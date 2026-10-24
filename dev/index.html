@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surfd QoL harness</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111 center/cover no-repeat}
+  #picker{position:fixed;left:12px;bottom:12px;z-index:2000;display:flex;gap:6px;font:12px system-ui;color:#eee}
+  #picker select{font:inherit;background:#000c;color:#eee;border:1px solid #fff3;border-radius:6px;padding:4px}
+  body.shot #picker{display:none}
+</style>
+</head>
+<body>
+<div id="picker"></div>
+<script type="module" src="./harness.js"></script>
+</body>
+</html>

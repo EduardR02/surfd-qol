@@ -32,7 +32,7 @@ function routeCollector() {
       const key = visitKey(board);
       if (!key || typeof board.routePrefix !== 'string' || !board.routePrefix || indices.has(key)) complete = false;
       if (key) indices.set(key, indices.has(key) ? null : boards.length);
-      pending = {key, loss: null, surfLoss: null, valid: complete};
+      pending = {key, loss: null, surfLoss: null, downLoss: null, upLoss: null, valid: complete};
     }
     if (pending.key !== visitKey(board)) complete = false;
     pending.valid &&= complete;
@@ -43,7 +43,11 @@ function routeCollector() {
     if (!key || typeof surf.routePrefix !== 'string' || !surf.routePrefix) return;
     const index = indices.get(key);
     const visit = index == null ? null : boards[index] ?? pending;
-    if (visit?.key === key) visit.surfLoss = surf.available && Number.isFinite(surf.loss) ? surf.loss : null;
+    if (visit?.key !== key) return;
+    const valid = surf.available && Number.isFinite(surf.loss);
+    visit.surfLoss = valid ? surf.loss : null;
+    visit.downLoss = valid && Number.isFinite(surf.downLoss) ? surf.downLoss : null;
+    visit.upLoss = valid && Number.isFinite(surf.upLoss) ? surf.upLoss : null;
   }
   return {observe, observeSurf, finish() { if (pending) boards.push(pending); return validRun ? {boards, indices} : null; }};
 }

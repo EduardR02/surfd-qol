@@ -153,7 +153,13 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let surfContactSeconds = 0;
   let surfMeasuredSeconds = 0;
   let surfUnsupportedTicks = 0;
+  let surfSkippedTicks = 0;
+  let surfLowHeight = Infinity;
+  let surfLowEnergy = NaN;
   let surfTick = null;
+  let idle = false;
+  let tickAirGated = false;
+  let airSkippedSeconds = 0;
   const entryPlane = { x: 0, y: 0, z: 0 };
   const surfaceVisits = new Map();
   let routePrefix = '';
@@ -171,9 +177,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   };
   let boardVersion = 0;
   const air = { available: false, loss: 0, brakingLoss: 0, missedGain: 0, measuredSeconds: 0, tick: null, sequence: 0 };
+  // downLoss + upLoss === loss: the visit splits at its lowest contact point.
   const surf = {
-    available: false, loss: null, entrySpeed: null, exitSpeed: null,
-    expectedExitSpeed: null, heightDelta: null, measuredSeconds: 0,
+    available: false, loss: null, downLoss: null, upLoss: null, entrySpeed: null, exitSpeed: null,
+    expectedExitSpeed: null, heightDelta: null, lowHeightDelta: null, measuredSeconds: 0,
     tick: null, sequence: 0, surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
     unsupportedTicks: 0, reason: '',
   };
@@ -183,6 +190,16 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let eventKind = '';
   let eventAt = -Infinity;
   let eventSimulationAt = -Infinity;
+
+  // Hidden HUD values skip their work entirely. Reference reconstruction
+  // always measures. A value enabled mid-section publishes that section as
+  // unavailable instead of a partial measurement.
+  const shown = key => settings[key] !== false;
+  const live = () => !referenceOnly && settings.continuousFeedback === true;
+  const active = () => referenceOnly ||
+    (settings.hud !== false && (shown('showBoard') || shown('showAir') || shown('showSurf')));
+  const airWanted = () => !referenceOnly && shown('showAir');
+  const heldSurfWanted = () => referenceOnly || (shown('showSurf') && !live());
 
   function clearBoard() {
     if (board.available) boardVersion++;
@@ -197,7 +214,14 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // Tiny contact-grace gaps are not useful flights. Unsupported/coasting
     // ticks contribute neither time nor invented input opportunity. Contact
     // closes the segment even when too short to replace the retained summary.
-    if (airMeasuredSeconds >= MIN_AIR_SECONDS) {
+    if (airSkippedSeconds > 0 && airSkippedSeconds + airMeasuredSeconds >= MIN_AIR_SECONDS) {
+      // Part of this flight was not analysed while Air was hidden.
+      air.available = false;
+      air.loss = air.brakingLoss = air.missedGain = 0;
+      air.measuredSeconds = airMeasuredSeconds;
+      air.tick = tick;
+      air.sequence++;
+    } else if (airMeasuredSeconds >= MIN_AIR_SECONDS) {
       air.available = true;
       air.brakingLoss = airBrakingLoss;
       air.missedGain = airMissedGain;
@@ -206,12 +230,14 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       air.tick = tick;
       air.sequence++;
     }
-    airBrakingLoss = airMissedGain = airMeasuredSeconds = 0;
+    airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
   }
 
   function clearSurfEpisode() {
     surfEntrySpeedSquared = surfEntryHeight = surfExitSpeedSquared = surfExitHeight = surfGravity = NaN;
-    surfContactSeconds = surfMeasuredSeconds = surfUnsupportedTicks = 0;
+    surfContactSeconds = surfMeasuredSeconds = surfUnsupportedTicks = surfSkippedTicks = 0;
+    surfLowHeight = Infinity;
+    surfLowEnergy = NaN;
     surfTick = null;
     episodeSurface = null;
     episodeActive = false;
@@ -221,15 +247,28 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   function finishSurf() {
     if (surfContactSeconds + TIME_EPSILON >= MIN_SURF_SECONDS) {
       const expectedSquared = surfEntrySpeedSquared + 2 * surfGravity * (surfEntryHeight - surfExitHeight);
-      surf.available = surfUnsupportedTicks === 0 && Number.isFinite(expectedSquared) && expectedSquared >= 0 &&
-        Number.isFinite(surfExitSpeedSquared);
+      surf.available = surfUnsupportedTicks === 0 && surfSkippedTicks === 0 && Number.isFinite(expectedSquared) &&
+        expectedSquared >= 0 && Number.isFinite(surfExitSpeedSquared) && Number.isFinite(surfLowEnergy);
       surf.entrySpeed = Number.isFinite(surfEntrySpeedSquared) ? Math.sqrt(surfEntrySpeedSquared) : null;
       surf.exitSpeed = Number.isFinite(surfExitSpeedSquared) ? Math.sqrt(surfExitSpeedSquared) : null;
       surf.expectedExitSpeed = surf.available ? Math.sqrt(expectedSquared) : null;
       surf.heightDelta = Number.isFinite(surfEntryHeight) && Number.isFinite(surfExitHeight)
         ? surfExitHeight - surfEntryHeight : null;
+      surf.lowHeightDelta = Number.isFinite(surfLowHeight) && Number.isFinite(surfEntryHeight)
+        ? surfLowHeight - surfEntryHeight : null;
       surf.loss = surf.available ? surf.expectedExitSpeed - surf.exitSpeed : null;
-      surf.reason = surfUnsupportedTicks ? 'unsupported-contact-or-endpoint'
+      // Energy E = v² + 2gh. expected − exit = (E_entry − E_exit) / (expected + exit),
+      // so dividing each phase's energy drop by the same sum makes them add up
+      // exactly to the whole-visit result, in exit-speed units.
+      const scale = surf.available ? surf.expectedExitSpeed + surf.exitSpeed : 0;
+      if (scale > 0) {
+        const entryEnergy = surfEntrySpeedSquared + 2 * surfGravity * surfEntryHeight;
+        const exitEnergy = surfExitSpeedSquared + 2 * surfGravity * surfExitHeight;
+        surf.downLoss = (entryEnergy - surfLowEnergy) / scale;
+        surf.upLoss = (surfLowEnergy - exitEnergy) / scale;
+      } else surf.downLoss = surf.upLoss = surf.available ? 0 : null;
+      surf.reason = surfSkippedTicks ? 'not-tracked-while-hidden'
+        : surfUnsupportedTicks ? 'unsupported-contact-or-endpoint'
         : !Number.isFinite(expectedSquared) || !Number.isFinite(surfExitSpeedSquared) ? 'invalid-endpoint'
         : expectedSquared < 0 ? 'above-gravity-only-height' : '';
       surf.measuredSeconds = surfMeasuredSeconds;
@@ -273,10 +312,12 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     air.available = false;
     air.loss = air.brakingLoss = air.missedGain = air.measuredSeconds = air.sequence = 0;
     air.tick = null;
-    airBrakingLoss = airMissedGain = airMeasuredSeconds = 0;
+    airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
+    tickAirGated = false;
     clearSurfEpisode();
     surf.available = false;
-    surf.loss = surf.entrySpeed = surf.exitSpeed = surf.expectedExitSpeed = surf.heightDelta = null;
+    surf.loss = surf.downLoss = surf.upLoss = surf.entrySpeed = surf.exitSpeed = surf.expectedExitSpeed = null;
+    surf.heightDelta = surf.lowHeightDelta = null;
     surf.measuredSeconds = 0;
     surf.reason = '';
     surf.sequence = surf.unsupportedTicks = 0;
@@ -410,8 +451,18 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   }
 
   function begin(session) {
-    if (previousSession && (session !== previousSession || session.state !== previousState ||
-      session.state.tick !== previousTick)) reset();
+    if (!active()) {
+      idle = true;
+      open = false;
+      return;
+    }
+    const resumed = idle;
+    idle = false;
+    if (resumed || (previousSession && (session !== previousSession || session.state !== previousState ||
+      session.state.tick !== previousTick))) reset();
+    // Visits counted before the pause are unknown: until the next run start
+    // resets the route, nothing may claim a PB/WR visit match.
+    if (resumed) routePrefix = null;
     duration = Number.isFinite(session.config?.dt) && session.config.dt > 0 ? session.config.dt : 0.015;
     open = true;
     accelerationCount = 0;
@@ -433,6 +484,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tickBoardSpeedBefore = tickBoardSpeedAfter = 0;
     tickGround = session.state?.grounded === true;
     tickGroundContact = false;
+    tickAirGated = false;
     tickReason = tickGround ? 'ground' : 'no-acceleration';
   }
 
@@ -442,6 +494,11 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // grounded state immediately before native movement jumps onto a ramp.
     tickGround = !airborne;
     if (!airborne || referenceOnly) { tickReason = !airborne ? 'ground' : 'no-analysis'; return; }
+    if (!airWanted() && !(live() && shown('showSurf'))) {
+      tickAirGated = true;
+      tickReason = 'hidden';
+      return;
+    }
     if (!Number.isFinite(wishSpeed) || wishSpeed < 0 || !finiteVector(direction)) {
       tickReason = 'unsupported-physics';
       return;
@@ -586,8 +643,13 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     elapsed += duration;
     const nextMode = tickRampContact || tickMixedContact ? 'surf' : 'air';
     if (nextMode === 'surf') {
-      if (!referenceOnly && settings.continuousFeedback === true) surfAcceleration();
+      if (live() && shown('showSurf')) surfAcceleration();
       else { tickAvailable = false; tickReason = 'surf'; }
+    } else if (tickAvailable && !airWanted()) {
+      // Live ramp Input still needs air observations; hidden Air needs no optimum.
+      tickAvailable = false;
+      tickAirGated = true;
+      tickReason = 'hidden';
     } else if (tickAvailable) {
       // Contacts classify the completed tick before any horizontal optimum is
       // evaluated. Held ramp ticks never compute an optimum just to discard it.
@@ -615,14 +677,14 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     }
     if (tickAirBoundary || grounded) {
       if (episodeActive && !grounded && ((sameSurface && tickRampContact) || ambiguous)) {
-        airBrakingLoss = airMissedGain = airMeasuredSeconds = 0;
+        airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
       } else finishAir(session.state.tick);
     } else if (nextMode === 'air' && tickAvailable) {
       // Only confirmed free air enters the unchanged horizontal comparison.
       airBrakingLoss += Math.max(0, -tickGain);
       airMissedGain += Math.max(0, tickOptimum - Math.max(0, tickGain));
       airMeasuredSeconds += duration;
-    }
+    } else if (nextMode === 'air' && tickAirGated) airSkippedSeconds += duration;
     // Never mix a free-air optimum with the narrower same-pressure comparison.
     if (nextMode !== mode || !tickAvailable) {
       head = count = 0;
@@ -710,7 +772,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         surfTick = session.state.tick;
         const velocity = session.state.velocity;
         const height = session.state.position?.z;
-        if (!ambiguous && !tickMixedContact && finiteVector(velocity) &&
+        if (!heldSurfWanted()) surfSkippedTicks++;
+        else if (!ambiguous && !tickMixedContact && finiteVector(velocity) &&
           Number.isFinite(height) && Number.isFinite(tickStartHeight) &&
           Number.isFinite(tickStartSpeedSquared) && Number.isFinite(surfEntrySpeedSquared) &&
           Number.isFinite(surfEntryHeight) && Number.isFinite(surfGravity) && surfGravity >= 0 &&
@@ -718,6 +781,12 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
           surfExitSpeedSquared = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
           surfExitHeight = height;
           surfMeasuredSeconds += duration;
+          // The first contact tick seeds the split, so Down always holds the
+          // board clip even on a ramp that is only ever climbed.
+          if (height < surfLowHeight) {
+            surfLowHeight = height;
+            surfLowEnergy = surfExitSpeedSquared + 2 * surfGravity * height;
+          }
         } else surfUnsupportedTicks++;
       } else if (episodeActive && tickMixedContact) surfUnsupportedTicks++;
       airborneGapSeconds = 0;
@@ -797,6 +866,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       board: { ...board },
       air: { ...air },
       surf: { ...surf },
+      // false while every movement value is hidden: mode is then unknown.
+      active: !idle,
       status,
     };
   }

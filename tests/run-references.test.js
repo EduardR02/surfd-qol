@@ -4,7 +4,7 @@ import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
 import {createCheckpointReferences} from '../src/references.js';
 import {createReferenceReplayStore} from '../src/replay-store.js';
-import {selectFeedbackType} from '../src/hud.js';
+import {selectFeedbackType} from '../src/hud-model.js';
 
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
@@ -614,6 +614,21 @@ describe('Matched completed Surf references', () => {
     });
     expect(f.metrics.snapshot().surf).toEqual(actual);
     expect(f.native().loads).toBe(1);
+  });
+
+  test('Down and Up compare against the same matched visit and add up to its Surf reference', async () => {
+    const f = fixture({surfSource:'pb',commands:surfCommands()});
+    const actual = finishLiveSurf(f);
+    expect(actual.downLoss + actual.upLoss).toBeCloseTo(actual.loss, 9);
+    expect(f.references()).toMatchObject({down:{status:'loading',source:'pb'},up:{status:'loading',source:'pb'}});
+    await flush();
+    const refs = f.references();
+    expect(refs.down).toMatchObject({status:'ready',source:'pb'});
+    expect(refs.up).toMatchObject({status:'ready',source:'pb'});
+    expect(Number.isFinite(refs.down.loss) && Number.isFinite(refs.up.loss)).toBe(true);
+    expect(refs.down.loss + refs.up.loss).toBeCloseTo(refs.surf.loss, 9);
+    f.settings.showSurf = false;
+    expect(f.references()).toMatchObject({down:{source:'fixed'},up:{source:'fixed'}});
   });
 
   test('retains signed reference gains rather than clamping them into zero-loss baselines', async () => {

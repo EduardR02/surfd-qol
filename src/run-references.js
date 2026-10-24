@@ -109,7 +109,8 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
       ? settings.surfColorReference : 'fixed';
     const result = () => ({
       board: visitResult(board, boardSource, 'loss'), start: startResult(startSource),
-      surf: visitResult(surf, surfSource, 'surfLoss')
+      surf: visitResult(surf, surfSource, 'surfLoss'),
+      down: visitResult(surf, surfSource, 'downLoss'), up: visitResult(surf, surfSource, 'upLoss')
     });
     if (destroyed) return result();
     const session = getSession(), refs = getReferences?.(), nextAdapter = getAdapter();

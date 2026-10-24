@@ -1971,3 +1971,123 @@ test('observer restores prior native methods when installation fails partway thr
   assert.equal(adapter.Movement.prototype.accelerate, nativeAccelerate);
   assert.equal(adapter.Movement.prototype.slide, nativeSlide);
 });
+
+function phaseSplit(entry, contacts, gravity = config.gravity) {
+  const energy = ({ speed, z }) => speed * speed + 2 * gravity * z;
+  const low = contacts.reduce((best, item) => item.z < best.z ? item : best);
+  const exit = contacts.at(-1);
+  const expected = Math.sqrt(entry.speed ** 2 + 2 * gravity * (entry.z - exit.z));
+  const scale = expected + exit.speed;
+  return { loss: expected - exit.speed, down: (energy(entry) - energy(low)) / scale, up: (energy(low) - energy(exit)) / scale };
+}
+
+test('Down and Up split a visit at its lowest contact and add up exactly to Surf', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  game.state.position.z = 1000;
+  const contacts = [{ speed: 1060, z: 900 }, { speed: 1200, z: 700 }, { speed: 1230, z: 650 }, { speed: 1100, z: 800 }, { speed: 960, z: 950 }];
+  for (const { speed, z } of contacts) endpointContact(metrics, game, vector(speed * 0.6, 0, speed * 0.8), z);
+  const result = leaveRamp(metrics, game).surf;
+  const expected = phaseSplit({ speed: 1000, z: 1000 }, contacts);
+  assert.equal(result.available, true);
+  close(result.loss, expected.loss);
+  close(result.downLoss, expected.down);
+  close(result.upLoss, expected.up);
+  close(result.downLoss + result.upLoss, result.loss);
+  close(result.lowHeightDelta, -350);
+  assert.ok(result.downLoss > 0 && result.upLoss > 0);
+});
+
+test('a climbed-only ramp keeps its board clip in Down; a ramp left at its bottom has zero Up', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  const climb = [{ speed: 990, z: 10 }];
+  for (let z = 30; z <= 90; z += 20) climb.push({ speed: Math.sqrt(990 ** 2 - 2 * config.gravity * (z - 10)), z });
+  for (const { speed, z } of climb) endpointContact(metrics, game, vector(speed), z);
+  const climbed = leaveRamp(metrics, game).surf;
+  const expected = phaseSplit({ speed: 1000, z: 0 }, climb);
+  close(climbed.downLoss, expected.down);
+  close(climbed.upLoss, 0, 1e-9);
+  close(climbed.downLoss + climbed.upLoss, climbed.loss);
+  assert.ok(climbed.downLoss > 0);
+
+  const drop = createMetrics();
+  const dropGame = mappedSession();
+  dropGame.state.position.z = 500;
+  for (const { speed, z } of [{ speed: 1050, z: 450 }, { speed: 1100, z: 380 }, { speed: 1150, z: 300 }]) {
+    endpointContact(drop, dropGame, vector(speed), z);
+  }
+  const dropped = leaveRamp(drop, dropGame).surf;
+  close(dropped.upLoss, 0);
+  close(dropped.downLoss, dropped.loss);
+});
+
+test('hidden Ramp skips endpoint tracking; enabling it mid-visit publishes that visit as unavailable', () => {
+  const settings = { showSurf: false };
+  const metrics = createMetrics(settings);
+  const game = mappedSession();
+  for (const speed of [990, 985]) endpointContact(metrics, game, vector(speed));
+  settings.showSurf = true;
+  for (const speed of [980, 975]) endpointContact(metrics, game, vector(speed));
+  const partial = leaveRamp(metrics, game).surf;
+  assert.equal(partial.sequence, 1);
+  assert.equal(partial.available, false);
+  assert.equal(partial.loss, null);
+  assert.equal(partial.downLoss, null);
+  assert.equal(partial.reason, 'not-tracked-while-hidden');
+  game.state.velocity = vector(1000);
+  for (const speed of [990, 985, 980, 975]) endpointContact(metrics, game, vector(speed), 0, [separateContact]);
+  const tracked = leaveRamp(metrics, game).surf;
+  assert.equal(tracked.available, true);
+  close(tracked.loss, 25);
+  // Board and visit identity keep working while Ramp is hidden.
+  assert.equal(metrics.snapshot().board.available, true);
+});
+
+test('hidden Air computes no optimum; a flight enabled mid-way is unavailable, the next one complete', () => {
+  const settings = { showAir: false };
+  const metrics = createMetrics(settings);
+  const game = mappedSession();
+  for (let i = 0; i < 4; i++) coastContact(metrics, game);
+  for (let i = 0; i < 20; i++) assert.equal(tick(metrics, game, sample()).status, 'hidden');
+  settings.showAir = true;
+  for (let i = 0; i < 6; i++) tick(metrics, game, sample());
+  const partial = coastContact(metrics, game, { contacts: [separateContact] }).air;
+  assert.equal(partial.available, false);
+  assert.equal(partial.sequence, 1);
+  for (let i = 0; i < 17; i++) tick(metrics, game, sample());
+  const landed = coastContact(metrics, game).air;
+  assert.equal(landed.available, true);
+  assert.equal(landed.sequence, 2);
+  close(landed.measuredSeconds, 0.255);
+});
+
+test('hidden HUD or all-hidden feedback leaves metrics idle; resuming mid-run cannot claim a reference visit', () => {
+  for (const hidden of [{ hud: false }, { showBoard: false, showAir: false, showSurf: false }]) {
+    const settings = { ...hidden };
+    const metrics = createMetrics(settings);
+    const game = mappedSession();
+    const idle = coastContact(metrics, game);
+    assert.equal(idle.board.available, false);
+    assert.equal(idle.status, 'waiting');
+    Object.assign(settings, { hud: true, showBoard: true, showAir: true, showSurf: true });
+    const resumed = coastContact(metrics, game).board;
+    assert.equal(resumed.available, true);
+    assert.equal(resumed.routePrefix, null);
+    tick(metrics, game, null, null, ['start']);
+    const fresh = coastContact(metrics, game, { contacts: [separateContact] }).board;
+    assert.equal(typeof fresh.routePrefix, 'string');
+    assert.equal(fresh.visit, 1);
+  }
+});
+
+test('live ramp Input runs only with Live feedback and Ramp both enabled', () => {
+  const settings = { continuousFeedback: true, showSurf: false };
+  const metrics = createMetrics(settings);
+  const game = mappedSession();
+  const input = sample({ before: vector(1000), direction: vector(0, 1) });
+  const contact = () => tick(metrics, game, input, clip(input.after, vector(input.after.x, input.after.y * 0.5, 0)));
+  assert.equal(contact().strafe.available, false);
+  settings.showSurf = true;
+  assert.equal(contact().strafe.available, true);
+});

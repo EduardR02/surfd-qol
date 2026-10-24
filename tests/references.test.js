@@ -1,6 +1,6 @@
 import {describe, test, expect} from 'bun:test';
 import {createCheckpointReferences, reconstructCheckpointSpeeds, reconstructRecordRoute, referenceIdentity, sessionKey} from '../src/references.js';
-import {formatTime, formatDelta, formatSplitDelta, startTone, referenceTone} from '../src/hud.js';
+import {formatTime, formatDelta, formatSplitDelta, startTone, referenceTone} from '../src/hud-model.js';
 
 const makeSession = () => ({map:{id:'surf_test',version:'map-1'},config:{version:'physics-1',dt:.015},replayFormat:8,state:{tick:0},timer:{state:{phase:'ready',startTick:null,elapsed:0,splits:[],invalidReason:null}},checkpointSpeeds:[],practice:false});
 const entry = {runId:'old-pb',timeUs:10000000,splitsUs:[5000000,8000000]};

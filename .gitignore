@@ -3,6 +3,9 @@
 /node_modules/
 /coverage/
 
+# Harness backdrops: local screenshots of the game, never committed
+/dev/backdrops/
+
 # Local secrets and browser profiles
 .env
 .env.*
