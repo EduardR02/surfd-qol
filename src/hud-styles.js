@@ -15,7 +15,7 @@ export const hudStyles = `
 [hidden]{display:none!important}
 
 .hud{position:absolute;left:50%;top:var(--y,82%);width:0;height:0;transform:scale(var(--scale,1));transform-origin:0 0;
-  opacity:var(--opacity,.9);color:var(--paper);white-space:nowrap;
+  opacity:var(--opacity,1);color:var(--paper);white-space:nowrap;
   font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"case" 1;
   -webkit-text-stroke:1.5px var(--edge);paint-order:stroke fill;
   text-shadow:0 1px 2px rgba(0,0,0,.5),0 0 10px rgba(0,0,0,.28)}

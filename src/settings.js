@@ -1,6 +1,6 @@
 export const storageKey = 'surfd-qol.settings.v1';
 export const defaults = {
-  hud: true, scale: 1, y: 82, speedColor: '#ebbcba', opacity: 0.9,
+  hud: true, scale: 1, y: 82, speedColor: '#ebbcba', opacity: 1,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,
@@ -11,7 +11,8 @@ export const defaults = {
   startDeficitAmazing: 10, startDeficitGood: 17.5, strafeLookbackSeconds: 0.2,
   boardLossAmazing: 5, boardLossGood: 20, airLossAmazing: 5, airLossGood: 20,
   referenceLossTolerance: 2,
-  crouchJump: true, crouchJumpKey: 'Space',
+  // Binds change what the game receives, so each one is opt-in.
+  crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
 };
 export const colorKeys = ['speedColor', 'goodColor', 'warnColor', 'badColor'];
