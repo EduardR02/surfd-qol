@@ -46,7 +46,7 @@ export function instrumentGame(source) {
       const mapInfo = ${client}.config.maps.find(entry => entry.id === session.map.id);
       const recordSlug = mapInfo?.slug ?? session.map.slug;
       const record = refs?.entries?.find(entry => entry.rank === 1) ?? null;
-      return {boardId: board?.boardId ?? null, own: refs?.own ?? null, record,
+      return {boardId: board?.boardId ?? null, own: refs?.own ?? null, record, mapName: mapInfo?.title ?? mapInfo?.name ?? null,
         loadReplay: runId => ${client}.replay(runId),
         loadRecordRoute: () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
     }

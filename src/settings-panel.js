@@ -21,8 +21,9 @@ const color = (key, label) =>
   `<label class="color"><input type="color" data-setting="${key}"><span>${label}</span></label>`;
 const references = [['fixed', 'Fixed'], ['pb', 'PB'], ['wr', 'WR']];
 
+export const launcherMarkup = `<button id="open" class="launcher" type="button" aria-expanded="false" aria-controls="panel" hidden><span class="mark" aria-hidden="true"></span>QoL</button>`;
+
 export const panelMarkup = `
-<button id="open" class="launcher" type="button" aria-expanded="false" aria-controls="panel" hidden><span class="mark" aria-hidden="true"></span>QoL</button>
 <section id="panel" role="dialog" aria-labelledby="panel-title" hidden>
   <header class="head">
     <h2 id="panel-title"><span class="mark" aria-hidden="true"></span>Surfd QoL</h2>
@@ -176,7 +177,7 @@ export function previewModel(settings) {
   };
 }
 
-export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange}) {
+export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen}) {
   const node = id => root.getElementById(id);
   const panel = node('panel'), opener = node('open'), close = node('close'), keyButton = node('key'), keyHelp = node('key-help');
   const body = panel.querySelector('.body');
@@ -273,6 +274,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   opener.addEventListener('click', () => {
     if (!available) return;
     if (!panel.hidden) { closePanel(true); return; }
+    onOpen?.();
     bindings?.release?.();
     panel.hidden = false;
     opener.setAttribute('aria-expanded', 'true');
@@ -326,6 +328,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   return {
     sync,
     handleKey,
+    close: closePanel,
     get open() { return !panel.hidden; },
     // Settings are reachable only outside a run (menus).
     setAvailable(next) {

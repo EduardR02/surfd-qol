@@ -26,6 +26,8 @@ const shots = [
     [`panel-${page}`, `panel=${page}`], [`panel-${page}-540x600`, `panel=${page}`, 540, 600],
   ]),
   ['panel-custom-palette', 'panel=display&palette=custom'],
+  ['runs-session', 'runs=session'], ['runs-map', 'runs=map'], ['runs-map-540x600', 'runs=map', 540, 600],
+  ['runs-detail', 'runs=map&expand=fixture-6'],
 ];
 await mkdir(out, {recursive: true});
 const browser = await puppeteer.launch({executablePath: process.env.CHROME, headless: true});

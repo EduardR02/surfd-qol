@@ -876,5 +876,6 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   const boardRevision = () => boardVersion;
   // Reference reconstruction reads completed Surf visits only, not per-tick copies.
   const surfSnapshot = sequence => surf.sequence !== sequence ? {...surf} : null;
-  return { begin, acceleration, collision, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot };
+  const airSnapshot = sequence => air.sequence !== sequence ? {...air} : null;
+  return { begin, acceleration, collision, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, airSnapshot };
 }

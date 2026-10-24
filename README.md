@@ -80,6 +80,12 @@ At each checkpoint you get your split time and speed, plus time and speed deltas
 
 Both work inside the game's own input sampling, so the commands it records are exactly what you'd get from a keyboard that did this in hardware. Your binds on disk aren't changed.
 
+### Run history
+
+**Runs**, next to **QoL** in the menu, opens a summary of your runs: count, best and average finish, start speed and average sync, then one row per run with its time, result (finished, or reset at which checkpoint), start speed, sync, total board, ramp and air loss, and top speed. Click a run to see its checkpoint splits and speeds against the best finish in the list, and Board, Down and Up for every ramp.
+
+**This session** lists the runs since the page loaded, on any map; **This map** lists every saved run on the current map, up to the last 100. Practice and invalid runs are marked and never count as best. Restarts within the first second aren't recorded, and replays never are. The loss totals only include values the HUD was measuring, so a value you had hidden shows —.
+
 ### Replays and spectating
 
 Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback.
@@ -97,7 +103,7 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 - Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each replay is processed once and cached.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
-- No telemetry. Settings and local checkpoint PB speeds live in surfd.net's local storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
+- No telemetry. Settings, run history and local checkpoint PB speeds live in surfd.net's local storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
 
 ## Troubleshooting
 
@@ -125,6 +131,7 @@ Source layout:
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
 - `src/energy.js`: the speed tint's energy trend.
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
+- `src/run-history.js`, `src/runs-panel.js`: per-run stats recording and the Runs popup.
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License

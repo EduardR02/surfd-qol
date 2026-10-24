@@ -2,7 +2,7 @@
 // colour as the only accent, hairline rows instead of cards. The slanted bar
 // is the panel's one motif.
 export const panelStyles = `
-.launcher,#panel{pointer-events:auto;text-shadow:none;-webkit-text-stroke:0;
+.launcher,#panel,#runs{pointer-events:auto;text-shadow:none;-webkit-text-stroke:0;
   --bg:rgba(27,22,23,.9);--raise:#2a2324;--sunk:rgba(0,0,0,.28);--line:rgba(255,232,226,.085);--line-2:rgba(255,232,226,.16);
   --text:#f5ede9;--text-2:#c4b7b2;--text-3:#998c87;color:var(--text);font-size:14px;line-height:1.45}
 button,input,select{font:inherit;color:inherit}
@@ -10,12 +10,13 @@ button{cursor:pointer}
 :is(button,input,summary,[role=tabpanel]):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .mark{display:inline-block;flex:none;width:6px;height:15px;border-radius:1.5px;background:var(--accent);transform:skewX(-18deg)}
 
-.launcher{position:absolute;right:var(--dock-right,20px);bottom:var(--dock-bottom,20px);height:var(--dock-height,42px);display:inline-flex;align-items:center;gap:9px;padding:0 16px 0 14px;border:1px solid var(--line-2);
+.launchers{position:absolute;right:var(--dock-right,20px);bottom:var(--dock-bottom,20px);height:var(--dock-height,42px);display:flex;gap:8px}
+.launcher{height:100%;display:inline-flex;align-items:center;gap:9px;padding:0 16px 0 14px;border:1px solid var(--line-2);
   border-radius:999px;background:var(--bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 8px 28px rgba(0,0,0,.35);
   font-size:13px;font-weight:700;letter-spacing:.02em}
 .launcher:hover,.launcher[aria-expanded=true]{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
 
-#panel{--above:calc(var(--dock-bottom,20px) + var(--dock-height,42px) + 12px);position:absolute;right:var(--dock-edge,20px);bottom:var(--above);
+#panel,#runs{--above:calc(var(--dock-bottom,20px) + var(--dock-height,42px) + 12px);position:absolute;right:var(--dock-edge,20px);bottom:var(--above);
   width:560px;max-width:calc(100vw - 24px);height:min(800px,calc(100dvh - var(--above) - 16px));display:flex;flex-direction:column;
   overflow:hidden;border:1px solid var(--line-2);border-radius:18px;background:var(--bg);-webkit-backdrop-filter:blur(22px) saturate(1.1);
   backdrop-filter:blur(22px) saturate(1.1);box-shadow:0 24px 70px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.25);animation:panel-in .16s ease-out}
@@ -121,7 +122,7 @@ details[open] summary::after{transform:translateY(3px) rotate(-135deg)}
 .status:empty{display:none}
 
 @media (max-width:600px){
-  #panel{left:12px;right:12px;width:auto;max-width:none}
+  #panel,#runs{left:12px;right:12px;width:auto;max-width:none}
   .head{padding-left:16px}.saved{display:none}.saved+.close{margin-left:auto}
   .preview{height:116px;margin:0 10px}.preview .hud{--scale:.62}
   .tabs{margin:8px 10px 0}
@@ -137,7 +138,7 @@ details[open] summary::after{transform:translateY(3px) rotate(-135deg)}
   .status{display:none}
 }
 @media (prefers-reduced-motion:reduce){
-  #panel{animation:none}
+  #panel,#runs{animation:none}
   .preview .energy .speed{animation:none;color:var(--good)}
   .switch,.switch::before,.seg span{transition:none}
 }

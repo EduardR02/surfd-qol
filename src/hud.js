@@ -7,7 +7,9 @@ import {createEnergyTrend, energySample} from './energy.js';
 import {hudMarkup, createHudView, installFonts} from './hud-view.js';
 import {hudStyles} from './hud-styles.js';
 import {panelStyles} from './panel-styles.js';
-import {panelMarkup, createSettingsPanel} from './settings-panel.js';
+import {launcherMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
+import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
+import {runsStyles} from './runs-styles.js';
 import {defaults} from './settings.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -15,14 +17,15 @@ const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}</style>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
-    ${panelMarkup}`;
+    <div class="launchers">${runsLauncherMarkup}${launcherMarkup}</div>
+    ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
   const overlay = root.getElementById('overlay');
   const hud = createHudView(overlay);
@@ -77,9 +80,11 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onResetColors,
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },
+    onOpen: () => runs.close(),
   });
+  const runs = createRunsPanel({root, host, history, onOpen: () => panel.close()});
 
-  function onKey(event) { panel.handleKey(event); }
+  function onKey(event) { panel.handleKey(event); runs.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
   window.addEventListener('resize', syncSettings);
@@ -108,6 +113,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const currentView = view ?? snapshot?.spectator ?? null;
     const inSurf = inSurfContext(snapshot, session, currentView);
     panel.setAvailable(!inSurf);
+    runs.setAvailable(!inSurf);
     if (!inSurf) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
@@ -229,12 +235,14 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     observeFinish() { references.update(false); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
+    showRuns(scope) { runs.show(scope); },
     destroy() {
       destroyed = true;
       clearInterval(interval);
       cancelAnimationFrame(liveFrame);
       references.destroy();
       runReferences.destroy();
+      runs.destroy();
       replayStore.destroy?.();
       menuObserver.disconnect();
       document.removeEventListener('pointerlockchange', onPointerLockChange);

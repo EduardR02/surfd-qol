@@ -53,6 +53,35 @@ export const scenarios = {
   menu: {note: 'In a menu (settings entry point)', ...ramp, menu: true},
 };
 
+// A session of runs on two maps for the Runs popup (?runs=session|map).
+function fixtureRuns() {
+  const session = 1, at = Date.parse('2026-10-24T19:00:00');
+  const ramps = (n, seed) => Array.from({length: n}, (_, i) => ({checkpoint: Math.floor(i / 2), board: [3.2, 11.4, 0.8, 6.1][(i + seed) % 4],
+    down: [14.6, 22.0, 9.4, 18.3][(i + seed) % 4], up: [38.1, 16.2, 24.9, 30.5][(i + seed) % 4], exit: 2380 + 140 * i}));
+  const run = (index, map, mapName, time, outcome, splits, extra = {}) => {
+    const list = ramps(splits.length * 2 + (outcome === 'finished' ? 1 : 0), index);
+    const sum = key => list.reduce((total, ramp) => total + ramp[key], 0);
+    return {id: `fixture-${index}`, session: extra.session ?? session, map, mapName, at: at + index * 95000, kind: 'CP', outcome, practice: false, invalid: '', time,
+      start: {speed: [348.4, 342.1, 349.6, 331.8, 347.2][index % 5], height: [4.2, 9.8, 2.6, 18.4, 5.5][index % 5]},
+      topSpeed: 3020 + 37 * index, sync: [93.4, 89.1, 95.2, 84.6, 92.0][index % 5],
+      checkpoints: splits.map((split, i) => ({split, speed: 2410 + 260 * i - 7 * index})), ramps: list,
+      board: {total: Number(sum('board').toFixed(1)), count: list.length},
+      surf: {down: Number(sum('down').toFixed(1)), up: Number(sum('up').toFixed(1)), loss: Number((sum('down') + sum('up')).toFixed(1)), count: list.length, unavailable: 0},
+      air: {loss: 31.4 + index, braking: 12.2, missed: 19.2 + index, seconds: 9.5, count: list.length}, ...extra};
+  };
+  return [
+    run(0, 'boreas:2', 'Boreas', 64.912, 'finished', [21.404, 43.118], {session: 0}),
+    run(1, 'utopia:3', 'Utopia', 43.551, 'finished', [10.31, 21.62]),
+    run(2, 'utopia:3', 'Utopia', 12.874, 'reset', [10.48]),
+    run(3, 'utopia:3', 'Utopia', 41.233, 'finished', [10.12, 21.233]),
+    run(4, 'utopia:3', 'Utopia', 6.02, 'reset', []),
+    run(5, 'utopia:3', 'Utopia', 42.807, 'finished', [10.2, 21.49], {practice: true}),
+    run(6, 'utopia:3', 'Utopia', 42.016, 'finished', [10.15, 21.38]),
+  ];
+}
+const runsFixture = fixtureRuns();
+const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, subscribe: () => () => {}, clear() {}};
+
 const palettes = {custom: {speedColor: '#f4f1ea', goodColor: '#6fe0b0', warnColor: '#ffcf5c', badColor: '#ff5f6d'}};
 const backdrops = ['snow', 'fog', 'ice', 'neon', 'warm', 'dark', 'menu'];
 
@@ -66,7 +95,8 @@ for (const [key, value] of params) {
   applySettings(settings, {[field]: typeof defaults[field] === 'number' ? Number(value) : typeof defaults[field] === 'boolean' ? value === 'true' : value});
 }
 const panelPage = params.get('panel');
-const inMenu = scenario.menu || panelPage !== null;
+const runsScope = params.get('runs');
+const inMenu = scenario.menu || panelPage !== null || runsScope !== null;
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
 // Backdrops are local game screenshots (gitignored); a neutral sky stands in when one is missing.
 document.body.style.backgroundImage = `url(./backdrops/${bg}.jpg), linear-gradient(#1b2430, #4a566a 55%, #b8a09c)`;
@@ -101,6 +131,7 @@ const hud = mountHud({
   settings,
   onSettings: patch => applySettings(settings, patch),
   onResetColors: () => applySettings(settings, Object.fromEntries(colorKeys.map(key => [key, defaults[key]]))),
+  history,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -111,6 +142,11 @@ const hud = mountHud({
   },
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
+if (runsScope !== null) {
+  hud.showRuns(runsScope || 'session');
+  // ?expand=<run id> opens that run's splits and ramps.
+  if (params.has('expand')) document.getElementById('surfd-qol').shadowRoot.querySelector(`tr.run[data-run="${params.get('expand')}"]`)?.click();
+}
 
 // Small picker for manual browsing; hidden in screenshot mode.
 const picker = document.getElementById('picker');

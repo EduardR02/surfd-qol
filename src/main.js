@@ -1,5 +1,6 @@
 import { createMetrics } from './metrics.js';
 import { createStartFeedback } from './start.js';
+import { createRunHistory } from './run-history.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
@@ -11,6 +12,11 @@ try { applySettings(JSON.parse(localStorage.getItem(storageKey) ?? '{}')); } cat
 
 const metrics = createMetrics(settings);
 const start = createStartFeedback();
+const history = createRunHistory({
+  metrics, start,
+  getState: () => window.__SURF__?.snapshot?.() ?? null,
+  getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null
+});
 let observer = null;
 let hud = null;
 let runtimeStatus = 'Connecting physics observer…';
@@ -39,9 +45,10 @@ const api = {
         onTick(session, command, events) {
           // The Start flash costs nothing while hidden; a stale flash ages out.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
+          history.observe(session, events);
           if (events.includes('finish')) hud?.observeFinish();
         },
-        onReset() { start.reset(); },
+        onReset() { start.reset(); history.reset(); },
         onError: fail
       });
       api.adapter = adapter;
@@ -94,7 +101,7 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings,
+    settings, onSettings, bindings, history,
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
 }
