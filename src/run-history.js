@@ -1,9 +1,11 @@
 // Per-run stats and history. Observes the live session once per tick (after
 // metrics and start feedback) and keeps one compact record per run: splits,
-// start, ramp/air totals, top speed and sync. Runs are kept in memory for this
-// page session and saved per map in surfd.net's local storage.
+// start, ramp/air totals, top speed and sync. Runs are kept in memory and
+// saved one record each in IndexedDB (createRunStore), so ending a run writes
+// only that run.
+// Where older versions kept the whole history, in the game's localStorage.
 export const HISTORY_KEY = 'surfd-qol.runs.v1';
-// A hard ceiling under localStorage's quota, whatever the limits say.
+// A hard ceiling, whatever the limits say.
 const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
 // Restarts straight out of the start zone are not worth a row.
@@ -46,18 +48,20 @@ function prettyName(map) {
 }
 
 export function createRunHistory({metrics, start, getState = () => null, getMapName = () => null, onReplay = null, limits = () => ({}),
-  onPrune = null, storage, clock = () => Date.now()} = {}) {
-  if (storage === undefined) {
-    try { storage = globalThis.localStorage; } catch { storage = null; }
+  onPrune = null, store = null, legacy, clock = () => Date.now()} = {}) {
+  if (legacy === undefined) {
+    try { legacy = globalThis.localStorage; } catch { legacy = null; }
   }
   const session = clock();
-  let runs = [], storedBytes = 0;
-  try {
-    const text = storage?.getItem(HISTORY_KEY) ?? 'null';
-    storedBytes = text === 'null' ? 0 : text.length;
-    const saved = JSON.parse(text);
-    if (Array.isArray(saved?.runs)) runs = saved.runs.filter(valid);
-  } catch { /* Private browsing or an incompatible history must not affect play. */ }
+  let runs = [], loaded = false;
+  // Serialized size per run, for the storage readout; computed once per run.
+  const sizes = new WeakMap();
+  const sizeOf = run => {
+    let size = sizes.get(run);
+    if (size === undefined) { size = JSON.stringify(run).length; sizes.set(run, size); }
+    return size;
+  };
+  const write = work => Promise.resolve().then(work).catch(error => console.warn('[Surfd QoL] Could not save run history:', error));
   const listeners = new Set();
   let current = null, owner = null, startTick = null, lastMap = '', lastMapName = '';
   let boardRevision = -1, board = null, surfSequence = 0, airSequence = 0;
@@ -67,22 +71,47 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
   // Replay sessions keep stepping after playback stops; they never record.
   const replaySessions = new WeakSet();
 
-  function save() {
+  // Applies the limits and saves `changed` runs. Deleting waits for the saved
+  // history to load: before that, the kept set is incomplete.
+  function commit(changed = []) {
     let limit = {};
     try { limit = limits() ?? {}; } catch { /* defaults */ }
+    const before = runs;
     runs = retainRuns(runs, limit);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const text = JSON.stringify({runs});
-        storage?.setItem(HISTORY_KEY, text);
-        storedBytes = text.length;
-        break;
-      } catch { runs = runs.slice(Math.floor(runs.length / 2)); }
-    }
+    const kept = new Set(runs.map(run => run.id));
+    for (const run of changed) if (kept.has(run.id) && store) write(() => store.put(run));
+    if (!loaded) return;
+    const removed = before.filter(run => !kept.has(run.id)).map(run => run.id);
+    if (removed.length && store) write(() => store.remove(removed));
     // Replays follow: a run that is no longer kept takes its replay with it.
-    try { onPrune?.(new Set(runs.map(run => run.id))); } catch { /* optional */ }
+    try { onPrune?.(kept); } catch { /* optional */ }
   }
   function notify() { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } }
+  const ready = (async () => {
+    let saved = null;
+    try { saved = await store?.load(); } catch (error) { console.warn('[Surfd QoL] Could not load run history:', error); }
+    let moved = [];
+    if (Array.isArray(saved)) {
+      // Older versions kept everything in one localStorage entry: move it over once.
+      try {
+        const text = legacy?.getItem(HISTORY_KEY);
+        if (text) {
+          const known = new Set(saved.map(run => run.id));
+          moved = (JSON.parse(text)?.runs ?? []).filter(run => valid(run) && !known.has(run.id));
+          await Promise.all(moved.map(run => store.put(run)));
+          legacy.removeItem(HISTORY_KEY);
+        }
+      } catch { /* an unreadable old history is left where it is */ }
+    }
+    // Runs that ended while loading stay newest.
+    const recorded = new Set(runs.map(run => run.id));
+    const older = [...(saved ?? []), ...moved].filter(run => valid(run) && !recorded.has(run.id)).sort((a, b) => a.at - b.at);
+    runs = [...older, ...runs];
+    // A failed load never unlocks deleting: the kept set would be incomplete.
+    loaded = !store || Array.isArray(saved);
+    commit();
+    notify();
+  })();
 
   function commitBoard() {
     if (!current || !board?.available) return;
@@ -136,7 +165,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
     for (const group of [run.board, run.surf, run.air]) for (const key of Object.keys(group)) group[key] = round(group[key], 1);
     runs.push(run);
     saveReplay(run, owner);
-    save();
+    commit([run]);
     notify();
   }
   function saveReplay(run, live) {
@@ -208,15 +237,19 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
     observe(live, events) {
       const timer = live?.timer?.state;
       if (!timer || !live.state) return;
-      let playback = false;
-      try { playback = getState?.()?.playback === true; } catch { /* optional */ }
-      if (playback) replaySessions.add(live);
-      else playback = replaySessions.has(live);
-      if (current && (live !== owner || playback || events.some(event => endEvents.has(event)) ||
+      const starting = events.includes('start');
+      // The game snapshot is a full copy of its state, so it is read only when
+      // a run would start. A replay loaded mid-run ends that run via reset().
+      let playback = replaySessions.has(live);
+      if (starting && !playback) {
+        try { playback = getState?.()?.playback === true; } catch { /* optional */ }
+        if (playback) replaySessions.add(live);
+      }
+      if (current && (live !== owner || events.some(event => endEvents.has(event)) ||
         timer.phase === 'ready' || timer.startTick !== startTick)) {
         end('reset', live);
       }
-      if (events.includes('start') && !playback) {
+      if (starting && !playback) {
         if (current) end('reset', live);
         owner = live;
         startTick = timer.startTick;
@@ -228,16 +261,23 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
     },
     // Restart, practice restore, replay load or station visit.
     reset() { if (current) end('reset', owner); },
+    // Drops the run in progress without recording it (recording turned off).
+    discard() { current = board = commands = initialState = null; },
+    // Resolves once the saved history has loaded.
+    ready,
     get currentMap() { return lastMap; },
     get currentMapName() { return lastMapName; },
     get running() { return !!current; },
     runs() { return runs; },
     // Re-applies the History limits after they change.
-    prune() { save(); notify(); },
-    usage() { return {bytes: storedBytes, runs: runs.length, maps: new Set(runs.map(run => run.map)).size}; },
-    clear(map) {
+    prune() { commit(); notify(); },
+    usage() { return {bytes: runs.reduce((total, run) => total + sizeOf(run), 0), runs: runs.length, maps: new Set(runs.map(run => run.map)).size}; },
+    async clear(map) {
+      await ready;
+      const removed = runs.filter(run => !map || run.map === map).map(run => run.id);
       runs = map ? runs.filter(run => run.map !== map) : [];
-      save();
+      if (store && removed.length) await write(() => store.remove(removed));
+      commit();
       notify();
     },
     // Replay spots (bookmarks) the player saved while watching this run.
@@ -245,7 +285,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
       const run = runs.find(entry => entry.id === id);
       if (!run) return;
       if (spots.length) run.spots = spots; else delete run.spots;
-      save();
+      sizes.delete(run);
+      if (store) write(() => store.put(run));
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };

@@ -4,11 +4,22 @@ import { runsView } from '../src/runs-panel.js';
 
 function memoryStorage(initial = {}) {
   const data = { ...initial };
-  return { data, getItem: key => data[key] ?? null, setItem: (key, value) => { data[key] = String(value); } };
+  return { data, getItem: key => data[key] ?? null, setItem: (key, value) => { data[key] = String(value); }, removeItem: key => { delete data[key]; } };
 }
+// The IndexedDB run store, in memory: one record per run.
+function memoryStore(initial = []) {
+  const data = new Map(initial.map(run => [run.id, structuredClone(run)]));
+  return {
+    data,
+    load: async () => [...data.values()].map(run => structuredClone(run)),
+    put: async run => { data.set(run.id, structuredClone(run)); },
+    remove: async ids => { for (const id of ids) data.delete(id); },
+  };
+}
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
 // A fake live session plus the metrics accessors the recorder reads.
-function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null, limits, onPrune } = {}) {
+function rig({ store = memoryStore(), legacy = memoryStorage(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null, limits, onPrune } = {}) {
   let now = 1000;
   const live = {
     map, practice: false, checkpointSpeeds: [], replayFormat: 8, config: { dt: 0.015 },
@@ -28,7 +39,9 @@ function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stag
   };
   const start = { snapshot: () => ({ available: true, speed: 348.4, heightAboveFloor: 4.25 }) };
   const state = { playback, strafeSync: { percentage: 91.26 } };
-  const history = createRunHistory({ metrics, start, storage, onReplay, limits, onPrune, getState: () => state, getMapName: () => 'Utopia', clock: () => now });
+  const snapshots = { count: 0 };
+  const getState = () => { snapshots.count++; return state; };
+  const history = createRunHistory({ metrics, start, store, legacy, onReplay, limits, onPrune, getState, getMapName: () => 'Utopia', clock: () => now });
   const tick = (events = [], seconds = 0.015) => {
     now += seconds * 1000;
     live.state = { tick: live.state.tick + 1, velocity: live.state.velocity };
@@ -37,7 +50,7 @@ function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stag
     history.observe(live, events);
   };
   return {
-    live, history, storage, state, tick,
+    live, history, store, legacy, state, snapshots, tick,
     go(speed = 350) {
       live.state.velocity = { x: speed, y: 0, z: 0 };
       live.timer.state = { ...live.timer.state, phase: 'running', elapsed: 0, splits: [], startTick: live.state.tick + 0.5 };
@@ -68,7 +81,7 @@ function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stag
 }
 
 describe('run history', () => {
-  test('records a finished run with splits, start, ramps, air and sync', () => {
+  test('records a finished run with splits, start, ramps, air and sync', async () => {
     const r = rig();
     r.go();
     for (let i = 0; i < 100; i++) r.tick();
@@ -88,7 +101,8 @@ describe('run history', () => {
     expect(run.checkpoints).toEqual([{ split: expect.any(Number), speed: 2412, command: expect.any(Number) }]);
     expect(run.ramps).toEqual([{ checkpoint: 0, board: 3.2, down: 14.6, up: 38.1, exit: 2500 }]);
     expect(run.time).toBeCloseTo(1.59, 3);
-    expect(JSON.parse(r.storage.data[HISTORY_KEY]).runs).toHaveLength(1);
+    await flush();
+    expect([...r.store.data.values()]).toEqual([run]);
   });
 
   test('a ramp surfed with Ramp hidden keeps Board, falls back to the current speed and says why', () => {
@@ -157,10 +171,11 @@ describe('run history', () => {
     expect(r.history.runs()).toHaveLength(0);
   });
 
-  test('history persists across page loads, keeps the runs-per-map limit, and can be cleared', () => {
-    const storage = memoryStorage();
+  test('history persists across page loads, applies the runs-per-map limit on load, and can be cleared', async () => {
+    const store = memoryStore();
     let kept = null;
-    const first = rig({ storage, limits: () => ({ runsPerMap: 12 }), onPrune: ids => { kept = ids; } });
+    const first = rig({ store, limits: () => ({ runsPerMap: 12 }), onPrune: ids => { kept = ids; } });
+    await first.history.ready;
     for (let i = 0; i < 15; i++) {
       first.go();
       for (let t = 0; t < 70; t++) first.tick();
@@ -168,13 +183,60 @@ describe('run history', () => {
     }
     expect(first.history.runs()).toHaveLength(12);
     expect(kept).toEqual(new Set(first.history.runs().map(run => run.id)));
-    expect(first.history.usage()).toMatchObject({ runs: 12, maps: 1, bytes: storage.data[HISTORY_KEY].length });
-    const second = rig({ storage, limits: () => ({ runsPerMap: 5 }) });
-    expect(second.history.runs()).toHaveLength(12);
-    second.history.prune();
+    await flush();
+    expect(store.data.size).toBe(12);
+    expect(first.history.usage()).toMatchObject({ runs: 12, maps: 1 });
+    expect(first.history.usage().bytes).toBeGreaterThan(12 * 100);
+    const second = rig({ store, limits: () => ({ runsPerMap: 5 }) });
+    await second.history.ready;
     expect(second.history.runs()).toHaveLength(5);
-    second.history.clear('utopia:3');
-    expect(rig({ storage }).history.runs()).toHaveLength(0);
+    await flush();
+    expect(store.data.size).toBe(5);
+    await second.history.clear('utopia:3');
+    const third = rig({ store });
+    await third.history.ready;
+    expect(third.history.runs()).toHaveLength(0);
+  });
+
+  test('a history saved by older versions in localStorage moves into the store once', async () => {
+    const old = (id, at) => ({ id, map: 'utopia:3', mapName: 'Utopia', session: 1, at, time: 50, outcome: 'finished', checkpoints: [], ramps: [] });
+    const legacy = memoryStorage({ [HISTORY_KEY]: JSON.stringify({ runs: [old('a', 2), old('b', 1), { id: 'broken' }] }) });
+    const store = memoryStore([old('b', 1)]);
+    const r = rig({ store, legacy });
+    await r.history.ready;
+    expect(r.history.runs().map(run => run.id)).toEqual(['b', 'a']);
+    expect([...store.data.keys()].sort()).toEqual(['a', 'b']);
+    expect(legacy.data[HISTORY_KEY]).toBeUndefined();
+  });
+
+  test('a history that fails to load never prunes, so no replay is deleted', async () => {
+    let pruned = 0;
+    const store = { ...memoryStore(), load: async () => { throw new Error('broken'); } };
+    const r = rig({ store, onPrune: () => { pruned++; } });
+    await r.history.ready;
+    r.go();
+    for (let t = 0; t < 100; t++) r.tick();
+    r.finish();
+    expect(r.history.runs()).toHaveLength(1);
+    expect(pruned).toBe(0);
+  });
+
+  test('the game snapshot is read when a run starts and ends, not every tick', () => {
+    const r = rig();
+    r.go();
+    for (let t = 0; t < 500; t++) r.tick();
+    r.finish();
+    expect(r.history.runs()).toHaveLength(1);
+    expect(r.snapshots.count).toBe(2);
+  });
+
+  test('discard drops the run in progress without recording it', () => {
+    const r = rig();
+    r.go();
+    for (let t = 0; t < 100; t++) r.tick();
+    r.history.discard();
+    r.finish();
+    expect(r.history.runs()).toHaveLength(0);
   });
 
   test('limits keep the newest runs, the most recently played maps and the latest sessions', () => {
@@ -189,9 +251,12 @@ describe('run history', () => {
     expect(ids({ sessions: 1, maps: 1 })).toEqual([6]);
   });
 
-  test('a corrupt store is ignored', () => {
-    const r = rig({ storage: memoryStorage({ [HISTORY_KEY]: '{nope' }) });
+  test('a corrupt old history is ignored and left where it is', async () => {
+    const legacy = memoryStorage({ [HISTORY_KEY]: '{nope' });
+    const r = rig({ legacy });
+    await r.history.ready;
     expect(r.history.runs()).toEqual([]);
+    expect(legacy.data[HISTORY_KEY]).toBe('{nope');
   });
 });
 

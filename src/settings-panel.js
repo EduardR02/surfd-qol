@@ -150,13 +150,14 @@ export const panelMarkup = `
       <p class="explain intro">What the Runs list and replays keep in this browser. Lowering a limit deletes whatever is over it.</p>
       <h3>Run history</h3>
       <div class="group">
-        ${number('historyRunsPerMap', 'Runs kept per map', 5, 500, 5, 'runs', 'Newest first. A run takes about 1–2 KB.')}
-        ${number('historyMaps', 'Maps kept', 1, 100, 1, 'maps', 'The maps you played longest ago are dropped first.')}
-        ${number('historySessions', 'Sessions kept', 0, 500, 1, 'sessions', 'A session is one visit, from loading the page. 0 keeps them all.')}
+        ${toggle('keepHistory', 'Record runs', 'Off records nothing and keeps what you already have.')}
+        ${number('historyRunsPerMap', 'Runs kept per map', 5, 500, 5, 'runs', 'Newest first. A run takes about 1–2 KB.', ' sub')}
+        ${number('historyMaps', 'Maps kept', 1, 100, 1, 'maps', 'The maps you played longest ago are dropped first.', ' sub')}
+        ${number('historySessions', 'Sessions kept', 0, 500, 1, 'sessions', 'A session is one visit, from loading the page. 0 keeps them all.', ' sub')}
       </div>
       <h3>Replays</h3>
       <div class="group">
-        ${toggle('saveReplays', 'Save replays', 'About 250 KB per minute of run. Off saves the most space, and new runs can’t be watched.')}
+        ${toggle('saveReplays', 'Save replays', 'About 50 KB per minute of run, compressed. Off saves the most space, and new runs can’t be watched.')}
         ${number('replaysPerMap', 'Replays kept per map', 1, 100, 1, 'replays', 'Newest first. A run dropped from the history takes its replay with it.', ' sub')}
         ${toggle('keepBestReplay', 'Always keep each map’s best', 'Your fastest clean finish stays, even when it’s older than the rest.', ' sub')}
       </div>
@@ -238,8 +239,10 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     setDisabled('speedEnergyRamps', settings.speedEnergyColor !== true);
     setDisabled('rampResult', live || settings.showSurf === false);
     setDisabled('airMetric', live || settings.showAir === false);
-    setDisabled('replaysPerMap', settings.saveReplays === false);
-    setDisabled('keepBestReplay', settings.saveReplays === false);
+    const recording = settings.keepHistory !== false;
+    for (const key of ['historyRunsPerMap', 'historyMaps', 'historySessions', 'saveReplays']) setDisabled(key, !recording);
+    setDisabled('replaysPerMap', !recording || settings.saveReplays === false);
+    setDisabled('keepBestReplay', !recording || settings.saveReplays === false);
     showUsage();
     write(node('air-explain'), AIR_EXPLAIN[settings.airMetric] ?? AIR_EXPLAIN.combined);
     if (!capturing) write(keyButton, keyName(settings.crouchJumpKey));

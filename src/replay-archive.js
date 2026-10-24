@@ -1,9 +1,9 @@
-// Replays of your own runs, in surfd.net's IndexedDB. A replay is the game's
-// own format (initial state plus one input command per tick), roughly half a
-// megabyte a minute, so it lives here rather than in localStorage. A small
-// metadata store is read once at startup; replays are only read to watch one.
+// Everything this extension keeps beyond settings lives in one IndexedDB
+// database on surfd.net: replay metadata, the replays themselves and the run
+// history. Nothing goes in the game's localStorage, whose small quota it
+// shares with the game's own saves.
 const DB_NAME = 'surfd-qol';
-const VERSION = 1;
+const VERSION = 2;
 export const REPLAYS_PER_MAP = 30;
 
 const done = request => new Promise((resolve, reject) => {
@@ -14,6 +14,59 @@ const committed = transaction => new Promise((resolve, reject) => {
   transaction.oncomplete = () => resolve();
   transaction.onerror = transaction.onabort = () => reject(transaction.error);
 });
+
+// Resolves to null when IndexedDB is unavailable (some private modes).
+export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
+  if (!indexedDB) return Promise.resolve(null);
+  const request = indexedDB.open(DB_NAME, VERSION);
+  request.onupgradeneeded = () => {
+    const db = request.result;
+    for (const name of ['meta', 'replays', 'runs']) {
+      if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, {keyPath: 'id'});
+    }
+  };
+  return done(request).then(db => {
+    // Another tab upgrading the database must not wait on this one.
+    db.onversionchange = () => db.close();
+    return db;
+  }).catch(error => { console.warn('[Surfd QoL] Site storage unavailable:', error); return null; });
+}
+
+// Saved replays are gzipped JSON: exact for every value, about an eighth of
+// the size of the game's command objects, and unpacked in about a millisecond.
+export async function packReplay(replay) {
+  const stream = new Blob([JSON.stringify(replay)]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Response(stream).arrayBuffer();
+}
+export async function unpackReplay(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return JSON.parse(await new Response(stream).text());
+}
+// Packing runs when the browser has a spare moment, not on the restart frame.
+const idle = () => new Promise(resolve => {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), {timeout: 2000});
+  else setTimeout(resolve, 0);
+});
+
+// One record per run, so ending a run writes only that run.
+export function createRunStore(database) {
+  async function write(work) {
+    const db = await database;
+    if (!db) return;
+    const transaction = db.transaction('runs', 'readwrite');
+    work(transaction.objectStore('runs'));
+    await committed(transaction);
+  }
+  return {
+    // null when there is no database to load from or save to.
+    async load() {
+      const db = await database;
+      return db ? done(db.transaction('runs').objectStore('runs').getAll()) : null;
+    },
+    put: run => write(store => store.put(run)),
+    remove: ids => ids.length ? write(store => { for (const id of ids) store.delete(id); }) : Promise.resolve(),
+  };
+}
 
 // Newest `perMap` per map, plus each map's fastest clean finish when `keepBest`.
 export function pruneList(entries, perMap = REPLAYS_PER_MAP, keepBest = true) {
@@ -28,7 +81,7 @@ export function pruneList(entries, perMap = REPLAYS_PER_MAP, keepBest = true) {
   return entries.filter(entry => !keep.has(entry.id)).map(entry => entry.id);
 }
 
-export function createReplayArchive({indexedDB = globalThis.indexedDB, limits = () => ({})} = {}) {
+export function createReplayArchive({database = openSiteDatabase(), limits = () => ({})} = {}) {
   const limit = () => {
     let value = {};
     try { value = limits() ?? {}; } catch { /* defaults */ }
@@ -37,15 +90,10 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, limits = 
   const meta = new Map();
   const listeners = new Set();
   const notify = () => { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } };
+  // Only the small metadata store is read at startup; replays are read to watch one.
   const opened = (async () => {
-    if (!indexedDB) return null;
-    const request = indexedDB.open(DB_NAME, VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', {keyPath: 'id'});
-      if (!db.objectStoreNames.contains('replays')) db.createObjectStore('replays', {keyPath: 'id'});
-    };
-    const db = await done(request);
+    const db = await database;
+    if (!db) return null;
     for (const entry of await done(db.transaction('meta').objectStore('meta').getAll())) meta.set(entry.id, entry);
     notify();
     return db;
@@ -70,12 +118,17 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, limits = 
     async save(run, replay) {
       const db = await opened;
       if (!db) return false;
+      await idle();
+      let packed;
+      try { packed = await packReplay(replay); } catch (error) {
+        console.warn('[Surfd QoL] Could not pack replay:', error);
+        return false;
+      }
       const clean = run.outcome === 'finished' && !run.practice && !run.invalid;
-      // Size is estimated from the command count (about 65 bytes a tick stored).
-      const entry = {id: run.id, map: run.map, at: run.at, best: clean ? run.time : null, bytes: replay.commands.length * 65 + 1024};
+      const entry = {id: run.id, map: run.map, at: run.at, best: clean ? run.time : null, bytes: packed.byteLength};
       try {
         const transaction = db.transaction(['meta', 'replays'], 'readwrite');
-        transaction.objectStore('replays').put({id: run.id, replay});
+        transaction.objectStore('replays').put({id: run.id, packed});
         transaction.objectStore('meta').put(entry);
         await committed(transaction);
       } catch (error) {
@@ -92,7 +145,9 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, limits = 
     async get(id) {
       const db = await opened;
       if (!db || !meta.has(id)) return null;
-      return (await done(db.transaction('replays').objectStore('replays').get(id)))?.replay ?? null;
+      const record = await done(db.transaction('replays').objectStore('replays').get(id));
+      // Replays saved before packing are plain objects.
+      return record?.packed ? unpackReplay(record.packed) : record?.replay ?? null;
     },
     clearMap: map => remove([...meta.values()].filter(entry => !map || entry.map === map).map(entry => entry.id)),
     // Re-applies the History limits after they change.

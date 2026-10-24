@@ -15,7 +15,7 @@ export const defaults = {
   crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
   // What run history and replays keep in this browser.
-  historyRunsPerMap: 100, historyMaps: 20, historySessions: 0,
+  keepHistory: true, historyRunsPerMap: 100, historyMaps: 20, historySessions: 0,
   saveReplays: true, replaysPerMap: 30, keepBestReplay: true,
 };
 // Changing any of these prunes stored history and replays.

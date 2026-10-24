@@ -101,7 +101,7 @@ The bar along the bottom says what you're watching and whether it's playing. Und
 
 ### What's kept
 
-Under **QoL → History** you choose how much is stored: runs kept per map (100 by default), how many maps keep a history (the 20 played most recently), how many sessions (visits) to keep (all by default), whether to save replays at all, how many per map (30), and whether each map's best always stays. It also shows how much space history and replays use, with a button to clear everything. Lowering a limit deletes whatever is over it, and a run that's dropped takes its replay with it.
+Under **QoL → History** you can turn **Record runs** off entirely (nothing is tracked while it’s off), and choose how much is stored: runs kept per map (100 by default), how many maps keep a history (the 20 played most recently), how many sessions (visits) to keep (all by default), whether to save replays at all, how many per map (30), and whether each map's best always stays. It also shows how much space history and replays use, with a button to clear everything. Lowering a limit deletes whatever is over it, and a run that's dropped takes its replay with it. Runs and replays are kept in the extension's own IndexedDB database on surfd.net, not in the game's local storage; replays are compressed to about 50 KB per minute of run.
 
 ### Replays and spectating
 

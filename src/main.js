@@ -1,7 +1,7 @@
 import { createMetrics } from './metrics.js';
 import { createStartFeedback } from './start.js';
 import { createRunHistory } from './run-history.js';
-import { createReplayArchive } from './replay-archive.js';
+import { createReplayArchive, createRunStore, openSiteDatabase } from './replay-archive.js';
 import { createReplayControl } from './replay-control.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
@@ -14,7 +14,9 @@ try { applySettings(JSON.parse(localStorage.getItem(storageKey) ?? '{}')); } cat
 
 const metrics = createMetrics(settings);
 const start = createStartFeedback();
+const database = openSiteDatabase();
 const replays = createReplayArchive({
+  database,
   limits: () => ({ perMap: settings.replaysPerMap, keepBest: settings.keepBestReplay })
 });
 const history = createRunHistory({
@@ -23,10 +25,11 @@ const history = createRunHistory({
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
   onReplay: (run, replay) => { if (settings.saveReplays !== false) replays.save(run, replay); },
   limits: () => ({ runsPerMap: settings.historyRunsPerMap, maps: settings.historyMaps, sessions: settings.historySessions }),
-  onPrune: ids => { replays.retain(ids); }
+  // Also runs once the saved history has loaded, dropping replays left over
+  // from runs that are no longer kept.
+  onPrune: ids => { replays.retain(ids); },
+  store: createRunStore(database)
 });
-// Replays left over from runs that are no longer in the history.
-replays.ready.then(() => replays.retain(new Set(history.runs().map(run => run.id))));
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
@@ -41,6 +44,7 @@ function onSettings(patch) {
   applySettings(patch);
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch { /* private/storage-limited mode */ }
   if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) { history.prune(); replays.prune(); }
+  if (patch?.keepHistory === false) history.discard();
   bindings.update();
 }
 function fail(error) {
@@ -61,7 +65,8 @@ const api = {
         onTick(session, command, events) {
           // The Start flash costs nothing while hidden; a stale flash ages out.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
-          history.observe(session, events);
+          // Recording off costs nothing per tick.
+          if (settings.keepHistory !== false) history.observe(session, events);
           if (events.includes('finish')) hud?.observeFinish();
         },
         onReset() { start.reset(); history.reset(); },
