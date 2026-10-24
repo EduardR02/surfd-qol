@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surfd QoL: a better HUD for surfd.net</title>
+<meta name="description" content="A Chrome extension for surfd.net: a clean HUD that shows how much speed every ramp cost you, start stats, PB and WR splits, crouch-jump and nullbinds.">
+<meta property="og:title" content="Surfd QoL">
+<meta property="og:description" content="See where your speed goes on surfd.net: board, down and up losses for every ramp, compared to the KSF record.">
+<meta property="og:image" content="https://eduardr02.github.io/surfd-qol/hud.jpg">
+<meta name="color-scheme" content="dark">
+<style>
+@font-face{font-family:"Instrument Sans";src:url(fonts/instrument-sans-400.woff) format("woff");font-weight:400;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url(fonts/instrument-sans-700.woff) format("woff");font-weight:700;font-display:swap}
+:root{
+  --ink:#1a1516;--raise:#241d1e;--line:rgba(255,232,226,.1);
+  --paper:#f6f0ec;--dust:#b4aca8;--rose:#ebbcba;
+  --good:#9ccfd8;--warn:#f6c177;--bad:#eb6f92;
+  --edge:rgba(16,10,13,.74);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--ink);color:var(--paper);-webkit-text-size-adjust:100%}
+body{margin:0;font:400 17px/1.6 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased}
+a{color:var(--rose);text-underline-offset:.18em;text-decoration-thickness:1px}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:2px solid var(--rose);outline-offset:3px;border-radius:4px}
+.wrap{width:min(1080px,100% - 32px);margin-inline:auto}
+.measure{max-width:64ch}
+
+/* The slanted bar is the extension's own mark. */
+.mark{display:inline-block;width:.32em;height:.9em;background:var(--rose);transform:skewX(-18deg);border-radius:1px;vertical-align:-.08em}
+
+header.top{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.brand{display:flex;align-items:center;gap:.5em;font-weight:700;font-size:18px;color:var(--paper);text-decoration:none}
+.top nav a{color:var(--dust);text-decoration:none;font-size:15px}
+.top nav a:hover{color:var(--paper)}
+
+.hero{padding:40px 0 36px}
+.hero h1{margin:0;font-size:clamp(40px,6.4vw,76px);line-height:1.02;letter-spacing:-.025em;font-weight:700;max-width:13ch}
+.hero p{margin:22px 0 0;font-size:19px;color:var(--dust)}
+.cta{display:flex;flex-wrap:wrap;align-items:center;gap:14px 22px;margin-top:32px}
+.download{display:inline-flex;align-items:center;gap:12px;padding:15px 24px 15px 20px;border-radius:12px;background:var(--rose);color:#2a1718;
+  font-weight:700;font-size:18px;text-decoration:none;box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 30px rgba(235,188,186,.18)}
+.download:hover{background:#f3cbc9}
+.download svg{width:20px;height:20px;flex:none}
+.cta small{color:var(--dust);font-size:15px;line-height:1.45}
+
+.shot{margin-block:0}
+.shot img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
+.shot figcaption{margin-top:10px;font-size:14px;color:var(--dust)}
+
+section{padding:72px 0 0}
+section h2{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.015em}
+.lede{margin:0}
+
+/* Install: a real sequence, so it is numbered. */
+.steps{list-style:none;margin:28px 0 0;padding:0;counter-reset:step;display:grid;gap:2px;max-width:760px}
+.steps li{counter-increment:step;display:grid;grid-template-columns:44px 1fr;gap:4px 14px;padding:18px 20px;background:var(--raise);border-radius:4px}
+.steps li:first-child{border-radius:12px 12px 4px 4px}
+.steps li:last-child{border-radius:4px 4px 12px 12px}
+.steps li::before{content:counter(step);grid-row:span 2;font-size:28px;line-height:1;font-weight:700;color:var(--rose);font-variant-numeric:tabular-nums}
+.steps b{font-weight:700}
+.steps span{color:var(--dust);font-size:15.5px}
+code,kbd{font:inherit;font-weight:700;color:var(--paper)}
+.copy{margin-left:8px;padding:3px 10px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--dust);font:inherit;font-size:13.5px;cursor:pointer;vertical-align:1px}
+.copy:hover{color:var(--paper);border-color:rgba(255,232,226,.25)}
+.note{margin:22px 0 0;font-size:15.5px;color:var(--dust)}
+
+/* The feedback row, set in the HUD's own type: dark edge under each glyph, fraction smaller. */
+.row{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 0;margin:30px 0 8px;padding:34px 8px 28px;border-radius:14px;
+  background:linear-gradient(180deg,#59606b 0%,#8d8794 55%,#b8a09c 100%)}
+.value{flex:0 0 156px;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 12px}
+.value b{font-size:40px;line-height:1;font-weight:700;font-variant-numeric:tabular-nums;-webkit-text-stroke:1.75px var(--edge);paint-order:stroke fill;
+  text-shadow:0 1px 2px rgba(0,0,0,.5),0 0 10px rgba(0,0,0,.28)}
+.value b small{font-size:.74em}
+.value .lab{margin-top:7px;font-size:14px;font-weight:700;letter-spacing:.06em;color:var(--paper);-webkit-text-stroke:1.25px var(--edge);paint-order:stroke fill}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+dl.defs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:22px 28px;margin:26px 0 0}
+dl.defs div{border-top:1px solid var(--line);padding-top:12px}
+dl.defs dt{font-weight:700}
+dl.defs dd{margin:4px 0 0;color:var(--dust);font-size:15.5px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin:26px 0 0;padding:0;list-style:none;font-size:15.5px;color:var(--dust)}
+.legend li{display:flex;align-items:center;gap:9px}
+.legend i{width:10px;height:10px;border-radius:50%;background:currentColor;flex:none}
+
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:44px;align-items:start}
+.split ul{margin:0;padding-left:1.1em}
+.split li{margin:0 0 10px}
+.split li::marker{color:var(--rose)}
+.split img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
+
+footer{margin-top:88px;padding:28px 0 40px;border-top:1px solid var(--line);color:var(--dust);font-size:14.5px}
+footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 24px}
+
+@media (max-width:760px){
+  .value{flex-basis:112px}
+  body{font-size:16px}
+  .hero{padding-top:20px}
+  .hero p{font-size:17px}
+  section{padding-top:56px}
+  .split{grid-template-columns:1fr}
+  .split img{max-width:420px}
+  .value b{font-size:34px}
+}
+</style>
+</head>
+<body>
+<header class="top wrap">
+  <a class="brand" href="./"><span class="mark" aria-hidden="true"></span>Surfd QoL</a>
+  <nav><a href="https://github.com/EduardR02/surfd-qol">Source on GitHub</a></nav>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <h1>See where your speed goes.</h1>
+    <p class="measure">A HUD for <a href="https://surfd.net/">surfd.net</a> that tells you, after every ramp, how much speed you lost boarding it, riding down and coming back up, compared against the KSF record. Plus start stats, PB and WR splits, crouch-jump and nullbinds.</p>
+    <div class="cta">
+      <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Download for Chrome
+      </a>
+      <small>Free. Desktop Chrome 118 or newer.<br>Not on the Chrome Web Store; install takes a minute.</small>
+    </div>
+  </div>
+
+  <figure class="shot wrap">
+    <img src="hud.jpg" width="1280" height="720" alt="Surfd QoL's HUD during a replay on Boreas: speed 3025, the timer and sync above it, a checkpoint split against the KSF record, and board, down and up values below.">
+    <figcaption>Boreas, watching the KSF record route. Values that match the record show teal.</figcaption>
+  </figure>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="lede measure">It isn't on the Chrome Web Store, so you load it yourself. Takes about a minute.</p>
+      <ol class="steps">
+        <li><b>Download the zip and unzip it.</b><span>Keep the unzipped folder somewhere it can stay; Chrome loads the extension from it.</span></li>
+        <li><b>Open <code>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions">Copy</button></b><span>Paste it into the address bar, then switch on <b>Developer mode</b> in the top right.</span></li>
+        <li><b>Click Load unpacked and pick the unzipped folder.</b><span>It's the folder that contains <code>manifest.json</code>.</span></li>
+        <li><b>Open surfd.net.</b><span>The tab reloads once while the extension hooks in. Settings are under <b>QoL</b>, bottom right of the game menu.</span></li>
+      </ol>
+      <p class="note measure">Chrome will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only touches surfd.net. You can close the bar; everything keeps working until you reload. To update, download the new zip, replace the folder and click reload on the extension.</p>
+    </div>
+  </section>
+
+  <section id="numbers">
+    <div class="wrap">
+      <h2>What the numbers mean</h2>
+      <p class="lede measure">Each value stays up until the next ramp or flight replaces it, so you can read it in the air instead of mid-ramp. All of them are in units per second.</p>
+      <div class="row" aria-hidden="true">
+        <div class="value"><b class="good">−2<small>.6</small></b><span class="lab">board</span></div>
+        <div class="value"><b class="warn">−34<small>.4</small></b><span class="lab">down</span></div>
+        <div class="value"><b class="bad">−16<small>.2</small></b><span class="lab">up</span></div>
+      </div>
+      <dl class="defs">
+        <div><dt>Board</dt><dd>Speed clipped off as you land on a ramp. Height conversion doesn't count.</dd></div>
+        <div><dt>Down</dt><dd>What the ramp cost from boarding to the lowest point you touched.</dd></div>
+        <div><dt>Up</dt><dd>What it cost from the lowest point to where you left the ramp. Down and Up add up to the whole ramp.</dd></div>
+        <div><dt>Air</dt><dd>Your last flight: speed lost to braking plus gain missed by imperfect strafes. Shows in Down's place when you land.</dd></div>
+      </dl>
+      <ul class="legend">
+        <li class="good"><i></i><span>As good as the reference or better</span></li>
+        <li class="warn"><i></i><span>A little worse</span></li>
+        <li class="bad"><i></i><span>Worse</span></li>
+        <li style="color:var(--dust)"><i></i><span>No matching reference</span></li>
+      </ul>
+      <p class="note measure">The reference is the KSF record route by default, or your PB or Surfd's #1. Even the record loses real speed on most ramps, so compare against it instead of chasing zero.</p>
+    </div>
+  </section>
+
+  <section id="settings">
+    <div class="wrap split">
+      <div>
+        <h2>Make it yours</h2>
+        <ul class="measure">
+          <li>Turn any value on or off; the rest re-centre.</li>
+          <li>Move, resize and recolor the HUD, with a live preview.</li>
+          <li>Grade each value against fixed targets, your PB or the WR.</li>
+          <li>Crouch-jump on any key: one tick of crouch per jump.</li>
+          <li>Nullbinds for A/D and W/Space.</li>
+          <li>Speed counter and timer refresh rates, so digits stay readable.</li>
+        </ul>
+        <p class="note measure">It never changes physics, timing or replays, and sends nothing anywhere. Anything you hide isn't computed.</p>
+      </div>
+      <img src="settings.jpg" width="590" height="885" alt="The Surfd QoL settings panel open in the game menu, with a live HUD preview, layout sliders and color choices.">
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Not affiliated with Surfd. Font: Instrument Sans, <a href="fonts/OFL.txt">SIL Open Font License</a>.</span>
+    <a href="https://github.com/EduardR02/surfd-qol">github.com/EduardR02/surfd-qol</a>
+  </div>
+</footer>
+<script>
+for (const button of document.querySelectorAll('[data-copy]')) {
+  button.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = 'Copied'; }
+    catch { button.textContent = 'Select and copy it'; }
+    setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+  });
+}
+</script>
+</body>
+</html>

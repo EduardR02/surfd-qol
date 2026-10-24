@@ -1,0 +1,27 @@
+# Pushing a version tag (vX.Y.Z, matching extension/manifest.json) builds the
+# extension, runs the tests and publishes surfd-qol.zip as a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Check the tag matches the manifest version
+        run: test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+      - run: bun test
+      - run: bun run build
+      - name: Package
+        run: cd dist && zip -r -X ../surfd-qol.zip .
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" surfd-qol.zip --title "Surfd QoL $GITHUB_REF_NAME" --generate-notes

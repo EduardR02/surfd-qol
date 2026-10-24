@@ -1,23 +1,23 @@
 # Surfd QoL
 
+![Surfd QoL's HUD during the KSF record route on Boreas: speed, timer and sync, a checkpoint split, and board, down and up values](docs/hud.jpg)
+
 A Chrome extension for [surfd.net](https://surfd.net/) that gives you what a good KSF server would: a clean, glanceable HUD, per-ramp and per-flight speed-loss feedback, start stats, PB and WR checkpoint splits, a crouch-jump bind and nullbinds.
 
 It never changes physics, maps or your runs. It watches the game's own movement code and reports what happened.
 
+**Download page: [eduardr02.github.io/surfd-qol](https://eduardr02.github.io/surfd-qol/)**
+
 ## Install
 
-You need desktop Chrome 118 or newer and [Bun](https://bun.sh) to build it.
+You need desktop Chrome 118 or newer. The extension isn't on the Chrome Web Store, so you load it yourself:
 
-1. Get this folder (clone or download), then build the extension:
-   ```sh
-   bun run build
-   ```
-   This writes the ready-to-load extension to `dist/`.
-2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick the `dist` folder.
-3. Open or reload [surfd.net](https://surfd.net/). The first visit reloads the tab once while the extension hooks in.
-4. In the game menu, click **QoL** (bottom right, next to the notification bell) to change settings. Changes save automatically in your browser.
+1. Download [surfd-qol.zip](https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip) and unzip it somewhere it can stay. Chrome loads the extension from that folder every time.
+2. Open `chrome://extensions` and switch on **Developer mode** (top right).
+3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
+4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-Keep the folder where it is; Chrome loads the extension from it on every visit. After pulling changes, run `bun run build` again, click reload on the extension in `chrome://extensions`, then reload Surfd.
+**Updating:** download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 
@@ -102,12 +102,16 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 ## Development
 
+You only need [Bun](https://bun.sh) to work on the source; no other dependencies.
+
 ```sh
-bun run build   # writes dist/
+bun run build   # writes the unpacked extension to dist/
 bun test
 ```
 
-No dependencies besides Bun. Source layout:
+Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
+
+Source layout:
 
 - `extension/`: manifest, the background loader (debugger attach and script patching) and `instrument.js`, which appends an adapter to the game module.
 - `src/metrics.js`: per-tick movement analysis (Board, Down/Up/Surf, Air, live feedback).
