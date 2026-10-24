@@ -84,7 +84,7 @@ Both work inside the game's own input sampling, so the commands it records are e
 
 **Runs**, next to **QoL** in the menu, opens a summary of your runs: count, best and average finish, start speed and average sync, then one row per run with its time, result (finished, or reset at which checkpoint), start speed, sync, total board, ramp and air loss, and top speed. Click a run to see its checkpoint splits and speeds against the best finish in the list, and Board, Down and Up for every ramp.
 
-**This session** lists the runs since the page loaded, on any map; **This map** lists every saved run on the current map, up to the last 100. Practice and invalid runs are marked and never count as best. Restarts within the first second aren't recorded, and replays never are. The loss totals only include values the HUD was measuring, so a value you had hidden shows —.
+**This session** lists the runs since the page loaded, on any map; **This map** lists every saved run on the current map. Practice and invalid runs are marked and never count as best. Restarts within the first second aren't recorded, and replays never are. The loss totals only include values the HUD was measuring, so a value you had hidden shows —.
 
 ### Watching replays
 
@@ -98,6 +98,10 @@ The bar along the bottom says what you're watching and whether it's playing. Und
 - Every loc you save is **also added to your practice savelocs** when you leave the replay, so you can load it and play from there. **Practice from here** does it in one go: it leaves the replay and puts you at that exact moment, with the same speed and view, in practice mode. This works for any replay, including ones recorded under older movement rules: a loc is only position, speed, view and timer, and you play on under today's rules. Locs from another map wait until you're back on that map.
 
 **Keys** lists every shortcut: Space plays and pauses, ← and → jump 5 seconds, `,` and `.` step one tick, `[` and `]` change speed, and Esc stops playback as usual. Replays of the last 30 runs on each map, plus your best, are kept in the browser.
+
+### What's kept
+
+Under **QoL → History** you choose how much is stored: runs kept per map (100 by default), how many maps keep a history (the 20 played most recently), how many sessions (visits) to keep (all by default), whether to save replays at all, how many per map (30), and whether each map's best always stays. It also shows how much space history and replays use, with a button to clear everything. Lowering a limit deletes whatever is over it, and a run that's dropped takes its replay with it.
 
 ### Replays and spectating
 

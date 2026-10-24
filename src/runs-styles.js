@@ -60,7 +60,6 @@ tr.run.best .run-time{color:var(--accent)}
 .good{color:var(--good)!important}.loss{color:var(--bad)!important}.muted{color:var(--text-3)!important}
 
 .runs-foot{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 20px 12px;border-top:1px solid var(--line)}
-.ghost.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 60%,transparent)}
 
 @media (max-width:900px){
   #runs{left:12px;right:12px;width:auto;max-width:none}

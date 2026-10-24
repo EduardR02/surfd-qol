@@ -6,7 +6,7 @@ import { createReplayControl } from './replay-control.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
-import { applySettings as applySettingsTo, colorKeys, defaults, storageKey } from './settings.js';
+import { applySettings as applySettingsTo, colorKeys, defaults, storageKey, storageLimitKeys } from './settings.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -14,13 +14,19 @@ try { applySettings(JSON.parse(localStorage.getItem(storageKey) ?? '{}')); } cat
 
 const metrics = createMetrics(settings);
 const start = createStartFeedback();
-const replays = createReplayArchive();
+const replays = createReplayArchive({
+  limits: () => ({ perMap: settings.replaysPerMap, keepBest: settings.keepBestReplay })
+});
 const history = createRunHistory({
   metrics, start,
   getState: () => window.__SURF__?.snapshot?.() ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
-  onReplay: (run, replay) => { replays.save(run, replay); }
+  onReplay: (run, replay) => { if (settings.saveReplays !== false) replays.save(run, replay); },
+  limits: () => ({ runsPerMap: settings.historyRunsPerMap, maps: settings.historyMaps, sessions: settings.historySessions }),
+  onPrune: ids => { replays.retain(ids); }
 });
+// Replays left over from runs that are no longer in the history.
+replays.ready.then(() => replays.retain(new Set(history.runs().map(run => run.id))));
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
@@ -34,6 +40,7 @@ const bindings = createBindings(() => api.adapter, settings, onSettings);
 function onSettings(patch) {
   applySettings(patch);
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch { /* private/storage-limited mode */ }
+  if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) { history.prune(); replays.prune(); }
   bindings.update();
 }
 function fail(error) {

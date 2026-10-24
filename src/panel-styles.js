@@ -38,7 +38,7 @@ button{cursor:pointer}
 .preview .energy .speed{animation:energy 4.5s linear infinite}
 @keyframes energy{0%,28%{color:var(--good)}36%,61%{color:var(--accent)}69%,94%{color:var(--bad)}100%{color:var(--good)}}
 
-.tabs{flex:none;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:10px 12px 0;border-bottom:1px solid var(--line)}
+.tabs{flex:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:10px 12px 0;border-bottom:1px solid var(--line)}
 [role=tab]{position:relative;padding:11px 4px 12px;border:0;background:none;color:var(--text-2);font-size:13.5px;font-weight:700;border-radius:8px 8px 0 0}
 [role=tab]:hover{color:var(--text)}
 [role=tab][aria-selected=true]{color:var(--text)}
@@ -59,6 +59,8 @@ h3{display:flex;align-items:center;gap:8px;margin:22px 0 2px;font-size:12px;font
 .row.off{opacity:.42}
 .row.sub{margin:0 0 8px 2px;padding:4px 0 4px 16px;min-height:0;border-top:0;border-left:2px solid var(--line-2)}
 .explain{margin:0 0 6px;font-size:12.5px;line-height:1.45;color:var(--text-3)}
+.explain.intro{margin:16px 0 0}
+.ghost.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 60%,transparent)}
 
 .switch{appearance:none;-webkit-appearance:none;flex:none;position:relative;width:40px;height:23px;margin:0;border-radius:12px;background:rgba(255,236,232,.14);transition:background .15s}
 .switch::before{content:"";position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#d9cdc9;transition:transform .15s,background .15s}

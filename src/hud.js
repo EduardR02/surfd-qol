@@ -84,6 +84,10 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },
     onOpen: () => runs.close(),
+    storage: history ? {
+      usage: () => ({history: history.usage(), replays: replays?.usage?.() ?? null}),
+      clear: () => { history.clear(); return replays?.clearMap(); },
+    } : null,
   });
   const runs = createRunsPanel({root, host, history, replays, replayControl, onOpen: () => panel.close()});
   const replayBar = replayControl ? createReplayBar({root, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.()}) : null;

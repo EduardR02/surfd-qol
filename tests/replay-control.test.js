@@ -232,5 +232,7 @@ describe('replay archive pruning', () => {
       { id: 'a4', map: 'a', at: 4, best: null }, { id: 'b1', map: 'b', at: 1, best: null },
     ];
     expect(pruneList(entries, 2).sort()).toEqual(['a2']);
+    // Without keeping the best, only the newest per map stay.
+    expect(pruneList(entries, 2, false).sort()).toEqual(['a1', 'a2']);
   });
 });

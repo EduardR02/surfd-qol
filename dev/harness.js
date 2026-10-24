@@ -81,7 +81,9 @@ function fixtureRuns() {
   ];
 }
 const runsFixture = fixtureRuns();
-const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, subscribe: () => () => {}, clear() {}};
+const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, subscribe: () => () => {}, clear() {},
+  usage: () => ({bytes: 9800, runs: runsFixture.length, maps: 2})};
+const replays = {usage: () => ({bytes: 1.6 * 1024 * 1024, count: 6}), subscribe: () => () => {}, clearMap: async () => {}};
 // Replay controls over a fixture run: the controls work, only the game behind them is still.
 const replayControl = (() => {
   const run = runsFixture[6], length = 2870, start = 66;
@@ -155,6 +157,7 @@ const hud = mountHud({
   onSettings: patch => applySettings(settings, patch),
   onResetColors: () => applySettings(settings, Object.fromEntries(colorKeys.map(key => [key, defaults[key]]))),
   history,
+  replays,
   replayControl,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {

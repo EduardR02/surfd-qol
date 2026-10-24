@@ -22,7 +22,7 @@ const shots = [
   ['energy-good', 'state=energy-good&bg=dark'], ['energy-loss', 'state=energy-loss&bg=dark'], ['energy-neutral', 'state=energy-neutral&bg=dark'],
   ['scale-0.6-top', 'state=checkpoint&bg=warm&scale=0.6&y=10'], ['scale-1.6-bottom', 'state=checkpoint-start&bg=neon&scale=1.6&y=90'],
   ['scale-1.6-top-flipped', 'state=checkpoint-start&bg=fog&scale=1.6&y=10'], ['custom-palette', 'state=air&bg=snow&palette=custom'],
-  ...['display', 'feedback', 'compare', 'controls'].flatMap(page => [
+  ...['display', 'feedback', 'compare', 'controls', 'history'].flatMap(page => [
     [`panel-${page}`, `panel=${page}`], [`panel-${page}-540x600`, `panel=${page}`, 540, 600],
   ]),
   ['panel-custom-palette', 'panel=display&palette=custom'],

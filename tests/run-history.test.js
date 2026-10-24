@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createRunHistory, HISTORY_KEY, RUNS_PER_MAP, summarize } from '../src/run-history.js';
+import { createRunHistory, HISTORY_KEY, retainRuns, summarize } from '../src/run-history.js';
 import { runsView } from '../src/runs-panel.js';
 
 function memoryStorage(initial = {}) {
@@ -8,7 +8,7 @@ function memoryStorage(initial = {}) {
 }
 
 // A fake live session plus the metrics accessors the recorder reads.
-function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null } = {}) {
+function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null, limits, onPrune } = {}) {
   let now = 1000;
   const live = {
     map, practice: false, checkpointSpeeds: [], replayFormat: 8, config: { dt: 0.015 },
@@ -28,7 +28,7 @@ function rig({ storage = memoryStorage(), map = { id: 'utopia', version: 3, stag
   };
   const start = { snapshot: () => ({ available: true, speed: 348.4, heightAboveFloor: 4.25 }) };
   const state = { playback, strafeSync: { percentage: 91.26 } };
-  const history = createRunHistory({ metrics, start, storage, onReplay, getState: () => state, getMapName: () => 'Utopia', clock: () => now });
+  const history = createRunHistory({ metrics, start, storage, onReplay, limits, onPrune, getState: () => state, getMapName: () => 'Utopia', clock: () => now });
   const tick = (events = [], seconds = 0.015) => {
     now += seconds * 1000;
     live.state = { tick: live.state.tick + 1, velocity: live.state.velocity };
@@ -157,19 +157,36 @@ describe('run history', () => {
     expect(r.history.runs()).toHaveLength(0);
   });
 
-  test('history persists across page loads, capped per map, and can be cleared', () => {
+  test('history persists across page loads, keeps the runs-per-map limit, and can be cleared', () => {
     const storage = memoryStorage();
-    const first = rig({ storage });
-    for (let i = 0; i < RUNS_PER_MAP + 5; i++) {
+    let kept = null;
+    const first = rig({ storage, limits: () => ({ runsPerMap: 12 }), onPrune: ids => { kept = ids; } });
+    for (let i = 0; i < 15; i++) {
       first.go();
       for (let t = 0; t < 70; t++) first.tick();
       first.finish();
     }
-    expect(first.history.runs()).toHaveLength(RUNS_PER_MAP);
-    const second = rig({ storage });
-    expect(second.history.runs()).toHaveLength(RUNS_PER_MAP);
+    expect(first.history.runs()).toHaveLength(12);
+    expect(kept).toEqual(new Set(first.history.runs().map(run => run.id)));
+    expect(first.history.usage()).toMatchObject({ runs: 12, maps: 1, bytes: storage.data[HISTORY_KEY].length });
+    const second = rig({ storage, limits: () => ({ runsPerMap: 5 }) });
+    expect(second.history.runs()).toHaveLength(12);
+    second.history.prune();
+    expect(second.history.runs()).toHaveLength(5);
     second.history.clear('utopia:3');
     expect(rig({ storage }).history.runs()).toHaveLength(0);
+  });
+
+  test('limits keep the newest runs, the most recently played maps and the latest sessions', () => {
+    const run = (id, map, session) => ({ id, map, session });
+    const runs = [run(1, 'a', 1), run(2, 'b', 1), run(3, 'a', 2), run(4, 'c', 2), run(5, 'a', 3), run(6, 'b', 3)];
+    const ids = limits => retainRuns(runs, limits).map(entry => entry.id);
+    expect(ids({})).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(ids({ runsPerMap: 1 })).toEqual([4, 5, 6]);
+    // b and a were played most recently; c is older.
+    expect(ids({ maps: 2 })).toEqual([1, 2, 3, 5, 6]);
+    expect(ids({ sessions: 2 })).toEqual([3, 4, 5, 6]);
+    expect(ids({ sessions: 1, maps: 1 })).toEqual([6]);
   });
 
   test('a corrupt store is ignored', () => {

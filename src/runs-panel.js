@@ -1,8 +1,7 @@
 // Run history popup: a summary of the session or map, one row per run, and
 // splits and ramps for the run you click. Opened only from menus, like settings.
 import {formatDelta, formatNumber, formatTime} from './hud-model.js';
-import {RUNS_PER_MAP, summarize} from './run-history.js';
-import {REPLAYS_PER_MAP} from './replay-archive.js';
+import {summarize} from './run-history.js';
 
 const escape = value => String(value).replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
 const loss = value => Number.isFinite(value) ? formatNumber(Math.max(0, value), 1) : '—';
@@ -42,7 +41,7 @@ export const runsMarkup = `
     <p id="runs-empty" class="runs-empty" hidden></p>
   </div>
   <footer class="runs-foot">
-    <span class="note">— means not measured (that HUD value was hidden). Saved in this browser: the last ${RUNS_PER_MAP} runs per map, and replays of the last ${REPLAYS_PER_MAP} plus your best.</span>
+    <span class="note">— means not measured (that HUD value was hidden). Saved in this browser; choose how much under QoL → History.</span>
     <button id="runs-clear" class="ghost" type="button">Clear map</button>
   </footer>
 </section>`;

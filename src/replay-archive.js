@@ -15,8 +15,8 @@ const committed = transaction => new Promise((resolve, reject) => {
   transaction.onerror = transaction.onabort = () => reject(transaction.error);
 });
 
-// Newest REPLAYS_PER_MAP per map, plus each map's fastest clean finish.
-export function pruneList(entries, perMap = REPLAYS_PER_MAP) {
+// Newest `perMap` per map, plus each map's fastest clean finish when `keepBest`.
+export function pruneList(entries, perMap = REPLAYS_PER_MAP, keepBest = true) {
   const keep = new Set(), counts = new Map(), best = new Map();
   for (const entry of [...entries].sort((a, b) => b.at - a.at)) {
     const count = counts.get(entry.map) ?? 0;
@@ -24,11 +24,16 @@ export function pruneList(entries, perMap = REPLAYS_PER_MAP) {
     counts.set(entry.map, count + 1);
     if (Number.isFinite(entry.best) && !(best.get(entry.map)?.best <= entry.best)) best.set(entry.map, entry);
   }
-  for (const entry of best.values()) keep.add(entry.id);
+  if (keepBest) for (const entry of best.values()) keep.add(entry.id);
   return entries.filter(entry => !keep.has(entry.id)).map(entry => entry.id);
 }
 
-export function createReplayArchive({indexedDB = globalThis.indexedDB, perMap = REPLAYS_PER_MAP} = {}) {
+export function createReplayArchive({indexedDB = globalThis.indexedDB, limits = () => ({})} = {}) {
+  const limit = () => {
+    let value = {};
+    try { value = limits() ?? {}; } catch { /* defaults */ }
+    return {perMap: value.perMap ?? REPLAYS_PER_MAP, keepBest: value.keepBest !== false};
+  };
   const meta = new Map();
   const listeners = new Set();
   const notify = () => { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } };
@@ -66,7 +71,8 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, perMap = 
       const db = await opened;
       if (!db) return false;
       const clean = run.outcome === 'finished' && !run.practice && !run.invalid;
-      const entry = {id: run.id, map: run.map, at: run.at, best: clean ? run.time : null};
+      // Size is estimated from the command count (about 65 bytes a tick stored).
+      const entry = {id: run.id, map: run.map, at: run.at, best: clean ? run.time : null, bytes: replay.commands.length * 65 + 1024};
       try {
         const transaction = db.transaction(['meta', 'replays'], 'readwrite');
         transaction.objectStore('replays').put({id: run.id, replay});
@@ -75,12 +81,12 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, perMap = 
       } catch (error) {
         // Most likely over quota: drop this map's oldest replays and give up on this one.
         console.warn('[Surfd QoL] Could not save replay:', error);
-        await remove(pruneList([...meta.values()], Math.max(1, Math.floor(perMap / 2))));
+        await remove(pruneList([...meta.values()], Math.max(1, Math.floor(limit().perMap / 2)), limit().keepBest));
         return false;
       }
       meta.set(entry.id, entry);
       notify();
-      await remove(pruneList([...meta.values()], perMap));
+      await remove(pruneList([...meta.values()], limit().perMap, limit().keepBest));
       return true;
     },
     async get(id) {
@@ -89,6 +95,15 @@ export function createReplayArchive({indexedDB = globalThis.indexedDB, perMap = 
       return (await done(db.transaction('replays').objectStore('replays').get(id)))?.replay ?? null;
     },
     clearMap: map => remove([...meta.values()].filter(entry => !map || entry.map === map).map(entry => entry.id)),
+    // Re-applies the History limits after they change.
+    async prune() { await opened; return remove(pruneList([...meta.values()], limit().perMap, limit().keepBest)); },
+    // Drops replays whose run is no longer in the history.
+    async retain(ids) { await opened; return remove([...meta.keys()].filter(id => !ids.has(id))); },
+    usage() {
+      let bytes = 0;
+      for (const entry of meta.values()) bytes += entry.bytes ?? 0;
+      return {bytes, count: meta.size};
+    },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }

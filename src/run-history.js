@@ -3,8 +3,8 @@
 // start, ramp/air totals, top speed and sync. Runs are kept in memory for this
 // page session and saved per map in surfd.net's local storage.
 export const HISTORY_KEY = 'surfd-qol.runs.v1';
-export const RUNS_PER_MAP = 100;
-const MAX_RUNS = 600;
+// A hard ceiling under localStorage's quota, whatever the limits say.
+const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
 // Restarts straight out of the start zone are not worth a row.
 const MIN_RESET_SECONDS = 1;
@@ -16,6 +16,27 @@ const round = (value, digits = 1) => Number.isFinite(value) ? Number(value.toFix
 const valid = run => run && typeof run.map === 'string' && Number.isFinite(run.at) && Number.isFinite(run.time) &&
   (run.outcome === 'finished' || run.outcome === 'reset') && Array.isArray(run.checkpoints) && Array.isArray(run.ramps);
 
+// Applies the History limits, newest first: runs from the latest `sessions`
+// page loads (0 keeps all), on the `maps` most recently played maps, and at
+// most `runsPerMap` of each.
+export function retainRuns(runs, {runsPerMap = 100, maps = 20, sessions = 0} = {}) {
+  const keptSessions = new Set(), keptMaps = new Set(), counts = new Map(), kept = [];
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i];
+    const newSession = sessions > 0 && !keptSessions.has(run.session);
+    if (newSession && keptSessions.size >= sessions) continue;
+    const newMap = !keptMaps.has(run.map);
+    if (newMap && keptMaps.size >= maps) continue;
+    const count = counts.get(run.map) ?? 0;
+    if (count >= runsPerMap || kept.length >= MAX_RUNS) continue;
+    if (newSession) keptSessions.add(run.session);
+    if (newMap) keptMaps.add(run.map);
+    counts.set(run.map, count + 1);
+    kept.push(run);
+  }
+  return kept.reverse();
+}
+
 export function mapKey(map) {
   return map ? `${map.id}:${map.version ?? ''}` : '';
 }
@@ -24,14 +45,17 @@ function prettyName(map) {
   return raw == null ? 'Unknown map' : String(raw);
 }
 
-export function createRunHistory({metrics, start, getState = () => null, getMapName = () => null, onReplay = null, storage, clock = () => Date.now()} = {}) {
+export function createRunHistory({metrics, start, getState = () => null, getMapName = () => null, onReplay = null, limits = () => ({}),
+  onPrune = null, storage, clock = () => Date.now()} = {}) {
   if (storage === undefined) {
     try { storage = globalThis.localStorage; } catch { storage = null; }
   }
   const session = clock();
-  let runs = [];
+  let runs = [], storedBytes = 0;
   try {
-    const saved = JSON.parse(storage?.getItem(HISTORY_KEY) ?? 'null');
+    const text = storage?.getItem(HISTORY_KEY) ?? 'null';
+    storedBytes = text === 'null' ? 0 : text.length;
+    const saved = JSON.parse(text);
     if (Array.isArray(saved?.runs)) runs = saved.runs.filter(valid);
   } catch { /* Private browsing or an incompatible history must not affect play. */ }
   const listeners = new Set();
@@ -44,20 +68,19 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
   const replaySessions = new WeakSet();
 
   function save() {
-    // Per-map and global caps keep localStorage well under its quota.
-    const counts = new Map();
-    const kept = [];
-    for (let i = runs.length - 1; i >= 0; i--) {
-      const count = counts.get(runs[i].map) ?? 0;
-      if (count >= RUNS_PER_MAP || kept.length >= MAX_RUNS) continue;
-      counts.set(runs[i].map, count + 1);
-      kept.push(runs[i]);
-    }
-    runs = kept.reverse();
+    let limit = {};
+    try { limit = limits() ?? {}; } catch { /* defaults */ }
+    runs = retainRuns(runs, limit);
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { storage?.setItem(HISTORY_KEY, JSON.stringify({runs})); return; }
-      catch { runs = runs.slice(Math.floor(runs.length / 2)); }
+      try {
+        const text = JSON.stringify({runs});
+        storage?.setItem(HISTORY_KEY, text);
+        storedBytes = text.length;
+        break;
+      } catch { runs = runs.slice(Math.floor(runs.length / 2)); }
     }
+    // Replays follow: a run that is no longer kept takes its replay with it.
+    try { onPrune?.(new Set(runs.map(run => run.id))); } catch { /* optional */ }
   }
   function notify() { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } }
 
@@ -209,6 +232,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
     get currentMapName() { return lastMapName; },
     get running() { return !!current; },
     runs() { return runs; },
+    // Re-applies the History limits after they change.
+    prune() { save(); notify(); },
+    usage() { return {bytes: storedBytes, runs: runs.length, maps: new Set(runs.map(run => run.map)).size}; },
     clear(map) {
       runs = map ? runs.filter(run => run.map !== map) : [];
       save();

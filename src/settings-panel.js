@@ -13,8 +13,8 @@ const choice = (key, label, options, help = '', extra = '') =>
   }</span></div>`;
 const range = (key, label, min, max, step, help = '') =>
   `<label class="row">${text(label, help)}<span class="range"><input type="range" min="${min}" max="${max}" step="${step}" data-setting="${key}"><output data-output="${key}"></output></span></label>`;
-const number = (key, label, min, max, step, unit, help = '') =>
-  `<label class="row">${text(label, help)}<span class="num"><input type="number" min="${min}"${max ? ` max="${max}"` : ''} step="${step}" data-setting="${key}"><span class="unit">${unit}</span></span></label>`;
+const number = (key, label, min, max, step, unit, help = '', extra = '') =>
+  `<label class="row${extra}">${text(label, help)}<span class="num"><input type="number" min="${min}"${max ? ` max="${max}"` : ''} step="${step}" data-setting="${key}"><span class="unit">${unit}</span></span></label>`;
 const cutoff = (key, label, step, unit) =>
   `<input type="number" min="0" step="${step}" data-setting="${key}" aria-label="${label}"><span class="unit">${unit}</span>`;
 const color = (key, label) =>
@@ -50,6 +50,7 @@ export const panelMarkup = `
     <button id="tab-feedback" type="button" role="tab" aria-selected="false" aria-controls="page-feedback" data-page="feedback" tabindex="-1">Feedback</button>
     <button id="tab-compare" type="button" role="tab" aria-selected="false" aria-controls="page-compare" data-page="compare" tabindex="-1">Compare</button>
     <button id="tab-controls" type="button" role="tab" aria-selected="false" aria-controls="page-controls" data-page="controls" tabindex="-1">Controls</button>
+    <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="page-history" data-page="history" tabindex="-1">History</button>
   </nav>
   <div class="body">
     <section id="page-display" role="tabpanel" aria-labelledby="tab-display" tabindex="0">
@@ -144,6 +145,27 @@ export const panelMarkup = `
         ${toggle('nullWSpace', 'W / Space', 'In each pair the latest key wins; let go to resume the other.')}
       </div>
     </section>
+
+    <section id="page-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
+      <p class="explain intro">What the Runs list and replays keep in this browser. Lowering a limit deletes whatever is over it.</p>
+      <h3>Run history</h3>
+      <div class="group">
+        ${number('historyRunsPerMap', 'Runs kept per map', 5, 500, 5, 'runs', 'Newest first. A run takes about 1–2 KB.')}
+        ${number('historyMaps', 'Maps kept', 1, 100, 1, 'maps', 'The maps you played longest ago are dropped first.')}
+        ${number('historySessions', 'Sessions kept', 0, 500, 1, 'sessions', 'A session is one visit, from loading the page. 0 keeps them all.')}
+      </div>
+      <h3>Replays</h3>
+      <div class="group">
+        ${toggle('saveReplays', 'Save replays', 'About 250 KB per minute of run. Off saves the most space, and new runs can’t be watched.')}
+        ${number('replaysPerMap', 'Replays kept per map', 1, 100, 1, 'replays', 'Newest first. A run dropped from the history takes its replay with it.', ' sub')}
+        ${toggle('keepBestReplay', 'Always keep each map’s best', 'Your fastest clean finish stays, even when it’s older than the rest.', ' sub')}
+      </div>
+      <h3>Storage</h3>
+      <div class="group">
+        <div class="row"><span class="row-text"><span class="row-label">Used in this browser</span><span class="hint" id="storage-usage"></span></span>
+          <button id="clear-history" class="ghost" type="button">Clear all</button></div>
+      </div>
+    </section>
   </div>
   <p id="status" class="status" role="status"></p>
 </section>`;
@@ -177,7 +199,12 @@ export function previewModel(settings) {
   };
 }
 
-export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen}) {
+// Sizes for the Storage row: KB below a megabyte, then MB.
+export function formatBytes(bytes) {
+  return bytes < 1024 * 1024 ? `${Math.max(bytes ? 1 : 0, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
   const node = id => root.getElementById(id);
   const panel = node('panel'), opener = node('open'), close = node('close'), keyButton = node('key'), keyHelp = node('key-help');
   const body = panel.querySelector('.body');
@@ -211,6 +238,9 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     setDisabled('speedEnergyRamps', settings.speedEnergyColor !== true);
     setDisabled('rampResult', live || settings.showSurf === false);
     setDisabled('airMetric', live || settings.showAir === false);
+    setDisabled('replaysPerMap', settings.saveReplays === false);
+    setDisabled('keepBestReplay', settings.saveReplays === false);
+    showUsage();
     write(node('air-explain'), AIR_EXPLAIN[settings.airMetric] ?? AIR_EXPLAIN.combined);
     if (!capturing) write(keyButton, keyName(settings.crouchJumpKey));
     panel.style.setProperty('--opacity', settings.opacity);
@@ -219,6 +249,25 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     preview.setTime('00:41.233');
     preview.render(previewModel(settings));
   }
+  let confirmingClear = false;
+  const clearButton = node('clear-history');
+  function showUsage() {
+    let usage = null;
+    try { usage = storage?.usage(); } catch { /* unavailable */ }
+    const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+    write(node('storage-usage'), !usage ? 'Unavailable.' : [
+      `History about ${formatBytes(usage.history.bytes)}: ${plural(usage.history.runs, 'run')} on ${plural(usage.history.maps, 'map')}.`,
+      usage.replays ? `Replays about ${formatBytes(usage.replays.bytes)}: ${plural(usage.replays.count, 'replay')}.` : '',
+    ].filter(Boolean).join(' '));
+    clearButton.hidden = !storage;
+    write(clearButton, confirmingClear ? 'Delete all runs and replays?' : 'Clear all');
+    clearButton.classList.toggle('danger', confirmingClear);
+  }
+  clearButton.addEventListener('click', () => {
+    if (confirmingClear) { confirmingClear = false; Promise.resolve(storage?.clear()).then(showUsage, showUsage); }
+    else confirmingClear = true;
+    showUsage();
+  });
   function setDisabled(key, disabled) {
     for (const control of controls) {
       if (control.dataset.setting !== key) continue;
@@ -256,6 +305,8 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   }
   function selectPage(tab) {
     cancelCapture();
+    confirmingClear = false;
+    if (tab.dataset.page === 'history') showUsage();
     for (const item of tabs) {
       const selected = item === tab;
       item.setAttribute('aria-selected', String(selected));
