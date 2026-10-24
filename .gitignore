@@ -1,0 +1,21 @@
+# Generated extension and dependencies
+/dist/
+/node_modules/
+/coverage/
+
+# Local secrets and browser profiles
+.env
+.env.*
+!.env.example
+/profiles/
+/browser-profile/
+
+# Local editor/OS files and scratch output
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo

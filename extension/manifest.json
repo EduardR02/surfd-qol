@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Surfd QoL",
+  "version": "1.0.0",
+  "description": "Custom HUD, per-tick surf feedback, start splits, PB/WR checkpoint speeds and a native crouch-jump binding.",
+  "minimum_chrome_version": "118",
+  "permissions": ["debugger"],
+  "host_permissions": ["https://surfd.net/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Surfd QoL — connect or reload observer" },
+  "content_scripts": [
+    { "matches": ["https://surfd.net/*"], "js": ["page.js"], "run_at": "document_start", "world": "MAIN" },
+    { "matches": ["https://surfd.net/*"], "js": ["bridge.js"], "run_at": "document_start" }
+  ]
+}

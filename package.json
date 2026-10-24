@@ -1,0 +1,10 @@
+{
+  "name": "surfd-qol",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.js",
+    "test": "bun test"
+  }
+}
