@@ -1,8 +1,8 @@
 # Surfd QoL
 
-![Surfd QoL's HUD during the KSF record route on Boreas: speed, timer and sync, a checkpoint split, and board, down and up values](docs/hud.jpg)
+![Surfd QoL's HUD on Utopia: speed, timer and sync, and board, down and up values for the last ramp](docs/hud.jpg)
 
-*The full HUD. Each part can be shown or hidden on its own.*
+*What it looks like most of the time. Each part can be shown or hidden on its own.*
 
 A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, a crouch-jump bind and nullbinds.
 
@@ -68,6 +68,10 @@ For 1.8 seconds after you leave the start zone you see your exit **speed** (350 
 ### Checkpoints
 
 At each checkpoint you get your split time and speed, plus time and speed deltas against your PB, the WR, or both. The reference comes from the full replay, never per-checkpoint bests.
+
+![The full HUD on Boreas just after a checkpoint: split time and speed against the KSF record above the timer, and board, down and up values below](docs/hud-full.jpg)
+
+*The full HUD, just after a checkpoint.*
 
 ### Binds
 
