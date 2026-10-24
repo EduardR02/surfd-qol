@@ -2,9 +2,11 @@
 
 ![Surfd QoL's HUD during the KSF record route on Boreas: speed, timer and sync, a checkpoint split, and board, down and up values](docs/hud.jpg)
 
-A Chrome extension for [surfd.net](https://surfd.net/) that gives you what a good KSF server would: a clean, glanceable HUD, per-ramp and per-flight speed-loss feedback, start stats, PB and WR checkpoint splits, a crouch-jump bind and nullbinds.
+*The full HUD. Each part can be shown or hidden on its own.*
 
-It never changes physics, maps or your runs. It watches the game's own movement code and reports what happened.
+A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, a crouch-jump bind and nullbinds.
+
+Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It never changes physics, maps or your runs: it watches the game's own movement code and reports what happened.
 
 **Download page: [eduardr02.github.io/surfd-qol](https://eduardr02.github.io/surfd-qol/)**
 

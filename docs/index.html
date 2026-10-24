@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Surfd QoL: a better HUD for surfd.net</title>
-<meta name="description" content="A Chrome extension for surfd.net: a clean HUD that shows how much speed every ramp cost you, start stats, PB and WR splits, crouch-jump and nullbinds.">
+<meta name="description" content="A Chrome extension for surfd.net that shows where you lose speed on each ramp and in the air, so you can find your mistakes and learn what an optimal run does differently.">
 <meta property="og:title" content="Surfd QoL">
-<meta property="og:description" content="See where your speed goes on surfd.net: board, down and up losses for every ramp, compared to the KSF record.">
+<meta property="og:description" content="Shows where you lose speed on surfd.net, ramp by ramp, so you can find your mistakes and learn what an optimal run does differently.">
 <meta property="og:image" content="https://eduardr02.github.io/surfd-qol/hud.jpg">
 <meta name="color-scheme" content="dark">
 <style>
@@ -38,6 +38,7 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .hero{padding:40px 0 36px}
 .hero h1{margin:0;font-size:clamp(40px,6.4vw,76px);line-height:1.02;letter-spacing:-.025em;font-weight:700;max-width:13ch}
 .hero p{margin:22px 0 0;font-size:19px;color:var(--dust)}
+.hero p + p{margin-top:12px}
 .cta{display:flex;flex-wrap:wrap;align-items:center;gap:14px 22px;margin-top:32px}
 .download{display:inline-flex;align-items:center;gap:12px;padding:15px 24px 15px 20px;border-radius:12px;background:var(--rose);color:#2a1718;
   font-weight:700;font-size:18px;text-decoration:none;box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 30px rgba(235,188,186,.18)}
@@ -47,7 +48,7 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 
 .shot{margin-block:0}
 .shot img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
-.shot figcaption{margin-top:10px;font-size:14px;color:var(--dust)}
+.shot figcaption{margin-top:10px;max-width:76ch;font-size:14px;color:var(--dust)}
 
 section{padding:72px 0 0}
 section h2{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.015em}
@@ -113,25 +114,26 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
 <main>
   <div class="hero wrap">
     <h1>See where your speed goes.</h1>
-    <p class="measure">A HUD for <a href="https://surfd.net/">surfd.net</a> that tells you, after every ramp, how much speed you lost boarding it, riding down and coming back up, compared against the KSF record. Plus start stats, PB and WR splits, crouch-jump and nullbinds.</p>
+    <p class="measure">Surfd QoL is a Chrome extension for <a href="https://surfd.net/">surfd.net</a>. It shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently.</p>
+    <p class="measure">Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent.</p>
     <div class="cta">
       <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Download for Chrome
       </a>
-      <small>Free and open source (MIT). Desktop Chrome 118 or newer.<br>Not on the Chrome Web Store; install takes a minute.</small>
+      <small>Free and open source (MIT).<br>Desktop Chrome 118 or newer.</small>
     </div>
   </div>
 
   <figure class="shot wrap">
     <img src="hud.jpg" width="1280" height="720" alt="Surfd QoL's HUD during a replay on Boreas: speed 3025, the timer and sync above it, a checkpoint split against the KSF record, and board, down and up values below.">
-    <figcaption>Boreas, watching the KSF record route. Values that match the record show teal.</figcaption>
+    <figcaption>The full HUD: speed, timer and sync, a checkpoint split, and board, down and up for the last ramp. Each part can be shown or hidden on its own. Boreas, during the KSF record route.</figcaption>
   </figure>
 
   <section id="install">
     <div class="wrap">
       <h2>Install</h2>
-      <p class="lede measure">It isn't on the Chrome Web Store, so you load it yourself. Takes about a minute.</p>
+      <p class="lede measure">It isn't on the Chrome Web Store, so you load it into Chrome yourself.</p>
       <ol class="steps">
         <li><b>Download the zip and unzip it.</b><span>Keep the unzipped folder somewhere it can stay; Chrome loads the extension from it.</span></li>
         <li><b>Open <code>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions">Copy</button></b><span>Paste it into the address bar, then switch on <b>Developer mode</b> in the top right.</span></li>
@@ -163,18 +165,18 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
         <li class="bad"><i></i><span>Worse</span></li>
         <li style="color:var(--dust)"><i></i><span>No matching reference</span></li>
       </ul>
-      <p class="note measure">The reference is the KSF record route by default, or your PB or Surfd's #1. Even the record loses real speed on most ramps, so compare against it instead of chasing zero.</p>
+      <p class="note measure">You choose what to compare against: the KSF record route (the default), Surfd's leaderboard #1, or your own PB. Even the record loses real speed on most ramps, so the comparison tells you more than the raw number.</p>
     </div>
   </section>
 
   <section id="settings">
     <div class="wrap split">
       <div>
-        <h2>Make it yours</h2>
+        <h2>Settings</h2>
         <ul class="measure">
           <li>Turn any value on or off; the rest re-centre.</li>
-          <li>Move, resize and recolor the HUD, with a live preview.</li>
-          <li>Grade each value against fixed targets, your PB or the WR.</li>
+          <li>Move, resize and recolor the HUD with a live preview.</li>
+          <li>Grade each value against fixed targets, your PB, the KSF record or Surfd's #1.</li>
           <li>Crouch-jump on any key: one tick of crouch per jump.</li>
           <li>Nullbinds for A/D and W/Space.</li>
           <li>Speed counter and timer refresh rates, so digits stay readable.</li>
