@@ -85,18 +85,22 @@ const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, su
 // Replay controls over a fixture run: the controls work, only the game behind them is still.
 const replayControl = (() => {
   const run = runsFixture[6], length = 2870, start = 66;
-  let index = 1480, playing = true, speed = 1;
+  let index = 1480, playing = true, speed = 1, spots = [430, 1120], lastSpot = 1120;
   const clamp = value => Math.max(0, Math.min(length, Math.round(value)));
   return {
     canWatch: entry => entry.id !== 'fixture-4',
     async watch() {},
     get active() { return scenario.watching === true; },
-    status: () => scenario.watching ? {title: `Your run on ${run.mapName} · finished in 00:42.016`, index, length, start, dt: DT, playing, ended: index >= length, speed, markers: [742, 1488]} : null,
+    status: () => scenario.watching ? {title: `Your run on ${run.mapName} · finished in 00:42.016`, index, length, start, dt: DT, playing, ended: index >= length, speed, markers: [742, 1488], spots, lastSpot, practice: 'ok', notice: ''} : null,
     play() { playing = true; }, pause() { playing = false; }, toggle() { playing = !playing; },
     seek(value) { index = clamp(value); },
     skip(seconds) { index = clamp(index + seconds / DT); },
     step(ticks) { playing = false; index = clamp(index + ticks); },
     setSpeed(value) { speed = value; },
+    saveSpot() { if (!spots.includes(index)) spots = [...spots, index].sort((a, b) => a - b); lastSpot = index; return true; },
+    goToSpot(tick) { const target = tick ?? lastSpot ?? spots.at(-1); if (target == null) return false; lastSpot = target; index = target; return true; },
+    async practiceFromHere() {},
+    removeSpot(tick) { spots = spots.filter(spot => spot !== tick); if (lastSpot === tick) lastSpot = null; },
     faster() { speed = Math.min(4, speed * 2); }, slower() { speed = Math.max(0.25, speed / 2); },
   };
 })();

@@ -214,6 +214,13 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
       save();
       notify();
     },
+    // Replay spots (bookmarks) the player saved while watching this run.
+    setSpots(id, spots) {
+      const run = runs.find(entry => entry.id === id);
+      if (!run) return;
+      if (spots.length) run.spots = spots; else delete run.spots;
+      save();
+    },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
 }

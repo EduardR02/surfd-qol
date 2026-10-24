@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { createReplayControl } from '../src/replay-control.js';
+import { createReplayControl, MAX_SPOTS } from '../src/replay-control.js';
 import { pruneList } from '../src/replay-archive.js';
+import { keyName } from '../src/replay-bar.js';
 
 const DT = 0.015;
 
@@ -49,7 +50,8 @@ function game(length = 400) {
   });
   const run = { id: 'r1', mapName: 'Utopia', time: 4.5, outcome: 'finished', replay: { start: 100, dt: DT }, checkpoints: [{ command: 250 }] };
   const archive = { has: id => id === 'r1', get: async () => replay };
-  const control = createReplayControl({ getAdapter: () => ({ replay: world.hooks }), getSession: () => world.session, archive });
+  const control = createReplayControl({ getAdapter: () => ({ replay: world.hooks, practice: world.practice }), getSession: () => world.session, archive,
+    onSpots: (id, spots) => { world.savedSpots = [id, spots]; } });
   return { world, replay, run, control };
 }
 
@@ -126,6 +128,87 @@ describe('replay control', () => {
     expect(control.status().index).toBe(12);
   });
 
+  test('spots bookmark ticks, jump back keeping play state, and persist for your own runs', async () => {
+    const { world, run, control } = game();
+    await control.watch({ ...run, spots: [300, 9999] });
+    expect(control.status().spots).toEqual([300]);
+    control.seek(150);
+    control.saveSpot();
+    expect(control.status()).toMatchObject({ spots: [150, 300], lastSpot: 150 });
+    expect(world.savedSpots).toEqual(['r1', [150, 300]]);
+    control.seek(350);
+    control.goToSpot();
+    expect(control.status()).toMatchObject({ index: 150, playing: true });
+    control.pause();
+    control.goToSpot(300);
+    expect(control.status()).toMatchObject({ index: 300, lastSpot: 300, playing: false });
+    control.cycleSpot(-1);
+    expect(control.status()).toMatchObject({ index: 150, lastSpot: 150 });
+    control.cycleSpot(-1);
+    expect(control.status()).toMatchObject({ index: 300, lastSpot: 300 });
+    control.cycleSpot(1);
+    expect(control.status().lastSpot).toBe(150);
+    control.goToSpot(300);
+    control.removeSpot(300);
+    expect(control.status()).toMatchObject({ spots: [150], lastSpot: null });
+    expect(world.savedSpots).toEqual(['r1', [150]]);
+  });
+
+  test("spots on someone else's replay are not persisted, and are capped", async () => {
+    const { world, replay, control } = game();
+    await world.hooks.watch(replay);
+    for (let tick = 0; tick < MAX_SPOTS + 5; tick++) { control.seek(tick * 10); control.saveSpot(); }
+    expect(control.status().spots).toHaveLength(MAX_SPOTS);
+    expect(world.savedSpots).toBeUndefined();
+    expect(control.goToSpot()).toBe(true);
+  });
+
+  test('saved locs become practice savelocs in the game you return to, under its rules', async () => {
+    const { world, run, control } = game();
+    const store = { banks: new Map(), nextId: 1, revision: 0 };
+    const calls = [];
+    let playable = false;
+    world.practice = {
+      store: () => store, canLoad: () => playable,
+      leaveReplay: () => { calls.push('leave'); world.session = live(); world.playing = null; playable = true; },
+      load: () => calls.push('load'),
+    };
+    const live = () => ({ commands: [], map: { id: 'utopia', version: 2 }, practiceKey: () => 'utopia-v2-rules-8' });
+    await control.watch(run);
+    // The replay session: older rules, same map. Snapshots are what the game would capture.
+    Object.assign(world.session, { map: { id: 'utopia', version: 2 }, practiceKey: () => 'utopia-v2-rules-5',
+      capturePractice() { return { key: 'utopia-v2-rules-5', tick: this.commands.length }; } });
+    control.seek(200);
+    control.saveSpot();
+    expect(control.status().notice).toBe('Saved loc 1 · it’ll be in your practice savelocs when you leave the replay');
+    expect(store.banks.size).toBe(0);
+    control.seek(260);
+    await control.practiceFromHere();
+    expect(calls).toEqual(['leave', 'load']);
+    // Filed under the live game's key, newest selected, so Load position loads it.
+    const bank = store.banks.get('utopia-v2-rules-8');
+    expect(bank.entries.map(entry => entry.snapshot)).toEqual([
+      { key: 'utopia-v2-rules-8', tick: 200 }, { key: 'utopia-v2-rules-8', tick: 260 }]);
+    expect(bank.selected).toBe(2);
+    expect(store.revision).toBe(2);
+  });
+
+  test('a loc from another map waits until you are on that map', async () => {
+    const { world, run, control } = game();
+    const store = { banks: new Map(), nextId: 1, revision: 0 };
+    world.practice = { store: () => store, canLoad: () => true, leaveReplay() {}, load() {} };
+    await control.watch(run);
+    Object.assign(world.session, { map: { id: 'utopia', version: 2 }, capturePractice: () => ({ tick: 1 }) });
+    control.saveSpot();
+    world.playing = null;
+    world.session = { commands: [], map: { id: 'mesa', version: 1 }, practiceKey: () => 'mesa' };
+    control.status();
+    expect(store.banks.size).toBe(0);
+    world.session = { commands: [], map: { id: 'utopia', version: 2 }, practiceKey: () => 'utopia' };
+    control.status();
+    expect(store.banks.get('utopia').entries).toHaveLength(1);
+  });
+
   test('leaving the replay session ends control', async () => {
     const { world, run, control } = game();
     await control.watch(run);
@@ -133,6 +216,12 @@ describe('replay control', () => {
     world.playing = null;
     expect(control.active).toBe(false);
     expect(control.status()).toBeNull();
+  });
+});
+
+describe('saveloc bind names', () => {
+  test('read like the game shows them', () => {
+    expect(['F5', 'KeyV', 'Digit4', 'Mouse3', 'WheelUp', 'ShiftLeft'].map(keyName)).toEqual(['F5', 'V', '4', 'Mouse 3', 'Wheel Up', 'Shift Left']);
   });
 });
 

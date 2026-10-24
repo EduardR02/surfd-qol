@@ -23,7 +23,8 @@ const history = createRunHistory({
 });
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
-  getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null
+  getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
+  onSpots: (runId, spots) => history.setSpots(runId, spots)
 });
 let observer = null;
 let hud = null;
@@ -76,6 +77,7 @@ const api = {
   diagnostics() { return { connected: !!api.adapter, healthy: observer?.healthy ?? false, status: runtimeStatus, crouchJump: bindings.status() }; },
   destroy() {
     clearInterval(bindingTimer);
+    for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
     observer?.destroy();
     hud?.destroy();
@@ -100,6 +102,21 @@ function receiveStatus(event) {
 }
 window.addEventListener('surfd-qol-status', receiveStatus);
 const bindingTimer = setInterval(() => { try { bindings.update(); } catch (error) { fail(error); } }, 250);
+// Chrome treats mouse buttons 3 and 4 as Back and Forward. The game cancels
+// that only while the pointer is locked, so a bind on a side button left the
+// page from menus and replays. Cancel it whenever that button has a bind; the
+// game still receives the press.
+const SIDE_BUTTON_EVENTS = ['mousedown', 'mouseup', 'pointerup', 'auxclick'];
+function keepSideButtons(event) {
+  if (event.button !== 3 && event.button !== 4) return;
+  let bound = false;
+  try {
+    const code = `Mouse${event.button}`;
+    bound = Object.values(api.adapter?.getBindings?.() ?? {}).some(codes => Array.isArray(codes) && codes.includes(code));
+  } catch { /* bindings unavailable */ }
+  if (bound) event.preventDefault();
+}
+for (const type of SIDE_BUTTON_EVENTS) window.addEventListener(type, keepSideButtons, true);
 function mount() {
   if (location.pathname !== '/') return;
   hud = mountHud({

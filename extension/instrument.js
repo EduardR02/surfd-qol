@@ -46,6 +46,27 @@ function replayHooks(source, state) {
   }
 }
 
+// The game's practice savelocs, also optional: a replay moment can be saved
+// into them, and "practice from here" leaves the replay and loads it.
+function practiceHooks(source, state) {
+  try {
+    const store = unique(source, new RegExp(`const ${identifier}=(${identifier})\\.entries\\((${identifier})\\)\\.length>=${identifier},${identifier}=\\1\\.save\\(\\2\\)`, 'g'), 'saveloc store')[1];
+    const load = unique(source, new RegExp(`function (${identifier})\\(\\)\\{if\\(!(${identifier})\\(\\)\\)\\{${identifier}\\("Return to play before loading a location\\."\\);return\\}`, 'g'), 'saveloc load');
+    const leave = unique(source, new RegExp(`function ${identifier}\\((${identifier})\\)\\{if\\((${identifier})\\)\\{\\1\\|\\|(${identifier})\\(\\);return\\}`, 'g'), 'replay exit')[3];
+    return `
+    practice: {
+      // The saveloc store: one bank of snapshots per practice key (map and movement rules).
+      store: () => ${store},
+      canLoad: () => ${load[2]}(),
+      leaveReplay: () => ${leave}(),
+      load: () => ${load[1]}(),
+    },`;
+  } catch (error) {
+    console.warn('[Surfd QoL] Practice savelocs from replays unavailable:', error.message);
+    return '';
+  }
+}
+
 // Append access to existing lexical objects; no original movement statement is rewritten.
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
@@ -77,7 +98,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}${practiceHooks(source, state)}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

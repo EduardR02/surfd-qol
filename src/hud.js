@@ -86,11 +86,13 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onOpen: () => runs.close(),
   });
   const runs = createRunsPanel({root, host, history, replays, replayControl, onOpen: () => panel.close()});
-  const replayBar = replayControl ? createReplayBar({root, control: replayControl}) : null;
+  const replayBar = replayControl ? createReplayBar({root, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.()}) : null;
 
   function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
+  function onPointer(event) { replayBar?.handlePointer(event); }
+  for (const type of ['mousedown', 'mouseup', 'wheel']) window.addEventListener(type, onPointer, {capture: true, passive: false});
   window.addEventListener('resize', syncSettings);
 
   const menu = document.getElementById('menu');
@@ -256,6 +258,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       document.removeEventListener('pointerlockchange', onPointerLockChange);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('keyup', onKey, true);
+      for (const type of ['mousedown', 'mouseup', 'wheel']) window.removeEventListener(type, onPointer, {capture: true});
       window.removeEventListener('resize', syncSettings);
       bindings?.release?.();
       hullState?.remove();

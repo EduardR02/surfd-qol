@@ -94,6 +94,8 @@ The bar along the bottom says what you're watching and whether it's playing. Und
 
 - **Play/pause** and **−5 s / +5 s**, then a timeline you can drag. It marks where the run left the start and each checkpoint (on other players' runs these fill in as the replay passes them).
 - **Speed** from 0.25× to 4×.
+- **Savelocs**: **Save loc** marks the moment you're watching, **Load loc** jumps back to the selected one, and each loc is a chip you can click or delete. They use your own **Save position** and **Load position** binds (F5 and F9 by default; previous/next saveloc step through them), and during a replay those binds only work on these locs. Locs are kept with your own runs and last until you leave anyone else's replay.
+- Every loc you save is **also added to your practice savelocs** when you leave the replay, so you can load it and play from there. **Practice from here** does it in one go: it leaves the replay and puts you at that exact moment, with the same speed and view, in practice mode. This works for any replay, including ones recorded under older movement rules: a loc is only position, speed, view and timer, and you play on under today's rules. Locs from another map wait until you're back on that map.
 
 **Keys** lists every shortcut: Space plays and pauses, ← and → jump 5 seconds, `,` and `.` step one tick, `[` and `]` change speed, and Esc stops playback as usual. Replays of the last 30 runs on each map, plus your best, are kept in the browser.
 
