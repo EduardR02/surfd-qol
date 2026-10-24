@@ -10,6 +10,7 @@ import {panelStyles} from './panel-styles.js';
 import {launcherMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
 import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
 import {runsStyles} from './runs-styles.js';
+import {replayBarMarkup, replayBarStyles, createReplayBar} from './replay-bar.js';
 import {defaults} from './settings.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -17,13 +18,14 @@ const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}</style>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
+    ${replayBarMarkup}
     <div class="launchers">${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
@@ -61,7 +63,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     // Keep the core stack on screen at the extremes of position and size;
     // with no room above for splits, they drop below the feedback instead.
     const top = 84 * scale, bottom = 112 * scale;
-    overlay.style.setProperty('--y', `clamp(${top}px, ${clamp(settings.y, 10, 90)}%, calc(100% - ${bottom}px))`);
+    // --reserve keeps the stack above the replay controls while they are up.
+    overlay.style.setProperty('--y', `clamp(${top}px, ${clamp(settings.y, 10, 90)}%, calc(100% - ${bottom}px - var(--reserve, 0px)))`);
     const anchor = Math.max(top, Math.min(innerHeight * clamp(settings.y, 10, 90) / 100, innerHeight - bottom));
     overlay.classList.toggle('flip', anchor < 250 * scale);
     overlay.style.setProperty('--scale', scale);
@@ -82,9 +85,10 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onChange() { syncSettings(); render(); },
     onOpen: () => runs.close(),
   });
-  const runs = createRunsPanel({root, host, history, onOpen: () => panel.close()});
+  const runs = createRunsPanel({root, host, history, replays, replayControl, onOpen: () => panel.close()});
+  const replayBar = replayControl ? createReplayBar({root, control: replayControl}) : null;
 
-  function onKey(event) { panel.handleKey(event); runs.handleKey(event); }
+  function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
   window.addEventListener('resize', syncSettings);
@@ -225,6 +229,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       }
     }
     panel.setStatus(model.status);
+    const reserve = `${replayBar?.render(inSurf) ?? 0}px`;
+    if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }
 
   syncSettings();
@@ -236,6 +242,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
     showRuns(scope) { runs.show(scope); },
+    showReplayKeys() { replayBar?.showKeys(); },
     destroy() {
       destroyed = true;
       clearInterval(interval);
@@ -243,6 +250,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       references.destroy();
       runReferences.destroy();
       runs.destroy();
+      replayBar?.destroy();
       replayStore.destroy?.();
       menuObserver.disconnect();
       document.removeEventListener('pointerlockchange', onPointerLockChange);

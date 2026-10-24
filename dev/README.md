@@ -12,11 +12,12 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 
 | Parameter | Values |
 | --- | --- |
-| `state` | `ramp`, `air` (stale Up), `net`, `sole`, `pair`, `none`, `unavailable`, `live`, `start-good`, `start-bad`, `checkpoint`, `checkpoint-start`, `practice`, `replay`, `invalid`, `spectating`, `energy-good`, `energy-loss`, `energy-neutral`, `menu` |
+| `state` | `ramp`, `air` (stale Up), `net`, `sole`, `pair`, `none`, `unavailable`, `live`, `start-good`, `start-bad`, `checkpoint`, `checkpoint-start`, `practice`, `replay`, `invalid`, `spectating`, `energy-good`, `energy-loss`, `energy-neutral`, `menu`, `watching` (replay controls) |
 | `bg` | `snow`, `fog`, `ice`, `neon`, `warm`, `dark`, `menu` |
 | `scale`, `y`, `opacity` | Layout settings, e.g. `scale=1.6&y=10` |
 | `palette=custom` | A non-default palette |
 | `panel=display\|feedback\|compare\|controls` | Opens the settings panel on that section |
+| `keys` | With `state=watching`, opens the replay Keys list |
 | `runs=session\|map` | Opens the Runs popup with fixture history on that scope; add `expand=fixture-6` to open a run |
 | `set.<key>=<value>` | Any other setting, e.g. `set.showBoard=false` |
 | `css=<rules>` | Extra CSS in the HUD's shadow root, for A/B experiments |

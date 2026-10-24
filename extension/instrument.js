@@ -6,6 +6,46 @@ function unique(source, pattern, label) {
   return matches[0];
 }
 
+// Replay playback hooks are optional: when the game's watch function or its
+// playback cursor can't be found, Watch is unavailable and nothing else changes.
+function replayHooks(source, state) {
+  try {
+    const watch = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})=\\+\\+(${identifier})\\)\\{if\\(!\\3\\(\\)\\)return;`, 'g'), 'replay watch')[1];
+    const cursor = unique(source, new RegExp(`const ${identifier}=(${identifier})\\?\\1\\.commands\\[(${identifier})\\+\\+\\]:`, 'g'), 'replay cursor');
+    const stepper = unique(source, new RegExp(`(${identifier})\\.advance\\(`, 'g'), 'fixed stepper')[1];
+    const stepperClasses = new Set([...source.matchAll(new RegExp(`[,;]${stepper.replace(/\$/g, '\\$')}=new (${identifier})\\(`, 'g'))].map(match => match[1]));
+    if (stepperClasses.size !== 1) throw new Error('Unsupported Surfd build: fixed stepper class');
+    const [replay, index] = [cursor[1], cursor[2]];
+    return `
+    replay: {
+      Stepper: ${[...stepperClasses][0]},
+      stepper: () => ${stepper},
+      watch: (replay, label) => ${watch}(replay, () => true, label),
+      // The cursor outlives playback: after Esc or the end, index is where it stopped.
+      playback: () => ({replay: ${replay}, index: ${index}}),
+      // Re-simulates the watched session to \`index\` commands into \`replay\`:
+      // forward from where it is, or from the start when going back or when
+      // live input moved it after playback stopped.
+      seek(replay, index) {
+        const session = ${state};
+        if (!session || !replay || session.map.id !== replay.mapId || (${replay} && ${replay} !== replay)) return false;
+        const length = replay.commands.length;
+        index = Math.max(0, Math.min(length, Math.floor(index)));
+        const at = session.commands.length;
+        if (at > length || at !== Math.min(${index}, length) || index < at) { session.loadReplay(replay); ${index} = 0; }
+        else ${index} = at;
+        while (${index} < index) session.step(replay.commands[${index}++]);
+        ${replay} = index < length ? replay : null;
+        ${stepper}.reset();
+        return true;
+      },
+    },`;
+  } catch (error) {
+    console.warn('[Surfd QoL] Replay controls unavailable:', error.message);
+    return '';
+  }
+}
+
 // Append access to existing lexical objects; no original movement statement is rewritten.
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
@@ -26,7 +66,7 @@ export function instrumentGame(source) {
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   return source + `
-/* surfd-qol-adapter-v4: viewed state, selectable reference routes and input binding */
+/* surfd-qol-adapter-v5: viewed state, selectable reference routes, input binding and replay playback */
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;
   if (!qol) return;
@@ -37,7 +77,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

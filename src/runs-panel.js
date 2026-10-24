@@ -2,10 +2,12 @@
 // splits and ramps for the run you click. Opened only from menus, like settings.
 import {formatDelta, formatNumber, formatTime} from './hud-model.js';
 import {RUNS_PER_MAP, summarize} from './run-history.js';
+import {REPLAYS_PER_MAP} from './replay-archive.js';
 
 const escape = value => String(value).replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
 const loss = value => Number.isFinite(value) ? formatNumber(Math.max(0, value), 1) : '—';
 const plain = (value, digits = 0) => Number.isFinite(value) ? formatNumber(value, digits) : '—';
+const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L12.6 8z"/></svg>';
 
 export const runsLauncherMarkup = `<button id="runs-open" class="launcher" type="button" aria-expanded="false" aria-controls="runs" hidden><span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>Runs</button>`;
 
@@ -21,7 +23,8 @@ export const runsMarkup = `
   </header>
   <p id="runs-context" class="runs-context"></p>
   <div id="runs-tiles" class="tiles"></div>
-  <p class="runs-hint">Click a run to see its checkpoints and every ramp. Speeds and losses are in u/s; for losses, lower is better.</p>
+  <p class="runs-hint">Click a run to see its checkpoints and every ramp, or Watch to replay it. Speeds and losses are in u/s; for losses, lower is better.</p>
+  <p id="runs-message" class="runs-message" role="status" hidden></p>
   <div class="body runs-body">
     <table class="runs-table">
       <thead><tr>
@@ -32,13 +35,14 @@ export const runsMarkup = `
         <th scope="col" title="Speed lost while surfing ramps (Down + Up), all ramps added up">Ramp loss</th>
         <th scope="col" title="Speed lost in the air to braking and imperfect strafes, all flights added up">Air loss</th>
         <th scope="col">Top speed</th>
+        <th scope="col"><span class="visually-hidden">Replay</span></th>
       </tr></thead>
       <tbody id="runs-rows"></tbody>
     </table>
     <p id="runs-empty" class="runs-empty" hidden></p>
   </div>
   <footer class="runs-foot">
-    <span class="note">— means not measured (that HUD value was hidden). Saved in this browser, last ${RUNS_PER_MAP} runs per map.</span>
+    <span class="note">— means not measured (that HUD value was hidden). Saved in this browser: the last ${RUNS_PER_MAP} runs per map, and replays of the last ${REPLAYS_PER_MAP} plus your best.</span>
     <button id="runs-clear" class="ghost" type="button">Clear map</button>
   </footer>
 </section>`;
@@ -115,10 +119,10 @@ function detail(run, best, columns) {
     <div class="detail-grid">${checkpoints}${ramps}</div></td></tr>`;
 }
 
-export function createRunsPanel({root, host, history, onOpen}) {
+export function createRunsPanel({root, host, history, replays, replayControl, onOpen}) {
   const node = id => root.getElementById(id);
   const popup = node('runs'), opener = node('runs-open'), close = node('runs-close'), rows = node('runs-rows');
-  const tiles = node('runs-tiles'), context = node('runs-context'), empty = node('runs-empty'), clear = node('runs-clear');
+  const tiles = node('runs-tiles'), context = node('runs-context'), empty = node('runs-empty'), clear = node('runs-clear'), message = node('runs-message');
   const table = popup.querySelector('.runs-table'), body = popup.querySelector('.runs-body');
   let available = false, scope = 'session', expanded = null, confirming = false;
 
@@ -126,7 +130,7 @@ export function createRunsPanel({root, host, history, onOpen}) {
     if (popup.hidden || !history) return;
     const view = runsView(history.runs(), {scope, session: history.session, map: history.currentMap});
     const {summary} = view;
-    const columns = view.multipleMaps ? 10 : 9;
+    const columns = view.multipleMaps ? 11 : 10;
     table.classList.toggle('with-map', view.multipleMaps);
     context.textContent = scope === 'map'
       ? view.mapName ? `Every saved run on ${view.mapName}` : 'No map played yet'
@@ -153,7 +157,10 @@ export function createRunsPanel({root, host, history, onOpen}) {
         <td title="${run.board.count} boards">${run.board.count ? loss(run.board.total) : '—'}</td>
         <td ${ramps}>${run.surf.count ? loss(run.surf.loss) : '—'}</td>
         <td title="${run.air.count} flights">${run.air.count ? loss(run.air.loss) : '—'}</td>
-        <td>${plain(run.topSpeed)}</td></tr>${open ? detail(run, view.bests.get(run.map), columns) : ''}`;
+        <td>${plain(run.topSpeed)}</td>
+        <td class="watch-cell">${replayControl?.canWatch(run)
+          ? `<button class="watch" type="button" data-watch="${escape(run.id)}" aria-label="Watch run ${number}">${PLAY_ICON}Watch</button>`
+          : `<span class="dim" title="${run.replay ? 'This replay is no longer saved.' : 'No replay was saved for this run.'}">—</span>`}</td></tr>${open ? detail(run, view.bests.get(run.map), columns) : ''}`;
     }).join('');
     clear.hidden = !view.map || !history.runs().some(run => run.map === view.map);
     clear.textContent = confirming ? 'Clear all runs on this map?' : 'Clear map';
@@ -166,8 +173,29 @@ export function createRunsPanel({root, host, history, onOpen}) {
     render();
     root.querySelector(`tr.run[data-run="${CSS.escape(row.dataset.run)}"]`)?.focus();
   }
-  rows.addEventListener('click', event => toggleRow(event.target));
+  function say(text) {
+    message.hidden = !text;
+    message.textContent = text;
+  }
+  async function watch(id) {
+    const run = history.runs().find(entry => entry.id === id);
+    if (!run || !replayControl) return;
+    say('Loading the replay…');
+    try {
+      await replayControl.watch(run);
+      say('');
+      hide();
+    } catch (error) {
+      say(`Couldn’t play this run: ${error?.message ?? error}`);
+    }
+  }
+  rows.addEventListener('click', event => {
+    const button = event.target.closest?.('[data-watch]');
+    if (button) watch(button.dataset.watch);
+    else toggleRow(event.target);
+  });
   rows.addEventListener('keydown', event => {
+    if (event.target.closest?.('[data-watch]')) return;
     if (event.code === 'Enter' || event.code === 'Space') { event.preventDefault(); toggleRow(event.target); }
   });
   for (const input of popup.querySelectorAll('[data-scope]')) input.addEventListener('change', () => {
@@ -182,8 +210,9 @@ export function createRunsPanel({root, host, history, onOpen}) {
     confirming = false;
     const map = runsView(history.runs(), {scope, session: history.session, map: history.currentMap}).map;
     history?.clear(map);
+    replays?.clearMap(map);
   });
-  const unsubscribers = [history?.subscribe(render)].filter(Boolean);
+  const unsubscribers = [history?.subscribe(render), replays?.subscribe(render)].filter(Boolean);
 
   function hide(focus = false) {
     popup.hidden = true;

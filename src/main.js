@@ -1,6 +1,8 @@
 import { createMetrics } from './metrics.js';
 import { createStartFeedback } from './start.js';
 import { createRunHistory } from './run-history.js';
+import { createReplayArchive } from './replay-archive.js';
+import { createReplayControl } from './replay-control.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
@@ -12,9 +14,15 @@ try { applySettings(JSON.parse(localStorage.getItem(storageKey) ?? '{}')); } cat
 
 const metrics = createMetrics(settings);
 const start = createStartFeedback();
+const replays = createReplayArchive();
 const history = createRunHistory({
   metrics, start,
   getState: () => window.__SURF__?.snapshot?.() ?? null,
+  getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
+  onReplay: (run, replay) => { replays.save(run, replay); }
+});
+const replayControl = createReplayControl({
+  getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null
 });
 let observer = null;
@@ -101,7 +109,7 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings, history,
+    settings, onSettings, bindings, history, replays, replayControl,
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
 }

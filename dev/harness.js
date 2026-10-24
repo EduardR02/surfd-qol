@@ -51,6 +51,7 @@ export const scenarios = {
   'energy-loss': {note: 'Speed tint: losing', ...ramp, energy: -1, settings: {speedEnergyColor: true}},
   'energy-neutral': {note: 'Speed tint: neutral', ...ramp, energy: 0, settings: {speedEnergyColor: true}},
   menu: {note: 'In a menu (settings entry point)', ...ramp, menu: true},
+  watching: {note: 'Watching a saved run with replay controls', ...ramp, ...checkpoint, snapshot: {playback: true}, watching: true},
 };
 
 // A session of runs on two maps for the Runs popup (?runs=session|map).
@@ -81,6 +82,24 @@ function fixtureRuns() {
 }
 const runsFixture = fixtureRuns();
 const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, subscribe: () => () => {}, clear() {}};
+// Replay controls over a fixture run: the controls work, only the game behind them is still.
+const replayControl = (() => {
+  const run = runsFixture[6], length = 2870, start = 66;
+  let index = 1480, playing = true, speed = 1;
+  const clamp = value => Math.max(0, Math.min(length, Math.round(value)));
+  return {
+    canWatch: entry => entry.id !== 'fixture-4',
+    async watch() {},
+    get active() { return scenario.watching === true; },
+    status: () => scenario.watching ? {title: `Your run on ${run.mapName} · finished in 00:42.016`, index, length, start, dt: DT, playing, ended: index >= length, speed, markers: [742, 1488]} : null,
+    play() { playing = true; }, pause() { playing = false; }, toggle() { playing = !playing; },
+    seek(value) { index = clamp(value); },
+    skip(seconds) { index = clamp(index + seconds / DT); },
+    step(ticks) { playing = false; index = clamp(index + ticks); },
+    setSpeed(value) { speed = value; },
+    faster() { speed = Math.min(4, speed * 2); }, slower() { speed = Math.max(0.25, speed / 2); },
+  };
+})();
 
 const palettes = {custom: {speedColor: '#f4f1ea', goodColor: '#6fe0b0', warnColor: '#ffcf5c', badColor: '#ff5f6d'}};
 const backdrops = ['snow', 'fog', 'ice', 'neon', 'warm', 'dark', 'menu'];
@@ -132,6 +151,7 @@ const hud = mountHud({
   onSettings: patch => applySettings(settings, patch),
   onResetColors: () => applySettings(settings, Object.fromEntries(colorKeys.map(key => [key, defaults[key]]))),
   history,
+  replayControl,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -142,6 +162,7 @@ const hud = mountHud({
   },
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
+if (params.has('keys')) hud.showReplayKeys();
 if (runsScope !== null) {
   hud.showRuns(runsScope || 'session');
   // ?expand=<run id> opens that run's splits and ramps.

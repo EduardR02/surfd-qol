@@ -86,6 +86,17 @@ Both work inside the game's own input sampling, so the commands it records are e
 
 **This session** lists the runs since the page loaded, on any map; **This map** lists every saved run on the current map, up to the last 100. Practice and invalid runs are marked and never count as best. Restarts within the first second aren't recorded, and replays never are. The loss totals only include values the HUD was measuring, so a value you had hidden shows —.
 
+### Watching replays
+
+**Watch** in the Runs list replays one of your runs in the game's own replay mode, with the full HUD, starting a second before you left the start. The same controls appear for every replay the game plays: other players' runs from the leaderboard's **Watch** buttons, the record route and server replays.
+
+The bar along the bottom says what you're watching and whether it's playing. Under it:
+
+- **Play/pause** and **−5 s / +5 s**, then a timeline you can drag. It marks where the run left the start and each checkpoint (on other players' runs these fill in as the replay passes them).
+- **Speed** from 0.25× to 4×.
+
+**Keys** lists every shortcut: Space plays and pauses, ← and → jump 5 seconds, `,` and `.` step one tick, `[` and `]` change speed, and Esc stops playback as usual. Replays of the last 30 runs on each map, plus your best, are kept in the browser.
+
 ### Replays and spectating
 
 Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback.
@@ -103,7 +114,7 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 - Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each replay is processed once and cached.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
-- No telemetry. Settings, run history and local checkpoint PB speeds live in surfd.net's local storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
+- No telemetry. Settings, run history, replays of your runs and local checkpoint PB speeds live in surfd.net's site storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
 
 ## Troubleshooting
 
@@ -132,6 +143,7 @@ Source layout:
 - `src/energy.js`: the speed tint's energy trend.
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
 - `src/run-history.js`, `src/runs-panel.js`: per-run stats recording and the Runs popup.
+- `src/replay-archive.js`, `src/replay-control.js`, `src/replay-bar.js`: saved replays (IndexedDB), playback speed and seeking, and the replay controls.
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License

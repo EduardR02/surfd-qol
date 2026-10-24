@@ -9,6 +9,8 @@ const MAX_RAMPS = 120;
 // Restarts straight out of the start zone are not worth a row.
 const MIN_RESET_SECONDS = 1;
 const endEvents = new Set(['restart', 'start-return', 'practice-restore']);
+// About 15 minutes of ticks since the last restart; longer is not kept as a replay.
+const MAX_REPLAY_COMMANDS = 60000;
 
 const round = (value, digits = 1) => Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
 const valid = run => run && typeof run.map === 'string' && Number.isFinite(run.at) && Number.isFinite(run.time) &&
@@ -22,7 +24,7 @@ function prettyName(map) {
   return raw == null ? 'Unknown map' : String(raw);
 }
 
-export function createRunHistory({metrics, start, getState = () => null, getMapName = () => null, storage, clock = () => Date.now()} = {}) {
+export function createRunHistory({metrics, start, getState = () => null, getMapName = () => null, onReplay = null, storage, clock = () => Date.now()} = {}) {
   if (storage === undefined) {
     try { storage = globalThis.localStorage; } catch { storage = null; }
   }
@@ -35,6 +37,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
   const listeners = new Set();
   let current = null, owner = null, startTick = null, lastMap = '', lastMapName = '';
   let boardRevision = -1, board = null, surfSequence = 0, airSequence = 0;
+  // The session's own command log and spawn state. A restart swaps in a new
+  // array, so this reference still holds the whole run when it ends.
+  let commands = null, initialState = null, commandCount = 0;
   // Replay sessions keep stepping after playback stops; they never record.
   const replaySessions = new WeakSet();
 
@@ -83,6 +88,11 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
       surf: {down: 0, up: 0, loss: 0, count: 0, unavailable: 0},
       air: {loss: 0, braking: 0, missed: 0, seconds: 0, count: 0},
     };
+    commands = Array.isArray(live.commands) ? live.commands : null;
+    initialState = live.initialState ?? null;
+    commandCount = commands?.length ?? 0;
+    // Watching starts a moment before this tick: the command that left the start.
+    if (commands) current.replay = {start: Math.max(0, commandCount - 1), length: 0, dt: live.config?.dt ?? 0.015};
     boardRevision = metrics?.boardRevision?.() ?? -1;
     board = null;
     surfSequence = metrics?.surfSnapshot?.(-1)?.sequence ?? 0;
@@ -102,19 +112,32 @@ export function createRunHistory({metrics, start, getState = () => null, getMapN
     run.topSpeed = round(run.topSpeed);
     for (const group of [run.board, run.surf, run.air]) for (const key of Object.keys(group)) group[key] = round(group[key], 1);
     runs.push(run);
+    saveReplay(run, owner);
     save();
     notify();
   }
+  function saveReplay(run, live) {
+    const log = commands, spawn = initialState;
+    commands = initialState = null;
+    if (!run.replay || !onReplay || !log || !spawn || !Number.isInteger(live?.replayFormat) ||
+      commandCount <= run.replay.start || commandCount > MAX_REPLAY_COMMANDS) { delete run.replay; return; }
+    run.replay.length = commandCount;
+    const replay = {format: live.replayFormat, mapId: live.map.id, mapVersion: live.map.version, config: {...live.config},
+      initialState: structuredClone(spawn), commands: log.slice(0, commandCount)};
+    try { onReplay(run, replay); } catch { delete run.replay; }
+  }
+
   function track(live) {
     const run = current, state = live.state, timer = live.timer.state;
     run.topSpeed = Math.max(run.topSpeed, Math.hypot(state.velocity.x, state.velocity.y));
     if (Number.isFinite(timer.elapsed)) run.time = timer.elapsed;
+    if (commands) commandCount = commands.length;
     if (timer.invalidReason) run.invalid = String(timer.invalidReason);
     const speeds = live.checkpointSpeeds;
     // Splits are copied as they happen: a restart clears them before the reset hook runs.
     while (Array.isArray(speeds) && run.checkpoints.length < speeds.length && run.checkpoints.length < 64) {
       const index = run.checkpoints.length;
-      run.checkpoints.push({split: round(timer.splits?.[index], 3), speed: round(speeds[index])});
+      run.checkpoints.push({split: round(timer.splits?.[index], 3), speed: round(speeds[index]), ...(commands ? {command: commands.length} : {})});
     }
     if (!metrics) return;
     const revision = metrics.boardRevision?.();

@@ -85,7 +85,7 @@ describe('run history', () => {
       board: { total: 3.2, count: 1 }, surf: { down: 14.6, up: 38.1, loss: 52.7, count: 1 },
       air: { loss: 9.5, braking: 4, missed: 5.5, count: 1 },
     });
-    expect(run.checkpoints).toEqual([{ split: expect.any(Number), speed: 2412 }]);
+    expect(run.checkpoints).toEqual([{ split: expect.any(Number), speed: 2412, command: expect.any(Number) }]);
     expect(run.ramps).toEqual([{ checkpoint: 0, board: 3.2, down: 14.6, up: 38.1, exit: 2500 }]);
     expect(run.time).toBeCloseTo(1.59, 3);
     expect(JSON.parse(r.storage.data[HISTORY_KEY]).runs).toHaveLength(1);
@@ -100,6 +100,24 @@ describe('run history', () => {
     const [run] = r.history.runs();
     expect(run.ramps).toEqual([{ checkpoint: 0, board: 3.2, down: null, up: null, exit: 2600, missing: 'hidden' }]);
     expect(run.surf).toMatchObject({ count: 0, unavailable: 1 });
+  });
+
+  test('each run hands over its replay: the session log up to the end, and where it left the start', () => {
+    const saved = [];
+    const r = rig({ onReplay: (run, replay) => saved.push({ run, replay }) });
+    for (let i = 0; i < 20; i++) r.tick();
+    r.go();
+    for (let i = 0; i < 50; i++) r.tick();
+    r.checkpoint(2000);
+    for (let i = 0; i < 30; i++) r.tick();
+    // A restart swaps in a fresh log, as the game does; the old one must survive.
+    r.live.commands = [];
+    r.tick(['restart']);
+    const [{ run, replay }] = saved;
+    expect(replay).toMatchObject({ format: 8, mapId: 'utopia', mapVersion: 3, config: { dt: 0.015 }, initialState: { spawn: true } });
+    expect(replay.commands).toHaveLength(102);
+    expect(run.replay).toEqual({ start: 20, length: 102, dt: 0.015 });
+    expect(run.checkpoints[0].command).toBe(72);
   });
 
   test('a restart ends the run as a reset, keeping the splits reached', () => {

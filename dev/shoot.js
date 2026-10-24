@@ -28,6 +28,7 @@ const shots = [
   ['panel-custom-palette', 'panel=display&palette=custom'],
   ['runs-session', 'runs=session'], ['runs-map', 'runs=map'], ['runs-map-540x600', 'runs=map', 540, 600],
   ['runs-detail', 'runs=map&expand=fixture-6'],
+  ['watching', 'state=watching&bg=snow'], ['watching-540x600', 'state=watching&bg=snow', 540, 600],
 ];
 await mkdir(out, {recursive: true});
 const browser = await puppeteer.launch({executablePath: process.env.CHROME, headless: true});

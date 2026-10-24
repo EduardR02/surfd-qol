@@ -17,6 +17,8 @@ export const runsStyles = `
 .tile-sub{min-height:1.4em;font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .runs-hint{flex:none;margin:6px 20px 0;font-size:12.5px;line-height:1.4;color:var(--text-3)}
+.runs-message{flex:none;margin:8px 20px 0;padding:8px 12px;border-radius:9px;background:var(--sunk);font-size:12.5px;color:var(--text)}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .runs-body{padding:4px 12px 12px;overflow-x:auto}
 .runs-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .runs-table>thead th{position:sticky;top:0;z-index:1;padding:10px 8px 8px;background:#1f1a1b;text-align:right;font-size:11.5px;font-weight:700;color:var(--text-3);
@@ -36,6 +38,11 @@ tr.run.best .run-time{color:var(--accent)}
 .dim{color:var(--text-3)}
 .pill{display:inline-block;margin-left:7px;padding:0 6px;border:1px solid var(--line-2);border-radius:999px;font-size:10.5px;font-weight:700;color:var(--text-3);vertical-align:1px}
 .best-pill{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+.runs-table>tbody>tr>td.watch-cell{padding:5px 4px 5px 8px}
+.watch{display:inline-flex;align-items:center;gap:5px;padding:4px 9px 4px 7px;border:1px solid var(--line-2);border-radius:8px;background:transparent;
+  font-size:12px;font-weight:700;color:var(--text-2)}
+.watch svg{width:11px;height:11px;fill:var(--accent)}
+.watch:hover{color:var(--text);border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
 .runs-empty{margin:28px 8px;text-align:center;font-size:13px;color:var(--text-3)}
 
 .runs-table>tbody>tr.detail>td{padding:4px 8px 16px;text-align:left;background:var(--raise);border-top:0;white-space:normal}
