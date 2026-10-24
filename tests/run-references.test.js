@@ -4,6 +4,7 @@ import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
 import {createCheckpointReferences} from '../src/references.js';
 import {createReferenceReplayStore} from '../src/replay-store.js';
+import {selectFeedbackType} from '../src/hud.js';
 
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
@@ -866,5 +867,173 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     expect(f.update(board)).toMatchObject({status:'ready',loss:9});
     expect(loads).toBe(1);
     expect(f.native()).toEqual({loads:2,steps:4});
+  });
+});
+
+describe('Independent movement feedback visibility', () => {
+  test('selects the newest enabled held type, never an unavailable or disabled fallback', () => {
+    const metrics = {air:{tick:20,available:true},surf:{tick:10,available:true}};
+    expect(selectFeedbackType(metrics, {})).toBe('air');
+    expect(selectFeedbackType(metrics, {showAir:false})).toBe('surf');
+    expect(selectFeedbackType({...metrics,surf:{tick:30,available:false}}, {})).toBe('surf');
+    expect(selectFeedbackType({...metrics,surf:{tick:30}}, {showSurf:false})).toBe('air');
+    expect(selectFeedbackType({...metrics,surf:{tick:20}}, {})).toBe('surf');
+    expect(selectFeedbackType({air:metrics.air}, {showAir:false})).toBe('surf');
+    expect(selectFeedbackType({surf:metrics.surf}, {showSurf:false})).toBe('air');
+    expect(selectFeedbackType(metrics, {showAir:false,showSurf:false})).toBeNull();
+  });
+
+  test('maps live free-air to Air and ramp input to Surf without enabling the other type', () => {
+    const settings = {continuousFeedback:true};
+    expect(selectFeedbackType({strafe:{mode:'air'}}, settings)).toBe('air');
+    expect(selectFeedbackType({strafe:{mode:'surf'}}, settings)).toBe('surf');
+    expect(selectFeedbackType({strafe:{mode:'air'}}, {...settings,showAir:false})).toBe('surf');
+    expect(selectFeedbackType({strafe:{mode:'surf'}}, {...settings,showSurf:false})).toBe('air');
+    expect(selectFeedbackType({strafe:{mode:'surf'}}, {...settings,showAir:false,showSurf:false})).toBeNull();
+  });
+
+  test('Board, Air and Surf preferences gate only their own reference consumers', async () => {
+    const f = fixture({source:'pb',surfSource:'wr',commands:surfCommands()});
+    finishLiveSurf(f);
+    f.settings.showBoard = false;
+    f.settings.showAir = false;
+    f.references(); await flush();
+    expect(f.calls()).toEqual({replay:[],route:1});
+    expect(f.references()).toMatchObject({
+      board:{source:'fixed'},surf:{source:'wr',status:'ready',loss:5}
+    });
+    f.settings.showSurf = false;
+    f.settings.showAir = true;
+    f.references(); await flush();
+    expect(f.calls()).toEqual({replay:[],route:1});
+    f.settings.showBoard = true;
+    f.references(); await flush();
+    expect(f.references()).toMatchObject({
+      board:{source:'pb',status:'ready',loss:5},surf:{source:'fixed'}
+    });
+    expect(f.calls()).toEqual({replay:['official-pb'],route:1});
+    f.settings.showBoard = false; f.settings.showSurf = true;
+    expect(f.references().surf).toMatchObject({source:'wr',status:'ready',loss:5});
+    expect(f.native().loads).toBe(2);
+  });
+
+  test('hiding pending Board cancels its unused PB without cancelling active Surf and Start WR', async () => {
+    const commands = [...startCommands().slice(0,-2),...surfCommands(5,350)];
+    const f = fixture({source:'pb',surfSource:'wr',startSource:'wr',commands});
+    let releaseBoard, releaseRoute, boardLoads = 0, routeLoads = 0;
+    f.setLoader(() => { boardLoads++; return new Promise(resolve => { releaseBoard = resolve; }); });
+    f.setRouteLoader(() => { routeLoads++; return new Promise(resolve => { releaseRoute = resolve; }); });
+    finishLiveSurf(f);
+    f.references(); await flush();
+    f.settings.showBoard = false;
+    f.references();
+    releaseBoard(f.replay()); releaseRoute(f.replay()); await flush();
+    expect(f.native()).toEqual({loads:1,steps:commands.length});
+    expect(f.references()).toMatchObject({
+      board:{source:'fixed'},surf:{source:'wr',status:'ready',loss:5},
+      start:{source:'wr',status:'ready',speed:350}
+    });
+    f.settings.showBoard = true;
+    expect(f.references().board.status).toBe('loading'); await flush();
+    releaseBoard(f.replay()); await flush();
+    expect(f.references().board).toMatchObject({source:'pb',status:'ready',loss:5});
+    expect(boardLoads).toBe(2); expect(routeLoads).toBe(1);
+    expect(f.native().loads).toBe(2);
+  });
+
+  test('shared pending work survives each hidden feedback consumer and cached results survive hiding all', async () => {
+    const commands = [...startCommands().slice(0,-2),...surfCommands(5,350)];
+    const f = fixture({source:'pb',surfSource:'pb',startSource:'pb',commands});
+    let release, loads = 0;
+    f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+    finishLiveSurf(f);
+    f.references(); await flush();
+    f.settings.showBoard = false; f.references();
+    f.settings.showSurf = false; f.references();
+    release(f.replay()); await flush();
+    expect(f.references().start).toMatchObject({source:'pb',status:'ready',speed:350});
+    expect(f.native()).toEqual({loads:1,steps:commands.length});
+    f.settings.showStart = false; f.references();
+    f.settings.showBoard = f.settings.showSurf = f.settings.showStart = true;
+    expect(f.references()).toMatchObject({
+      board:{status:'ready',loss:5},surf:{status:'ready',loss:5},start:{status:'ready',speed:350}
+    });
+    expect(loads).toBe(1);
+    expect(f.native().loads).toBe(1);
+  });
+
+  test('disabled Surf releases its WR consumer and reenabling selects the correct cached source', async () => {
+    const f = fixture({source:'fixed',surfSource:'wr',commands:surfCommands()});
+    finishLiveSurf(f);
+    f.settings.showSurf = false; f.references(); await flush();
+    expect(f.calls()).toEqual({replay:[],route:0});
+    f.settings.showSurf = true; f.references(); await flush();
+    expect(f.references().surf).toMatchObject({source:'wr',status:'ready',loss:5});
+    f.settings.showSurf = false; f.references();
+    f.settings.wrSource = 'leaderboard'; f.references(); await flush();
+    expect(f.calls()).toEqual({replay:[],route:1});
+    f.settings.showSurf = true; f.references(); await flush();
+    expect(f.references().surf).toMatchObject({source:'wr',status:'ready',loss:5});
+    f.settings.showSurf = false; f.references();
+    f.settings.wrSource = 'ksf'; f.settings.showSurf = true;
+    expect(f.references().surf).toMatchObject({source:'wr',status:'ready',loss:5});
+    expect(f.calls()).toEqual({replay:['rank-one'],route:1});
+    expect(f.native().loads).toBe(2);
+  });
+
+  test('enabled references prefetch before results and live mode leaves only the independent Start consumer', async () => {
+    const f = fixture({source:'pb',surfSource:'pb',startSource:'wr',commands:startCommands()});
+    f.settings.continuousFeedback = true;
+    f.settings.showStart = false; f.references(null); await flush();
+    expect(f.calls()).toEqual({replay:[],route:0});
+    f.settings.showStart = true; f.references(null); await flush();
+    expect(f.references(null)).toMatchObject({
+      board:{source:'fixed'},surf:{source:'fixed'},start:{source:'wr',status:'ready',speed:350}
+    });
+    f.settings.continuousFeedback = false;
+    f.settings.showStart = false; f.references(null); await flush();
+    expect(f.references(null).board).toMatchObject({source:'pb',status:'unmatched'});
+    expect(f.calls()).toEqual({replay:['official-pb'],route:1});
+    const board = f.step(contact());
+    expect(f.references(board).board).toMatchObject({source:'pb',status:'ready',loss:5});
+    f.settings.showStart = true;
+    expect(f.references(board).start).toMatchObject({source:'wr',status:'ready',speed:350});
+    expect(f.native().loads).toBe(2);
+  });
+
+  test('hiding Board keeps the checkpoint consumer on its original pending replay', async () => {
+    const f = fixture({shared:true}), checkpoints = checkpointsFor(f);
+    let release, loads = 0;
+    f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+    const board = f.step(contact());
+    checkpoints.update(); f.update(board); await flush();
+    f.settings.showBoard = false; f.update(board);
+    release(f.replay()); await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
+    expect(f.update(board).source).toBe('fixed');
+    f.settings.showBoard = true;
+    expect(f.update(board)).toMatchObject({source:'pb',status:'ready',loss:5});
+    expect(loads).toBe(1);
+    expect(f.native().loads).toBe(1);
+  });
+
+  test('hiding Board alone cancels a yielded pass while core held measurements keep advancing', async () => {
+    let yields = 0, resume;
+    const f = fixture({commands:[contact(),...Array(40).fill({}),finish],yieldTask:async () => {
+      if (++yields === 2) await new Promise(resolve => { resume = resolve; });
+    }});
+    const board = f.step(contact()); f.update(board); await flush();
+    expect(f.native().steps).toBe(32);
+    f.settings.showBoard = false; f.update(board);
+    const newest = f.step(contact('b',17));
+    expect(newest.loss).toBe(17);
+    resume(); await flush();
+    expect(f.native().steps).toBe(32);
+    expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
+    expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
+    f.settings.showBoard = true;
+    f.update(newest); await flush();
+    expect(f.metrics.snapshot().board.loss).toBe(17);
+    expect(f.native().loads).toBe(2);
   });
 });

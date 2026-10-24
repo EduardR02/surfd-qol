@@ -16,7 +16,11 @@ export function createBindings(getAdapter, settings, onSettings) {
     removeSampler = null;
     // setBindings clones its argument. Restore only our installed map, never a
     // newer native map, and use the current saved controls rather than a snapshot.
-    if (installedBindings && input.bindings === installedBindings) adapter.setInputBindings(adapter.getBindings());
+    if (installedBindings && input.bindings === installedBindings) {
+      const saved = adapter.getBindings();
+      if (adapter.getInput() === input) adapter.setInputBindings(saved);
+      else input.setBindings(saved);
+    }
     installedBindings = null;
     signature = '';
   }
@@ -144,7 +148,8 @@ export function createBindings(getAdapter, settings, onSettings) {
         return sample.apply(this, arguments);
       }
       const command = sample.apply(this, arguments);
-      const down = crouchJump && command.jump && this.keys.has(code) && code !== hideAD && code !== hideWS;
+      const down = crouchJump && this.bindings === installedBindings &&
+        command.jump && this.keys.has(code) && code !== hideAD && code !== hideWS;
       if (down && !wasDown) command.duck = true;
       wasDown = down;
       return command;

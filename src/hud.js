@@ -32,6 +32,17 @@ export function referenceTone(value, reference, tolerance = 0) {
   return difference <= 0 ? 'good' : difference <= tolerance ? 'warn' : 'loss';
 }
 
+// The shared slot selects by completion time, not availability: an unavailable
+// enabled result must show a dash rather than borrowing a disabled metric.
+export function selectFeedbackType(metrics, settings) {
+  const air = settings.showAir !== false, surf = settings.showSurf !== false;
+  if (!air) return surf ? 'surf' : null;
+  if (!surf) return 'air';
+  if (settings.continuousFeedback === true) return metrics?.strafe?.mode === 'surf' ? 'surf' : 'air';
+  return Number.isFinite(metrics?.surf?.tick) &&
+    (!Number.isFinite(metrics?.air?.tick) || metrics.surf.tick >= metrics.air.tick) ? 'surf' : 'air';
+}
+
 export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings}) {
   const host = document.createElement('div');
   host.id = 'surfd-qol';
@@ -85,12 +96,16 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       </nav>
       <div class="settings-body">
         <section id="settings-display" role="tabpanel" aria-labelledby="tab-display" tabindex="0">
+          <fieldset><legend>Movement feedback</legend>
+            <label class="control">Board<input data-setting="showBoard" type="checkbox"></label>
+            <label class="control">Air<input data-setting="showAir" type="checkbox"></label>
+            <label class="control">Surf<input data-setting="showSurf" type="checkbox"></label>
+            <p>Air and Surf share one slot; held feedback shows the newest enabled result.</p>
+          </fieldset>
           <fieldset><legend>On your screen</legend>
             <label class="control"><span>Custom HUD<small>Replace the native timer and speed</small></span><input data-setting="hud" type="checkbox"></label>
             <label class="control">Strafe sync<input data-setting="showSync" type="checkbox"></label>
-            <label class="control">Air &amp; ramp feedback<input data-setting="showFeedback" type="checkbox"></label>
             <label class="control">Start speed &amp; height<input data-setting="showStart" type="checkbox"></label>
-            <label class="control"><span>Surf after ramps<small>Show Surf in the Air slot after a ramp</small></span><input data-setting="showSurf" type="checkbox"></label>
           </fieldset>
           <fieldset><legend>Counter refresh</legend>
             <label class="control">Speed<span class="number-control"><input data-setting="speedFps" type="number" min="1" max="1000" step="1"><output data-output="speedFps"></output></span></label>
@@ -114,7 +129,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
           <fieldset><legend>Air analysis</legend>
             <label class="control">Air value<select data-setting="airMetric" aria-describedby="air-metric-help"><option value="missed">Missed strafe gain</option><option value="braking">Air braking</option><option value="combined">Both combined</option></select></label>
             <p id="air-metric-help"></p>
-            <label class="control"><span>Live feedback<small>Update movement feedback while surfing, instead of holding results.</small></span><input data-setting="continuousFeedback" type="checkbox"></label>
+            <label class="control"><span>Live feedback<small>Air → free-air Strafe. Surf → ramp Input. Board → Board / Clip. Outside the enabled movement type, the shared slot shows —.</small></span><input data-setting="continuousFeedback" type="checkbox"></label>
             <label class="control"><span>Live strafe window<small>Live feedback only: how much recent movement to compare.</small></span><span class="range"><input data-setting="strafeLookbackSeconds" type="range" min="0.05" max="0.5" step="0.05"><output data-output="strafeLookbackSeconds"></output></span></label>
           </fieldset>
           <details><summary>Fixed targets &amp; cutoffs</summary>
@@ -144,7 +159,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
               <dt>Board</dt><dd>Collision loss during ramp entry. Brief recontacts can join; later turns never change the held result.</dd>
               <dt>Surf</dt><dd>Exit speed versus the entry-speed / height prediction. Covers the whole ramp, including Board—don’t add them.</dd>
               <dt>PB / WR</dt><dd>Matches ramp, checkpoint and visit. Different entries and routes mean “worse” is not proof of an avoidable mistake.</dd>
-              <dt>Live feedback</dt><dd>Off by default. On: rolling Strafe / Input and contact Clip readings. Off: held Air, Board and Surf results.</dd>
+              <dt>Live feedback</dt><dd>Off by default. On: Air enables free-air Strafe, Surf enables ramp Input, and Board enables contact Board / Clip. Off: held Air, Board and Surf results.</dd>
             </dl>
           </details>
         </section>
@@ -407,10 +422,13 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const state = spectator ? pose : snapshot?.state ?? session?.state;
     const timer = spectator ? null : snapshot?.run ?? session?.timer?.state;
     const metrics = spectator ? null : getMetrics?.();
+    const enabled = settings.hud !== false && inSurf && !!state;
+    const continuous = settings.continuousFeedback === true;
+    const feedbackType = selectFeedbackType(metrics, settings);
+    const heldSurf = !continuous && feedbackType === 'surf';
     const activeReferences = inSurf && !spectator;
     const refs = references.update(activeReferences);
     const runRefs = runReferences.update(metrics?.board, metrics?.surf, activeReferences);
-    const enabled = settings.hud !== false && inSurf && !!state;
     nodes.overlay.hidden = !enabled;
     if (enabled && !liveFrame) {
       const timestamp = performance.now();
@@ -428,13 +446,14 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       : snapshot?.playback ? 'REPLAY' : session?.practice ? 'PRACTICE' : timer?.invalidReason ? 'INVALID' : !session ? 'CONNECT EXTENSION' : timer?.phase === 'finished' ? 'FINISHED' : '';
     text('run-state', runState);
     nodes['run-state'].title = spectator ? runState : timer?.invalidReason || '';
-    nodes.feedback.hidden = settings.showFeedback === false;
-    const continuous = settings.continuousFeedback === true;
+    nodes['ramp-metric'].hidden = settings.showBoard === false;
+    nodes['strafe-metric'].hidden = feedbackType === null;
+    nodes.feedback.hidden = nodes['ramp-metric'].hidden && nodes['strafe-metric'].hidden;
     const airMetric = ['missed', 'braking', 'combined'].includes(settings.airMetric) ? settings.airMetric : 'combined';
     const airMetricLabel = airMetric === 'missed' ? 'Missed' : airMetric === 'braking' ? 'Brake' : 'Air';
-    const heldSurf = !continuous && settings.showSurf !== false && Number.isFinite(metrics?.surf?.tick)
-      && (!Number.isFinite(metrics?.air?.tick) || metrics.surf.tick >= metrics.air.tick);
-    const strafe = continuous ? metrics?.strafe : heldSurf ? metrics.surf : metrics?.air;
+    const strafe = continuous
+      ? (metrics?.strafe?.mode === feedbackType ? metrics.strafe : null)
+      : feedbackType === 'surf' ? metrics?.surf : feedbackType === 'air' ? metrics?.air : null;
     const heldAirLoss = heldSurf ? strafe?.loss : airMetric === 'missed' ? strafe?.missedGain : airMetric === 'braking' ? strafe?.brakingLoss : strafe?.loss;
     const selectedLoss = continuous ? strafe?.loss : heldAirLoss;
     const strafeLoss = strafe?.available && Number.isFinite(selectedLoss) ? selectedLoss : null;
@@ -447,14 +466,14 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const surfSourceLabel = settings.surfColorReference === 'pb' ? 'PB' : settings.wrSource === 'leaderboard' ? 'SITE WR' : 'KSF';
     text('strafe', strafeLoss === null ? '—' : formatDelta(-strafeLoss, 1));
     text('ramp', rampLoss === null ? '—' : formatDelta(-rampLoss, 1));
-    text('strafe-label', continuous ? strafe?.mode === 'surf' ? 'Input' : 'Strafe' : heldSurf ? 'Surf' : airMetricLabel);
+    text('strafe-label', continuous ? feedbackType === 'surf' ? 'Input' : 'Strafe' : heldSurf ? 'Surf' : airMetricLabel);
     text('ramp-label', !continuous || ramp?.kind === 'board' ? 'Board' : ramp?.kind === 'contact' ? 'Contact' : 'Clip');
     const lookback = Number.isFinite(strafe?.windowSeconds) ? strafe.windowSeconds : settings.strafeLookbackSeconds;
     nodes['strafe-metric'].title = !continuous
       ? heldSurf
         ? `Net ramp exit: ${number(strafe?.exitSpeed, 1)} u/s actual versus ${number(strafe?.expectedExitSpeed, 1)} u/s gravity-only expected. Includes Board and complete first/last contact ticks; brief same-ramp skips retain the first entry. Positive is net gain, negative is net loss after height conversion. No post-exit ticks are counted; do not add Board. ${strafe?.reason === 'above-gravity-only-height' ? 'No real gravity-only baseline exists at this exit height. ' : strafe?.reason ? 'Ambiguous contact or invalid endpoint/gravity data. ' : ''}${relativeSurf ? surfReference?.status === 'ready' ? `${surfSourceLabel} matched Surf: ${formatDelta(-surfReference.loss, 1)} u/s. Loss difference: ${formatDelta((strafeLoss ?? 0) - surfReference.loss, 1)} u/s (positive is worse). Teal: at or better; gold: up to ${number(settings.referenceLossTolerance, 1)} u/s worse; red: beyond. Compared to 0.1 u/s precision. Number remains raw.` : `${surfSourceLabel} reference ${surfReference?.status ?? 'missing'}; no comparison color.` : 'Fixed colors use raw net-loss cutoffs.'} Same ramp, checkpoint and visit; entry speeds and routes may differ. Not an avoidable-loss proof.`
         : `Last completed air section: ${number(strafe?.brakingLoss, 1)} u/s Air braking + ${number(strafe?.missedGain, 1)} u/s Missed strafe gain over ${number(strafe?.measuredSeconds, 2)} s of input. Showing ${airMetricLabel}. Air braking is actual speed removed by input; tight turns may require it. Missed gain is extra speed from a better local strafe; taking it may lengthen the route. Coasting/no-input excluded. Neither is a route-optimal error count.`
-      : strafe?.mode === 'surf'
+      : feedbackType === 'surf'
         ? 'Live same-pressure ramp-input comparison, not turn clipping. ±0 means no better local acceleration at the same holding pressure; — means unsupported.'
         : `Live missed local acceleration over ${number(lookback, 2)} s, including input braking. Not a route optimum.`;
     nodes['ramp-metric'].title = !continuous

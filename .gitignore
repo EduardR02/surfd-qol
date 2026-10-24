@@ -9,6 +9,8 @@
 !.env.example
 /profiles/
 /browser-profile/
+*.pem
+*.crx
 
 # Local editor/OS files and scratch output
 /.idea/

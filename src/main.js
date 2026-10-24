@@ -9,7 +9,7 @@ const defaults = {
   hud: true, scale: 1, y: 82, speedColor: '#ebbcba', opacity: 0.9,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
-  showSync: true, showFeedback: true, showStart: true, showSurf: true,
+  showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,
   checkpointReference: 'both', wrSource: 'ksf', continuousFeedback: false, airMetric: 'combined',
   boardColorReference: 'fixed', startColorReference: 'fixed', surfColorReference: 'wr',
   startHeightAmazing: 7.5, startHeightGood: 15,
