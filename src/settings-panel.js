@@ -21,6 +21,9 @@ const color = (key, label) =>
   `<label class="color"><input type="color" data-setting="${key}"><span>${label}</span></label>`;
 const references = [['fixed', 'Fixed'], ['pb', 'PB'], ['wr', 'WR']];
 
+// Zen: a mode switch, not a panel, so it is a pressed/unpressed pill.
+export const zenMarkup = `<button id="zen" class="launcher zen" type="button" aria-pressed="false" aria-label="Zen mode" title="Zen mode: only the speed, plus your start speed and height" hidden><span class="zen-mark" aria-hidden="true"></span>Zen</button>`;
+
 export const launcherMarkup = `<button id="open" class="launcher" type="button" aria-expanded="false" aria-controls="panel" hidden><span class="mark" aria-hidden="true"></span>QoL</button>`;
 
 export const panelMarkup = `
@@ -44,6 +47,7 @@ export const panelMarkup = `
       <path d="M420 160 L470 124 L500 122 L560 142 V160Z" fill="url(#pv-shade)"/>
     </svg>
     <div class="hud preview-hud">${hudMarkup}</div>
+    <div class="history-preview" id="history-preview"></div>
   </div>
   <nav class="tabs" role="tablist" aria-label="Settings sections">
     <button id="tab-display" type="button" role="tab" aria-selected="true" aria-controls="page-display" data-page="display">Display</button>
@@ -56,6 +60,7 @@ export const panelMarkup = `
     <section id="page-display" role="tabpanel" aria-labelledby="tab-display" tabindex="0">
       <div class="group">
         ${toggle('hud', 'Custom HUD', 'Off brings back the game’s own speed and timer.')}
+        ${toggle('zen', 'Zen mode', 'Only the speed, plus your start speed and height.')}
       </div>
       <h3>Layout</h3>
       <div class="group">
@@ -188,10 +193,12 @@ export function previewModel(settings) {
       : value(!air, settings.airMetric === 'missed' ? 'MISSED' : settings.airMetric === 'braking' ? 'BRAKE' : 'AIR', '−9.8', 'warn');
   const board = value(settings.showBoard === false, 'BOARD', '−3.2', 'good');
   const up = value(live || !ramp || !split, 'UP', '−38.1', 'loss');
+  const zen = settings.zen === true;
   return {
-    sync: {hidden: settings.showSync === false, text: '96.4%', tone: 'good'},
+    zen, clock: {hidden: zen},
+    sync: {hidden: zen || settings.showSync === false, text: '96.4%', tone: 'good'},
     runState: {text: '', title: ''},
-    feedback: {hidden: result.hidden && board.hidden && up.hidden, result, board, up},
+    feedback: {hidden: zen || (result.hidden && board.hidden && up.hidden), result, board, up},
     start: {hidden: true},
     checkpoint: {hidden: true},
   };
@@ -201,12 +208,30 @@ export function previewModel(settings) {
 export function formatBytes(bytes) {
   return bytes < 1024 * 1024 ? `${Math.max(bytes ? 1 : 0, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+// The History tab's preview, in the HUD preview's place: what one map keeps,
+// as slanted bars. The best finish, the newest runs (short resets fall away)
+// and the latest attempt.
+export function historyPreview(settings) {
+  const off = settings.keepHistory === false, runs = settings.historyRunsPerMap, short = settings.historyMinSeconds > 0;
+  const shown = Math.min(runs, 20), heights = [22, 30, 18, 26, 34, 20, 28, 24, 31, 19, 27, 23, 33, 21, 29, 25, 17, 30, 22, 26];
+  const bars = [];
+  for (let i = 0; i < shown; i++) {
+    // A skipped short reset now and then, faded out of the row.
+    if (short && (i === 2 || i === 7 || i === 13)) bars.push('<i class="skip"></i>');
+    bars.push(`<i style="height:${heights[i]}px"></i>`);
+  }
+  return `<div class="hp${off ? ' off' : ''}">
+    <div class="hp-group"><div class="hp-bars"><i class="best" style="height:30px"></i></div><span>best finish</span></div>
+    <div class="hp-group"><div class="hp-bars">${bars.join('')}${runs > shown ? `<b>+${runs - shown}</b>` : ''}</div><span>${runs} newest runs</span></div>
+    <div class="hp-group"><div class="hp-bars"><i class="latest" style="height:12px"></i></div><span>latest</span></div>
+  </div><p class="hp-note">${off ? 'Recording is off' : short ? `resets under ${settings.historyMinSeconds} s are skipped` : 'every reset counts'}</p>`;
+}
 // What the History settings keep, said as one plain sentence (HTML).
 export function historyRule(settings) {
   if (settings.keepHistory === false) return 'Recording is off. Nothing new is added, and what you already have stays until you clear it.';
   const runs = settings.historyRunsPerMap, short = settings.historyMinSeconds;
-  return `On each map you keep <b>your best recorded finish</b> and <b>your ${runs} newest runs</b>${
-    short > 0 ? `, skipping resets under ${short} s` : ''}. Your latest attempt is always available, even a short reset. Best splits and ramps stay after the runs that set them are gone.`;
+  return `Each map keeps <b>your ${runs} newest runs</b> with their replays, plus <b>your best finish</b>.${
+    short > 0 ? ` Resets under ${short} s are skipped, except your latest run.` : ''} Best checkpoint, ramp and start-speed values stay for good.`;
 }
 
 export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
@@ -216,7 +241,8 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   const tabs = [...panel.querySelectorAll('[role="tab"]')];
   const controls = [...panel.querySelectorAll('[data-setting]')];
   const outputs = Object.fromEntries([...panel.querySelectorAll('[data-output]')].map(output => [output.dataset.output, output]));
-  const previewElement = panel.querySelector('.preview-hud');
+  const previewElement = panel.querySelector('.preview-hud'), zenButton = node('zen');
+  let historyShown = '';
   const preview = createHudView(previewElement);
   let capturing = false, available = false;
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -254,7 +280,12 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     preview.setSpeed('2950');
     preview.setTime('00:41.233');
     preview.render(previewModel(settings));
+    const history = historyPreview(settings);
+    if (history !== historyShown) { historyShown = history; node('history-preview').innerHTML = history; }
+    setDisabled('zen', settings.hud === false);
+    zenButton.setAttribute('aria-pressed', String(settings.zen === true));
   }
+  zenButton.addEventListener('click', () => patch({zen: settings.zen !== true}));
   // Storage: what history and replays take in this browser, and Clear all,
   // which asks once before deleting.
   let clearState = 'idle';
@@ -405,12 +436,14 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     setAvailable(next) {
       available = next;
       if (opener.hidden === next) opener.hidden = !next;
+      if (zenButton.hidden === next) zenButton.hidden = !next;
       if (!next && !panel.hidden) closePanel();
     },
     setStatus(value) { write(node('status'), value); },
     show(page) {
       available = true;
       opener.hidden = false;
+      zenButton.hidden = false;
       panel.hidden = false;
       opener.setAttribute('aria-expanded', 'true');
       if (page) selectPage(tabs.find(tab => tab.dataset.page === page) ?? tabs[0]);

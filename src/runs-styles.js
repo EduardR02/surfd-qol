@@ -1,8 +1,8 @@
-// Runs panel and History page styles. The panel is ink glass in the HUD's own
-// palette family (Rosé Pine's base, not warm charcoal), so the four HUD
-// colours read at full strength: rose for speed, PB and progress; teal, gold
-// and red only where something is graded against your PB or the WR. The
-// slanted bar is the unit of progress: checkpoints, run meters, marks.
+// Runs panel, History page and Zen pill styles. The panel is neutral graphite
+// glass, so the four HUD colours read at full strength: rose for speed, PB,
+// progress and play; teal, gold and red only where something is graded
+// against your PB or the WR. Switches stay neutral. The slanted bar is the
+// unit of progress: checkpoints, run meters, marks.
 export const runsStyles = `
 #runs-panel{--ink:rgba(18,18,18,.93);--ink-2:#1c1c1c;--line:rgba(255,255,255,.08);--line-2:rgba(255,255,255,.15);
   --text:#eeeeee;--text-2:#a8a8a8;--text-3:#7a7a7a;--on-accent:#141414;
@@ -75,9 +75,6 @@ export const runsStyles = `
 .rn-stat{display:flex;flex-direction:column;align-items:flex-end}
 .rn-stat dd{margin:0;font-size:19px;line-height:1;font-weight:700}
 .rn-stat dt{margin-top:5px;font-size:11px;line-height:1;font-weight:700;letter-spacing:.05em;color:var(--text-3)}
-.rn-highlight{display:flex;align-items:center;gap:12px;margin:0 20px 18px;padding:10px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-.rn-highlight>span{margin-right:auto;font-size:12.5px}
-.rn-highlight small{display:block;font-size:11.5px;color:var(--text-3)}
 
 .rn h3{display:flex;align-items:baseline;gap:10px;margin:0 0 12px;font-size:13px;font-weight:700;color:var(--text)}
 .rn h3 span{font-size:12px;font-weight:400;color:var(--text-3)}
@@ -100,6 +97,8 @@ export const runsStyles = `
 .rn-latest{margin:0 12px 6px;padding:12px 0 4px;border-radius:13px;background:color-mix(in srgb,var(--accent) 7%,transparent);
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 16%,transparent)}
 .rn-latest h3{margin:0 8px 4px 16px}
+.rn-latest .rn-sub{margin-top:10px}
+#runs-panel .rn-latest h3 .rn-also{font-size:11.5px;font-weight:700;color:var(--accent)}
 .rn-dash{width:4px;height:12px;margin-right:-2px;align-self:center;flex:none;border-radius:1px;background:var(--accent);transform:skewX(-18deg)}
 
 /* Runs: time, result, progress, start speed, when, watch. */
@@ -147,30 +146,41 @@ export const runsStyles = `
 @keyframes rn-spin{to{transform:rotate(1turn)}}
 
 /* Ramps: your best on each, against the PB or WR run. */
-.rn-compare{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 20px 12px}
-.rn-compare-label{font-size:13px;font-weight:700}
+.rn-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 20px 8px}
+.rn-vs{margin-left:auto;font-size:12px;color:var(--text-3)}
 .rn-seg{display:flex;padding:3px;gap:2px;border-radius:10px;background:rgba(0,0,0,.35);box-shadow:inset 0 0 0 1px var(--line)}
-.rn-seg button{padding:5px 12px;border:0;border-radius:7px;background:none;font-size:12.5px;font-weight:700;color:var(--text-2)!important}
-.rn-seg button:hover{color:var(--text)}
-.rn-seg button[aria-checked=true]{background:var(--accent);color:var(--on-accent)!important}
-.rn-summary{padding-top:12px;padding-bottom:6px}
-.rn-reset{margin-left:auto;padding:5px 0;border:0;background:none;color:var(--text-3)!important;font-size:12px;text-decoration:underline;text-underline-offset:3px}
-.rn-reset:hover:not(:disabled){color:var(--text)!important}
+.rn-seg button{padding:5px 12px;border:0;border-radius:7px;background:none;font-size:12.5px;font-weight:700;color:var(--text-3)!important}
+.rn-seg button:hover{color:var(--text)!important}
+.rn-seg button[aria-checked=true]{background:rgba(255,255,255,.13);color:var(--text)!important;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+.rn-caption{display:flex;align-items:baseline;gap:12px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
+.rn-caption span{flex:1}
+.rn-reset{flex:none;padding:4px 10px;border:0;border-radius:8px;background:rgba(255,255,255,.07);color:var(--text-2)!important;font-size:12px;font-weight:700}
+.rn-reset:hover:not(:disabled){background:rgba(255,255,255,.12);color:var(--text)!important}
 .rn-reset:disabled{opacity:.5}
-.rn-reset-confirm{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:6px 12px;margin:4px 20px 10px;padding:9px 12px;border-radius:9px;background:rgba(255,255,255,.06);font-size:12px;color:var(--text-2)}
-.rn-reset-confirm small{display:block;font-size:11px;color:var(--text-3)}
-.rn-reset-confirm .rn-reset{margin:0;color:var(--text)!important}
-.rn-count{font-size:10px;color:var(--text-3);white-space:nowrap}
-.rn-ramp-play{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:2px 8px 8px;padding:9px 10px;border-radius:10px;background:rgba(255,255,255,.045)}
-.rn-ramp-play .rn-seg button{padding:5px 9px}
-.rn-play-note{flex:1 0 100%;font-size:11.5px;color:var(--text-3)}
+.rn-reset.danger{color:var(--bad)!important;background:color-mix(in srgb,var(--bad) 14%,transparent)}
+.rn-reset.danger:hover:not(:disabled){background:color-mix(in srgb,var(--bad) 22%,transparent)}
+.rn-reset-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 20px 8px;font-size:12px;color:var(--text)}
+.rn-reset-confirm span{flex:1 1 220px}
+.rn-reset-confirm small{font-size:12px;color:var(--text-3)}
+/* Watching a ramp: the name plays it in the compared replay; the chips under an open row offer the others. */
+.rn-tri{flex:none;width:8px;height:9px;margin-right:7px;background:currentColor;clip-path:polygon(0 0,100% 50%,0 100%);opacity:.55}
+.rn-ramp-play{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-2px 0 4px;padding:4px 8px 10px 8px;border-radius:0 0 8px 8px;background:rgba(255,255,255,.045)}
+.rn-chip{display:inline-flex;align-items:center;height:28px;padding:0 11px 0 10px;border:0;border-radius:999px;background:rgba(255,255,255,.08);font-size:12.5px;font-weight:700}
+.rn-chip .rn-tri{color:var(--accent);opacity:1}
+.rn-chip:hover:not(:disabled){background:var(--accent);color:var(--on-accent)!important}
+.rn-chip:hover:not(:disabled) .rn-tri{color:var(--on-accent)}
+.rn-chip:disabled{opacity:.35}
+.rn-chip[aria-busy=true]{opacity:1}
+.rn-chip[aria-busy=true] .rn-tri,.rn-name[aria-busy=true] .rn-tri{clip-path:none;border-radius:50%;background:none;border:1.5px solid currentColor;border-right-color:transparent;opacity:1;animation:rn-spin .7s linear infinite}
+.rn-play-note{flex:1 0 100%;margin-top:2px;font-size:11.5px;color:var(--text-3)}
 .rn-note{margin:0 20px 6px;font-size:12.5px;line-height:1.45;color:var(--text-2);max-width:56ch}
 .rn-legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
 .rn-legend span::before{content:"";display:inline-block;width:4px;height:11px;margin-right:7px;border-radius:1px;transform:skewX(-18deg);vertical-align:-1px}
 .rn-legend .good::before{background:var(--good)}.rn-legend .warn::before{background:var(--warn)}.rn-legend .loss::before{background:var(--bad)}
 .rn-ramps{padding:0 12px 8px}
-.rn-rr{display:grid;grid-template-columns:76px minmax(60px,1fr) repeat(3,68px);align-items:center;gap:10px;padding:6px 8px;border-radius:8px}
-.rn-ramps.net .rn-rr{grid-template-columns:76px minmax(60px,1fr) repeat(2,80px)}
+.rn-rr{display:grid;grid-template-columns:92px minmax(48px,1fr) repeat(3,62px) 24px;align-items:center;gap:10px;padding:5px 4px 5px 8px;border-radius:8px}
+.rn-ramps.net .rn-rr{grid-template-columns:92px minmax(48px,1fr) repeat(2,76px) 24px}
+.rn-rr.open{border-radius:8px 8px 0 0;background:rgba(255,255,255,.045)}
 .rn-bar{position:relative;height:8px;margin:0 6px}
 .rn-bar.vs::before{content:"";position:absolute;left:50%;top:-5px;bottom:-5px;width:1px;background:var(--line-2)}
 .rn-bar i{position:absolute;top:0;bottom:0;min-width:2px;border-radius:1.5px;transform:skewX(-20deg);background:rgba(255,255,255,.24)}
@@ -178,15 +188,21 @@ export const runsStyles = `
 .rn-bar i.good{background:var(--good)}.rn-bar i.warn{background:var(--warn)}.rn-bar i.loss{background:var(--bad)}
 #runs-panel .rn-rh .rn-bar-head{text-align:center}
 .rn-rr:not(.rn-rh):hover{background:rgba(255,255,255,.045)}
-.rn-rh{position:sticky;top:0;z-index:1;padding-top:8px;padding-bottom:4px;background:linear-gradient(rgba(18,18,18,.97) 70%,transparent)}
+.rn-rh{position:sticky;top:0;z-index:1;padding-top:6px;padding-bottom:5px;border-radius:0;background:rgba(10,10,10,.55);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--line)}
 .rn-rh span{font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3);text-align:right}
 .rn-sec{display:flex;align-items:center;padding:14px 8px 4px}
 .rn-sec span{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700;color:var(--text-2)}
 .rn-sec i{width:4px;height:12px;border-radius:1px;background:var(--text-3);transform:skewX(-18deg)}
-.rn-name{display:flex;align-items:center;gap:3px;padding:6px 0;border:0;background:none;text-align:left;white-space:nowrap;font-size:12.5px;color:var(--text-2)}
-#runs-panel .rn-name svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.6}
+.rn-namecell{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.rn-name{display:flex;align-items:center;padding:5px 0;border:0;background:none;text-align:left;white-space:nowrap;font-size:12.5px;color:var(--text-2)}
 .rn-name:hover{color:var(--text)}
-.rn-name[aria-expanded=true] svg{transform:rotate(180deg)}
+.rn-name:hover .rn-tri{color:var(--accent);opacity:1}
+.rn-name.off .rn-tri{opacity:.2}
+.rn-n{margin:-3px 0 2px 15px;font-size:11px;color:var(--text-3);white-space:nowrap}
+.rn-more{display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:7px;background:none;color:var(--text-3)}
+.rn-more:hover,.rn-more[aria-expanded=true]{background:rgba(255,255,255,.08);color:var(--text)}
+#runs-panel .rn-more svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
+.rn-more[aria-expanded=true] svg{transform:rotate(180deg)}
 .rn-v{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
 .rn-v b{font-size:15.5px;line-height:1.15}
 .rn-v em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--text-3)}
@@ -212,15 +228,39 @@ export const runsStyles = `
 @media (max-width:470px){
   .rn-row,.rn-cols{grid-template-columns:86px 62px minmax(36px,1fr) 52px 30px}
   .rn-start,.rn-cols span:nth-child(4){display:none}
-  .rn-rr{grid-template-columns:62px minmax(24px,1fr) repeat(3,50px);gap:6px}
-  .rn-ramps.net .rn-rr{grid-template-columns:62px minmax(24px,1fr) repeat(2,70px)}
-  .rn-compare{gap:6px 10px}
-  .rn-summary .rn-seg button{padding:5px 9px}
+  .rn-rr{grid-template-columns:78px minmax(20px,1fr) repeat(3,50px) 22px;gap:6px}
+  .rn-ramps.net .rn-rr{grid-template-columns:78px minmax(20px,1fr) repeat(2,66px) 22px}
+  .rn-toolbar{gap:6px}.rn-seg button{padding:5px 9px}
   .rn-bar-reference{display:none}
 }
 @media (prefers-reduced-motion:reduce){#runs-panel{animation:none}.rn-watch[aria-busy=true]::after{animation-duration:2s}}
 
 /* History page (in the settings panel): the rule as a sentence, storage as a bar. */
+/* The History tab's preview fills the HUD preview's slot, drawn the HUD's way:
+   rose for your best finish, paper bars for the newest runs, short resets faded out. */
+.history-preview{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;
+  color:var(--paper);-webkit-text-stroke:1.25px rgba(8,8,8,.72);paint-order:stroke fill;text-shadow:0 1px 2px rgba(0,0,0,.5);font-variant-numeric:tabular-nums}
+.hp{display:flex;align-items:flex-end;gap:22px}
+.hp.off{opacity:.4}
+.hp-group{display:flex;flex-direction:column;align-items:center;gap:8px}
+.hp-bars{display:flex;align-items:flex-end;gap:4px;height:36px}
+.hp-bars i{width:5px;border-radius:1px;transform:skewX(-18deg);background:var(--paper);box-shadow:0 0 0 1.25px rgba(8,8,8,.7)}
+.hp-bars i.best{width:7px;background:var(--accent)}
+.hp-bars i.latest{width:7px;background:none;box-shadow:inset 0 0 0 1.75px var(--accent),0 0 0 1.25px rgba(8,8,8,.7)}
+.hp-bars i.skip{height:7px;opacity:.3}
+.hp-bars b{align-self:center;margin-left:5px;font-size:12px}
+.hp-group span{font-size:11px;font-weight:700;letter-spacing:.07em;opacity:.85}
+.hp-note{margin:0;font-size:11px;font-weight:700;letter-spacing:.05em;opacity:.6}
+@media (max-height:720px){.hp-bars{height:28px}.hp-bars i{max-height:28px}}
+@media (max-height:640px){.hp-note{display:none}.hp-bars{height:22px}.hp-bars i{max-height:22px}.hp-group{gap:5px}}
+
+/* Zen: a pill like Runs and QoL; on, it turns rose. */
+.launcher.zen{gap:8px;padding:0 15px 0 13px}
+.zen-mark{flex:none;width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 1.75px var(--text-2)}
+.launcher.zen[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#141414}
+.launcher.zen[aria-pressed=true] .zen-mark{background:#141414;box-shadow:none}
+.launcher.zen[aria-pressed=true]:hover{filter:brightness(1.06)}
+
 #page-history .hist-rule{margin:14px 0 2px;padding:12px 14px;border-radius:12px;font-size:13px;line-height:1.5;color:var(--text-2);
   background:color-mix(in srgb,var(--accent) 7%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 14%,transparent)}
 #page-history .hist-rule b{color:var(--text)}

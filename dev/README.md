@@ -25,6 +25,8 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `pop=keys\|speed` | With `state=watching`: opens the keyboard sheet or the speed picker |
 | `runs[=<map key>]` | Opens the Runs panel on the current map (`utopia:3`) or another: `kitsune:1` (stages, long lists), `mesa:2` (no finish yet), `boreas:2`. With `state=watching` it opens over the replay bar |
 | `maps`, `view=ramps` | With `runs`: opens the map list, or the Ramps view |
+| `stat=recent\|average`, `expand=<n>`, `reset` | With `view=ramps`: the Last 10 or Average statistic, the nth ramp's other replays opened, or the Reset averages confirmation |
+| `pb=official\|partial` | A leaderboard PB on the current map (`partial`: only its first split) |
 | `ref=loading\|missing\|pb\|none` | The Ramps view's PB and WR references on the current map (default: both ready) |
 | `history=empty` | No runs on any map; add `set.keepHistory=false` for the recording-off empty state |
 | `set.<key>=<value>` | Any other setting, e.g. `set.showBoard=false` |

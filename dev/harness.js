@@ -138,6 +138,14 @@ if (panelPage !== null) hud.showSettings(panelPage || 'display');
 if (params.has('pop')) setTimeout(() => hud.showReplayPopover(params.get('pop')), 50);
 if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
+// With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
+// other replays, ?reset asks to reset the averages. These press the panel's own buttons.
+if (runsMap !== null && params.get('view') === 'ramps') {
+  const press = selector => document.getElementById('surfd-qol').shadowRoot.querySelectorAll(selector);
+  if (params.has('stat')) press(`[data-ramp-mode="${params.get('stat')}"]`)[0]?.click();
+  if (params.has('expand')) press('[data-ramp]')[Number(params.get('expand')) || 0]?.click();
+  if (params.has('reset')) press('[data-reset-averages="ask"]')[0]?.click();
+}
 
 // Small picker for manual browsing; hidden in screenshot mode.
 const picker = document.getElementById('picker');

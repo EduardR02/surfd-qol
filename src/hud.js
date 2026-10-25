@@ -7,7 +7,7 @@ import {createEnergyTrend, energySample} from './energy.js';
 import {hudMarkup, createHudView, installFonts} from './hud-view.js';
 import {hudStyles} from './hud-styles.js';
 import {panelStyles} from './panel-styles.js';
-import {launcherMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
+import {launcherMarkup, zenMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
 import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
 import {runsStyles} from './runs-styles.js';
 import {replayBarMarkup, replayBarStyles, createReplayBar} from './replay-bar.js';
@@ -26,7 +26,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
     ${replayBarMarkup}
-    <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${runsLauncherMarkup}${launcherMarkup}</div>
+    <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
   const overlay = root.getElementById('overlay');
