@@ -26,10 +26,12 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
     ${replayBarMarkup}
-    <div class="launchers">${runsLauncherMarkup}${launcherMarkup}</div>
+    <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
   const overlay = root.getElementById('overlay');
+  const releaseNotice = root.getElementById('release-notice');
+  let releaseVersion = null;
   const hud = createHudView(overlay);
 
   const nativeStyle = document.createElement('style');
@@ -124,6 +126,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const inSurf = inSurfContext(snapshot, session, currentView);
     panel.setAvailable(!inSurf);
     runs.setAvailable(!inSurf);
+    releaseNotice.hidden = inSurf || releaseVersion === null;
     if (!inSurf) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
@@ -244,6 +247,12 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   render();
   const interval = setInterval(render, 67);
   return {
+    setUpdate(update) {
+      releaseVersion = typeof update?.version === 'string' && /^\d{1,5}(?:\.\d{1,5}){2,3}$/.test(update.version) ? update.version : null;
+      releaseNotice.textContent = releaseVersion ? `Surfd QoL ${releaseVersion} available ↗` : '';
+      releaseNotice.title = 'Open the GitHub release. Download and replace your extension folder, then reload the extension and Surfd.';
+      refreshMenu();
+    },
     observeFinish() { references.update(false); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },

@@ -15,6 +15,10 @@ button{cursor:pointer}
   border-radius:999px;background:var(--bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 8px 28px rgba(0,0,0,.35);
   font-size:13px;font-weight:700;letter-spacing:.02em}
 .launcher:hover,.launcher[aria-expanded=true]{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+.update-notice{position:absolute;right:0;bottom:calc(100% + 10px);pointer-events:auto;white-space:nowrap;color:var(--accent);font-size:12px;font-weight:650;text-decoration:none;text-shadow:0 1px 2px #000}
+.update-notice:hover{text-decoration:underline}
+.update-notice:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.launchers:has(.launcher[aria-expanded=true]) .update-notice{display:none}
 
 #panel,#runs{--above:calc(var(--dock-bottom,20px) + var(--dock-height,42px) + 12px);position:absolute;right:var(--dock-edge,20px);bottom:var(--above);
   width:560px;max-width:calc(100vw - 24px);height:min(800px,calc(100dvh - var(--above) - 16px));display:flex;flex-direction:column;

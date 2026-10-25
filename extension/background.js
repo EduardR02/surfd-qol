@@ -1,9 +1,11 @@
 import { instrumentGame } from './instrument.js';
+import { createUpdateChecker } from './update-check.js';
 
 const sessions = new Map();
 const origin = 'https://surfd.net';
 const isSurfd = url => { try { const parsed = new URL(url); return parsed.origin === origin && parsed.pathname === '/'; } catch { return false; } };
 const command = (tabId, method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
+const checkForUpdate = createUpdateChecker({storage: chrome.storage.local, version: chrome.runtime.getManifest().version});
 
 async function status(tabId, message, error = false) {
   try { await chrome.tabs.sendMessage(tabId, { type: 'surfd-qol-status', message, error }); } catch { /* navigation */ }
@@ -34,6 +36,10 @@ async function attach(tabId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message?.type === 'surfd-qol-check-update' && sender.tab && isSurfd(sender.url)) {
+    checkForUpdate().then(update => respond({update}), () => respond({update: null}));
+    return true;
+  }
   if (message?.type !== 'surfd-qol-connect' || !sender.tab || !isSurfd(sender.url)) return;
   attach(sender.tab.id).then(() => respond({ ok: true }), async error => {
     await status(sender.tab.id, `Could not attach: ${error.message}. Close DevTools and use the QoL toolbar button to retry.`, true);

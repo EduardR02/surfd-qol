@@ -14,3 +14,6 @@ window.dispatchEvent(new Event('surfd-qol-query-state'));
 if (location.pathname === '/') chrome.runtime.sendMessage({ type: 'surfd-qol-connect' }).catch(error => {
   window.dispatchEvent(new CustomEvent('surfd-qol-status', { detail: { error: true, message: `Extension connection failed: ${error.message}` } }));
 });
+if (location.pathname === '/') chrome.runtime.sendMessage({type: 'surfd-qol-check-update'}).then(response => {
+  if (response?.update) window.dispatchEvent(new CustomEvent('surfd-qol-release', {detail: {version: response.update.version}}));
+}).catch(() => { /* Release checks never affect game setup. */ });

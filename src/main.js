@@ -37,6 +37,7 @@ const replayControl = createReplayControl({
 });
 let observer = null;
 let hud = null;
+let availableUpdate = null;
 let runtimeStatus = 'Connecting physics observer…';
 let failed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
@@ -93,6 +94,7 @@ const api = {
     bindings.release();
     observer?.destroy();
     hud?.destroy();
+    window.removeEventListener('surfd-qol-release', receiveRelease);
     window.removeEventListener('surfd-qol-status', receiveStatus);
     failed = true;
     publishPageState();
@@ -113,6 +115,11 @@ function receiveStatus(event) {
   if (event.detail?.error) { failed = true; metrics.reset(); start.reset(); publishPageState(); }
 }
 window.addEventListener('surfd-qol-status', receiveStatus);
+function receiveRelease(event) {
+  availableUpdate = {version: event.detail?.version};
+  hud?.setUpdate(availableUpdate);
+}
+window.addEventListener('surfd-qol-release', receiveRelease);
 const bindingTimer = setInterval(() => { try { bindings.update(); } catch (error) { fail(error); } }, 250);
 // Chrome treats mouse buttons 3 and 4 as Back and Forward. The game cancels
 // that only while the pointer is locked, so a bind on a side button left the
@@ -141,6 +148,7 @@ function mount() {
     settings, onSettings, bindings, history, replays, replayControl,
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
+  hud.setUpdate(availableUpdate);
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, { once: true });
 else mount();
