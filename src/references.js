@@ -107,7 +107,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     const expectedAdapter = adapter, expectedMap = session.map, expectedConfig = session.config, expectedFormat = session.replayFormat;
     const expectedMapId = session.map.id, expectedMapVersion = session.map.version;
     const source = recordSource;
-    const isCurrent = () => !destroyed && visible && settings.hud !== false && slot.key === key &&
+    const isCurrent = () => !destroyed && visible && settings.hud !== false && settings.zen !== true && slot.key === key &&
       (slot === ownSlot ? settings.checkpointReference !== 'wr' : settings.checkpointReference !== 'pb' &&
         (settings.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf') === source) &&
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
@@ -130,7 +130,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
   }
   function update(active = true) {
     visible = active;
-    const enabled = active && settings.hud !== false;
+    // Zen hides checkpoints, so their references aren't loaded either.
+    const enabled = active && settings.hud !== false && settings.zen !== true;
     const source = settings?.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf';
     if (source !== recordSource) {
       recordSource = source;

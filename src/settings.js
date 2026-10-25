@@ -1,6 +1,8 @@
 export const storageKey = 'surfd-qol.settings.v1';
 export const defaults = {
   hud: true, scale: 1, y: 82, speedColor: '#ebbcba', opacity: 1,
+  // Zen: only the speed, plus the start speed and height after leaving the start.
+  zen: false,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,

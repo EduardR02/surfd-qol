@@ -54,6 +54,8 @@ export const hudStyles = `
 /* Events: start flash and checkpoint splits, stacked upward above the clock. */
 .events{position:absolute;left:0;bottom:78px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:14px}
 .flip .events{bottom:auto;top:104px;flex-direction:column-reverse}
+/* Zen: the start values take the timer's place right above (or below) the speed. */
+.zen .events{bottom:39px}.flip.zen .events{top:41px}
 .start{display:flex;justify-content:center}
 .start .cell{width:92px;display:flex;flex-direction:column;align-items:center}
 .start .val{font-size:24px}

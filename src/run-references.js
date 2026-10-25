@@ -50,7 +50,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const expectedMap = session.map, expectedConfig = session.config, expectedFormat = session.replayFormat;
     const expectedMapId = session.map.id, expectedMapVersion = session.map.version;
     const selected = () => visible && settings.hud !== false && (
-      settings.continuousFeedback !== true &&
+      settings.continuousFeedback !== true && settings.zen !== true &&
         (settings.showBoard !== false && settings.boardColorReference === source ||
           settings.showSurf !== false && settings.surfColorReference === source) ||
       settings.showStart !== false && settings.startColorReference === source);
@@ -100,11 +100,11 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
   function update(board, surf, active = true) {
     visible = active;
     const enabled = active && settings.hud !== false;
-    const boardSource = enabled && settings.showBoard !== false && settings.continuousFeedback !== true &&
+    const boardSource = enabled && settings.zen !== true && settings.showBoard !== false && settings.continuousFeedback !== true &&
       ['pb', 'wr'].includes(settings.boardColorReference) ? settings.boardColorReference : 'fixed';
     const startSource = enabled && settings.showStart !== false &&
       ['pb', 'wr'].includes(settings.startColorReference) ? settings.startColorReference : 'fixed';
-    const surfSource = enabled && settings.showSurf !== false &&
+    const surfSource = enabled && settings.zen !== true && settings.showSurf !== false &&
       settings.continuousFeedback !== true && ['pb', 'wr'].includes(settings.surfColorReference)
       ? settings.surfColorReference : 'fixed';
     const result = () => ({

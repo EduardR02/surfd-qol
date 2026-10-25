@@ -142,6 +142,7 @@ export function createHudModel(clock = () => performance.now()) {
   let splitOwner = null, splitIndex = -1, splitAt = -Infinity;
   return function buildHudModel({snapshot, session, view, metrics, refs, runRefs, settings, inSurf = true, bindingStatus = null}) {
     const spectator = view?.target != null;
+    const zen = settings.zen === true;
     const pose = spectator ? view.view?.pose : null;
     const timer = spectator ? null : snapshot?.run ?? session?.timer?.state;
     const now = clock();
@@ -201,13 +202,16 @@ export function createHudModel(clock = () => performance.now()) {
       // Last completed tick touched a ramp ('surf') or not ('air', including
       // ground); null when unknown. Used to keep the speed tint off ramps.
       motion: spectator || metrics?.active === false ? null : metrics?.strafe?.mode ?? null,
-      sync: { hidden: settings.showSync === false || spectator, value: Number.isFinite(sync) ? sync : null,
+      zen,
+      // The timer row: sync, time and run label.
+      clock: { hidden: zen },
+      sync: { hidden: zen || settings.showSync === false || spectator, value: Number.isFinite(sync) ? sync : null,
         text: Number.isFinite(sync) ? `${sync.toFixed(1)}%` : '—', tone: syncTone(sync) },
       runState: { text: runState, title: spectator ? runState : timer?.invalidReason || '' },
-      feedback: spectator ? buildFeedback(null, null, {...settings, showBoard: false, showAir: false, showSurf: false}) : buildFeedback(metrics, runRefs, settings),
+      feedback: spectator || zen ? buildFeedback(null, null, {...settings, showBoard: false, showAir: false, showSurf: false}) : buildFeedback(metrics, runRefs, settings),
       start: buildStart(metrics?.start, runRefs?.start, settings, spectator),
-      checkpoint,
-      hull: { hidden: snapshot?.playback !== true || spectator || !inSurf || typeof replayDuck !== 'boolean', crouched: replayDuck === true },
+      checkpoint: zen ? {...checkpoint, hidden: true} : checkpoint,
+      hull: { hidden: zen || snapshot?.playback !== true || spectator || !inSurf || typeof replayDuck !== 'boolean', crouched: replayDuck === true },
       status: [feedbackStatus, bindingText].filter(Boolean).join(' · '),
     };
   };

@@ -197,7 +197,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   const shown = key => settings[key] !== false;
   const live = () => !referenceOnly && settings.continuousFeedback === true;
   const active = () => referenceOnly ||
-    (settings.hud !== false && (shown('showBoard') || shown('showAir') || shown('showSurf')));
+    (settings.hud !== false && settings.zen !== true && (shown('showBoard') || shown('showAir') || shown('showSurf')));
   const airWanted = () => !referenceOnly && shown('showAir');
   const heldSurfWanted = () => referenceOnly || (shown('showSurf') && !live());
 

@@ -76,6 +76,17 @@ describe('HUD model', () => {
     expect(build({ snapshot: {}, view, settings: settings() }).checkpoint.hidden).toBe(true);
   });
 
+  test('zen shows only the speed and the start values', () => {
+    const build = createHudModel(() => 0);
+    const session = { timer: { state: { phase: 'running', splits: [12.5] } }, checkpointSpeeds: [1500], map: {} };
+    const start = { available: true, speed: 349, speedDelta: -1, heightAboveFloor: 4, age: 100 };
+    const model = build({ snapshot: { playback: true, strafeSync: { percentage: 90 } }, session, metrics: { ...metrics, start }, settings: settings({ zen: true }) });
+    expect(model).toMatchObject({ zen: true, clock: { hidden: true }, sync: { hidden: true }, feedback: { hidden: true },
+      checkpoint: { hidden: true }, hull: { hidden: true }, start: { hidden: false } });
+    expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings({ zen: true, showStart: false }) }).start.hidden).toBe(true);
+    expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings() })).toMatchObject({ zen: false, clock: { hidden: false } });
+  });
+
   test('ranked runs show no run label; practice and replays do', () => {
     const build = createHudModel(() => 0);
     const session = { timer: { state: { phase: 'running' } }, checkpointSpeeds: [] };

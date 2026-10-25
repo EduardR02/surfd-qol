@@ -42,7 +42,7 @@ export const hudMarkup = `
       <div class="cell">${num('startHeight', 'val')}${label('startHeightLabel', 'height')}</div>
     </div>
   </div>
-  <div class="clock">
+  <div class="clock" data-part="clock">
     <span class="sync" data-text="sync"></span>
     ${num('time', 'time')}
     <span class="state" data-text="state"></span>
@@ -106,6 +106,8 @@ export function createHudView(element) {
       cls(parts.speed, next === 'good' || next === 'loss' ? `speed e-${next}` : 'speed');
     },
     render(model) {
+      element.classList.toggle('zen', model.zen === true);
+      hide(parts.clock, model.clock?.hidden === true);
       text('sync', model.sync.hidden ? '' : model.sync.text);
       cls(texts.sync, `sync ${tone(model.sync.tone)}`);
       hide(texts.sync, model.sync.hidden);
