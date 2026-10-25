@@ -100,3 +100,19 @@ test('suppressed samples read neutral but keep the baseline for an immediate res
   s.tick++; s.position.x += 15; s.velocity.x += 400 * dt;
   expect(trend.sample(energySample(s, dt, false), gravity).tone).toBe('good');
 });
+
+test('suppression clears the prior tone even without a new local tick or network pose', () => {
+  for (const spectator of [false, true]) {
+    const trend = createEnergyTrend();
+    const s = state(0, {x: 0, y: 0, z: 0}, {x: 1000, y: 0, z: 0});
+    const sample = now => energySample(spectator ? {
+      x: s.position.x, y: s.position.y, z: s.position.z,
+      vx: s.velocity.x, vy: s.velocity.y, vz: s.velocity.z,
+    } : s, dt, spectator, now);
+    trend.sample(sample(0), gravity);
+    s.tick++; s.position.x = 15; s.velocity.x = 1002;
+    expect(trend.sample(sample(15), gravity).tone).toBe('good');
+    expect(trend.sample(sample(spectator ? 30 : 15), gravity, true)).toMatchObject({tone: 'neutral', rate: 0, level: 0});
+    expect(trend.sample(sample(spectator ? 45 : 15), gravity)).toMatchObject({tone: 'neutral', rate: 0});
+  }
+});
