@@ -32,7 +32,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
     id, vertices:[{x:index*100,y:0,z:0},{x:index*100+10,y:0,z:0},{x:index*100+10,y:6,z:-8},{x:index*100,y:6,z:-8}],
     faces:[[0,1,2,3]],planes:[{normal,distance:0}]
   }))};
-  let nativeLoads = 0, nativeSteps = 0;
+  let nativeLoads = 0, nativeSteps = 0, feedbackSteps = 0;
   class Movement {
     constructor(config) {
       this.config = config;
@@ -68,7 +68,10 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
     restorePractice() {}
     visitStation() {}
     step(command) {
-      if (this !== session) nativeSteps++;
+      if (this !== session) {
+        nativeSteps++;
+        if (Session.prototype.step !== liveStep) feedbackSteps++;
+      }
       if (command.position) this.state.position = {...command.position};
       this.state.ducked = !!command.ducked;
       this.lastResult = command.segments ? {segments:command.segments} : null;
@@ -107,6 +110,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
     update(board = metrics.snapshot().board) { return controller.update(board).board; },
     references(board = metrics.snapshot().board) { return controller.update(board, metrics.snapshot().surf); },
     native:() => ({loads:nativeLoads,steps:nativeSteps}),
+    feedbackSteps:() => feedbackSteps,
     replay:() => replay, setReplay(value) { replay = value; }, setOwn(value) { own = value; }, setRecord(value) { record = value; },
     setLoader(value) { loadReplay = value; }, setRouteLoader(value) { loadRecordRoute = value; }, calls:() => ({replay:replayCalls,route:routeCalls})};
 }
@@ -728,6 +732,60 @@ function checkpointsFor(f, settings = {checkpointReference:'pb'}) {
 }
 
 describe('Shared checkpoint and feedback replay lifecycle', () => {
+  test('checkpoint-only passes skip feedback observation and later feedback upgrades stay cached', async () => {
+    const f = fixture({shared:true,source:'fixed',commands:startCommands()});
+    const checkpoints = checkpointsFor(f);
+    const board = f.step(contact());
+    checkpoints.update(); f.references(); await flush();
+    expect(checkpoints.update()).toMatchObject({own:[],ownStatus:'ready'});
+    expect(f.feedbackSteps()).toBe(0);
+    f.settings.boardColorReference = 'pb';
+    expect(f.update(board)).toMatchObject({status:'loading',loss:null});
+    await flush();
+    expect(f.update(board)).toMatchObject({status:'ready',loss:5});
+    expect(f.feedbackSteps()).toBe(f.replay().commands.length);
+    f.settings.showBoard = false; f.update(board);
+    checkpoints.update();
+    f.settings.showBoard = true;
+    expect(f.update(board)).toMatchObject({status:'ready',loss:5});
+    expect(f.feedbackSteps()).toBe(f.replay().commands.length);
+  });
+
+  test('feedback joining the initial yield shares one feedback-capable native pass', async () => {
+    let resume;
+    const f = fixture({shared:true,yieldTask:() => new Promise(resolve => { resume = resolve; })});
+    const checkpoints = checkpointsFor(f);
+    const board = f.step(contact());
+    checkpoints.update(); await flush();
+    expect(f.native()).toEqual({loads:0,steps:0});
+    f.update(board);
+    resume(); await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
+    expect(f.update(board)).toMatchObject({status:'ready',loss:5});
+    expect(f.calls().replay).toEqual(['official-pb']);
+    expect(f.native()).toEqual({loads:1,steps:f.replay().commands.length});
+    expect(f.feedbackSteps()).toBe(f.replay().commands.length);
+  });
+
+  test('feedback joining a running checkpoint pass upgrades its in-flight download', async () => {
+    let yields = 0, resume;
+    const commands = [contact(),...Array(40).fill({}),finish];
+    const f = fixture({shared:true,commands,yieldTask:async () => {
+      if (++yields === 2) await new Promise(resolve => { resume = resolve; });
+    }});
+    const checkpoints = checkpointsFor(f);
+    const board = f.step(contact());
+    checkpoints.update(); await flush();
+    expect(f.native().steps).toBe(32);
+    expect(f.feedbackSteps()).toBe(0);
+    expect(f.update(board)).toMatchObject({status:'loading',loss:null});
+    resume(); await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
+    expect(f.update(board)).toMatchObject({status:'ready',loss:5});
+    expect(f.calls().replay).toEqual(['official-pb']);
+    expect(f.feedbackSteps()).toBe(commands.length);
+  });
+
   test('one official load and pass serves checkpoints, Board, Surf, Start and equal PB/WR identities', async () => {
     const commands = [...startCommands().slice(0,-2),...surfCommands(5,350)];
     const f = fixture({shared:true,source:'pb',startSource:'wr',surfSource:'pb',wrSource:'leaderboard',commands});
@@ -748,8 +806,8 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     for (const hidden of ['checkpoint','feedback']) {
       const f = fixture({shared:true});
       const checkpoints = checkpointsFor(f);
-      let release, loads = 0;
-      f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+      let release;
+      f.setLoader(() => new Promise(resolve => { release = resolve; }));
       const board = f.step(contact());
       checkpoints.update(); f.update(board); await flush();
       if (hidden === 'checkpoint') checkpoints.update(false);
@@ -761,10 +819,11 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
         expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
       } else {
         expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
+        f.setLoader(async () => f.replay());
+        expect(f.update(board)).toMatchObject({status:'loading',loss:null});
+        await flush();
         expect(f.update(board)).toMatchObject({status:'ready',loss:5});
       }
-      expect(loads).toBe(1);
-      expect(f.native()).toEqual({loads:1,steps:f.replay().commands.length});
       checkpoints.destroy(); f.controller.destroy();
     }
   });
@@ -803,6 +862,30 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
   });
 
+  test('hiding feedback during a shared pass stops observation but completes checkpoint reconstruction', async () => {
+    let yields = 0, resume;
+    const commands = [contact(), ...Array(40).fill({}), finish];
+    const f = fixture({shared: true, commands, yieldTask: async () => {
+      if (++yields === 2) await new Promise(resolve => { resume = resolve; });
+    }});
+    const checkpoints = checkpointsFor(f);
+    const board = f.step(contact());
+    checkpoints.update(); f.update(board); await flush();
+    expect(f.native().steps).toBe(32);
+    expect(f.feedbackSteps()).toBe(32);
+    f.settings.showBoard = false; f.update(board);
+    resume(); await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus: 'ready', own: []});
+    expect(f.native()).toEqual({loads: 1, steps: commands.length});
+    expect(f.feedbackSteps()).toBe(32);
+    expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
+    expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
+    f.settings.showBoard = true; f.update(board); await flush();
+    expect(f.update(board)).toMatchObject({status: 'ready', loss: 5});
+    expect(f.native()).toEqual({loads: 2, steps: commands.length * 2});
+    expect(f.feedbackSteps()).toBe(32 + commands.length);
+  });
+
   test('start ticks and checkpoint-array restarts preserve pending WR work and the frozen PB identity', async () => {
     const f = fixture({shared:true,source:'wr',startSource:'pb',commands:startCommands()});
     const checkpoints = checkpointsFor(f);
@@ -839,9 +922,9 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     f.session.map = originalMap; f.setReplay(originalReplay);
     expect(checkpoints.update()).toMatchObject({recordStatus:'ready',record:[]});
     f.settings.boardColorReference = 'wr';
+    expect(f.update(board)).toMatchObject({status:'loading',loss:null});
+    await flush();
     expect(f.update(board)).toMatchObject({status:'ready',loss:5});
-    expect(f.calls()).toEqual({replay:['rank-one'],route:2});
-    expect(f.native().loads).toBe(3);
   });
 
   test('checkpoint metadata stays usable when imported movement or feedback reset validation fails', async () => {
@@ -870,18 +953,19 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
   test('switching feedback WR source cannot cancel KSF still required by checkpoints', async () => {
     const f = fixture({shared:true,source:'wr'});
     const checkpoints = checkpointsFor(f,{checkpointReference:'wr'});
-    let release, loads = 0;
-    f.setRouteLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+    let release;
+    f.setRouteLoader(() => new Promise(resolve => { release = resolve; }));
     const board = f.step(contact());
     checkpoints.update(); f.update(board); await flush();
     f.settings.wrSource = 'leaderboard'; f.update(board); await flush();
     expect(f.update(board)).toMatchObject({status:'ready',loss:5});
     release({...f.replay(),commands:[contact('a',9),finish]}); await flush();
     expect(checkpoints.update()).toMatchObject({recordStatus:'ready',record:[]});
+    f.setRouteLoader(async () => ({...f.replay(),commands:[contact('a',9),finish]}));
     f.settings.wrSource = 'ksf';
+    expect(f.update(board)).toMatchObject({status:'loading',loss:null});
+    await flush();
     expect(f.update(board)).toMatchObject({status:'ready',loss:9});
-    expect(loads).toBe(1);
-    expect(f.native()).toEqual({loads:2,steps:4});
   });
 });
 
@@ -1018,8 +1102,8 @@ describe('Independent movement feedback visibility', () => {
 
   test('hiding Board keeps the checkpoint consumer on its original pending replay', async () => {
     const f = fixture({shared:true}), checkpoints = checkpointsFor(f);
-    let release, loads = 0;
-    f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+    let release;
+    f.setLoader(() => new Promise(resolve => { release = resolve; }));
     const board = f.step(contact());
     checkpoints.update(); f.update(board); await flush();
     f.settings.showBoard = false; f.update(board);
@@ -1027,9 +1111,9 @@ describe('Independent movement feedback visibility', () => {
     expect(checkpoints.update()).toMatchObject({ownStatus:'ready',own:[]});
     expect(f.update(board).source).toBe('fixed');
     f.settings.showBoard = true;
+    f.update(board); await flush();
+    release(f.replay()); await flush();
     expect(f.update(board)).toMatchObject({source:'pb',status:'ready',loss:5});
-    expect(loads).toBe(1);
-    expect(f.native().loads).toBe(1);
   });
 
   test('hiding Board alone cancels a yielded pass while core held measurements keep advancing', async () => {

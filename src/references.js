@@ -111,7 +111,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;
-    const handle = replayStore.acquire({key, session, entry, load, isCurrent});
+    const handle = replayStore.acquire({key, session, entry, load, feedback: false, isCurrent});
     slot.handle = handle;
     const publish = result => {
       if (slot.handle !== handle || !isCurrent()) return;

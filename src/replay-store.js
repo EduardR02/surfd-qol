@@ -68,10 +68,14 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
     replay.commands.length > MAX_COMMANDS || replay.mapId !== session.map.id || replay.mapVersion !== session.map.version ||
     !Number.isInteger(replay.format)) return null;
   const checkpointCompatible = !entry || JSON.stringify(replay.config) === JSON.stringify(session.config);
-  const feedbackCompatible = feedback && replay.commands.length > 0 && typeof adapter.Movement === 'function' && sameMovementConfig(replay.config, session.config);
-  if (!checkpointCompatible && !feedbackCompatible) return null;
   await yieldTask();
   if (!isCurrent()) return null;
+  // Shared consumers can join during the initial yield, before any native
+  // state or movement observers are constructed.
+  const wantsFeedback = typeof feedback === 'function' ? feedback() : feedback;
+  const feedbackCompatible = wantsFeedback && replay.commands.length > 0 &&
+    typeof adapter.Movement === 'function' && sameMovementConfig(replay.config, session.config);
+  if (!checkpointCompatible && !feedbackCompatible) return null;
   const shadow = new adapter.Session(session.map, replay.config, replay.format);
   shadow.loadReplay(replay);
   const metrics = feedbackCompatible ? createMetrics({}, {referenceOnly: true}) : null;
@@ -83,6 +87,9 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   const shadowAdapter = {Session: adapter.Session, Movement: adapter.Movement, getSession: () => active};
   for (let index = 0; index < replay.commands.length;) {
     if (!isCurrent()) return null;
+    // Checkpoint consumers may keep the native pass alive after all feedback
+    // consumers hide. Stop observing rather than compute an unused summary.
+    if (index && metrics && !failed && typeof feedback === 'function' && !feedback()) failed = true;
     let observer;
     try {
       if (metrics && !failed) {
@@ -136,6 +143,9 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   } : null};
 }
 
+// Cache only summaries, not downloaded commands. A later feedback upgrade of
+// a completed checkpoint-only result may fetch again; in-flight consumers
+// share the download and request the highest active capability.
 export function createReferenceReplayStore({getAdapter, yieldTask = defer}) {
   const pending = new Map(), cache = new Map();
   let adapter = null, destroyed = false;
@@ -143,40 +153,57 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer}) {
     for (const job of pending.values()) job.consumers.clear();
     pending.clear();
   }
-  function acquire({key, session, entry = null, load, isCurrent = () => true}) {
+  function acquire({key, session, entry = null, load, feedback = false, isCurrent = () => true}) {
     const nextAdapter = getAdapter();
     if (nextAdapter !== adapter) { clearPending(); cache.clear(); adapter = nextAdapter; }
     const cached = cache.get(key);
-    if (cached) {
+    if (cached && (!feedback || cached.feedback)) {
       cache.delete(key); cache.set(key, cached);
-      return {result: cached, promise: Promise.resolve(cached), release() {}};
+      return {result: cached.result, promise: Promise.resolve(cached.result), release() {}};
     }
-    const consumer = {isCurrent};
+    const consumer = {isCurrent, feedback};
     let job = pending.get(key);
     if (job && !job.current()) { pending.delete(key); job = null; }
     if (!job && !destroyed) {
       const expectedAdapter = adapter, map = session.map, config = session.config, format = session.replayFormat;
       const mapId = map.id, mapVersion = map.version;
-      job = {consumers: new Set(), promise: null, current() {
+      job = {consumers: new Set(), promise: null, feedback: false, current() {
         if (destroyed || getAdapter() !== expectedAdapter || session.map !== map || session.config !== config ||
           session.replayFormat !== format || map.id !== mapId || map.version !== mapVersion) return false;
         for (const member of this.consumers) if (!member.isCurrent()) this.consumers.delete(member);
         return this.consumers.size > 0;
+      }, wantsFeedback() {
+        if (!this.current()) return false;
+        for (const member of this.consumers) if (member.feedback) return true;
+        return false;
       }};
       pending.set(key, job);
       const work = job;
-      work.promise = Promise.resolve().then(() => work.current() ? load?.() : null).then(async replay => {
-        if (!work.current()) return null;
-        if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
-        const data = await reconstructReferenceReplay({adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask});
-        return work.current() ? {...data, status: 'unmatched'} : null;
-      }).catch(() => work.current() ? {checkpoint: null, feedback: null, status: 'missing'} : null).then(result => {
-        if (pending.get(key) === work) pending.delete(key);
-        if (result && work.current() && (result.checkpoint || result.feedback)) {
-          cache.set(key, result);
-          while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
+      work.promise = Promise.resolve().then(async () => {
+        try {
+          const replay = work.current() ? await load?.() : null;
+          if (!work.current()) return null;
+          if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
+          const reconstruct = () => reconstructReferenceReplay({
+            adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask,
+            feedback: () => work.feedback = work.wantsFeedback()
+          });
+          let data = await reconstruct();
+          // A feedback consumer joining after native simulation began needs an
+          // upgrade, but shares this job's already-downloaded replay.
+          if (!work.feedback && work.wantsFeedback()) data = await reconstruct();
+          if (!work.current()) return null;
+          const result = {...data, status: 'unmatched'};
+          if (result.checkpoint || result.feedback) {
+            cache.set(key, {result, feedback: work.feedback});
+            while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
+          }
+          return result;
+        } catch {
+          return work.current() ? {checkpoint: null, feedback: null, status: 'missing'} : null;
+        } finally {
+          if (pending.get(key) === work) pending.delete(key);
         }
-        return result;
       });
     }
     if (!job) return {result: null, promise: Promise.resolve(null), release() {}};
