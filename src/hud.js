@@ -18,7 +18,7 @@ const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
@@ -88,11 +88,15 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onOpen: () => runs.close(),
     storage: history ? {
       usage: () => ({history: history.usage(), replays: replays?.usage?.() ?? null}),
-      clear: () => { history.clear(); return replays?.clearMap(); },
+      clear: () => Promise.all([history.clear(), replays?.clearMap?.()]),
     } : null,
   });
-  const runs = createRunsPanel({root, host, history, replays, replayControl, onOpen: () => panel.close()});
-  const replayBar = replayControl ? createReplayBar({root, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.()}) : null;
+  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, settings, now: services.now, onOpen: () => panel.close(),
+    onOpenSettings: page => { runs.close(); panel.show(page); }});
+  // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
+  const replayBar = replayControl ? createReplayBar({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
+    getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
+    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open}) : null;
 
   function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
@@ -125,7 +129,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const currentView = view ?? snapshot?.spectator ?? null;
     const inSurf = inSurfContext(snapshot, session, currentView);
     panel.setAvailable(!inSurf);
-    runs.setAvailable(!inSurf);
+    runs.setContext({menu: !inSurf, replay: inSurf && !!replayBar?.visible});
     releaseNotice.hidden = inSurf || releaseVersion === null;
     if (!inSurf) placeLauncher();
     const spectator = currentView?.target != null;
@@ -239,6 +243,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
     panel.setStatus(model.status);
     const reserve = `${replayBar?.render(inSurf) ?? 0}px`;
+    replayBar?.setRunsOpen(runs.open);
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }
 
@@ -256,8 +261,11 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     observeFinish() { references.update(false); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
-    showRuns(scope) { runs.show(scope); },
-    showReplayKeys() { replayBar?.showKeys(); },
+    // Dev harness hooks: the Runs panel (optionally on a map, with the map list
+    // open) and the replay controls' lists.
+    showRuns(key, {maps = false, view = 'runs'} = {}) { runs.show(key); runs.showView(view); if (maps) runs.showMaps(); },
+    showReplayPopover(name) { replayBar?.showPopover(name); },
+    showReplayRuns() { if (replayBar?.visible) runs.show(replayBar.status?.run?.mapKey ?? history?.currentMap, root.getElementById('replay').getBoundingClientRect()); },
     destroy() {
       destroyed = true;
       clearInterval(interval);

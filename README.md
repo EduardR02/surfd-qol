@@ -19,7 +19,7 @@ You need desktop Chrome 118 or newer. The extension isn't on the Chrome Web Stor
 3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-**Updating:** download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
+**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 
@@ -76,32 +76,34 @@ At each checkpoint you get your split time and speed, plus time and speed deltas
 ### Binds
 
 - **Crouch-jump** (off by default; turn it on under **Controls**, Space unless you rebind it): holding jump presses crouch for exactly one physics tick per jump. That's enough for the crouched jump impulse (+6 u/s vertical, the same as holding crouch) without staying crouched. Rebind it to any free key.
-- **Nullbinds** (off by default): for A/D and for W/Space, the newest key you press wins, and releasing it hands control back to the other key if it's still held. W/Space cuts forward input while Space wins (not your momentum) and blocks jump while W wins.
+- **Nullbinds** (off by default): for left/right and for forward/jump, the newest key you press wins, and releasing it hands control back to the other one if it's still held. They follow your Surfd key bindings, including alternate and mouse binds. Forward/jump cuts forward input while jump wins (not your momentum) and blocks jump while forward wins.
 
 Both work inside the game's own input sampling, so the commands it records are exactly what you'd get from a keyboard that did this in hardware. Your binds on disk aren't changed.
 
 ### Run history
 
-**Runs**, next to **QoL** in the menu, opens a summary of your runs: count, best and average finish, start speed and average sync, then one row per run with its time, result (finished, or reset at which checkpoint), start speed, sync, total board, ramp and air loss, and top speed. Click a run to see its checkpoint splits and speeds against the best finish in the list, and Board, Down and Up for every ramp.
+**Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
 
-**This session** lists the runs since the page loaded, on any map; **This map** lists every saved run on the current map. Practice and invalid runs are marked and never count as best. Restarts within the first second aren't recorded, and replays never are. The loss totals only include values the HUD was measuring, so a value you had hidden shows —.
+- **Runs:** your PB (watch it with ▶), best and average start speed, and how many attempts and finishes you have. Under that, your best time at each checkpoint from any run, finished or not, in teal where it beats your PB's split there. Then your latest attempt and your last 10 runs, each with its time, how far it got, start speed and its replay.
+- **Ramps:** your best Board, Down and Up on every ramp of the map, next to your PB or the WR, so you can see which ramps cost you. Ramps follow your PB's route (or your furthest run's before you finish); a bounce or another line still improves a ramp's best but doesn't add rows. The comparison is only available for the map you're on.
+
+Bests count every clean run, including ones you reset, and are kept for good. Practice and invalid runs never count. Resets shorter than 10 seconds don't take one of the 10 slots, except your latest run, which is always there.
 
 ### Watching replays
 
-**Watch** in the Runs list replays one of your runs in the game's own replay mode, with the full HUD, starting a second before you left the start. The same controls appear for every replay the game plays: other players' runs from the leaderboard's **Watch** buttons, the record route and server replays.
+▶ in Runs replays one of your runs in the game's own replay mode, with the full HUD, starting a second before you left the start. The same controls appear for every replay the game plays: other players' runs from the leaderboard, the record route and server replays.
 
-The bar along the bottom says what you're watching and whether it's playing. Under it:
+The timeline along the bottom shows the run's start, its checkpoints and, on your own runs, every ramp board, coloured like the HUD's Board value. Hover a mark to see it, click or drag anywhere to jump there. Left alone while playing, everything but the timeline fades out. At the end, playback stops on the last frame instead of dropping to the menu. **Runs** is on the bar too, so you can jump to another run straight away.
 
-- **Play/pause** and **−5 s / +5 s**, then a timeline you can drag. It marks where the run left the start and each checkpoint (on other players' runs these fill in as the replay passes them).
-- **Speed** from 0.25× to 4×.
-- **Savelocs**: **Save loc** marks the moment you're watching, **Load loc** jumps back to the selected one, and each loc is a chip you can click or delete. They use your own **Save position** and **Load position** binds (F5 and F9 by default; previous/next saveloc step through them), and during a replay those binds only work on these locs. Locs are kept with your own runs and last until you leave anyone else's replay.
-- Every loc you save is **also added to your practice savelocs** when you leave the replay, so you can load it and play from there. **Practice from here** does it in one go: it leaves the replay and puts you at that exact moment, with the same speed and view, in practice mode. This works for any replay, including ones recorded under older movement rules: a loc is only position, speed, view and timer, and you play on under today's rules. Locs from another map wait until you're back on that map.
+**Savelocs:** your own **Save position** and **Load position** binds (and previous/next saveloc) work on the replay: save a moment, jump back to it, step through the ones you saved. Each one becomes a **practice saveloc** when you leave the replay, so you can load it and play on from exactly there, even from a replay recorded under older movement rules. The game's chat confirms each one.
 
-**Keys** lists every shortcut: Space plays and pauses, ← and → jump 5 seconds, `,` and `.` step one tick, `[` and `]` change speed, and Esc stops playback as usual. Replays of the last 30 runs on each map, plus your best, are kept in the browser.
+Keys: Space plays and pauses, ← and → jump 5 seconds, `,` and `.` step one tick, `[` and `]` change speed (0.25× to 4×), and Esc leaves the replay as usual. The keyboard button on the bar lists them with your saveloc binds.
 
 ### What's kept
 
-Under **QoL → History** you can turn **Record runs** off entirely (nothing is tracked while it’s off), and choose how much is stored: runs kept per map (100 by default), how many maps keep a history (the 20 played most recently), how many sessions (visits) to keep (all by default), whether to save replays at all, how many per map (30), and whether each map's best always stays. It also shows how much space history and replays use, with a button to clear everything. Lowering a limit deletes whatever is over it, and a run that's dropped takes its replay with it. Runs and replays are kept in the extension's own IndexedDB database on surfd.net, not in the game's local storage; replays are compressed to about 50 KB per minute of run.
+Under **QoL → History** you can turn **Record runs** off, change how many runs are kept per map and the minimum length of a reset that's kept, and turn off **Save replays**. Lowering a limit deletes the runs over it, with their replays. Bests are never pruned, and recent runs are kept for the 50 maps you played last. The same page shows the storage used and has **Clear all**.
+
+If you wait around before a run, its saved replay keeps only the last 5 seconds before you left the start. Replays take about 50 KB per minute. Everything is stored in the extension's own database on surfd.net, not in the game's local storage.
 
 ### Replays and spectating
 
@@ -118,9 +120,9 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 ## Performance and privacy
 
-- Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each replay is processed once and cached.
+- Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each one is processed once and cached.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
-- No telemetry. Settings, run history, replays of your runs and local checkpoint PB speeds live in surfd.net's site storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
+- No telemetry. Settings, run history, replays of your runs and local checkpoint PB speeds live in surfd.net's site storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net and, at most once a day, a check with GitHub for a newer release, which sends nothing about you or your runs.
 
 ## Troubleshooting
 
@@ -148,8 +150,9 @@ Source layout:
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
 - `src/energy.js`: the speed tint's energy trend.
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
-- `src/run-history.js`, `src/runs-panel.js`: per-run stats recording and the Runs popup.
-- `src/replay-archive.js`, `src/replay-control.js`, `src/replay-bar.js`: saved replays (IndexedDB), playback speed and seeking, and the replay controls.
+- `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.
+- `src/replay-archive.js`, `src/replay-trim.js`: saved replays (compressed, in IndexedDB), trimmed to a few seconds before the start.
+- `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`: playback speed, seeking from snapshots, savelocs, and the replay bar.
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License

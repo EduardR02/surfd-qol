@@ -7,6 +7,7 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
+import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createBinds} from './fixtures.js';
 
 const params = new URLSearchParams(location.search);
 const DT = 0.015, GRAVITY = 800;
@@ -54,58 +55,9 @@ export const scenarios = {
   watching: {note: 'Watching a saved run with replay controls', ...ramp, ...checkpoint, snapshot: {playback: true}, watching: true},
 };
 
-// A session of runs on two maps for the Runs popup (?runs=session|map).
-function fixtureRuns() {
-  const session = 1, at = Date.parse('2026-10-24T19:00:00');
-  const ramps = (n, seed) => Array.from({length: n}, (_, i) => ({checkpoint: Math.floor(i / 2), board: [3.2, 11.4, 0.8, 6.1][(i + seed) % 4],
-    down: [14.6, 22.0, 9.4, 18.3][(i + seed) % 4], up: [38.1, 16.2, 24.9, 30.5][(i + seed) % 4], exit: 2380 + 140 * i}));
-  const run = (index, map, mapName, time, outcome, splits, extra = {}) => {
-    const list = ramps(splits.length * 2 + (outcome === 'finished' ? 1 : 0), index);
-    const sum = key => list.reduce((total, ramp) => total + ramp[key], 0);
-    return {id: `fixture-${index}`, session: extra.session ?? session, map, mapName, at: at + index * 95000, kind: 'CP', outcome, practice: false, invalid: '', time,
-      start: {speed: [348.4, 342.1, 349.6, 331.8, 347.2][index % 5], height: [4.2, 9.8, 2.6, 18.4, 5.5][index % 5]},
-      topSpeed: 3020 + 37 * index, sync: [93.4, 89.1, 95.2, 84.6, 92.0][index % 5],
-      checkpoints: splits.map((split, i) => ({split, speed: 2410 + 260 * i - 7 * index})), ramps: list,
-      board: {total: Number(sum('board').toFixed(1)), count: list.length},
-      surf: {down: Number(sum('down').toFixed(1)), up: Number(sum('up').toFixed(1)), loss: Number((sum('down') + sum('up')).toFixed(1)), count: list.length, unavailable: 0},
-      air: {loss: 31.4 + index, braking: 12.2, missed: 19.2 + index, seconds: 9.5, count: list.length}, ...extra};
-  };
-  return [
-    run(0, 'boreas:2', 'Boreas', 64.912, 'finished', [21.404, 43.118], {session: 0}),
-    run(1, 'utopia:3', 'Utopia', 43.551, 'finished', [10.31, 21.62]),
-    run(2, 'utopia:3', 'Utopia', 12.874, 'reset', [10.48]),
-    run(3, 'utopia:3', 'Utopia', 41.233, 'finished', [10.12, 21.233]),
-    run(4, 'utopia:3', 'Utopia', 6.02, 'reset', []),
-    run(5, 'utopia:3', 'Utopia', 42.807, 'finished', [10.2, 21.49], {practice: true}),
-    run(6, 'utopia:3', 'Utopia', 42.016, 'finished', [10.15, 21.38]),
-  ];
-}
-const runsFixture = fixtureRuns();
-const history = {session: 1, currentMap: 'utopia:3', runs: () => runsFixture, subscribe: () => () => {}, clear() {},
-  usage: () => ({bytes: 9800, runs: runsFixture.length, maps: 2})};
-const replays = {usage: () => ({bytes: 1.6 * 1024 * 1024, count: 6}), subscribe: () => () => {}, clearMap: async () => {}};
-// Replay controls over a fixture run: the controls work, only the game behind them is still.
-const replayControl = (() => {
-  const run = runsFixture[6], length = 2870, start = 66;
-  let index = 1480, playing = true, speed = 1, spots = [430, 1120], lastSpot = 1120;
-  const clamp = value => Math.max(0, Math.min(length, Math.round(value)));
-  return {
-    canWatch: entry => entry.id !== 'fixture-4',
-    async watch() {},
-    get active() { return scenario.watching === true; },
-    status: () => scenario.watching ? {title: `Your run on ${run.mapName} · finished in 00:42.016`, index, length, start, dt: DT, playing, ended: index >= length, speed, markers: [742, 1488], spots, lastSpot, practice: 'ok', notice: ''} : null,
-    play() { playing = true; }, pause() { playing = false; }, toggle() { playing = !playing; },
-    seek(value) { index = clamp(value); },
-    skip(seconds) { index = clamp(index + seconds / DT); },
-    step(ticks) { playing = false; index = clamp(index + ticks); },
-    setSpeed(value) { speed = value; },
-    saveSpot() { if (!spots.includes(index)) spots = [...spots, index].sort((a, b) => a - b); lastSpot = index; return true; },
-    goToSpot(tick) { const target = tick ?? lastSpot ?? spots.at(-1); if (target == null) return false; lastSpot = target; index = target; return true; },
-    async practiceFromHere() {},
-    removeSpot(tick) { spots = spots.filter(spot => spot !== tick); if (lastSpot === tick) lastSpot = null; },
-    faster() { speed = Math.min(4, speed * 2); }, slower() { speed = Math.max(0.25, speed / 2); },
-  };
-})();
+// Run history, replays, playback and ramp references in the shapes the UI is
+// given (dev/fixtures.js). The watching state reads ?play, ?locs, ?notice,
+// ?title, ?speed, ?at and ?binds; the Runs panel's Ramps view reads ?ref.
 
 const palettes = {custom: {speedColor: '#f4f1ea', goodColor: '#6fe0b0', warnColor: '#ffcf5c', badColor: '#ff5f6d'}};
 const backdrops = ['snow', 'fog', 'ice', 'neon', 'warm', 'dark', 'menu'];
@@ -120,8 +72,16 @@ for (const [key, value] of params) {
   applySettings(settings, {[field]: typeof defaults[field] === 'number' ? Number(value) : typeof defaults[field] === 'boolean' ? value === 'true' : value});
 }
 const panelPage = params.get('panel');
-const runsScope = params.get('runs');
-const inMenu = scenario.menu || panelPage !== null || runsScope !== null;
+// ?runs opens the Runs panel on the current map, ?runs=<map key> on another;
+// ?maps opens its map list; ?history=empty has no runs at all.
+const runsMap = params.get('runs');
+const emptyHistory = params.get('history') === 'empty';
+const history = createHistory({settings, empty: emptyHistory});
+const replays = createReplays({empty: emptyHistory});
+const replayControl = createReplayControl({params, active: () => scenario.watching === true});
+const rampReference = createRampReference({params, settings});
+const binds = createBinds(params);
+const inMenu = scenario.menu || panelPage !== null || (runsMap !== null && !scenario.watching);
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
 // Backdrops are local game screenshots (gitignored); a neutral sky stands in when one is missing.
 document.body.style.backgroundImage = `url(./backdrops/${bg}.jpg), linear-gradient(#1b2430, #4a566a 55%, #b8a09c)`;
@@ -152,13 +112,15 @@ const hud = mountHud({
   getMetrics: () => ({active: true, status: '', ...scenario.metrics}),
   getSession: () => scenario.spectate ? null : session,
   getReferences: () => null,
-  getAdapter: () => null,
+  // Only the saveloc binds; every service that would use the game is faked below.
+  getAdapter: () => ({getBindings: () => binds}),
   settings,
   onSettings: patch => applySettings(settings, patch),
   onResetColors: () => applySettings(settings, Object.fromEntries(colorKeys.map(key => [key, defaults[key]]))),
   history,
   replays,
   replayControl,
+  rampReference,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -166,15 +128,15 @@ const hud = mountHud({
     runReferences: {update: () => runRefs, destroy() {}},
     // A frozen clock keeps checkpoint splits on screen for screenshots.
     createModel: () => createHudModel(() => 0),
+    // Run dates are shown against a fixed day.
+    now: () => NOW,
   },
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
-if (params.has('keys')) hud.showReplayKeys();
-if (runsScope !== null) {
-  hud.showRuns(runsScope || 'session');
-  // ?expand=<run id> opens that run's splits and ramps.
-  if (params.has('expand')) document.getElementById('surfd-qol').shadowRoot.querySelector(`tr.run[data-run="${params.get('expand')}"]`)?.click();
-}
+// With ?state=watching: ?pop=keys|speed opens that popover; ?runs opens the Runs panel over the bar.
+if (params.has('pop')) setTimeout(() => hud.showReplayPopover(params.get('pop')), 50);
+if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
+else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
 
 // Small picker for manual browsing; hidden in screenshot mode.
 const picker = document.getElementById('picker');

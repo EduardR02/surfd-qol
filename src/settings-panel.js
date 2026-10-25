@@ -141,30 +141,29 @@ export const panelMarkup = `
       </div>
       <h3>Null binds</h3>
       <div class="group">
-        ${toggle('nullAD', 'A / D')}
-        ${toggle('nullWSpace', 'W / Space', 'In each pair the latest key wins; let go to resume the other.')}
+        ${toggle('nullAD', 'Left / Right', 'Uses your movement bindings in Surfd’s settings.')}
+        ${toggle('nullWSpace', 'Forward / Jump', 'Uses your bindings, including extra keys. Latest press wins; release it to resume the other action.')}
       </div>
     </section>
 
     <section id="page-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
-      <p class="explain intro">What the Runs list and replays keep in this browser. Lowering a limit deletes whatever is over it.</p>
-      <h3>Run history</h3>
       <div class="group">
-        ${toggle('keepHistory', 'Record runs', 'Off records nothing and keeps what you already have.')}
-        ${number('historyRunsPerMap', 'Runs kept per map', 5, 500, 5, 'runs', 'Newest first. A run takes about 1–2 KB.', ' sub')}
-        ${number('historyMaps', 'Maps kept', 1, 100, 1, 'maps', 'The maps you played longest ago are dropped first.', ' sub')}
-        ${number('historySessions', 'Sessions kept', 0, 500, 1, 'sessions', 'A session is one visit, from loading the page. 0 keeps them all.', ' sub')}
+        ${toggle('keepHistory', 'Record runs', 'Keeps your attempts on each map for the Runs panel.')}
+        ${number('historyRunsPerMap', 'Runs kept per map', 3, 100, 1, 'runs', '', ' sub')}
+        ${number('historyMinSeconds', 'Skip short resets', 0, 300, 1, 's', '', ' sub')}
+        ${toggle('saveReplays', 'Save replays', '<span id="replay-size">So you can rewatch your runs.</span>', ' sub')}
       </div>
-      <h3>Replays</h3>
-      <div class="group">
-        ${toggle('saveReplays', 'Save replays', 'About 50 KB per minute of run, compressed. Off saves the most space, and new runs can’t be watched.')}
-        ${number('replaysPerMap', 'Replays kept per map', 1, 100, 1, 'replays', 'Newest first. A run dropped from the history takes its replay with it.', ' sub')}
-        ${toggle('keepBestReplay', 'Always keep each map’s best', 'Your fastest clean finish stays, even when it’s older than the rest.', ' sub')}
-      </div>
+      <p id="history-rule" class="hist-rule" role="status"></p>
       <h3>Storage</h3>
-      <div class="group">
-        <div class="row"><span class="row-text"><span class="row-label">Used in this browser</span><span class="hint" id="storage-usage"></span></span>
-          <button id="clear-history" class="ghost" type="button">Clear all</button></div>
+      <div class="group hist-store">
+        <div class="hist-total"><b id="size-total"></b><span id="size-where">in this browser only</span></div>
+        <div id="size-bar" class="hist-bar" aria-hidden="true"></div>
+        <dl class="hist-keys">
+          <dt class="replays">Replays</dt><dd id="usage-replays"></dd><dd class="size" id="size-replays"></dd>
+          <dt class="runs">Runs and bests</dt><dd id="usage-runs"></dd><dd class="size" id="size-runs"></dd>
+        </dl>
+        <div class="actions clear-row"><span class="note" id="clear-note" role="status"></span>
+          <span class="clear-buttons"><button id="clear-cancel" class="ghost" type="button" hidden>Cancel</button><button id="clear-history" class="ghost" type="button">Clear all</button></span></div>
       </div>
     </section>
   </div>
@@ -204,6 +203,13 @@ export function previewModel(settings) {
 export function formatBytes(bytes) {
   return bytes < 1024 * 1024 ? `${Math.max(bytes ? 1 : 0, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+// What the History settings keep, said as one plain sentence (HTML).
+export function historyRule(settings) {
+  if (settings.keepHistory === false) return 'Recording is off. Nothing new is added, and what you already have stays until you clear it.';
+  const runs = settings.historyRunsPerMap, short = settings.historyMinSeconds;
+  return `On each map you keep <b>your PB</b>, <b>your latest attempt</b> and <b>your ${runs} newest runs</b>${
+    short > 0 ? `, not counting resets under ${short} s` : ''}. Your best splits and ramps stay even after the runs that set them are gone.`;
+}
 
 export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
   const node = id => root.getElementById(id);
@@ -240,9 +246,9 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     setDisabled('rampResult', live || settings.showSurf === false);
     setDisabled('airMetric', live || settings.showAir === false);
     const recording = settings.keepHistory !== false;
-    for (const key of ['historyRunsPerMap', 'historyMaps', 'historySessions', 'saveReplays']) setDisabled(key, !recording);
-    setDisabled('replaysPerMap', !recording || settings.saveReplays === false);
-    setDisabled('keepBestReplay', !recording || settings.saveReplays === false);
+    setDisabled('historyRunsPerMap', !recording);
+    setDisabled('historyMinSeconds', !recording);
+    setDisabled('saveReplays', !recording);
     showUsage();
     write(node('air-explain'), AIR_EXPLAIN[settings.airMetric] ?? AIR_EXPLAIN.combined);
     if (!capturing) write(keyButton, keyName(settings.crouchJumpKey));
@@ -252,25 +258,48 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     preview.setTime('00:41.233');
     preview.render(previewModel(settings));
   }
-  let confirmingClear = false;
-  const clearButton = node('clear-history');
+  // Storage: what history and replays take in this browser, and Clear all,
+  // which asks once before deleting.
+  let clearState = 'idle';
+  const clearButton = node('clear-history'), cancelButton = node('clear-cancel');
+  const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  let ruleShown = '', barShown = '';
   function showUsage() {
     let usage = null;
     try { usage = storage?.usage(); } catch { /* unavailable */ }
-    const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
-    write(node('storage-usage'), !usage ? 'Unavailable.' : [
-      `History about ${formatBytes(usage.history.bytes)}: ${plural(usage.history.runs, 'run')} on ${plural(usage.history.maps, 'map')}.`,
-      usage.replays ? `Replays about ${formatBytes(usage.replays.bytes)}: ${plural(usage.replays.count, 'replay')}.` : '',
-    ].filter(Boolean).join(' '));
+    const runs = usage?.history, saved = usage?.replays;
+    write(node('usage-runs'), runs ? (runs.runs || runs.maps ? `${plural(runs.runs, 'run')} on ${plural(runs.maps, 'map')}` : 'None yet') : 'Unavailable');
+    write(node('size-runs'), runs ? formatBytes(runs.bytes) : '');
+    write(node('usage-replays'), saved ? (saved.count ? plural(saved.count, 'replay') : 'None yet') : 'Unavailable');
+    write(node('size-replays'), saved ? formatBytes(saved.bytes) : '');
+    const runBytes = runs?.bytes ?? 0, replayBytes = saved?.bytes ?? 0, all = runBytes + replayBytes;
+    write(node('size-total'), formatBytes(all));
+    write(node('replay-size'), saved?.count ? `So you can rewatch your runs. About ${formatBytes(replayBytes / saved.count)} each so far.` : 'So you can rewatch your runs.');
+    // The bar splits what's stored between replays and runs; it has no capacity to fill.
+    const bar = all ? `<i class="replays" style="flex:${replayBytes}"></i><i class="runs" style="flex:${runBytes}"></i>` : '<i class="none"></i>';
+    if (bar !== barShown) { barShown = bar; node('size-bar').innerHTML = bar; }
+    const rule = historyRule(settings);
+    if (rule !== ruleShown) { ruleShown = rule; node('history-rule').innerHTML = rule; }
+    node('history-rule').classList.toggle('off', settings.keepHistory === false);
+    const empty = !runs?.runs && !runs?.maps && !saved?.count;
     clearButton.hidden = !storage;
-    write(clearButton, confirmingClear ? 'Delete all runs and replays?' : 'Clear all');
-    clearButton.classList.toggle('danger', confirmingClear);
+    const asking = clearState === 'confirm' || clearState === 'clearing';
+    clearButton.disabled = clearState === 'clearing' || (!asking && empty);
+    cancelButton.hidden = clearState !== 'confirm';
+    write(clearButton, clearState === 'clearing' ? 'Clearing…' : 'Clear all');
+    clearButton.classList.toggle('danger', asking);
+    write(node('clear-note'), clearState === 'confirm' ? 'Clear every run, best and replay on every map? This can’t be undone.'
+      : clearState === 'done' ? 'Cleared.' : '');
+    node('clear-note').classList.toggle('warn', clearState === 'confirm');
   }
+  function setClear(next) { clearState = next; showUsage(); }
   clearButton.addEventListener('click', () => {
-    if (confirmingClear) { confirmingClear = false; Promise.resolve(storage?.clear()).then(showUsage, showUsage); }
-    else confirmingClear = true;
-    showUsage();
+    if (clearState === 'idle' || clearState === 'done') { setClear('confirm'); cancelButton.focus(); return; }
+    if (clearState !== 'confirm') return;
+    setClear('clearing');
+    Promise.resolve(storage?.clear()).catch(() => {}).then(() => { setClear('done'); clearButton.focus(); });
   });
+  cancelButton.addEventListener('click', () => { setClear('idle'); clearButton.focus(); });
   function setDisabled(key, disabled) {
     for (const control of controls) {
       if (control.dataset.setting !== key) continue;
@@ -308,8 +337,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   }
   function selectPage(tab) {
     cancelCapture();
-    confirmingClear = false;
-    if (tab.dataset.page === 'history') showUsage();
+    if (clearState !== 'clearing') setClear('idle');
     for (const item of tabs) {
       const selected = item === tab;
       item.setAttribute('aria-selected', String(selected));
@@ -321,6 +349,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   for (const tab of tabs) tab.addEventListener('click', () => selectPage(tab));
   function closePanel(focus = false) {
     cancelCapture();
+    if (clearState !== 'clearing') clearState = 'idle';
     panel.hidden = true;
     opener.setAttribute('aria-expanded', 'false');
     if (focus && available) opener.focus();

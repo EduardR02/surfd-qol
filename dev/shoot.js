@@ -11,7 +11,7 @@ const out = resolve(process.argv[2] ?? join(tmpdir(), 'surfd-qol-shots'));
 const {default: puppeteer} = await import(process.env.PUPPETEER ?? 'puppeteer');
 const server = serve(0);
 const base = `http://127.0.0.1:${server.port}/dev/?shot&`;
-// [file, query, width, height]
+// [file, query, width, height, wait ms]
 const shots = [
   ['ramp-snow', 'state=ramp&bg=snow'], ['ramp-neon', 'state=ramp&bg=neon'], ['air-stale-up-fog', 'state=air&bg=fog'],
   ['net', 'state=net&bg=warm'], ['sole-slot', 'state=sole&bg=dark'], ['no-feedback', 'state=none&bg=snow'],
@@ -26,18 +26,27 @@ const shots = [
     [`panel-${page}`, `panel=${page}`], [`panel-${page}-540x600`, `panel=${page}`, 540, 600],
   ]),
   ['panel-custom-palette', 'panel=display&palette=custom'],
-  ['runs-session', 'runs=session'], ['runs-map', 'runs=map'], ['runs-map-540x600', 'runs=map', 540, 600],
-  ['runs-detail', 'runs=map&expand=fixture-6'],
-  ['watching', 'state=watching&bg=snow'], ['watching-540x600', 'state=watching&bg=snow', 540, 600],
+  ['runs', 'runs'], ['runs-540x600', 'runs', 540, 600], ['runs-maps', 'runs&maps'], ['runs-stages', 'runs=kitsune:1'],
+  ['runs-no-finish', 'runs=mesa:2'], ['runs-empty', 'runs&history=empty'], ['runs-off', 'runs&history=empty&set.keepHistory=false'],
+  ['runs-off-with-runs', 'runs&set.keepHistory=false'],
+  ['ramps', 'runs&view=ramps'], ['ramps-net-pb', 'runs&view=ramps&set.rampResult=total&ref=pb'], ['ramps-loading', 'runs&view=ramps&ref=loading'],
+  ['ramps-no-reference', 'runs&view=ramps&ref=none'], ['ramps-other-map', 'runs=kitsune:1&view=ramps'], ['ramps-540x600', 'runs&view=ramps', 540, 600],
+  ['watching', 'state=watching&bg=snow'], ['watching-paused', 'state=watching&bg=warm&play=paused'],
+  ['watching-ended', 'state=watching&bg=fog&play=ended&locs=4&binds=custom'], ['watching-notice', 'state=watching&bg=neon&notice=saved'],
+  ['watching-keys', 'state=watching&bg=neon&play=paused&pop=keys&binds=custom'], ['watching-speed', 'state=watching&bg=warm&play=paused&pop=speed&speed=0.5'],
+  ['watching-runs', 'state=watching&bg=dark&play=paused&runs'], ['watching-other', 'state=watching&bg=dark&title=other&locs=0'],
+  ['watching-700x900', 'state=watching&bg=ice&play=paused&binds=custom', 700, 900], ['watching-540x600', 'state=watching&bg=snow&play=paused', 540, 600],
+  // Left alone while playing, the bar recedes to the timeline.
+  ['watching-rest', 'state=watching&bg=snow', 1920, 1080, 3400],
 ];
 await mkdir(out, {recursive: true});
 const browser = await puppeteer.launch({executablePath: process.env.CHROME, headless: true});
 const page = await browser.newPage();
-for (const [name, query, width = 1920, height = 1080] of shots) {
+for (const [name, query, width = 1920, height = 1080, wait = 500] of shots) {
   await page.setViewport({width, height});
   await page.goto(base + query, {waitUntil: 'load'});
   await page.evaluate(() => document.fonts.ready);
-  await new Promise(done => setTimeout(done, 500));
+  await new Promise(done => setTimeout(done, wait));
   await page.screenshot({path: `${out}/${name}.png`});
   console.log(name);
 }
