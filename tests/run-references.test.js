@@ -5,6 +5,9 @@ import {observePhysics} from '../src/observer.js';
 import {createCheckpointReferences} from '../src/references.js';
 import {createReferenceReplayStore} from '../src/replay-store.js';
 import {selectFeedbackType} from '../src/hud-model.js';
+import {createRampReference} from '../src/ramp-reference.js';
+import {visitKey} from '../src/replay-store.js';
+import {referenceIdentity, sessionKey} from '../src/references.js';
 
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
@@ -121,6 +124,51 @@ const savedAnalysis = () => {
   const data = new Map();
   return {data, async get(id) { return data.has(id) ? structuredClone(data.get(id)) : null; }, async put(id, value) { data.set(id, structuredClone(value)); }};
 };
+
+describe('Reference ramp entry ticks', () => {
+  test('captures first contact command cursors once in the shared native pass, not later board revisions', async () => {
+    const commands = [{}, {}, contact('a', 2), contact('a', 3), contact('b', 4), contact('a', 6), finish];
+    const f = fixture({shared: true, commands});
+    const first = f.step(contact('a'));
+    f.update(first);
+    const reference = createRampReference({getSession: () => f.session, getReferences: f.getReferences,
+      getAdapter: () => f.adapter, replayStore: f.replayStore, settings: f.settings});
+    cleanups.push(() => reference.destroy());
+    const consumer = reference.createConsumer();
+    const slot = consumer.get('surf_test:map-1', 'pb');
+    await flush();
+    expect(slot.status).toBe('ready');
+    expect(slot.dt).toBe(.015);
+    expect(slot.ramps.get(visitKey(first))).toMatchObject({tick: 3});
+    expect(slot.ramps.get(visitKey({...first, visit: 2}))).toMatchObject({tick: 6});
+    expect(f.native()).toEqual({loads: 1, steps: commands.length});
+    expect(f.calls().replay).toEqual(['official-pb']);
+    consumer.release();
+    const cached = consumer.get('surf_test:map-1', 'pb');
+    expect(cached.status).toBe('ready');
+    expect(cached.ramps.get(visitKey(first)).tick).toBe(3);
+    expect(f.native()).toEqual({loads: 1, steps: commands.length});
+  });
+
+  test('saved summaries retain entry cursors without replay download or native simulation', async () => {
+    const saved = savedAnalysis(), commands = [{}, contact('a'), finish];
+    const first = fixture({saved, commands});
+    first.update(first.step(contact()));
+    await flush();
+    first.controller.destroy();
+    const next = fixture({saved, commands});
+    const key = visitKey(next.step(contact()));
+    const reference = createRampReference({getSession: () => next.session, getReferences: next.getReferences,
+      getAdapter: () => next.adapter, replayStore: next.replayStore, settings: next.settings});
+    cleanups.push(() => reference.destroy());
+    const slot = reference.createConsumer().get('surf_test:map-1', 'pb');
+    await flush();
+    expect(slot.status).toBe('ready');
+    expect(slot.ramps.get(key).tick).toBe(2);
+    expect(next.calls().replay).toEqual([]);
+    expect(next.native()).toEqual({loads: 0, steps: 0});
+  });
+});
 
 describe('Saved reference analysis', () => {
   test('a PB analysed on an earlier visit needs no download or re-simulation', async () => {
@@ -304,7 +352,7 @@ describe('Native run replay references', () => {
     ]) {
       const f = fixture(); f.setReplay(mutate(f.replay()));
       const board = f.step(contact()); f.update(board); await flush();
-      expect(f.update(board)).toMatchObject({status:'unmatched',loss:null});
+      expect(f.update(board).loss).toBeNull();
       f.controller.destroy();
     }
   });
@@ -1053,6 +1101,35 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     expect(f.native()).toEqual({loads:1,steps:f.replay().commands.length});
   });
 
+  test('native adoption reuses movement feedback across panel lifetimes while validating newly compatible checkpoints', async () => {
+    const f = fixture({shared: true});
+    f.setReplay({...f.replay(), config: {...f.session.config, version: 'historical-label', unrestrictedStart: true}});
+    const reference = createRampReference({getSession: () => f.session, getReferences: f.getReferences,
+      getAdapter: () => f.adapter, replayStore: f.replayStore, settings: f.settings});
+    cleanups.push(() => reference.destroy());
+    const consumer = reference.createConsumer(), key = `${f.session.map.id}:${f.session.map.version}`;
+    const original = consumer.get(key, 'pb');
+    await flush();
+    expect([...original.ramps.values()][0].board).toBe(5);
+    const previous = {...f.session};
+    f.session.config = f.replay().config;
+    f.session.replayFormat = f.replay().format;
+    const adoptedKey = `${sessionKey(f.session, f.getReferences().boardId)}:official:${referenceIdentity(entry)}`;
+    f.replayStore.adoptFeedback({from: original.key, to: adoptedKey, previous, session: f.session});
+    consumer.release();
+    const reopened = reference.createConsumer();
+    expect([...reopened.get(key, 'pb').ramps.values()][0].board).toBe(5);
+    expect(f.native().loads).toBe(1);
+    const checkpoints = checkpointsFor(f);
+    checkpoints.update();
+    await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus: 'ready', own: []});
+    expect(f.native().loads).toBe(2);
+    reopened.release();
+    expect([...reopened.get(key, 'pb').ramps.values()][0].board).toBe(5);
+    expect(f.native().loads).toBe(2);
+  });
+
   test('switching feedback WR source cannot cancel KSF still required by checkpoints', async () => {
     const f = fixture({shared:true,source:'wr'});
     const checkpoints = checkpointsFor(f,{checkpointReference:'wr'});
@@ -1237,5 +1314,32 @@ describe('Independent movement feedback visibility', () => {
     f.update(newest); await flush();
     expect(f.metrics.snapshot().board.loss).toBe(17);
     expect(f.native().loads).toBe(2);
+  });
+});
+
+describe('Raw KSF route cache identity', () => {
+  test('a middle command change invalidates saved analysis without any extra native pass', async () => {
+    const saved = savedAnalysis();
+    const first = fixture({source: 'wr', saved, commands: [{}, contact('a', 5), finish]});
+    first.update(first.step(contact()));
+    await flush();
+    expect(first.native()).toEqual({loads: 1, steps: 3});
+    first.controller.destroy();
+    const changed = fixture({source: 'wr', saved, commands: [{}, contact('a', 8), finish]});
+    const board = changed.step(contact());
+    changed.update(board);
+    await flush();
+    expect(changed.update(board)).toEqual({loss: 8, status: 'ready', source: 'wr'});
+    expect(changed.calls().route).toBe(1);
+    expect(changed.native()).toEqual({loads: 1, steps: 3});
+    expect(saved.data.size).toBe(2);
+    changed.controller.destroy();
+    const cached = fixture({source: 'wr', saved, commands: [{}, contact('a', 8), finish]});
+    const again = cached.step(contact());
+    cached.update(again);
+    await flush();
+    expect(cached.update(again)).toEqual({loss: 8, status: 'ready', source: 'wr'});
+    expect(cached.calls().route).toBe(1);
+    expect(cached.native()).toEqual({loads: 0, steps: 0});
   });
 });

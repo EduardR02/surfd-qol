@@ -85,10 +85,21 @@ const maps = {
 };
 maps['boreas:2'].pb = maps['boreas:2'].runs[1];
 maps['boreas:2'].splits = [split('CP1', 21.404, 2690, 21.404, 0), split('CP2', 43.118, 3010, 43.118, 0)];
+for (const [key, map] of Object.entries(maps)) {
+  if (map.pb) Object.assign(map.pb, {mapKey: key, mapName: map.name,
+    boards: map.ramps.map((ramp, n) => [450 + n * 190, ramp.board, ramp.key])});
+}
 
 export function createHistory({settings, empty = false, current = 'utopia:3'} = {}) {
   const shown = empty ? {} : maps;
   const listeners = new Set();
+  const resetMaps = new Set();
+  const highlights = new Map(Object.entries(shown).map(([key, map]) => {
+    const run = map.runs.filter(run => run.outcome === 'finished' && !run.invalid && !run.practice && run.replay && run.at + run.time * 1000 > NOW - DAY)
+      .sort((a, b) => a.time - b.time)[0];
+    return [key, run ? {...run, finishedAt: run.at + run.time * 1000, expiresAt: run.at + run.time * 1000 + DAY,
+      boards: map.ramps.slice(0, -1).map((ramp, n) => [450 + n * 190, ramp.board, ramp.key])} : null];
+  }));
   // The newest attempt is `latest`; recent runs are the qualifying ones after it.
   const recentOf = map => {
     const qualifies = run => run.outcome === 'finished' || run.time >= settings.historyMinSeconds;
@@ -100,14 +111,25 @@ export function createHistory({settings, empty = false, current = 'utopia:3'} = 
     ready: Promise.resolve(),
     maps: () => Object.entries(shown).map(([key, map]) => ({key, name: map.name, at: map.at, runs: recentOf(map).length + 1 + (map.pb ? 1 : 0)}))
       .sort((a, b) => b.at - a.at),
-    view(key = current) {
+    view(key = current, {rampMode = 'best'} = {}) {
       const map = shown[key];
       if (!map) return null;
+      const ramps = rampMode === 'best' ? map.ramps : map.ramps.map((ramp, n) => {
+        const result = {...ramp, counts: {}};
+        for (const field of ['board', 'down', 'up', 'surf']) {
+          const lag = field === 'board' ? 0 : field === 'down' ? 1 : 2;
+          const count = resetMaps.has(key) || ramp[field] == null ? 0 : rampMode === 'recent' ? Math.max(1, 10 - n - lag) : 23 + n * 3 - lag;
+          result.counts[field] = count;
+          result[field] = count ? round(ramp[field] + (rampMode === 'recent' ? 2 : 4) + noise(n) * 4) : null;
+        }
+        return result;
+      });
       return {key, name: map.name, kind: map.kind, totals: map.totals, pb: map.pb, latest: map.runs[0] ?? null, recent: recentOf(map),
-        start: map.start, splits: map.splits.map((split, index) => ({...split, index})), ramps: map.ramps};
+        recentBest: highlights.get(key), start: map.start, splits: map.splits.map((split, index) => ({...split, index})), ramps};
     },
     run: id => Object.values(shown).flatMap(map => [map.pb, ...map.runs]).find(run => run?.id === id) ?? null,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async resetRampAverages(key) { resetMaps.add(key); for (const listener of listeners) listener(); },
     async clear() {},
     usage: () => empty ? {bytes: 0, runs: 0, maps: 0} : {bytes: 61440, runs: 77, maps: 4},
   };
@@ -136,10 +158,11 @@ export function createLeaderboardReferences(params) {
 export function createRampReference({params, settings, current = 'utopia:3'}) {
   const mode = params.get('ref') ?? 'ready';
   const listeners = new Set();
-  const table = factor => new Map(maps[current].ramps.map((ramp, n) => {
+  const table = factor => new Map(maps[current].ramps.flatMap((ramp, n) => {
+    if (mode === 'absent' && n === 0) return [];
     const shift = (noise(n * 13 + factor) - .45) * 6 * factor;
-    return [ramp.key, {board: Math.max(0, round((ramp.board ?? 4) + shift)), down: Math.max(0, round(ramp.down + shift)),
-      up: Math.max(0, round(ramp.up + shift * 1.4)), surf: Math.max(0, round(ramp.surf + shift * 2.4))}];
+    return [[ramp.key, {tick: 450 + n * 190, board: Math.max(0, round((ramp.board ?? 4) + shift)), down: Math.max(0, round(ramp.down + shift)),
+      up: Math.max(0, round(ramp.up + shift * 1.4)), surf: Math.max(0, round(ramp.surf + shift * 2.4))}]];
   }));
   const label = () => settings.wrSource === 'leaderboard' ? 'Site WR' : 'KSF WR';
   const entries = {pb: {status: 'ready', label: 'PB', ramps: table(1)}, wr: {status: 'ready', get label() { return label(); }, ramps: table(2.2)}};
@@ -152,6 +175,12 @@ export function createRampReference({params, settings, current = 'utopia:3'}) {
     sources(key) { return ['pb', 'wr'].flatMap(name => { const entry = get(key, name); return entry ? [{name, label: entry.label}] : []; }); },
     createConsumer() {
       return {get, tone(key, loss) { return referenceTone(loss, entries.pb.ramps.get(key)?.board ?? null, settings.referenceLossTolerance); },
+        async watchRamp(key, source, rampKey, control, {leadSeconds = 0.5, paused = true} = {}) {
+          const entry = get(key, source), tick = entry?.ramps.get(rampKey)?.tick;
+          if (entry?.status !== 'ready' || !Number.isInteger(tick)) return false;
+          await control.watchLoaded(async () => ({fixture: true}), {title: `${entry.label} on Utopia`, tick: Math.max(0, tick - leadSeconds / DT), paused});
+          return true;
+        },
         version: () => mode, release() {}, destroy() {}};
     },
     version: () => mode,
@@ -200,15 +229,23 @@ export function createReplayControl({params, active}) {
   };
   return {
     canWatch: entry => !!entry?.replay,
-    async watch(entry) {
+    async watch(entry, {rampKey, leadSeconds = 0.5, paused = true, isCurrent = () => true} = {}) {
+      const board = rampKey == null ? null : entry.boards?.find(([, , key]) => key === rampKey);
+      if (rampKey != null && !board) return false;
       await new Promise(done => setTimeout(done, 700));
+      if (!isCurrent()) return false;
       if (String(entry.id).endsWith('-5')) throw new Error('This run’s replay is no longer saved.');
-      if (active()) { run = {id: entry.id, mapKey: 'utopia:3'}; index = ownStart - 66; playing = true; }
+      if (active()) {
+        run = {id: entry.id, mapKey: 'utopia:3'};
+        index = board ? clamp(board[0] - leadSeconds / DT) : ownStart - 66;
+        playing = board ? !paused : true;
+      }
+      return true;
     },
     async watchLoaded(load, options) {
       const replay = await load();
       if (!replay) throw new Error('This replay is unavailable.');
-      external = true; run = null; index = 0; playing = true; title = options.title;
+      external = true; run = null; index = options.tick ?? 0; playing = !options.paused; title = options.title;
       spots = []; lastSpot = null;
     },
     setVisible(next) { visible = !!next; },

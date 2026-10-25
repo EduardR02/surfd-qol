@@ -8,6 +8,8 @@ import {visitKey} from './replay-store.js';
 const MAX_MAPS = 50;
 const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
+const RAMP_FIELDS = ['board', 'down', 'up', 'surf'];
+const RECENT_BEST_MS = 24 * 60 * 60 * 1000;
 const endEvents = new Set(['restart', 'start-return', 'practice-restore']);
 // About 15 minutes of ticks since the last restart; longer is not kept as a replay.
 const MAX_REPLAY_COMMANDS = 60000;
@@ -38,17 +40,32 @@ const lower = (value, best) => Number.isFinite(value) && (best == null || value 
 // Newest first: qualifying runs on each of the MAX_MAPS most recently played
 // maps. A short latest attempt is an extra slot; it never evicts useful runs.
 // Each map's best stays pinned and counts while among the newest.
-export function retainRuns(runs, {runsPerMap = 10, minSeconds = 10, keep = new Set()} = {}) {
-  const maps = new Set(), counts = new Map(), kept = [];
+export function retainRuns(runs, {runsPerMap = 10, minSeconds = 10, keep = new Set(), highlights = new Set()} = {}) {
+  const counts = new Map(), kept = [];
+  // Reserve a qualifying slot, rather than pinning an extra replay. A PB that
+  // is also the highlight is still one run and consumes this same slot.
+  const recentMaps = new Set(), reserved = new Set();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i];
+    if (run.outcome !== 'finished' && run.time < minSeconds) continue;
+    if (!recentMaps.has(run.map) && recentMaps.size >= MAX_MAPS) continue;
+    recentMaps.add(run.map);
+    if (highlights.has(run.id)) {
+      reserved.add(run.id);
+      counts.set(run.map, (counts.get(run.map) ?? 0) + 1);
+    }
+  }
+  let remaining = reserved.size;
   for (let i = runs.length - 1; i >= 0; i--) {
     const run = runs[i], count = counts.get(run.map) ?? 0;
     if (run.outcome !== 'finished' && run.time < minSeconds) {
       if (i === runs.length - 1 || keep.has(run.id)) kept.push(run);
       continue;
     }
-    if (!keep.has(run.id) && ((!maps.has(run.map) && maps.size >= MAX_MAPS) || count >= runsPerMap || kept.length >= MAX_RUNS)) continue;
-    maps.add(run.map);
-    counts.set(run.map, count + 1);
+    const highlighted = reserved.has(run.id);
+    if (!keep.has(run.id) && !highlighted && (!recentMaps.has(run.map) || count >= runsPerMap || kept.length + remaining >= MAX_RUNS)) continue;
+    if (!highlighted) counts.set(run.map, count + 1);
+    else remaining--;
     kept.push(run);
   }
   return kept.reverse();
@@ -108,6 +125,36 @@ const routeOf = record => !record ? [] : record.route
 const emptyBests = (key, run) => ({id: key, name: run.mapName, kind: run.kind, at: 0, best: null, splits: [], ramps: {},
   start: {best: null, sum: 0, count: 0}, checkpointCount: null, attempts: 0, finishes: 0});
 
+function addRampAverages(record, run, ramps, epoch) {
+  if (run.practice || run.invalid) return;
+  for (const ramp of ramps) {
+    if (ramp.epoch !== epoch) continue;
+    for (const field of RAMP_FIELDS) {
+      const value = ramp[field];
+      if (!Number.isFinite(value)) continue;
+      const entry = (record.averages ??= {})[ramp.key] ??= {};
+      const metric = entry[field] ??= {sum: 0, count: 0, recent: [], recentSum: 0, next: 0};
+      metric.sum += value;
+      metric.count++;
+      metric.recentSum += value - (metric.recent[metric.next] ?? 0);
+      metric.recent[metric.next] = value;
+      metric.next = (metric.next + 1) % 10;
+    }
+  }
+}
+
+const finishedAt = run => Number.isFinite(run.finishedAt) ? run.finishedAt : run.at;
+function recentBestRuns(runs, now) {
+  const selected = new Map();
+  for (const run of runs) {
+    if (run.outcome !== 'finished' || run.practice || run.invalid || !run.replay ||
+      finishedAt(run) + RECENT_BEST_MS <= now) continue;
+    const previous = selected.get(run.map);
+    if (!previous || run.time < previous.time) selected.set(run.map, run);
+  }
+  return selected;
+}
+
 const isStill = state => state.grounded === true && !state.ducked && !(state.duckFraction > 0) && !state.jumpHeld &&
   state.velocity?.x === 0 && state.velocity?.y === 0 && state.velocity?.z === 0;
 
@@ -129,6 +176,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   let runs = [];
   let runSequence = 0;
   const bests = new Map();
+  let recentHighlights = new Map();
+  const averageEpochs = new Map();
+  const averageEpoch = key => averageEpochs.get(key) ?? 0;
   // `settled` once the saved history has been read (or failed to be);
   // `loaded` only when it was read: deleting anything needs the full picture.
   let settled = false, loaded = false;
@@ -140,7 +190,12 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     if (size === undefined) { size = JSON.stringify(record).length; sizes.set(record, size); }
     return size;
   };
-  const write = work => Promise.resolve().then(work).catch(error => console.warn('[Surfd QoL] Could not save run history:', error));
+  let writeTail = Promise.resolve();
+  const write = work => {
+    const operation = writeTail.then(work);
+    writeTail = operation.catch(error => console.warn('[Surfd QoL] Could not save run history:', error));
+    return operation;
+  };
   const listeners = new Set();
   let current = null, owner = null, startTick = null, lastMap = '', lastMapName = '';
   let boardRevision = -1, board = null, boardSequence = 0, surfSequence = 0;
@@ -164,8 +219,11 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   // history: before that, the kept set is incomplete.
   function commit(changed = [], changedBests = []) {
     const before = runs;
-    runs = retainRuns(runs, {runsPerMap: runsPerMap(), minSeconds: minSeconds(), keep: pinned()});
+    recentHighlights = recentBestRuns(runs, clock());
+    const highlights = new Set([...recentHighlights.values()].map(run => run.id));
+    runs = retainRuns(runs, {runsPerMap: runsPerMap(), minSeconds: minSeconds(), keep: pinned(), highlights});
     const kept = new Set(runs.map(run => run.id));
+    for (const [key, run] of recentHighlights) if (!kept.has(run.id)) recentHighlights.delete(key);
     if (store) {
       for (const run of changed) if (kept.has(run.id)) write(() => store.put(run));
       for (const record of changedBests) { sizes.delete(record); write(() => store.putBests(record)); }
@@ -180,13 +238,18 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   function addRun(run, ramps) {
     let record = bests.get(run.map);
     if (!record) bests.set(run.map, record = emptyBests(run.map, run));
-    return addToBests(record, run, ramps);
+    addToBests(record, run, ramps);
+    addRampAverages(record, run, ramps, averageEpoch(run.map));
+    return record;
   }
   const ready = (async () => {
     let saved = null;
     try { saved = await store?.load(); } catch (error) { console.warn('[Surfd QoL] Could not load run history:', error); }
     if (saved) {
-      for (const record of saved.bests ?? []) if (validBests(record)) bests.set(record.id, record);
+      for (const record of saved.bests ?? []) if (validBests(record)) {
+        if (averageEpoch(record.id)) record.averages = {};
+        bests.set(record.id, record);
+      }
       // Runs that ended while loading stay newest.
       const recorded = new Set(runs.map(run => run.id));
       runs = [...(saved.runs ?? []).filter(run => validRun(run) && !recorded.has(run.id)).sort((a, b) => a.at - b.at), ...runs];
@@ -217,6 +280,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         height: round(startStats?.available ? startStats.heightAboveFloor : null),
       },
       checkpoints: [], ramps: [],
+      rampEntries: new Map(),
     };
     commands = Array.isArray(live.commands) ? live.commands : null;
     initialState = live.initialState ?? null;
@@ -244,15 +308,19 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     surfSequence = metrics?.surfSnapshot?.(-1)?.sequence ?? 0;
   }
   function end(outcome, live) {
+    // A board can be measured even when held Surf is disabled or the run
+    // ends before leaving the ramp. Its final revision is already collected.
     const run = current;
     if (!run) return;
     current = board = null;
     run.outcome = outcome;
+    if (outcome === 'finished') run.finishedAt = clock();
     const timer = live?.timer?.state;
     if (outcome === 'finished' && Number.isFinite(timer?.elapsed)) run.time = timer.elapsed;
     const {ramps, clip} = run;
     delete run.ramps;
     delete run.clip;
+    delete run.rampEntries;
     run.time = round(run.time, 3);
     if (!clearing) runs.push(run);
     saveReplay(run, owner, clip);
@@ -272,7 +340,25 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     run.replay.length = commandCount;
     const replay = {format: live.replayFormat, mapId: live.map.id, mapVersion: live.map.version, config: {...live.config},
       initialState: structuredClone(spawn), commands: log.slice(0, commandCount)};
-    try { onReplay(run, replay, clip ? {...clip, map: live.map} : null); } catch { delete run.replay; }
+    const segment = clip ? {...clip, map: live.map} : null;
+    if (clearing) clearing.replays.push([run, replay, segment]);
+    else sendReplay(run, replay, segment);
+  }
+  function sendReplay(run, replay, clip) {
+    if (!run.replay) return;
+    try { onReplay(run, replay, clip); } catch { delete run.replay; delete run.boards; }
+  }
+  function rampEntry(run, measurement) {
+    const key = visitKey(measurement);
+    if (!key) return null;
+    let entry = run.rampEntries.get(key);
+    if (!entry && run.ramps.length < MAX_RAMPS) {
+      entry = {key, checkpoint: measurement.checkpoint, epoch: averageEpoch(run.map),
+        board: null, down: null, up: null, surf: null};
+      run.rampEntries.set(key, entry);
+      run.ramps.push(entry);
+    }
+    return entry;
   }
   function track(live) {
     const run = current, timer = live.timer.state;
@@ -286,11 +372,14 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       run.checkpoints.push({split: round(timer.splits?.[index], 3), speed: round(speeds[index]), ...(commands ? {command: commands.length} : {})});
     }
     if (!metrics) return;
-    const previousBoard = board;
     const revision = metrics.boardRevision?.();
     if (revision !== undefined && revision !== boardRevision) {
       boardRevision = revision;
       board = metrics.boardSnapshot();
+      if (board?.sequence > 0) {
+        const entry = rampEntry(run, board);
+        if (entry && board.available && Number.isFinite(board.loss)) entry.board = round(board.loss);
+      }
       // Each board, for the replay timeline: [tick, loss, ramp key]. Quick
       // re-touches while landing are the same board.
       if (run.boards && Number.isSafeInteger(board?.sequence) && board.sequence >= boardSequence) {
@@ -303,14 +392,13 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     const surf = metrics.surfSnapshot?.(surfSequence);
     if (!surf) return;
     surfSequence = surf.sequence;
-    // Ramps are identified like PB/WR matching does (visitKey): surface, checkpoint, visit.
-    const key = surf.sequence > 0 ? visitKey(surf) : null;
-    if (key && run.ramps.length < MAX_RAMPS) {
-      const matches = entry => entry?.available && visitKey(entry) === key;
-      const entry = matches(board) ? board : matches(previousBoard) ? previousBoard : null;
-      const value = field => surf.available ? round(surf[field]) : null;
-      run.ramps.push({key, checkpoint: surf.checkpoint, board: entry ? round(entry.loss) : null,
-        down: value('downLoss'), up: value('upLoss'), surf: value('loss')});
+    if (surf.sequence > 0) {
+      const entry = rampEntry(run, surf);
+      if (entry && surf.available) {
+        entry.down = round(surf.downLoss);
+        entry.up = round(surf.upLoss);
+        entry.surf = round(surf.loss);
+      }
     }
   }
   // Keeps recent pre-start states so a replay can start LEAD_SECONDS before its run.
@@ -329,9 +417,10 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     }
     wasStill = still;
   }
-  const shape = (run, total) => ({id: run.id, at: run.at, time: run.time, outcome: run.outcome, checkpoints: run.checkpoints.length,
-    totalCheckpoints: total, practice: run.practice, invalid: run.invalid, start: run.start, kind: run.kind,
-    ...(run.replay ? {replay: run.replay} : {})});
+  const shape = (run, total) => ({id: run.id, map: run.map, mapName: run.mapName, at: run.at, time: run.time,
+    outcome: run.outcome, checkpoints: run.checkpoints.length, totalCheckpoints: total,
+    practice: run.practice, invalid: run.invalid, start: run.start, kind: run.kind,
+    ...(run.replay ? {replay: run.replay, ...(run.boards ? {boards: run.boards} : {})} : {})});
 
   return {
     session,
@@ -342,16 +431,20 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const starting = events.includes('start');
       // The game snapshot is a full copy of its state, so it is read only when
       // a run would start. A replay loaded mid-run ends that run via reset().
-      let playback = replaySessions.has(live);
+      let playback = replaySessions.has(live), spectating = false;
       if (starting && !playback) {
-        try { playback = getState?.()?.playback === true; } catch { /* optional */ }
+        try {
+          const state = getState?.();
+          playback = state?.playback === true;
+          spectating = state?.spectator?.target != null;
+        } catch { /* optional */ }
         if (playback) replaySessions.add(live);
       }
       if (current && (live !== owner || events.some(event => endEvents.has(event)) ||
         timer.phase === 'ready' || timer.startTick !== startTick)) {
         end('reset', live);
       }
-      if (starting && !playback) {
+      if (starting && !playback && !spectating) {
         if (current) end('reset', live);
         owner = live;
         startTick = timer.startTick;
@@ -395,13 +488,21 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       return [...entries.values()].sort((a, b) => b.at - a.at);
     },
     // What the Runs view shows for one map; null when it has no history.
-    view(key = lastMap) {
+    view(key = lastMap, {rampMode = 'best'} = {}) {
       const record = bests.get(key) ?? null;
       const list = runs.filter(run => run.map === key);
       if (!record && !list.length) return null;
       const kind = record?.kind ?? list.at(-1)?.kind ?? 'CP';
       const total = record?.checkpointCount ?? null;
       const best = record?.best ? runs.find(run => run.id === record.best.runId) ?? null : null;
+      let recentBest = recentHighlights.get(key) ?? null;
+      // Reads are cheap while the selected finish remains eligible. Expiry
+      // alone may choose a retained fallback; no per-frame history scan/timer.
+      if (recentBest && finishedAt(recentBest) + RECENT_BEST_MS <= clock()) {
+        recentBest = recentBestRuns(list, clock()).get(key) ?? null;
+        if (recentBest) recentHighlights.set(key, recentBest);
+        else recentHighlights.delete(key);
+      }
       const minimum = minSeconds();
       // The newest attempt stands apart; older short resets don't take a slot.
       const latest = list.at(-1) ?? null;
@@ -411,12 +512,24 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         key, name: record?.name ?? list.at(-1)?.mapName ?? key, kind,
         totals: {attempts: record?.attempts ?? 0, finishes: record?.finishes ?? 0},
         pb: best ? shape(best, total) : null,
+        recentBest: recentBest ? {...shape(recentBest, total), finishedAt: finishedAt(recentBest),
+          expiresAt: finishedAt(recentBest) + RECENT_BEST_MS} : null,
         latest: latest ? shape(latest, total) : null,
         recent: recent.reverse().map(run => shape(run, total)),
         splits: (record?.splits ?? []).flatMap((split, index) => split ? [{index, label: `${kind}${index + (kind === 'S' ? 2 : 1)}`, time: split.time, speed: split.speed,
           at: split.at, pb: Number.isFinite(pbSplits[index]) ? pbSplits[index] : null}] : []),
-        ramps: routeOf(record).map(([rampKey, ramp], index) => ({key: rampKey, label: `Ramp ${index + 1}`, checkpoint: ramp.checkpoint,
-            board: ramp.board, down: ramp.down ?? null, up: ramp.up ?? null, surf: ramp.surf})),
+        ramps: routeOf(record).map(([rampKey, ramp], index) => {
+          const row = {key: rampKey, label: `Ramp ${index + 1}`, checkpoint: ramp.checkpoint};
+          if (rampMode === 'recent' || rampMode === 'average') row.counts = {};
+          for (const field of RAMP_FIELDS) {
+            if (!row.counts) { row[field] = ramp[field] ?? null; continue; }
+            const metric = record.averages?.[rampKey]?.[field];
+            const count = rampMode === 'recent' ? metric?.recent.length ?? 0 : metric?.count ?? 0;
+            row.counts[field] = count;
+            row[field] = count ? round((rampMode === 'recent' ? metric.recentSum : metric.sum) / count) : null;
+          }
+          return row;
+        }),
         start: record?.start?.count ? {best: record.start.best, average: round(record.start.sum / record.start.count), count: record.start.count} : null,
       };
     },
@@ -433,13 +546,33 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       for (const record of bests.values()) bytes += sizeOf(record);
       return {bytes, runs: runs.length, maps: this.maps().length};
     },
+    // The boundary is synchronous, including while load/clear is pending.
+    // Visits already in flight keep their old epoch; later visits can count.
+    resetRampAverages(key = lastMap) {
+      averageEpochs.set(key, averageEpoch(key) + 1);
+      const record = bests.get(key);
+      if (record) { record.averages = {}; sizes.delete(record); }
+      notify();
+      const operation = clearTail.then(async () => {
+        await ready;
+        await writeTail;
+        if (store && !loaded) throw new Error('Run history has not loaded; averages could not be saved.');
+        const record = bests.get(key);
+        if (record && store) {
+          await write(() => store.putBests(record));
+        }
+      });
+      clearTail = operation.catch(() => {});
+      return operation;
+    },
     // Clears serialize, including after rejection. Runs ending during the
     // transaction apply only after its result, against fresh or preserved bests.
     clear(key) {
       const operation = clearTail.then(async () => {
         await ready;
-        const queued = clearing = {runs: [], changed: new Set()};
+        const queued = clearing = {runs: [], replays: [], changed: new Set()};
         try {
+          await writeTail;
           const removed = runs.filter(run => !key || run.map === key).map(run => run.id);
           const dropped = key ? (bests.has(key) ? [key] : []) : [...bests.keys()];
           if (archive) await archive.clearHistory(removed, dropped, key);
@@ -455,6 +588,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
             queued.changed.add(run);
             touched.add(addRun(run, ramps));
           }
+          // New finishes belong after the clear boundary. Start their archive
+          // jobs only once deletion has settled, including when it failed.
+          for (const replay of queued.replays) sendReplay(...replay);
           commit([...queued.changed], loaded ? [...touched] : []);
           notify();
         }
@@ -470,6 +606,21 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       sizes.delete(run);
       if (clearing) clearing.changed.add(run);
       else if (store) write(() => store.put(run));
+      notify();
+    },
+    // A failed archive save must not leave a watchable highlight descriptor.
+    // Its attempt, bests and measurements remain useful without a replay.
+    setReplayUnavailable(id) {
+      const run = runs.find(entry => entry.id === id) ?? clearing?.runs.find(([entry]) => entry.id === id)?.[0];
+      if (!run || (!run.replay && !run.boards && !run.spots)) return;
+      delete run.replay;
+      delete run.boards;
+      delete run.spots;
+      sizes.delete(run);
+      if (clearing) {
+        clearing.changed.add(run);
+        recentHighlights = recentBestRuns(runs, clock());
+      } else commit([run]);
       notify();
     },
     // Replay spots (bookmarks) the player saved while watching this run.

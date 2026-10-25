@@ -20,6 +20,17 @@ test('a packed replay unpacks to exactly the same commands, much smaller', async
   expect(await unpackReplay(await packReplay({ ...replay, commands: [] }))).toEqual({ ...replay, commands: [] });
 });
 
+test('cancelling replay packing stops command serialization at the next yield', async () => {
+  let current = true, serialized = 0;
+  const replay = {format: 8, commands: Array.from({length: 32}, (_, side) => ({
+    toJSON() { serialized++; return {forward: 400, side}; },
+  }))};
+  const result = await packReplay(replay, {chunk: 4, isCurrent: () => current,
+    yieldTask: async () => { current = false; }});
+  expect(result).toBeNull();
+  expect(serialized).toBe(4);
+});
+
 // Transactions stage deletions until completion, like IndexedDB; abort leaves
 // both object stores intact so the caller can retry.
 function deletionDatabase(records) {
@@ -259,6 +270,37 @@ for (const abort of [false, true]) {
     else for (const rows of Object.values(db.records)) expect(rows.size).toBe(0);
   });
 }
+
+test('a finish while clear waits for older history writes keeps its replay across reload', async () => {
+  const db = sharedDatabase(), r = archivedHistory(db);
+  await r.ready();
+  const put = r.store.put;
+  let entered, release;
+  const writing = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  r.store.put = async run => { entered(); await blocked; return put(run); };
+  const oldId = r.finish(12);
+  await writing;
+  await Promise.all(r.saves);
+  const clearing = r.history.clear();
+  // Enter clear's wait for the blocked write, before archive deletion begins.
+  await Promise.resolve();
+  await Promise.resolve();
+  r.finish(6);
+  release();
+  await clearing;
+  await Promise.all(r.saves);
+  const view = r.history.view(), freshId = view.pb.id;
+  expect(freshId).not.toBe(oldId);
+  expect(view.recentBest.id).toBe(freshId);
+  expect(view.totals).toEqual({attempts: 1, finishes: 1});
+  expect((await r.archive.get(freshId)).commands).toEqual([{forward: 400}, {forward: 400}]);
+  expect(r.archive.has(oldId)).toBe(false);
+  const reload = archivedHistory(db);
+  await reload.ready();
+  expect(reload.history.view('utopia:3')).toEqual(view);
+  expect(await reload.archive.get(freshId)).toEqual(await r.archive.get(freshId));
+});
 
 test('clearing one map leaves other maps and their replays intact', async () => {
   const db = sharedDatabase(), r = archivedHistory(db);

@@ -150,6 +150,38 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   const rampConsumer = rampReference?.createConsumer();
   let key = null, view = 'runs', source = null, busy = null, errorTimer = 0, menu = false, replay = false;
   let unsubscribe = [], rendered = '', watchRequest = 0, replayCache = null, referenceContext = '', referenceSession = null;
+  let rampMode = 'best', expandedRamp = null, playbackSource = null, confirmReset = false, resetting = false;
+  let expiryTimer = 0, expiryAt = null, comparisonSlot = null, navigationContext = null;
+
+  function scheduleExpiry(run) {
+    const at = Number.isFinite(run?.expiresAt) ? run.expiresAt : null;
+    if (at === expiryAt) return;
+    clearTimeout(expiryTimer);
+    expiryAt = at;
+    if (at !== null && at > now()) expiryTimer = setTimeout(() => {
+      expiryAt = null;
+      render();
+    }, Math.min(2147483647, at - now() + 1));
+  }
+
+  function rampContext() {
+    try {
+      const session = getSession(), refs = getReferences();
+      // Native Watch adopts replay-format labels without changing movement.
+      const movement = Object.keys(session?.config ?? {}).filter(name => name !== 'version' && name !== 'unrestrictedStart')
+        .sort().map(name => [name, session.config[name]]);
+      return JSON.stringify([key, session?.map?.id, session?.map?.version, movement, refs?.boardId, refs?.ownerKey,
+        referenceIdentity(refs?.own), referenceIdentity(refs?.record), settings.wrSource, settings.surfColorReference, settings.replayControls]);
+    } catch { return null; }
+  }
+  function cancelRampNavigation() {
+    if (!busy?.startsWith('ramp:')) return;
+    rampConsumer?.release();
+    busy = null;
+    navigationContext = null;
+    comparisonSlot = null;
+    watchRequest++;
+  }
 
   function currentBest(data) {
     try { return bestFinish(data, {key, session: getSession(), refs: getReferences()}); }
@@ -214,7 +246,11 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       <ol class="rn-list">${data.recent.map(run => `<li>${row(run, pb)}</li>`).join('')}</ol>
     </section>` : '';
     const off = settings.keepHistory === false ? `<div class="rn-off"><span>Recording is off, so new runs aren’t added.</span><button type="button" class="rn-link" data-settings="history">History settings</button></div>` : '';
-    return off + head + pace + latest + recent;
+    const highlight = data.recentBest ? `<section class="rn-highlight" aria-label="Recent best">
+      <span><b>Recent best</b><small>Fastest retained finish · last 24h</small></span>
+      <b class="rn-time">${clock(data.recentBest.time)}</b>${watchButton(data.recentBest, 'Watch your recent best')}
+    </section>` : '';
+    return off + head + highlight + pace + latest + recent;
   }
   function row(run, pb, latest = false) {
     const versus = versusPb(run, pb);
@@ -233,18 +269,68 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   function references() {
     try { return rampReference?.sources(key) ?? []; } catch { return []; }
   }
+  function rampControls() {
+    return `<div class="rn-compare rn-summary"><div class="rn-seg" role="radiogroup" aria-label="Ramp statistic">${[
+      ['best', 'Best'], ['recent', 'Last 10'], ['average', 'Average'],
+    ].map(([mode, label]) => `<button type="button" role="radio" aria-checked="${rampMode === mode}" tabindex="${rampMode === mode ? 0 : -1}" data-ramp-mode="${mode}">${label}</button>`).join('')}</div>
+      <button type="button" class="rn-reset" data-reset-averages="ask"${resetting ? ' disabled' : ''}>Reset averages</button></div>
+      ${confirmReset ? `<div class="rn-reset-confirm" role="group" aria-label="Reset ramp averages"><span>Reset averages on this map?<small>Bests and replays stay.</small></span><button type="button" class="rn-reset" data-reset-averages="confirm"${resetting ? ' disabled' : ''}>${resetting ? 'Resetting…' : 'Reset'}</button><button type="button" class="rn-reset" data-reset-averages="cancel"${resetting ? ' disabled' : ''}>Cancel</button></div>` : ''}
+      ${rampMode === 'best' ? '' : `<p class="rn-note rn-samples">${rampMode === 'recent' ? 'Last 10 valid measurements per metric.' : 'All valid measurements since reset.'}</p>`}`;
+  }
+  function playbackReason(data, rampKey, destination, refs, selected, picked) {
+    if (settings.replayControls === false) return 'Replay controls are off';
+    if (destination === 'recentBest') {
+      const run = data.recentBest;
+      if (!run) return 'No recent best in the last 24h';
+      if (!canWatch(run)) return 'Recent best replay unavailable';
+      return run.boards?.some(([tick, , key]) => key === rampKey && Number.isInteger(tick) && tick >= (run.replay?.offset ?? 0)) ? '' : 'This ramp is absent from Recent best';
+    }
+    if (destination === 'pb' && !refs.some(ref => ref.name === 'pb')) {
+      const best = currentBest(data);
+      if (best && !best.official) {
+        if (!canWatch(best)) return 'PB replay unavailable';
+        return best.boards?.some(([tick, , key]) => key === rampKey && Number.isInteger(tick) && tick >= (best.replay?.offset ?? 0)) ? '' : 'This ramp is absent from PB';
+      }
+    }
+    const ref = refs.find(entry => entry.name === destination);
+    if (!ref || !rampConsumer?.watchRamp) return `${destination === 'pb' ? 'PB' : 'WR'} replay unavailable on this map`;
+    if (selected?.name === destination) {
+      if (picked?.status === 'missing') return `${ref.label} replay unavailable`;
+      if (picked?.status === 'ready' && !Number.isInteger(picked.ramps.get(rampKey)?.tick)) return `This ramp is absent from ${ref.label}`;
+    }
+    return '';
+  }
+  function rampPlayback(data, ramp, refs, selected, picked) {
+    if (expandedRamp !== ramp.key) return '';
+    const destination = playbackSource ?? selected?.name ?? 'pb';
+    const choices = [['pb', 'PB'], ['wr', refs.find(ref => ref.name === 'wr')?.label ?? 'WR'], ['recentBest', 'Recent best']];
+    const reason = playbackReason(data, ramp.key, destination, refs, selected, picked);
+    const pending = busy === `ramp:${ramp.key}`;
+    return `<div id="rn-play-${escape(encodeURIComponent(ramp.key))}" class="rn-ramp-play" role="group" aria-label="Watch ${escape(ramp.label)}">
+      <div class="rn-seg" role="radiogroup" aria-label="Replay destination">${choices.map(([name, label]) => `<button type="button" role="radio" aria-checked="${destination === name}" tabindex="${destination === name ? 0 : -1}" data-play-source="${name}">${escape(label)}</button>`).join('')}</div>
+      <button type="button" class="rn-watch" data-ramp-watch="${escape(ramp.key)}" aria-label="Watch ${escape(ramp.label)} in ${escape(choices.find(([name]) => name === destination)[1])}"${reason || pending ? ' disabled' : ''}${pending ? ' aria-busy="true"' : ''}>${PLAY}</button>
+      <span class="rn-play-note">${escape(reason || '0.5s before this ramp · paused')}</span>
+    </div>`;
+  }
   function ramps(data) {
-    const sections = rampSections(data);
+    const controls = rampControls(), sections = rampSections(data);
     if (!sections.length) {
       rampConsumer?.release();
-      return `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you board in a recorded run show up here with your best Board, Down and Up on each.</p></div>`;
+      return controls + `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you board in a recorded run show up here with your Board, Down and Up measurements.</p></div>`;
     }
     const refs = references();
     const preferred = settings.surfColorReference === 'pb' || settings.surfColorReference === 'wr' ? settings.surfColorReference : 'pb';
     const selected = refs.find(ref => ref.name === source) ?? refs.find(ref => ref.name === preferred) ?? refs[0] ?? null;
     let picked = null;
-    try { picked = selected ? rampConsumer?.get(key, selected.name) : null; } catch { /* unavailable */ }
-    if (!picked) rampConsumer?.release();
+    // Navigation owns the consumer until its selected replay has loaded. A
+    // subscription render must not swap it back to the comparison source.
+    const navigating = busy?.startsWith('ramp:');
+    if (navigating) picked = comparisonSlot?.key === key && comparisonSlot.source === selected?.name ? comparisonSlot.slot : null;
+    else {
+      try { picked = selected ? rampConsumer?.get(key, selected.name) : null; } catch { /* unavailable */ }
+      comparisonSlot = {key, source: selected?.name, slot: picked};
+      if (!picked) rampConsumer?.release();
+    }
     const ready = picked?.status === 'ready';
     const net = settings.rampResult === 'total';
     const fields = net ? [['board', 'board'], ['surf', 'surf']] : [['board', 'board'], ['down', 'down'], ['up', 'up']];
@@ -255,25 +341,26 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         : picked?.status === 'loading' ? `Reading the ${escape(picked.label)} run…`
           : picked?.status === 'missing' ? `The ${escape(picked.label)} run couldn’t be read, so there’s nothing to compare against.` : '';
     const compare = refs.length ? `<div class="rn-seg" role="radiogroup" aria-label="Compare with">${refs.map(ref =>
-      `<button type="button" role="radio" aria-checked="${ref === selected}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
+      `<button type="button" role="radio" aria-checked="${ref === selected}" tabindex="${ref === selected ? 0 : -1}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
     const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${fixed(tolerance)} u/s</span><span class="loss">worse</span></p>` : '';
     const cell = (ramp, field) => {
       const reference = ready ? picked.ramps.get(ramp.key)?.[field] : null;
       const value = compareRamp(ramp[field], reference, tolerance);
       const title = Number.isFinite(reference) ? `${picked.label}: ${formatDelta(-reference, 1)}` : '';
-      return `<span class="rn-v ${value.tone}" role="cell"${title ? ` title="${escape(title)}"` : ''}><b>${value.text}</b>${value.diff ? `<em>${value.diff}</em>` : ''}</span>`;
+      const count = rampMode === 'best' ? '' : `<small class="rn-count">${ramp.counts?.[field] ?? 0} valid</small>`;
+      return `<span class="rn-v ${value.tone}" role="cell"${title ? ` title="${escape(title)}"` : ''}><b>${value.text}</b>${value.diff ? `<em>${value.diff}</em>` : ''}${count}</span>`;
     };
     const bars = new Map(surfBars(data.ramps ?? [], ready ? ramp => picked.ramps.get(ramp.key)?.surf : null, tolerance).map((bar, index) => [data.ramps[index], bar]));
     const bar = ramp => {
       const entry = bars.get(ramp);
       return `<span class="rn-bar${ready ? ' vs' : ''}" aria-hidden="true">${entry ? `<i class="${entry.tone} ${entry.side}" style="width:${(entry.size * (ready ? 50 : 100)).toFixed(1)}%"></i>` : ''}</span>`;
     };
-    return `<div class="rn-compare"><span class="rn-compare-label">${refs.length ? 'Compare with' : 'Your best on each ramp'}</span>${compare}</div>
+    return controls + `<div class="rn-compare"><span class="rn-compare-label">${refs.length ? 'Compare with' : 'Your ramp measurements'}</span>${compare}</div>
       ${note ? `<p class="rn-note">${note}</p>` : legend}
-      <div class="rn-ramps${net ? ' net' : ''}" role="table" aria-label="Best ramps">
-        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span class="rn-bar-head" role="columnheader">${ready ? `surf vs ${escape(picked.label)}` : 'surf'}</span>${fields.map(([, label]) => `<span role="columnheader">${label}</span>`).join('')}</div>
+      <div class="rn-ramps${net ? ' net' : ''}" role="table" aria-label="Ramp measurements">
+        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span class="rn-bar-head" role="columnheader">surf${ready ? `<span class="rn-bar-reference"> vs ${escape(picked.label)}</span>` : ''}</span>${fields.map(([, label]) => `<span role="columnheader">${label}</span>`).join('')}</div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>
-          ${section.ramps.map(ramp => `<div class="rn-rr" role="row"><span class="rn-name" role="rowheader">${escape(ramp.label)}</span>${bar(ramp)}${fields.map(([field]) => cell(ramp, field)).join('')}</div>`).join('')}`).join('')}
+          ${section.ramps.map(ramp => `<div class="rn-rr" role="row"><span role="rowheader"><button type="button" class="rn-name" data-ramp="${escape(ramp.key)}" aria-expanded="${expandedRamp === ramp.key}"${expandedRamp === ramp.key ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="Replay options for ${escape(ramp.label)}">${escape(ramp.label)}${CHEVRON}</button></span>${bar(ramp)}${fields.map(([field]) => cell(ramp, field)).join('')}</div>${rampPlayback(data, ramp, refs, selected, picked)}`).join('')}`).join('')}
       </div>`;
   }
 
@@ -287,10 +374,12 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   function render(force = false) {
+    if (panel.hidden || busy && replayControl?.adopting) return;
     if (replayCache) syncReplayCache();
-    if (panel.hidden) return;
+    if (navigationContext && navigationContext !== rampContext()) cancelRampNavigation();
     let data = null;
-    try { data = key ? history.view(key) : null; } catch { /* unavailable */ }
+    try { data = key ? history.view(key, {rampMode}) : null; } catch { /* unavailable */ }
+    scheduleExpiry(data?.recentBest);
     if (!data && currentBest(null)?.official) data = {name: history.currentMapName, splits: [], recent: [], ramps: []};
     if (!data || view !== 'ramps') rampConsumer?.release();
     const maps = safeMaps();
@@ -306,8 +395,16 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const html = !data ? empty() : view === 'ramps' ? ramps(data) : overview(data);
     if (!force && html === rendered) return;
     rendered = html;
-    const scroll = body.scrollTop;
+    const scroll = body.scrollTop, active = root.activeElement;
+    const focused = active && body.contains?.(active) ? {...active.dataset} : null;
     body.innerHTML = html;
+    if (focused && Object.keys(focused).length) {
+      const buttons = [...body.querySelectorAll('button')];
+      const replacement = buttons.find(button =>
+        Object.entries(focused).every(([name, value]) => button.dataset[name] === value))
+        ?? (focused.resetAverages ? buttons.find(button => button.dataset.resetAverages === 'ask') : null);
+      replacement?.focus({preventScroll: true});
+    }
     body.scrollTop = scroll;
   }
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -338,9 +435,12 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     try { data = history.view(key); } catch { /* unavailable */ }
     const best = currentBest(data);
     const run = best?.official && id === `official-pb:${best.runId}` ? best
-      : [data?.pb, data?.latest, ...(data?.recent ?? [])].find(entry => entry?.id === id);
+      : [data?.pb, data?.recentBest, data?.latest, ...(data?.recent ?? [])].find(entry => entry?.id === id);
     if (!run) return;
     const request = ++watchRequest, expectedKey = key;
+    const expectedOwner = getReferences()?.ownerKey;
+    const ownsRequest = () => request === watchRequest && key === expectedKey && !panel.hidden &&
+      getReferences()?.ownerKey === expectedOwner;
     let isCurrent = () => true;
     busy = id;
     render(true);
@@ -358,9 +458,10 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
           const replay = await cache.promise;
           if (!isCurrent()) throw new Error('The personal best changed. Choose the run again.');
           return replay;
-        }, {title: `Your PB on ${data?.name ?? history.currentMapName ?? 'this map'} · ${formatTime(run.time)}`});
+        }, {title: `Your PB on ${data?.name ?? history.currentMapName ?? 'this map'} · ${formatTime(run.time)}`,
+          isCurrent: adopted => ownsRequest() && (adopted || isCurrent())});
       } else {
-        await replayControl.watch(run);
+        await replayControl.watch(run, {isCurrent: ownsRequest});
       }
       if (request !== watchRequest || key !== expectedKey) return;
       busy = null;
@@ -373,20 +474,83 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     }
   }
 
+  async function watchRamp(rampKey) {
+    if (panel.hidden || view !== 'ramps' || busy || !replayControl || settings.replayControls === false) return;
+    const data = history.view(key, {rampMode}), refs = references();
+    if (!data) return;
+    const preferred = settings.surfColorReference === 'wr' ? 'wr' : 'pb';
+    const selected = refs.find(ref => ref.name === source) ?? refs.find(ref => ref.name === preferred) ?? refs[0];
+    const destination = playbackSource ?? selected?.name ?? 'pb';
+    const picked = selected ? rampConsumer?.get(key, selected.name) : null;
+    const reason = playbackReason(data, rampKey, destination, refs, selected, picked);
+    if (reason) { showError(reason); return; }
+    const expectedKey = key, request = ++watchRequest;
+    const expectedContext = navigationContext = rampContext();
+    const expectedOwner = getReferences()?.ownerKey;
+    busy = `ramp:${rampKey}`;
+    render(true);
+    try {
+      const options = {leadSeconds: 0.5, paused: true};
+      const local = destination === 'recentBest' ? data.recentBest
+        : destination === 'pb' && !refs.some(ref => ref.name === 'pb') ? currentBest(data) : null;
+      const result = local
+        ? await replayControl.watch(local, {rampKey, ...options, isCurrent: adopted =>
+          request === watchRequest && key === expectedKey && !panel.hidden && view === 'ramps' &&
+          (adopted ? getReferences()?.ownerKey === expectedOwner : rampContext() === expectedContext)})
+        : await rampConsumer.watchRamp(key, destination, rampKey, replayControl, options);
+      if (request !== watchRequest || key !== expectedKey) return;
+      busy = null; navigationContext = null;
+      if (result === false) { showError('This ramp is unavailable in that replay.'); render(true); }
+      else closePanel();
+    } catch (error) {
+      if (request !== watchRequest || key !== expectedKey) return;
+      busy = null; navigationContext = null;
+      showError(error?.message || 'The ramp replay didn’t start.');
+      render(true);
+    }
+  }
+  async function resetAverages(action) {
+    if (resetting) return;
+    if (action !== 'confirm') { confirmReset = action === 'ask'; render(); return; }
+    if (!confirmReset) return;
+    const expectedKey = key;
+    resetting = true;
+    render();
+    try {
+      await history.resetRampAverages(expectedKey);
+      if (key === expectedKey && !panel.hidden) {
+        confirmReset = false;
+        write(status, 'Ramp averages reset. Bests and replays kept.');
+        status.classList.remove('error');
+      }
+    } catch (error) {
+      if (key === expectedKey && !panel.hidden) showError(error?.message || 'Averages could not be reset.');
+    } finally {
+      resetting = false;
+      render();
+    }
+  }
+
   body.addEventListener('click', event => {
     const target = event.target.closest('button');
     if (!target) return;
     if (target.dataset.watch) return watch(target.dataset.watch);
     else if (target.dataset.settings) onOpenSettings?.(target.dataset.settings);
-    else if (target.dataset.source) { source = target.dataset.source; render(); }
+    else if (target.dataset.source) { cancelRampNavigation(); source = target.dataset.source; playbackSource = null; render(); }
+    else if (target.dataset.rampMode) { rampMode = target.dataset.rampMode; render(); }
+    else if (target.dataset.resetAverages) return resetAverages(target.dataset.resetAverages);
+    else if (target.dataset.ramp) { cancelRampNavigation(); expandedRamp = expandedRamp === target.dataset.ramp ? null : target.dataset.ramp; playbackSource = null; render(); }
+    else if (target.dataset.playSource) { cancelRampNavigation(); playbackSource = target.dataset.playSource; render(); }
+    else if (target.dataset.rampWatch) return watchRamp(target.dataset.rampWatch);
   });
-  for (const tab of tabs) tab.addEventListener('click', () => { rampConsumer?.release(); view = tab.dataset.view; toggleMaps(false); render(); body.scrollTop = 0; });
+  for (const tab of tabs) tab.addEventListener('click', () => { cancelRampNavigation(); rampConsumer?.release(); view = tab.dataset.view; toggleMaps(false); render(); body.scrollTop = 0; });
   mapButton.addEventListener('click', () => toggleMaps());
   mapList.addEventListener('click', event => {
     const target = event.target.closest('[data-map]');
     if (!target) return;
     rampConsumer?.release();
     key = target.dataset.map;
+    expandedRamp = null; playbackSource = null; confirmReset = false;
     busy = null; watchRequest++;
     toggleMaps(false);
     mapButton.focus();
@@ -417,6 +581,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
   function closePanel(focus = false) {
     rampConsumer?.release();
+    clearTimeout(expiryTimer); expiryAt = null;
+    confirmReset = false; expandedRamp = null; playbackSource = null;
+    navigationContext = null; comparisonSlot = null;
     if (panel.hidden) return;
     panel.hidden = true;
     referenceSession = null;
@@ -436,15 +603,16 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     close: closePanel,
     // Where the panel can be: in menus from the dock; during a replay from the replay bar.
     setContext(next) {
-      if (replayCache) syncReplayCache();
       menu = !!next.menu; replay = !!next.replay;
       if (opener.hidden === menu) opener.hidden = !menu;
+      if (busy && replayControl?.adopting) return;
+      if (replayCache && !panel.hidden) syncReplayCache();
       if (!panel.hidden && !menu && !(replay && panel.classList.contains('over-replay'))) closePanel();
       if (!panel.hidden && menu && panel.classList.contains('over-replay')) closePanel();
       if (!panel.hidden) {
         const session = getSession(), refs = getReferences();
         const context = JSON.stringify([key, replayIdentity(), refs?.own?.createdAt, refs?.boardId, refs?.ownerKey,
-          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference, settings.replayControls]);
+          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference, settings.wrSource, settings.replayControls]);
         if (context !== referenceContext || session !== referenceSession) {
           referenceContext = context; referenceSession = session; render();
         }
@@ -453,7 +621,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     show(mapKey, anchor) { openPanel(mapKey, anchor); },
     toggle(mapKey, anchor) { if (!panel.hidden) closePanel(); else openPanel(mapKey, anchor); },
     showMaps() { if (!panel.hidden) toggleMaps(true); },
-    showView(next) { rampConsumer?.release(); view = next === 'ramps' ? 'ramps' : 'runs'; render(true); },
+    showView(next) { cancelRampNavigation(); rampConsumer?.release(); view = next === 'ramps' ? 'ramps' : 'runs'; render(true); },
     handleKey(event) {
       if (panel.hidden) return;
       const inside = event.composedPath().includes(panel);
@@ -462,10 +630,25 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         if (!mapList.hidden) { toggleMaps(false); mapButton.focus(); } else closePanel(true);
         return;
       }
+      if (inside && event.type === 'keydown') {
+        const target = event.composedPath()[0]?.closest?.('[role="radio"]');
+        const group = target?.closest('[role="radiogroup"]');
+        if (group && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+          const buttons = [...group.querySelectorAll('[role="radio"]')], index = buttons.indexOf(target);
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+            : (index + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+          event.preventDefault();
+          event.stopPropagation();
+          buttons[next].focus();
+          buttons[next].click();
+          return;
+        }
+      }
       const index = tabs.indexOf(event.composedPath()[0]);
       if (event.type === 'keydown' && index !== -1 && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
         event.preventDefault();
         const next = tabs[(index + 1) % tabs.length];
+        cancelRampNavigation();
         rampConsumer?.release();
         view = next.dataset.view;
         render();

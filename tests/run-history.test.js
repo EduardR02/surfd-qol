@@ -70,6 +70,16 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
   };
   return {
     live, history, store, state, snapshots, tick,
+    publishBoard(values) {
+      Object.assign(board, {sequence: board.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true}, values);
+      revision++;
+      tick();
+    },
+    reviseBoard(values) { Object.assign(board, values); revision++; tick(); },
+    publishSurf(values) {
+      Object.assign(surf, {sequence: surf.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true}, values);
+      tick();
+    },
     idle(seconds, { still = false } = {}) {
       standing = still;
       if (!still) live.state.velocity = { x: 1, y: 0, z: 0 };
@@ -719,4 +729,517 @@ describe('replay trimming', () => {
     expect(trimmed.offset).toBe(10);
     expect(trimmed.replay.commands).toHaveLength(190);
   });
+});
+
+describe('ramp averages', () => {
+  const row = (history, mode = 'average', key = 'utopia:3') => history.view(key, {rampMode: mode}).ramps[0];
+  const mean = values => values.length ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1)) : null;
+
+  test('last ten valid measurements and overall are independent per metric, bounded and persisted', async () => {
+    const r = rig();
+    await r.history.ready;
+    const values = {board: [], down: [], up: [], surf: []};
+    for (let i = 1; i <= 24; i++) {
+      const sample = {board: i, down: i % 3 ? i * 2 : null, up: i % 2 ? null : i * 3, surf: i % 2 ? i * 4 : null};
+      r.go();
+      r.ramp({boardLoss: sample.board, down: sample.down, up: sample.up, surfLoss: sample.surf});
+      r.restart();
+      for (const field of Object.keys(values)) if (sample[field] !== null) values[field].push(sample[field]);
+    }
+    for (const mode of ['recent', 'average']) {
+      const result = row(r.history, mode);
+      for (const [field, samples] of Object.entries(values)) {
+        const selected = mode === 'recent' ? samples.slice(-10) : samples;
+        expect(result[field]).toBe(mean(selected));
+        expect(result.counts[field]).toBe(selected.length);
+      }
+    }
+    expect(row(r.history, 'best')).toMatchObject({board: 1, down: 2, up: 6, surf: 4});
+    await flush();
+    const averages = r.store.data.bests.get('utopia:3').averages['[1,0,1]'];
+    for (const field of Object.keys(values)) {
+      const metric = averages[field], samples = values[field];
+      expect(metric).toMatchObject({sum: samples.reduce((sum, value) => sum + value, 0),
+        count: samples.length, recentSum: samples.slice(-10).reduce((sum, value) => sum + value, 0),
+        next: samples.length % 10});
+      expect(metric.recent).toHaveLength(10);
+      expect([...metric.recent.slice(metric.next), ...metric.recent.slice(0, metric.next)]).toEqual(samples.slice(-10));
+    }
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(row(reload.history)).toEqual(row(r.history));
+    expect(row(reload.history, 'recent')).toEqual(row(r.history, 'recent'));
+  });
+
+  test('available board revisions count once without completed Surf, and unavailable fields never become zero', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go();
+    r.publishBoard({loss: 4});
+    r.reviseBoard({loss: 7});
+    r.reviseBoard({loss: 9});
+    await flush();
+    expect(r.store.data.bests.size).toBe(0);
+    r.restart();
+    expect(row(r.history)).toMatchObject({board: 9, down: null, up: null, surf: null,
+      counts: {board: 1, down: 0, up: 0, surf: 0}});
+    expect(row(r.history, 'best').board).toBe(9);
+    r.go();
+    r.publishBoard({loss: null});
+    r.publishSurf({loss: null, downLoss: null, upLoss: 0});
+    r.finish();
+    expect(row(r.history)).toMatchObject({board: 9, down: null, up: 0, surf: null,
+      counts: {board: 1, down: 0, up: 1, surf: 0}});
+    r.go();
+    r.ramp({boardLoss: 3, surfLoss: 90, down: 40, up: 50, hidden: true});
+    r.finish();
+    expect(row(r.history)).toMatchObject({board: 6, down: null, up: 0, surf: null,
+      counts: {board: 2, down: 0, up: 1, surf: 0}});
+  });
+
+  test('clean resets count but practice, invalid runs and replay sessions do not', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 8, surfLoss: 20}); r.restart();
+    r.live.practice = true;
+    r.go(); r.ramp({boardLoss: 1, surfLoss: 1}); r.finish();
+    r.live.practice = false;
+    r.go(); r.ramp({boardLoss: 2, surfLoss: 2});
+    r.live.timer.state.invalidReason = 'Teleported'; r.tick(); r.restart();
+    r.live.timer.state.invalidReason = '';
+    r.state.playback = true;
+    r.go(); r.ramp({boardLoss: 3, surfLoss: 3}); r.finish();
+    expect(row(r.history)).toMatchObject({board: 8, surf: 20, counts: {board: 1, surf: 1}});
+    expect(r.history.runs()).toHaveLength(3);
+  });
+
+  test('reset is independent of bests, runs, replays and other maps; old in-flight visits cannot return', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 2, surfLoss: 10}); r.finish();
+    const saved = structuredClone(r.history.runs()), before = r.history.view();
+    r.live.map = {id: 'other', version: 1};
+    r.go(); r.ramp({boardLoss: 9, surfLoss: 90}); r.finish();
+    const other = r.history.view('other:1', {rampMode: 'average'});
+    r.live.map = {id: 'utopia', version: 3};
+    r.go();
+    r.publishBoard({loss: 4});
+    await r.history.resetRampAverages('utopia:3');
+    expect(row(r.history)).toMatchObject({board: null, surf: null, counts: {board: 0, surf: 0}});
+    expect(r.history.view('utopia:3')).toMatchObject({pb: before.pb, recentBest: before.recentBest, ramps: before.ramps, start: before.start});
+    expect(r.history.runs().slice(0, 1)).toEqual(saved);
+    expect(r.history.view('other:1', {rampMode: 'average'})).toEqual(other);
+    r.reviseBoard({loss: 6});
+    r.publishSurf({loss: 30, downLoss: 10, upLoss: 20});
+    r.ramp({boardLoss: 8, surfLoss: 40, surfaceId: 2});
+    r.restart();
+    const rows = r.history.view('utopia:3', {rampMode: 'average'}).ramps;
+    expect(rows[0]).toMatchObject({board: null, surf: null, counts: {board: 0, surf: 0}});
+    // PB route stays unchanged, but the genuinely new post-reset visit is aggregated.
+    await flush();
+    expect(r.store.data.bests.get('utopia:3').averages['[2,0,1]']).toMatchObject({
+      board: {sum: 8, count: 1, recent: [8]}, surf: {sum: 40, count: 1, recent: [40]}});
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(row(reload.history)).toEqual(row(r.history));
+  });
+
+  test('reset during load discards saved and pre-reset pending samples, preserving later ones', async () => {
+    const store = memoryStore();
+    const first = rig({store});
+    await first.history.ready;
+    first.go(); first.ramp({boardLoss: 2, surfLoss: 10}); first.finish();
+    await flush();
+    const saved = await store.load();
+    let resolveLoad;
+    const r = rig({store: {...store, load: () => new Promise(resolve => { resolveLoad = resolve; })}, now: 5000});
+    r.go(); r.ramp({boardLoss: 4, surfLoss: 20}); r.restart();
+    const resetting = r.history.resetRampAverages('utopia:3');
+    r.go(); r.ramp({boardLoss: 6, surfLoss: 30}); r.restart();
+    resolveLoad(saved);
+    await resetting;
+    expect(row(r.history)).toMatchObject({board: 6, surf: 30, counts: {board: 1, surf: 1}});
+    expect(row(r.history, 'best').board).toBe(2);
+    const reload = rig({store});
+    await reload.history.ready;
+    expect(row(reload.history)).toEqual(row(r.history));
+  });
+
+  for (const abort of [false, true]) {
+    test(`reset during ${abort ? 'failed' : 'successful'} clear keeps only post-boundary samples`, async () => {
+      const r = rig();
+      await r.history.ready;
+      r.go(); r.ramp({boardLoss: 2, surfLoss: 10}); r.finish();
+      await flush();
+      const clear = r.store.clear;
+      let release, started;
+      const waiting = new Promise(resolve => { started = resolve; });
+      r.store.clear = (...args) => new Promise((resolve, reject) => {
+        release = async () => {
+          if (abort) reject(new Error('Transaction aborted'));
+          else { await clear(...args); resolve(); }
+        };
+        started();
+      });
+      const clearing = r.history.clear('utopia:3').catch(error => error.message);
+      await waiting;
+      r.go(); r.ramp({boardLoss: 4, surfLoss: 20}); r.restart();
+      const resetting = r.history.resetRampAverages('utopia:3');
+      r.go(); r.ramp({boardLoss: 6, surfLoss: 30}); r.restart();
+      await release(); await clearing; await resetting;
+      expect(row(r.history)).toMatchObject({board: 6, surf: 30, counts: {board: 1, surf: 1}});
+      const reload = rig({store: r.store});
+      await reload.history.ready;
+      expect(row(reload.history)).toEqual(row(r.history));
+    });
+  }
+
+  test('legacy bests do not backfill averages and a failed reset persistence can be retried', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 3, surfLoss: 12}); r.finish();
+    await flush();
+    delete r.store.data.bests.get('utopia:3').averages;
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(row(reload.history)).toMatchObject({board: null, counts: {board: 0}});
+    expect(row(reload.history, 'best').board).toBe(3);
+    const putBests = r.store.putBests;
+    r.store.putBests = async () => { throw new Error('Write failed'); };
+    await expect(r.history.resetRampAverages('utopia:3')).rejects.toThrow('Write failed');
+    r.store.putBests = putBests;
+    await r.history.resetRampAverages('utopia:3');
+    expect(r.store.data.bests.get('utopia:3').averages).toEqual({});
+  });
+});
+
+describe('recent best replay', () => {
+  const day = 24 * 60 * 60 * 1000;
+
+  test('only strictly faster replay-backed clean finishes replace it; TTL uses completion time', async () => {
+    let now = 1000;
+    const r = rig({clock: () => now, onReplay: () => {}});
+    await r.history.ready;
+    r.go(); r.idle(1); now = 5000; r.finish();
+    const initial = r.history.view().recentBest;
+    expect(initial).toMatchObject({at: 1000, finishedAt: 5000, expiresAt: 5000 + day});
+    now = 6000;
+    r.go(); r.idle(1); r.finish();
+    expect(r.history.view().recentBest.id).toBe(initial.id);
+    r.run({ticks: 1, practice: true});
+    r.run({ticks: 1, invalid: 'Teleported'});
+    r.run({ticks: 1, finish: false});
+    expect(r.history.view().recentBest.id).toBe(initial.id);
+    r.run({ticks: 10});
+    const faster = r.history.view().recentBest;
+    expect(faster.id).not.toBe(initial.id);
+    expect(faster.finishedAt).toBe(6000);
+    await flush();
+    expect(r.store.data.runs.get(faster.id).finishedAt).toBe(6000);
+    now = faster.expiresAt;
+    expect(r.history.view().recentBest).toBeNull();
+    const unavailable = rig();
+    await unavailable.history.ready;
+    unavailable.run();
+    expect(unavailable.history.view().recentBest).toBeNull();
+  });
+
+  test('expiry falls back only to eligible retained finishes, including on load and prune', async () => {
+    let now = 1000;
+    const r = rig({clock: () => now, onReplay: () => {}, limits: () => ({runsPerMap: 3})});
+    await r.history.ready;
+    r.run({ticks: 10});
+    const first = r.history.view().recentBest;
+    now += 1000;
+    r.run({ticks: 20});
+    const fallback = r.history.view().latest;
+    now = first.expiresAt;
+    expect(r.history.view().recentBest.id).toBe(fallback.id);
+    r.history.prune();
+    await flush();
+    const reload = rig({store: r.store, clock: () => now});
+    await reload.history.ready;
+    expect(reload.history.view('utopia:3').recentBest.id).toBe(fallback.id);
+    now += 1000;
+    expect(reload.history.view('utopia:3').recentBest).toBeNull();
+    expect(reload.history.view('utopia:3').pb.id).toBe(first.id);
+  });
+
+  test('highlight reserves a qualifying slot; PB pin and latest short reset retain their existing roles', async () => {
+    let now = 1000, kept;
+    const replays = new Set();
+    const r = rig({clock: () => now, limits: () => ({runsPerMap: 3}),
+      onReplay: run => replays.add(run.id),
+      onPrune: ids => { kept = ids; for (const id of replays) if (!ids.has(id)) replays.delete(id); }});
+    await r.history.ready;
+    r.run({ticks: 1});
+    const pb = r.history.view().pb.id;
+    now += day;
+    r.run({ticks: 10});
+    const highlight = r.history.view().recentBest.id;
+    for (let i = 0; i < 8; i++) { now++; r.run({ticks: 30 + i}); }
+    expect(r.history.runs()).toHaveLength(4);
+    expect(kept.has(pb)).toBe(true);
+    expect(kept.has(highlight)).toBe(true);
+    expect(r.history.view().recentBest.id).toBe(highlight);
+    r.run({ticks: 1, finish: false});
+    expect(r.history.runs()).toHaveLength(5);
+    expect(replays.size).toBe(5);
+    await flush();
+    expect(r.store.data.runs.size).toBe(5);
+    now += day;
+    r.history.prune();
+    expect(r.history.view().recentBest).toBeNull();
+    r.run({ticks: 100});
+    expect(replays.has(highlight)).toBe(false);
+    expect(replays.has(pb)).toBe(true);
+  });
+
+  test('PB, latest and recent best share one recording; legacy completion uses its saved timestamp', async () => {
+    let now = 1000;
+    const r = rig({clock: () => now, onReplay: () => {}, limits: () => ({runsPerMap: 1})});
+    await r.history.ready;
+    r.run({ticks: 20});
+    const view = r.history.view();
+    expect(view.pb.id).toBe(view.latest.id);
+    expect(view.pb.id).toBe(view.recentBest.id);
+    expect(r.history.runs()).toHaveLength(1);
+    await flush();
+    const legacy = r.store.data.runs.get(view.pb.id);
+    delete legacy.finishedAt;
+    const reload = rig({store: r.store, clock: () => now});
+    await reload.history.ready;
+    expect(reload.history.view('utopia:3').recentBest).toMatchObject({finishedAt: legacy.at, expiresAt: legacy.at + day});
+    now = legacy.at + day;
+    expect(reload.history.view('utopia:3').recentBest).toBeNull();
+  });
+});
+
+describe('history statistics boundary regressions', () => {
+  const averages = (history, key = 'utopia:3') => history.view(key, {rampMode: 'average'}).ramps;
+
+  test('a simultaneous board transition and completed Surf keep visit-specific samples and missing fields', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go();
+    r.ramp({boardLoss: 3, down: 10, up: 20, surfLoss: 30, surfaceId: 7,
+      nextBoard: {surfaceId: 8, checkpoint: 0, visit: 1, loss: 12}});
+    r.reviseBoard({loss: 16});
+    r.publishSurf({surfaceId: 8, checkpoint: 0, visit: 1, loss: 60, downLoss: null, upLoss: 25});
+    r.restart();
+    expect(averages(r.history)).toEqual([
+      {key: '[7,0,1]', label: 'Ramp 1', checkpoint: 0, board: 3, down: 10, up: 20, surf: 30,
+        counts: {board: 1, down: 1, up: 1, surf: 1}},
+      {key: '[8,0,1]', label: 'Ramp 2', checkpoint: 0, board: 16, down: null, up: 25, surf: 60,
+        counts: {board: 1, down: 0, up: 1, surf: 1}},
+    ]);
+    r.go();
+    r.ramp({boardLoss: 7, down: 20, up: 30, surfLoss: 50, surfaceId: 7});
+    r.restart();
+    expect(averages(r.history)[0]).toMatchObject({board: 5, down: 15, up: 25, surf: 40,
+      counts: {board: 2, down: 2, up: 2, surf: 2}});
+    expect(averages(r.history)[1].counts.board).toBe(1);
+  });
+
+  test('spectator starts cannot add a run or any ramp samples', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 8, surfLoss: 20}); r.restart();
+    const before = structuredClone(r.history.view('utopia:3', {rampMode: 'average'}));
+    r.state.spectator = {target: 123};
+    r.go(); r.ramp({boardLoss: 1, surfLoss: 2}); r.finish();
+    expect(r.history.view('utopia:3', {rampMode: 'average'})).toEqual(before);
+    expect(r.history.runs()).toHaveLength(1);
+  });
+
+  test('successive resets keep their synchronous boundary while an earlier save is pending', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 2, surfLoss: 10}); r.restart();
+    await flush();
+    const putBests = r.store.putBests;
+    let release, started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    r.store.putBests = async record => {
+      await new Promise(resolve => { release = resolve; started(); });
+      await putBests(record);
+    };
+    const first = r.history.resetRampAverages('utopia:3');
+    await waiting;
+    // This visit starts after the first reset, but before the second.
+    r.go(); r.publishBoard({loss: 4});
+    const second = r.history.resetRampAverages('utopia:3');
+    r.reviseBoard({loss: 6});
+    r.publishSurf({loss: 30, downLoss: 10, upLoss: 20});
+    r.ramp({boardLoss: 9, surfLoss: 45, surfaceId: 2});
+    r.restart();
+    r.store.putBests = putBests;
+    release();
+    await first; await second;
+    const result = averages(r.history);
+    expect(result[0]).toMatchObject({board: null, surf: null, counts: {board: 0, surf: 0}});
+    expect(result[1]).toMatchObject({board: 9, surf: 45, counts: {board: 1, surf: 1}});
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(averages(reload.history)).toEqual(result);
+  });
+
+  test('a reset cannot report persistence success when saved history is unavailable', async () => {
+    const r = rig({store: {...memoryStore(), load: async () => { throw new Error('Unavailable'); }}});
+    await r.history.ready;
+    await expect(r.history.resetRampAverages('utopia:3')).rejects.toThrow('Run history has not loaded');
+  });
+
+  test('watchable recent-best metadata exposes exact boards and reflects replay trim offsets', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.idle(1);
+    r.go(); r.ramp({boardLoss: 3, surfLoss: 20, surfaceId: 7}); r.finish();
+    const saved = r.history.runs()[0], tick = saved.boards[0][0];
+    r.history.setReplayOffset(saved.id, 5);
+    const view = r.history.view();
+    expect(view.recentBest).toMatchObject({id: saved.id, map: 'utopia:3', mapName: 'Utopia',
+      boards: [[tick, 3, '[7,0,1]']], replay: {offset: 5}});
+    expect(view.pb.boards).toEqual(view.recentBest.boards);
+    expect(view.latest.boards).toEqual(view.recentBest.boards);
+    await flush();
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(reload.history.view('utopia:3').recentBest).toEqual(view.recentBest);
+  });
+});
+
+describe('highlight retention boundaries', () => {
+  const run = (id, map = 'a') => ({id, map, outcome: 'finished', time: 12});
+
+  test('a distinct highlight consumes the only qualifying slot, not a new overflow slot', () => {
+    const runs = [run('pb'), run('highlight'), run('newer'), run('latest-short')];
+    Object.assign(runs[3], {outcome: 'reset', time: 1});
+    expect(retainRuns(runs, {runsPerMap: 1, keep: new Set(['pb']), highlights: new Set(['highlight'])})
+      .map(entry => entry.id)).toEqual(['pb', 'highlight', 'latest-short']);
+    expect(retainRuns(runs, {runsPerMap: 1, keep: new Set(['pb']), highlights: new Set(['pb'])})
+      .map(entry => entry.id)).toEqual(['pb', 'latest-short']);
+  });
+
+  test('reserving an older highlight cannot expand the fifty-most-recent-map budget', () => {
+    const runs = [run('highlight')];
+    for (let i = 0; i < 51; i++) runs.push(run(`map-${i}`, `map-${i}`));
+    runs.push(run('latest-a'));
+    const kept = retainRuns(runs, {runsPerMap: 1, highlights: new Set(['highlight'])});
+    expect(kept).toHaveLength(50);
+    expect(new Set(kept.map(entry => entry.map)).size).toBe(50);
+    expect(kept.map(entry => entry.id)).toEqual(['highlight', ...Array.from({length: 49}, (_, i) => `map-${i + 2}`)]);
+  });
+
+  test('reserved highlights remain inside the global qualifying-run budget', () => {
+    const runs = [], highlights = new Set();
+    for (let attempt = 0; attempt < 42; attempt++) {
+      for (let map = 0; map < 50; map++) {
+        const id = `${map}-${attempt}`;
+        runs.push(run(id, String(map)));
+        if (attempt === 0) highlights.add(id);
+      }
+    }
+    const kept = retainRuns(runs, {runsPerMap: 50, highlights});
+    expect(kept).toHaveLength(2000);
+    const ids = new Set(kept.map(entry => entry.id));
+    expect([...highlights].every(id => ids.has(id))).toBe(true);
+  });
+});
+
+describe('failed replay saves', () => {
+  test('a failed winner falls back to a retained replay without changing run statistics or bests', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 8, surfLoss: 40}); r.idle(1); r.finish();
+    const fallback = r.history.view().recentBest.id;
+    r.go(); r.ramp({boardLoss: 4, surfLoss: 20}); r.finish();
+    const winner = r.history.view().recentBest.id;
+    r.history.setSpots(winner, [1]);
+    const before = r.history.view('utopia:3', {rampMode: 'average'});
+    let notifications = 0;
+    r.history.subscribe(() => notifications++);
+    r.history.setReplayUnavailable(winner);
+    const after = r.history.view('utopia:3', {rampMode: 'average'});
+    expect(after.recentBest.id).toBe(fallback);
+    expect(after.pb.id).toBe(winner);
+    expect(after.pb.replay).toBeUndefined();
+    expect(after.latest.replay).toBeUndefined();
+    expect(after.totals).toEqual(before.totals);
+    expect(after.ramps).toEqual(before.ramps);
+    expect(after.start).toEqual(before.start);
+    expect(r.history.run(winner).boards).toBeUndefined();
+    expect(r.history.run(winner).spots).toBeUndefined();
+    expect(notifications).toBe(1);
+    r.history.setReplayUnavailable(winner);
+    r.history.setReplayUnavailable('not-kept');
+    expect(notifications).toBe(1);
+    await flush();
+    expect(r.store.data.runs.get(winner).replay).toBeUndefined();
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(reload.history.view('utopia:3', {rampMode: 'average'})).toEqual(after);
+  });
+
+  test('failure before history load merges bests and persists the run without replay metadata', async () => {
+    const store = memoryStore();
+    const first = rig({store, onReplay: () => {}});
+    await first.history.ready;
+    first.run({ticks: 100});
+    await flush();
+    const saved = await store.load(), fallback = first.history.view().recentBest.id;
+    let resolveLoad;
+    const r = rig({now: 5000, store: {...store, load: () => new Promise(resolve => { resolveLoad = resolve; })},
+      onReplay: () => {}});
+    r.run({ticks: 1});
+    const winner = r.history.runs()[0].id;
+    r.history.setReplayUnavailable(winner);
+    resolveLoad(saved);
+    await r.history.ready;
+    await flush();
+    expect(r.history.view().recentBest.id).toBe(fallback);
+    expect(r.history.view().pb.id).toBe(winner);
+    expect(store.data.runs.get(winner).replay).toBeUndefined();
+    expect(r.history.view().totals).toEqual({attempts: 2, finishes: 2});
+  });
+
+  for (const abort of [false, true]) {
+    test(`a failed post-clear replay stays unavailable when deletion ${abort ? 'aborts' : 'commits'}`, async () => {
+      let recorded, failReplay = false;
+      const r = rig({onReplay: run => {
+        recorded = run;
+        if (failReplay) queueMicrotask(() => r.history.setReplayUnavailable(run.id));
+      }});
+      await r.history.ready;
+      r.run({ticks: 100});
+      const fallback = r.history.view().recentBest.id;
+      await flush();
+      const clear = r.store.clear;
+      let started, release;
+      const waiting = new Promise(resolve => { started = resolve; });
+      r.store.clear = (...args) => new Promise((resolve, reject) => {
+        release = async () => {
+          if (abort) reject(new Error('Transaction aborted'));
+          else { await clear(...args); resolve(); }
+        };
+        started();
+      });
+      const clearing = r.history.clear('utopia:3').catch(error => error.message);
+      await waiting;
+      failReplay = true;
+      r.go(); r.ramp({boardLoss: 4, surfLoss: 20}); r.finish();
+      await release();
+      await clearing;
+      const id = recorded.id;
+      expect(recorded.replay).toBeUndefined();
+      expect(r.history.view().pb.id).toBe(id);
+      expect(r.history.view().recentBest?.id ?? null).toBe(abort ? fallback : null);
+      await flush();
+      const reload = rig({store: r.store});
+      await reload.history.ready;
+      expect(reload.history.view('utopia:3')).toEqual(r.history.view());
+      expect(r.history.view('utopia:3', {rampMode: 'average'}).ramps[0]).toMatchObject({
+        board: 4, surf: 20, counts: {board: 1, surf: 1}});
+    });
+  }
 });

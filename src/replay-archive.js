@@ -37,21 +37,30 @@ export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
 // replay never holds the page.
 const PACK_COMMANDS = 1024;
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
-export async function packReplay(replay, {chunk = PACK_COMMANDS, yieldTask = pause} = {}) {
+export async function packReplay(replay, {chunk = PACK_COMMANDS, yieldTask = pause, isCurrent = () => true} = {}) {
+  if (!isCurrent()) return null;
   const {commands, ...rest} = replay;
   const compression = new CompressionStream('gzip');
   const packed = new Response(compression.readable).arrayBuffer();
   const writer = compression.writable.getWriter(), encoder = new TextEncoder();
-  const head = JSON.stringify(rest);
-  await writer.write(encoder.encode(`${head.slice(0, -1)}${head.length > 2 ? ',' : ''}"commands":[`));
-  for (let i = 0; i < commands.length; i += chunk) {
-    if (i) await yieldTask();
-    const part = commands.slice(i, i + chunk).map(command => JSON.stringify(command)).join(',');
-    await writer.write(encoder.encode(i ? `,${part}` : part));
+  let closed = false;
+  try {
+    const head = JSON.stringify(rest);
+    await writer.write(encoder.encode(`${head.slice(0, -1)}${head.length > 2 ? ',' : ''}"commands":[`));
+    for (let i = 0; i < commands.length; i += chunk) {
+      if (i) await yieldTask();
+      if (!isCurrent()) return null;
+      const part = commands.slice(i, i + chunk).map(command => JSON.stringify(command)).join(',');
+      await writer.write(encoder.encode(i ? `,${part}` : part));
+    }
+    if (!isCurrent()) return null;
+    await writer.write(encoder.encode(']}'));
+    await writer.close();
+    closed = true;
+    return await packed;
+  } finally {
+    if (!closed) await Promise.allSettled([writer.abort(), packed]);
   }
-  await writer.write(encoder.encode(']}'));
-  await writer.close();
-  return packed;
 }
 export async function unpackReplay(bytes) {
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -214,11 +223,11 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
         while (clearing) await clearing;
         if (!current()) return null;
         let packed;
-        try { packed = await packReplay(replay); } catch (error) {
+        try { packed = await packReplay(replay, {isCurrent: current}); } catch (error) {
           console.warn('[Surfd QoL] Could not pack replay:', error);
           return null;
         }
-        if (!current()) return null;
+        if (!packed || !current()) return null;
         while (clearing) await clearing;
         if (!current()) return null;
         const entry = {id: run.id, map: run.map, at: run.at, bytes: packed.byteLength};

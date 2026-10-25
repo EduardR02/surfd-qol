@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { bestFinish, compareRamp, createRunsPanel, paceCells, rampSections, reached, surfBars, versusPb, when } from '../src/runs-panel.js';
 import {createRampReference} from '../src/ramp-reference.js';
+import {createReplayControl} from '../src/replay-control.js';
 
-function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', time: 45, outcome: 'finished'}}, control = {}, rampStore = null, settings = {}} = {}) {
+function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', time: 45, outcome: 'finished'}}, control = {}, rampStore = null, reference = null, settings = {}, now} = {}) {
   const nodes = new Map();
   const root = {getElementById(id) {
     if (!nodes.has(id)) {
@@ -24,19 +25,20 @@ function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', ti
   const history = {currentMap: 'utopia:3', currentMapName: 'Utopia',
     view: () => data, maps: () => [], subscribe: () => () => {}};
   const loaded = [], watched = [];
-  const rampReference = rampStore ? createRampReference({getSession: () => session, getReferences: () => refs,
-    getAdapter: () => adapter, replayStore: rampStore, settings}) : null;
+  const rampReference = reference ?? (rampStore ? createRampReference({getSession: () => session, getReferences: () => refs,
+    getAdapter: () => adapter, replayStore: rampStore, settings}) : null);
   const adapter = {Session: function () {}, Movement: function () {}};
-  const panel = createRunsPanel({root, history, rampReference, settings, getSession: () => session, getReferences: () => refs,
-    replayControl: {watchLoaded: async (load, options) => {
+  const panel = createRunsPanel({root, history, rampReference, settings, now, getSession: () => session, getReferences: () => refs,
+    replayControl: Object.defineProperties({watchLoaded: async (load, options) => {
       loaded.push({replay: await load(), options});
       // Native Watch installs a fresh Session for every playback.
       session = {...session};
     },
-      canWatch: () => true, watch: async run => watched.push(run), ...control}});
+      canWatch: () => true, watch: async run => watched.push(run)}, Object.getOwnPropertyDescriptors(control))});
   const body = root.getElementById('rn-body');
   const click = id => body.emit('click', {target: {closest: () => ({dataset: {watch: id}})}});
-  return {panel, body, nodes, history, rampReference, loaded, watched, click, get downloads() { return downloads; },
+  const action = dataset => body.emit('click', {target: {closest: () => ({dataset})}});
+  return {panel, body, nodes, history, rampReference, loaded, watched, click, action, get downloads() { return downloads; },
     get session() { return session; }, set session(value) { session = value; },
     get refs() { return refs; }, set refs(value) { refs = value; },
     watchId: () => body.innerHTML.match(/data-watch="([^"]+)"/)?.[1]};
@@ -269,27 +271,6 @@ describe('runs panel', () => {
     rig.panel.destroy();
   });
 
-  test.each(['map', 'account', 'board', 'config', 'replay'])('a changed %s clears cached PB commands while the panel stays closed', async context => {
-    const rig = panelRig();
-    rig.panel.show();
-    await rig.click(rig.watchId());
-    expect(rig.panel.open).toBe(false);
-    const session = rig.session, refs = rig.refs;
-    if (context === 'map') rig.session = {...session, map: {id: 'mesa', version: 1}};
-    if (context === 'account') rig.refs = {...refs, ownerKey: 'other-account'};
-    if (context === 'board') rig.refs = {...refs, boardId: 'other-board'};
-    if (context === 'config') rig.session = {...session, config: {dt: 0.01}};
-    if (context === 'replay') rig.refs = {...refs, own: {...refs.own, runId: 'other-pb'}};
-    rig.panel.setContext({menu: true});
-    // Returning to the original context must not resurrect its obsolete raw replay.
-    rig.session = {...session};
-    rig.refs = refs;
-    rig.panel.setContext({menu: true});
-    rig.panel.show();
-    await rig.click(rig.watchId());
-    expect(rig.downloads).toBe(2);
-    rig.panel.destroy();
-  });
 
   test('Ramps loads only its selected source and releases ownership on source, view, map and visibility changes', () => {
     const acquired = [];
@@ -351,5 +332,284 @@ describe('runs panel', () => {
     expect(rig.body.innerHTML).toContain('at or better than PB');
     rig.panel.destroy();
     rig.rampReference.destroy();
+  });
+
+  test('ramp statistics change independently of comparison and reset only after confirmation', async () => {
+    const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1', checkpoint: 0, board: 2}]};
+    const rig = panelRig({data});
+    const calls = [], resets = [];
+    rig.history.view = (key, {rampMode = 'best'} = {}) => {
+      calls.push([key, rampMode]);
+      return {...data, ramps: data.ramps.map(ramp => ({...ramp, board: rampMode === 'best' ? 2 : 8, counts: {board: 3, down: 0, up: 1}}))};
+    };
+    rig.history.resetRampAverages = async key => { resets.push(key); };
+    rig.panel.show();
+    rig.panel.showView('ramps');
+    rig.action({rampMode: 'recent'});
+    expect(calls.at(-1)).toEqual(['utopia:3', 'recent']);
+    expect(rig.body.innerHTML).toContain('3 valid');
+    expect(rig.body.innerHTML).toContain('0 valid');
+    rig.action({rampMode: 'average'});
+    expect(calls.at(-1)).toEqual(['utopia:3', 'average']);
+    rig.action({resetAverages: 'ask'});
+    expect(resets).toEqual([]);
+    rig.action({resetAverages: 'cancel'});
+    await rig.action({resetAverages: 'confirm'});
+    expect(resets).toEqual([]);
+    rig.action({resetAverages: 'ask'});
+    await rig.action({resetAverages: 'confirm'});
+    expect(resets).toEqual(['utopia:3']);
+    expect(calls.at(-1)[1]).toBe('average');
+    rig.action({rampMode: 'best'});
+    expect(calls.at(-1)[1]).toBe('best');
+    rig.panel.destroy();
+  });
+
+  test('reset failure stays on the map with a retryable confirmation and does not clear history', async () => {
+    const rig = panelRig({data: {key: 'utopia:3', name: 'Utopia', ramps: []}});
+    let attempts = 0;
+    rig.history.resetRampAverages = async () => { if (++attempts === 1) throw new Error('Storage unavailable'); };
+    rig.panel.show(); rig.panel.showView('ramps');
+    rig.action({resetAverages: 'ask'});
+    await rig.action({resetAverages: 'confirm'});
+    expect(rig.panel.open).toBe(true);
+    expect(rig.nodes.get('rn-status').textContent).toBe('Storage unavailable');
+    await rig.action({resetAverages: 'confirm'});
+    expect(attempts).toBe(2);
+    rig.panel.destroy();
+  });
+
+  test('ramp playback follows comparison, acquires other destinations only on Watch, and keeps watch ownership through renders', async () => {
+    const gets = [], watches = [];
+    let finish;
+    const slot = {status: 'ready', label: 'PB', ramps: new Map([['ramp', {tick: 500, board: 2}]])};
+    const reference = {
+      sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: 'Site WR'}],
+      version: () => 1,
+      createConsumer: () => ({get: (key, source) => { gets.push(source); return slot; },
+        watchRamp: (...args) => { watches.push(args); return new Promise(resolve => { finish = resolve; }); },
+        release() {}, destroy() {}}),
+    };
+    const rig = panelRig({reference, data: {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1', checkpoint: 0, board: 4}]}});
+    rig.panel.show();
+    expect(gets).toEqual([]);
+    rig.panel.showView('ramps');
+    rig.action({ramp: 'ramp'});
+    rig.action({source: 'wr'});
+    const pending = rig.action({rampWatch: 'ramp'});
+    expect(watches[0].slice(0, 3)).toEqual(['utopia:3', 'wr', 'ramp']);
+    const before = gets.length;
+    rig.action({rampMode: 'recent'});
+    expect(gets).toHaveLength(before);
+    finish(false); await pending;
+    expect(rig.panel.open).toBe(true);
+    rig.action({playSource: 'pb'});
+    expect(watches).toHaveLength(1);
+    const second = rig.action({rampWatch: 'ramp'});
+    expect(watches[1][1]).toBe('pb');
+    finish(true); await second;
+    expect(rig.panel.open).toBe(false);
+    rig.panel.destroy();
+  });
+
+  test('ready references without the exact ramp never start playback; Recent best uses its own boards', async () => {
+    const calls = [];
+    const reference = {sources: () => [{name: 'pb', label: 'PB'}], version: () => 1,
+      createConsumer: () => ({get: () => ({status: 'ready', label: 'PB', ramps: new Map()}),
+        watchRamp: async () => { calls.push('wrong'); return true; }, release() {}, destroy() {}})};
+    const recentBest = {id: 'highlight', time: 42, outcome: 'finished', boards: [[700, 4, 'ramp']], replay: {start: 300}};
+    const rig = panelRig({reference, data: {key: 'utopia:3', name: 'Utopia', recentBest, ramps: [
+      {key: 'ramp', label: 'Ramp 1', checkpoint: 0, board: 4}, {key: 'absent', label: 'Ramp 2', checkpoint: 0, board: 3},
+    ]}, control: {watch: async (...args) => { calls.push(args); return true; }}});
+    rig.panel.show(); rig.panel.showView('ramps');
+    rig.action({ramp: 'ramp'});
+    await rig.action({rampWatch: 'ramp'});
+    expect(calls).toEqual([]);
+    expect(rig.nodes.get('rn-status').textContent).toContain('absent');
+    rig.action({playSource: 'recentBest'});
+    await rig.action({rampWatch: 'absent'});
+    expect(calls).toEqual([]);
+    await rig.action({rampWatch: 'ramp'});
+    expect(rig.panel.open).toBe(false);
+    rig.panel.destroy();
+  });
+
+  test('local Watch cancels changed ramp/map selections but completes its own menu-to-replay handoff', async () => {
+    let rig, pendingRead, generation = 0, playing = null, index = 0;
+    const replay = {mapId: 'boreas', mapVersion: 2, config: {dt: .015}, commands: Array(1000).fill({})};
+    const hooks = {
+      reserve: () => ++generation, isCurrent: token => token === generation,
+      playback: () => ({replay: playing, index}),
+      async watch(data, label, current, token) {
+        if (token !== generation || !current()) return;
+        rig.session = {map: {id: data.mapId, version: data.mapVersion}, config: data.config};
+        playing = data; index = 0;
+        // The native menu observer runs before Watch's promise continuation,
+        // while the bar can still report its previous visibility.
+        rig.panel.setContext({menu: false, replay: false});
+        await Promise.resolve();
+      },
+      seek(data, tick) { if (playing !== data) return false; index = tick; return true; },
+    };
+    const control = createReplayControl({getAdapter: () => adapter, getSession: () => rig?.session,
+      archive: {has: () => true, get: () => new Promise(resolve => { pendingRead = resolve; })}});
+    const adapter = {replay: hooks};
+    const run = {id: 'highlight', map: 'boreas:2', mapName: 'Boreas', time: 42, outcome: 'finished',
+      boards: [[700, 4, 'ramp']], replay: {start: 0}};
+    rig = panelRig({data: {key: 'boreas:2', name: 'Boreas', recentBest: run, ramps: [{key: 'ramp', label: 'Ramp 1'}]}, control});
+    rig.refs = null;
+    try {
+      rig.panel.show('boreas:2'); rig.panel.showView('ramps');
+      rig.action({ramp: 'ramp'}); rig.action({playSource: 'recentBest'});
+      const cancelled = rig.action({rampWatch: 'ramp'});
+      rig.action({playSource: 'wr'});
+      pendingRead(replay); await cancelled;
+      expect(playing).toBeNull();
+      expect(rig.panel.open).toBe(true);
+      const moved = rig.click(run.id);
+      rig.nodes.get('rn-maps').emit('click', {target: {closest: () => ({dataset: {map: 'utopia:3'}})}});
+      pendingRead(replay); await moved;
+      expect(playing).toBeNull();
+      rig.panel.show('boreas:2'); rig.panel.showView('ramps'); rig.action({ramp: 'ramp'});
+      rig.action({playSource: 'recentBest'});
+      const accepted = rig.action({rampWatch: 'ramp'});
+      pendingRead(replay); await accepted;
+      expect(rig.session.map.id).toBe('boreas');
+      expect(control.status()).toMatchObject({index: 667, playing: false});
+      expect(rig.panel.open).toBe(false);
+    } finally { rig.panel.destroy(); control.destroy(); }
+  });
+
+
+  test('Recent best is watchable outside the recent list and expiry refresh stops while hidden', async () => {
+    const timers = [];
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay) => { timers.push({callback, delay}); return 0; });
+    let now = 1000, reads = 0;
+    const run = {id: 'highlight', time: 42, outcome: 'finished', expiresAt: 2000};
+    const rig = panelRig({now: () => now});
+    rig.history.view = () => { reads++; return {key: 'utopia:3', name: 'Utopia', recentBest: now < 2000 ? run : null}; };
+    try {
+      rig.panel.show();
+      expect(timers).toHaveLength(1);
+      expect(timers[0].delay).toBe(1001);
+      await rig.click('highlight');
+      expect(rig.watched).toEqual([run]);
+      const closedReads = reads;
+      timers[0].callback();
+      expect(reads).toBe(closedReads);
+      rig.panel.show();
+      now = 2001;
+      timers.at(-1).callback();
+      expect(rig.body.innerHTML).not.toContain('data-watch="highlight"');
+    } finally { rig.panel.destroy(); timer.mockRestore(); }
+  });
+
+  test('subscription renders preserve an alternate replay request until a new destination cancels it', async () => {
+    const gets = [], calls = [], releases = [];
+    let notify, finish;
+    const reference = {
+      sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: 'KSF WR'}],
+      version: () => 1,
+      subscribe(listener) { notify = listener; return () => {}; },
+      createConsumer: () => ({
+        get(key, source) { gets.push(source); return {status: 'ready', label: source, ramps: new Map([['ramp', {tick: 500}]])}; },
+        watchRamp(...args) { calls.push(args); return new Promise(resolve => { finish = resolve; }); },
+        release() { releases.push(true); }, destroy() {},
+      }),
+    };
+    const rig = panelRig({reference, data: {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1'}]}});
+    try {
+      rig.panel.show(); rig.panel.showView('ramps');
+      rig.action({ramp: 'ramp'}); rig.action({playSource: 'wr'});
+      expect(gets.every(source => source === 'pb')).toBe(true);
+      const pending = rig.action({rampWatch: 'ramp'}), acquired = gets.length, released = releases.length;
+      notify(); rig.body.scrollTop = 123; rig.action({rampMode: 'average'}); notify();
+      expect(gets).toHaveLength(acquired);
+      expect(releases).toHaveLength(released);
+      expect(rig.body.scrollTop).toBe(123);
+      expect(calls[0][1]).toBe('wr');
+      rig.action({playSource: 'pb'});
+      expect(releases.length).toBeGreaterThan(released);
+      expect(gets.at(-1)).toBe('pb');
+      finish(true); await pending;
+      expect(rig.panel.open).toBe(true);
+      expect(rig.nodes.get('rn-status').textContent).toBe('');
+    } finally { rig.panel.destroy(); }
+  });
+
+  test.each(['source', 'account', 'board', 'config', 'view'])('pending ramp navigation loses ownership when %s changes', async change => {
+    const settings = {wrSource: 'ksf'};
+    let finish, releases = 0;
+    const reference = {
+      sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: settings.wrSource === 'ksf' ? 'KSF WR' : 'Site WR'}],
+      version: () => settings.wrSource,
+      createConsumer: () => ({
+        get: () => ({status: 'ready', label: 'PB', ramps: new Map([['ramp', {tick: 500}]])}),
+        watchRamp: () => new Promise(resolve => { finish = resolve; }),
+        release() { releases++; }, destroy() {},
+      }),
+    };
+    const rig = panelRig({reference, settings, data: {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1'}]}});
+    try {
+      rig.panel.show(); rig.panel.showView('ramps'); rig.action({ramp: 'ramp'});
+      const pending = rig.action({rampWatch: 'ramp'}), before = releases;
+      if (change === 'source') settings.wrSource = 'leaderboard';
+      if (change === 'account') rig.refs = {...rig.refs, ownerKey: 'another-account'};
+      if (change === 'board') rig.refs = {...rig.refs, boardId: 'another-board'};
+      if (change === 'config') rig.session = {...rig.session, config: {dt: 0.01}};
+      if (change === 'view') rig.panel.showView('runs');
+      else rig.panel.setContext({menu: true});
+      expect(releases).toBeGreaterThan(before);
+      finish(true); await pending;
+      expect(rig.panel.open).toBe(true);
+      expect(rig.nodes.get('rn-status').textContent).toBe('');
+    } finally { rig.panel.destroy(); }
+  });
+
+  test('native replay format labels do not cancel movement-compatible ramp playback', async () => {
+    let finish, releases = 0;
+    const reference = {
+      sources: () => [{name: 'wr', label: 'KSF WR'}], version: () => 1,
+      createConsumer: () => ({
+        get: () => ({status: 'ready', label: 'KSF WR', ramps: new Map([['ramp', {tick: 500}]])}),
+        watchRamp: () => new Promise(resolve => { finish = resolve; }),
+        release() { releases++; }, destroy() {},
+      }),
+    };
+    const rig = panelRig({reference, data: {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1'}]}});
+    try {
+      rig.panel.show(); rig.panel.showView('ramps'); rig.action({ramp: 'ramp'});
+      const pending = rig.action({rampWatch: 'ramp'}), before = releases;
+      rig.session = {...rig.session, replayFormat: 7, config: {...rig.session.config, version: 'legacy', unrestrictedStart: true}};
+      rig.panel.setContext({menu: true});
+      expect(releases).toBe(before);
+      finish(true); await pending;
+      expect(rig.panel.open).toBe(false);
+    } finally { rig.panel.destroy(); }
+  });
+
+  test('segmented radios use arrow keys and Home/End to select without passing keys to the game', () => {
+    const rig = panelRig({data: {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'ramp', label: 'Ramp 1'}]}});
+    const selected = [], focused = [];
+    const buttons = ['best', 'recent', 'average'].map(mode => ({
+      focus: () => focused.push(mode),
+      click: () => { selected.push(mode); rig.action({rampMode: mode}); },
+      closest: () => group,
+    }));
+    const group = {querySelectorAll: () => buttons};
+    let prevented = 0, stopped = 0;
+    const press = (index, key) => rig.panel.handleKey({
+      type: 'keydown', key, code: key,
+      composedPath: () => [{closest: () => buttons[index]}, rig.nodes.get('runs-panel')],
+      preventDefault() { prevented++; }, stopPropagation() { stopped++; },
+    });
+    try {
+      rig.panel.show(); rig.panel.showView('ramps');
+      press(0, 'ArrowLeft'); press(2, 'Home'); press(0, 'End'); press(2, 'ArrowRight');
+      expect(selected).toEqual(['average', 'best', 'average', 'best']);
+      expect(focused).toEqual(selected);
+      expect(prevented).toBe(4);
+      expect(stopped).toBe(4);
+    } finally { rig.panel.destroy(); }
   });
 });

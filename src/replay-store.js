@@ -14,7 +14,7 @@ const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev'
 // The KSF record route has no ID, so a saved analysis of it is matched by
 // a fingerprint of the downloaded route.
 export function routeFingerprint(replay) {
-  const text = JSON.stringify([replay.commands.length, replay.initialState, replay.commands.filter((_, index) => index % 32 === 0), replay.commands.at(-1)]);
+  const text = JSON.stringify([replay.format, replay.mapId, replay.mapVersion, replay.config, replay.initialState, replay.commands]);
   let hash = 2166136261;
   for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(36);
@@ -32,7 +32,7 @@ export function visitKey(measurement) {
 function routeCollector() {
   const boards = [], indices = new Map();
   let sequence = 0, pending = null, complete = true, validRun = true;
-  function observe(board) {
+  function observe(board, tick) {
     if (!board) return;
     if (!Number.isSafeInteger(board.sequence) || board.sequence < sequence) { validRun = complete = false; return; }
     if (!complete || !board.sequence) return;
@@ -43,7 +43,7 @@ function routeCollector() {
       const key = visitKey(board);
       if (!key || typeof board.routePrefix !== 'string' || !board.routePrefix || indices.has(key)) complete = false;
       if (key) indices.set(key, indices.has(key) ? null : boards.length);
-      pending = {key, loss: null, surfLoss: null, downLoss: null, upLoss: null, valid: complete};
+      pending = {key, tick, loss: null, surfLoss: null, downLoss: null, upLoss: null, valid: complete};
     }
     if (pending.key !== visitKey(board)) complete = false;
     pending.valid &&= complete;
@@ -63,7 +63,7 @@ function routeCollector() {
   return {observe, observeSurf, finish() { if (pending) boards.push(pending); return validRun ? {boards, indices} : null; }};
 }
 
-function sameMovementConfig(left, right) {
+export function sameMovementConfig(left, right) {
   if (!left || !right) return false;
   // These two native labels do not change ramp movement. All other settings do.
   const movementKeys = config => Object.keys(config).filter(key => key !== 'version' && key !== 'unrestrictedStart');
@@ -110,7 +110,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
               if (events.some(event => resetEvents.has(event))) failed = true;
               startFeedback.observe(shadow, events);
               const revision = metrics.boardRevision();
-              if (revision !== boardRevision) { boardRevision = revision; collect.observe(metrics.boardSnapshot()); }
+              if (revision !== boardRevision) { boardRevision = revision; collect.observe(metrics.boardSnapshot(), index); }
               const surf = metrics.surfSnapshot(surfSequence);
               if (surf) { surfSequence = surf.sequence; collect.observeSurf(surf); }
             },
@@ -147,6 +147,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
     ? {speeds: shadow.checkpointSpeeds.slice(), timeUs, splitsUs} : null;
   const start = metrics && !failed ? startFeedback.snapshot() : null;
   return {checkpoint, feedback: metrics && !failed ? {
+    dt: replay.config.dt,
     route: collect.finish(),
     start: start.available && Number.isFinite(start.speed) ? {
       speed: start.speed, heightAboveFloor: Number.isFinite(start.heightAboveFloor) ? start.heightAboveFloor : null
@@ -171,7 +172,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
     const nextAdapter = getAdapter();
     if (nextAdapter !== adapter) { clearPending(); cache.clear(); adapter = nextAdapter; }
     const cached = cache.get(key);
-    if (cached && (!feedback || cached.feedback)) {
+    if (cached && (!feedback || cached.feedback) && (feedback || !cached.feedbackOnly)) {
       cache.delete(key); cache.set(key, cached);
       return {result: cached.result, promise: Promise.resolve(cached.result), release() {}};
     }
@@ -194,6 +195,10 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
       pending.set(key, job);
       const work = job;
       const keep = summary => {
+        const previous = cache.get(key);
+        if (previous?.feedbackOnly && previous.result.feedback && !summary.result.feedback) {
+          summary = {...summary, feedback: true, result: {...summary.result, feedback: previous.result.feedback}};
+        }
         cache.set(key, summary);
         while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
         return summary.result;
@@ -208,14 +213,17 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
       };
       work.promise = Promise.resolve().then(async () => {
         try {
-          let id = key.includes(':official:') ? `${ANALYSIS}|${key}` : null;
+          let id = key.includes(':official:') ? `${ANALYSIS}|${key}` : null, fingerprint = null;
           let found = work.current() ? await stored(id) : null;
           if (found) return work.current() ? keep(found) : null;
           const replay = work.current() ? await load?.() : null;
           if (!work.current()) return null;
-          if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
-          if (key.endsWith(':ksf') && Array.isArray(replay.commands)) {
-            id = `${ANALYSIS}|${key}|${routeFingerprint(replay)}`;
+          if (!replay || !Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
+            return {checkpoint: null, feedback: null, status: 'missing'};
+          }
+          if (key.endsWith(':ksf')) {
+            fingerprint = routeFingerprint(replay);
+            id = `${ANALYSIS}|${key}|${fingerprint}`;
             found = await stored(id);
             if (found) return work.current() ? keep(found) : null;
           }
@@ -228,7 +236,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           // upgrade, but shares this job's already-downloaded replay.
           if (!work.feedback && work.wantsFeedback()) data = await reconstruct();
           if (!work.current()) return null;
-          const result = {...data, status: 'unmatched'};
+          const result = {...data, status: 'unmatched', ...(fingerprint ? {fingerprint} : {})};
           if (result.checkpoint || result.feedback) {
             keep({result, feedback: work.feedback});
             if (id) Promise.resolve().then(() => saved?.put(id, {result, feedback: work.feedback})).catch(() => { /* kept for this page */ });
@@ -248,5 +256,20 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
       if (!job.consumers.size && pending.get(key) === job) pending.delete(key);
     }};
   }
-  return {acquire, destroy() { destroyed = true; clearPending(); cache.clear(); }};
+  // Native Watch can change format and start-policy labels. Reuse the verified
+  // movement summary after that adoption, without treating it as proof that an
+  // official checkpoint summary passed the new exact-config requirement.
+  function adoptFeedback({from, to, previous, session}) {
+    if (destroyed || getAdapter() !== adapter || from === to || !previous?.map || !session?.map ||
+      previous.map.id !== session.map.id || previous.map.version !== session.map.version ||
+      !sameMovementConfig(previous.config, session.config)) return;
+    const summary = cache.get(from), target = cache.get(to);
+    if (!summary?.result.feedback || target?.result.feedback) return;
+    const fullTarget = target && !target.feedbackOnly;
+    const feedbackOnly = !fullTarget && (summary.feedbackOnly || JSON.stringify(previous.config) !== JSON.stringify(session.config));
+    cache.set(to, {...summary, feedbackOnly, result: {...summary.result,
+      checkpoint: fullTarget ? target.result.checkpoint : feedbackOnly ? null : summary.result.checkpoint}});
+    while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
+  }
+  return {acquire, adoptFeedback, destroy() { destroyed = true; clearPending(); cache.clear(); }};
 }

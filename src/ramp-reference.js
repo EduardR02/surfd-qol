@@ -4,6 +4,7 @@
 import {referenceIdentity, sessionKey} from './references.js';
 import {mapKey} from './run-history.js';
 import {referenceTone, startTone} from './hud-model.js';
+import {routeFingerprint, sameMovementConfig} from './replay-store.js';
 
 export function createRampReference({getSession, getReferences, getAdapter, replayStore, settings = {}}) {
   const consumers = new Set(), listeners = new Set();
@@ -17,61 +18,117 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
 
   function describe(key, source) {
     const session = getSession?.(), refs = getReferences?.();
-    if (destroyed || !session?.map || mapKey(session.map) !== key || !replayStore) return null;
+    if (destroyed || (source !== 'pb' && source !== 'wr') || !session?.map || mapKey(session.map) !== key || !replayStore) return null;
     const leaderboard = settings.wrSource === 'leaderboard';
     const entry = source === 'pb' ? refs?.own : source === 'wr' && leaderboard ? refs?.record : null;
     const ksf = source === 'wr' && !leaderboard, identity = referenceIdentity(entry);
     if (ksf ? typeof refs?.loadRecordRoute !== 'function' : !identity || typeof refs?.loadReplay !== 'function') return null;
-    return {session, refs, entry, identity, ksf, ownerKey: refs?.ownerKey,
+    return {session, refs, entry, identity, ksf, ownerKey: refs?.ownerKey, boardId: refs?.boardId,
       key: `${sessionKey(session, refs?.boardId)}:${ksf ? 'ksf' : `official:${identity}`}`,
       label: source === 'pb' ? 'PB' : leaderboard ? 'Site WR' : 'KSF WR'};
   }
 
   function createConsumer() {
-    let slot = null, pending = null, closed = destroyed;
+    let slot = null, slotAdapter = null, slotOwnerKey = null, pending = null, navigation = null, closed = destroyed;
     function release() {
       const work = pending;
-      pending = null; slot = null;
+      pending = null; slot = null; slotAdapter = null; slotOwnerKey = null; navigation = null;
       work?.handle?.release();
     }
-    function get(key, source) {
+    function get(key, source, owns = () => true) {
       const info = closed ? null : describe(key, source);
       if (!info) { release(); return null; }
       const adapter = getAdapter?.();
-      if (slot?.key === info.key && slot.source === source && (slot.status !== 'loading' ||
-        pending?.session === info.session && pending?.adapter === adapter && pending?.ownerKey === info.ownerKey)) return slot;
+      if (slot?.key === info.key && slot.source === source && slotAdapter === adapter && slotOwnerKey === info.ownerKey &&
+        (slot.status !== 'loading' || pending?.session === info.session && pending.owns())) return slot;
       release();
       slot = {key: info.key, source, status: 'loading', label: info.label, ramps: new Map()};
+      slotAdapter = adapter; slotOwnerKey = info.ownerKey;
       if (typeof adapter?.Session !== 'function' || typeof adapter?.Movement !== 'function') { slot.status = 'missing'; return slot; }
       const current = slot, {session, refs, identity, ksf, ownerKey} = info;
       const entry = identity ? {runId: info.entry.runId, timeUs: info.entry.timeUs, splitsUs: info.entry.splitsUs.slice()} : null;
-      const work = {session, adapter, ownerKey, handle: null};
+      const work = {session, adapter, ownerKey, owns, handle: null, replay: null, promise: null};
       pending = work;
       const isCurrent = () => {
-        if (pending !== work || getSession?.() !== session || getAdapter?.() !== adapter) return false;
+        if (!owns() || pending !== work || getSession?.() !== session || getAdapter?.() !== adapter) return false;
         const next = describe(key, source);
         return next?.key === current.key && next.ownerKey === ownerKey;
       };
       work.handle = replayStore.acquire({key: info.key, session, entry,
-        load: ksf ? () => refs.loadRecordRoute() : () => refs.loadReplay(entry.runId), feedback: true, isCurrent});
+        load: async () => work.replay = await (ksf ? refs.loadRecordRoute() : refs.loadReplay(entry.runId)), feedback: true, isCurrent});
       const publish = result => {
-        if (!isCurrent()) return;
+        if (!isCurrent()) {
+          if (pending === work) release();
+          else work.handle.release();
+          return;
+        }
         const route = result?.feedback?.route;
         for (const [rampKey, index] of route?.indices ?? []) {
           const visit = index == null ? null : route.boards[index];
-          if (visit?.valid) current.ramps.set(rampKey, {board: visit.loss, down: visit.downLoss, up: visit.upLoss, surf: visit.surfLoss});
+          if (visit?.valid) current.ramps.set(rampKey, {board: visit.loss, down: visit.downLoss, up: visit.upLoss, surf: visit.surfLoss,
+            ...(Number.isInteger(visit.tick) ? {tick: visit.tick} : {})});
         }
+        current.dt = result?.feedback?.dt;
+        current.fingerprint = result?.fingerprint;
         current.status = route ? 'ready' : 'missing';
         pending = null;
         work.handle.release();
         changed();
       };
       if (work.handle.result) publish(work.handle.result);
-      else work.handle.promise.then(publish, () => publish(null));
+      else work.promise = work.handle.promise.then(publish, () => publish(null));
       return current;
     }
     const consumer = {
       get,
+      async watchRamp(key, source, rampKey, replayControl, {leadSeconds = 0.5, paused = true} = {}) {
+        const info = closed ? null : describe(key, source), adapter = getAdapter?.();
+        if (!info || typeof rampKey !== 'string' || typeof replayControl?.watchLoaded !== 'function' ||
+          typeof adapter?.replay?.watch !== 'function' || !Number.isFinite(leadSeconds) || leadSeconds < 0) return false;
+        const intent = {}, entry = info.entry ? {...info.entry} : null;
+        let reference = null, destination = null;
+        const context = (session = info.session) => {
+          const next = closed ? null : describe(key, source);
+          if (getSession?.() !== session || getAdapter?.() !== adapter || !next || next.ownerKey !== info.ownerKey) return false;
+          if (session === info.session) return next.key === info.key;
+          // Native Watch adopts the replay's format and non-movement labels.
+          return next.boardId === info.boardId && next.identity === info.identity && next.ksf === info.ksf &&
+            sameMovementConfig(session.config, info.session.config);
+        };
+        // watchLoaded reserves native Watch ownership before any analysis or I/O.
+        const played = await replayControl.watchLoaded(async owns => {
+          if (!context() || !owns()) return null;
+          reference = get(key, source, owns);
+          const work = pending;
+          navigation = intent;
+          if (work?.promise) await work.promise;
+          if (!context() || !owns() || navigation !== intent || slot !== reference) return null;
+          const ramp = reference?.status === 'ready' ? reference.ramps.get(rampKey) : null;
+          if (!Number.isInteger(ramp?.tick) || ramp.tick < 0) return null;
+          destination = {tick: ramp.tick, leadSeconds, paused};
+          // A newly indexed route already downloaded these commands. Completed
+          // summaries deliberately retain no replays: fetch only on Watch intent.
+          const data = work?.replay ?? await (info.ksf ? info.refs.loadRecordRoute() : info.refs.loadReplay(entry.runId));
+          if (!context() || !owns() || navigation !== intent || !data ||
+            data.mapId !== info.session.map.id || data.mapVersion !== info.session.map.version ||
+            !Number.isInteger(data.format) || !Array.isArray(data.commands) || data.commands.length > 40000 ||
+            !sameMovementConfig(data.config, info.session.config) ||
+            (info.ksf && (!reference.fingerprint || routeFingerprint(data) !== reference.fingerprint))) return null;
+          return data;
+        }, {title: `${info.label} on ${info.session.map.name ?? info.session.map.id}`,
+          navigation: () => destination, isCurrent: session => navigation === intent && context(session)});
+        // Keep this completed index through our own native session adoption;
+        // the route was reconstructed using the replay's format, not the old
+        // live session's format. No second analysis is needed on another click.
+        if (played && navigation === intent && slot === reference) {
+          const next = describe(key, source);
+          if (next) {
+            replayStore.adoptFeedback?.({from: reference.key, to: next.key, previous: info.session, session: next.session});
+            reference.key = next.key;
+          }
+        }
+        return played;
+      },
       tone(rampKey, loss) {
         const source = settings.boardColorReference;
         if (source !== 'pb' && source !== 'wr') { release(); return startTone(loss, settings.boardLossAmazing, settings.boardLossGood); }

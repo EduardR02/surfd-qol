@@ -27,8 +27,14 @@ const history = createRunHistory({
   // The replay is trimmed to a few seconds before the start when the game's
   // own simulation confirms the trimmed one reaches the same start.
   onReplay: (run, replay, clip) => {
-    replays.save(run, replay, clip ? () => trimReplay(api.adapter?.Session, replay, clip) : null)
-      .then(saved => { if (saved?.offset) history.setReplayOffset(run.id, saved.offset); });
+    return replays.save(run, replay, clip ? () => trimReplay(api.adapter?.Session, replay, clip) : null)
+      .then(saved => {
+        if (!saved) history.setReplayUnavailable(run.id);
+        else if (saved.offset) history.setReplayOffset(run.id, saved.offset);
+      }, error => {
+        history.setReplayUnavailable(run.id);
+        console.warn('[Surfd QoL] Could not save replay:', error);
+      });
   },
   limits: () => ({ runsPerMap: settings.historyRunsPerMap, minSeconds: settings.historyMinSeconds }),
   // Also runs once the saved history has loaded, dropping replays left over

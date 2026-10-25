@@ -76,6 +76,123 @@ function game(length = 400) {
   return { world, replay, run, control };
 }
 
+describe('ramp replay navigation', () => {
+  test('local navigation uses the exact visit, trim offset, lead time and existing frame cache', async () => {
+    const {world, replay, run, control} = game(1200);
+    replay.config = {dt: DT};
+    run.replay.offset = 200;
+    run.boards = [[230, 5, '[7,0,1]'], [1000, 4, '[7,0,2]']];
+    expect(await control.watch(run, {rampKey: '[7,0,2]'})).toBe(true);
+    expect(control.status()).toMatchObject({index: 767, playing: false, speed: 1});
+    expect(world.steps).toBe(767);
+    world.frame(DT * 10);
+    expect(world.index).toBe(767);
+    control.seek(900);
+    const steps = world.steps;
+    control.seek(767);
+    expect(world.steps - steps).toBeLessThan(767);
+    expect(await control.watch(run)).toBe(true);
+    expect(control.status()).toMatchObject({index: 0, playing: true});
+    control.destroy();
+  });
+
+  test('lead time clamps at the retained start and can opt into playing at the board', async () => {
+    const {run, control} = game();
+    run.replay.offset = 200;
+    run.boards = [[205, null, 'entry'], [600, 2, 'end']];
+    expect(await control.watch(run, {rampKey: 'entry'})).toBe(true);
+    expect(control.status()).toMatchObject({index: 0, playing: false});
+    expect(await control.watch(run, {rampKey: 'end', leadSeconds: 0, paused: false})).toBe(true);
+    expect(control.status()).toMatchObject({index: 400, playing: true});
+    control.destroy();
+  });
+
+  test('absent, trimmed-out and out-of-bounds boards never start another replay', async () => {
+    for (const tick of [null, 199, 601, NaN]) {
+      const {world, run, control} = game();
+      run.replay.offset = 200;
+      run.boards = tick === null ? [[250, 3, 'other']] : [[tick, 3, 'wanted']];
+      expect(await control.watch(run, {rampKey: 'wanted'})).toBe(false);
+      expect(world.playing).toBeNull();
+      expect(world.seeks).toBe(0);
+      control.destroy();
+    }
+  });
+
+  test('navigation validates lead time and never changes normal Watch defaults', async () => {
+    for (const leadSeconds of [-1, Infinity, NaN]) {
+      const {world, run, control} = game();
+      run.boards = [[200, 2, 'ramp']];
+      expect(await control.watch(run, {rampKey: 'ramp', leadSeconds})).toBe(false);
+      expect(world.playing).toBeNull();
+      await control.watch(run);
+      expect(control.status()).toMatchObject({index: 0, playing: true});
+      control.destroy();
+    }
+  });
+
+  test('local navigation resolves current archived board metadata rather than the UI snapshot', async () => {
+    const {world, replay, run} = game();
+    const currentRun = {...run, boards: [[200, 4, 'ramp']]};
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      getRun: id => id === run.id ? currentRun : null, archive: {get: async () => replay}});
+    expect(await control.watch(run, {rampKey: 'ramp', leadSeconds: 0})).toBe(true);
+    expect(control.status()).toMatchObject({index: 200, playing: false});
+    control.destroy();
+  });
+
+  test('cancelling local ramp ownership during an archive read leaves native playback untouched', async () => {
+    const {world, replay, run} = game();
+    run.boards = [[200, 4, 'ramp']];
+    let resolveReplay, current = true;
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {get: () => new Promise(resolve => { resolveReplay = resolve; })}});
+    try {
+      const pending = control.watch(run, {rampKey: 'ramp', isCurrent: () => current});
+      current = false;
+      resolveReplay(replay);
+      expect(await pending).toBe(false);
+      expect(world.playing).toBeNull();
+      expect(world.seeks).toBe(0);
+    } finally { control.destroy(); }
+  });
+
+  test('native Watch cancels navigation while its route is loading without a late seek', async () => {
+    const {world, replay, control} = game();
+    let finish;
+    const request = control.watchLoaded(() => new Promise(resolve => { finish = resolve; }),
+      {title: 'Ramp PB', navigation: {tick: 200, leadSeconds: 0, paused: true}});
+    const native = {...replay};
+    await world.watchNative(async () => native);
+    finish(replay);
+    expect(await request).toBe(false);
+    expect(world.playing).toBe(native);
+    expect(world.seeks).toBe(0);
+    control.destroy();
+  });
+
+  test('reference context changes during native startup prevent playback and seeking', async () => {
+    const {world, replay, control} = game();
+    let valid = true, finish, started;
+    const beginning = new Promise(resolve => { started = resolve; });
+    const nativeWatch = world.hooks.watch;
+    world.hooks.watch = async (...args) => {
+      started();
+      await new Promise(resolve => { finish = resolve; });
+      return nativeWatch(...args);
+    };
+    const request = control.watchLoaded(async () => replay, {title: 'Ramp PB',
+      navigation: {tick: 200, leadSeconds: 0, paused: true}, isCurrent: () => valid});
+    await beginning;
+    valid = false;
+    finish();
+    expect(await request).toBe(false);
+    expect(world.playing).toBeNull();
+    expect(world.seeks).toBe(0);
+    control.destroy();
+  });
+});
+
 describe('replay control', () => {
   test('watching preserves the full recorded prestrafe before the start marker', async () => {
     const { world, run, control } = game();

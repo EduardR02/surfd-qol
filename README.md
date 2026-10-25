@@ -84,10 +84,12 @@ Both work inside the game's own input sampling, so the commands it records are e
 
 **Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
 
-- **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each.
-- **Ramps:** your best Board, Down and Up on each ramp, compared with your PB or the WR, so you can see where you have room to improve.
+- **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each. **Recent best** keeps your fastest retained finish from the last 24 hours.
+- **Ramps:** switch between your best, last 10 measurements and average on each ramp, compared with your PB or the WR. Expand a ramp to watch it in your PB, WR or Recent best, paused half a second before the board. If that route skips the ramp, it isn’t available. Reset averages separately without losing bests or replays.
 
 Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
+
+The last 10 count measurements of each ramp, not your last 10 runs. Averages start collecting when you update; old recordings aren’t re-analysed. Recent best uses your existing replay allowance, not extra storage.
 
 ### Watching replays
 

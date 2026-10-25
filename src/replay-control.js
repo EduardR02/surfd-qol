@@ -214,28 +214,42 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   }
   const playing = () => !!current() && !paused && hooks()?.playback?.()?.replay === watching.replay;
 
-  async function startPlayback(load, details, label) {
-    if (destroyed || !enabled) return;
+  async function startPlayback(load, details, label, {navigation = null, isCurrent = () => true} = {}) {
+    if (destroyed || !enabled) return false;
     const request = ++requestVersion, previousSession = getSession?.(), replay = hooks();
     if (!replay?.watch) throw new Error('Replays aren’t supported by this version of Surfd.');
     // Reserve the game's Watch generation before either archive or network I/O.
     // Native Watch buttons reserve the same generation before their downloads.
     const token = replay.reserve();
     const owned = () => !destroyed && enabled && request === requestVersion && hooks() === replay && replay.isCurrent(token);
-    const intent = starting = {replay, token};
+    const intent = starting = {replay, token, adopting: false};
     try {
-      const data = await load();
+      const data = await load(owned);
       // Session identity still rejects an actual map/context change while loading.
-      if (!owned() || getSession?.() !== previousSession) return;
-      if (!data) throw new Error('This run’s replay is no longer available.');
+      if (!owned() || getSession?.() !== previousSession || !isCurrent()) return false;
+      if (!data) {
+        if (navigation) return false;
+        throw new Error('This run’s replay is no longer available.');
+      }
+      const destination = typeof navigation === 'function' ? navigation(data) : navigation;
+      const dt = data.config?.dt ?? previousSession?.config?.dt ?? 0.015;
+      if (navigation && (!destination || !Number.isInteger(destination.tick) || destination.tick < 0 ||
+        destination.tick > data.commands.length || !Number.isFinite(dt) || dt <= 0 ||
+        !Number.isFinite(destination.leadSeconds) || destination.leadSeconds < 0)) return false;
       install(replay);
-      await replay.watch(data, label, owned, token);
-      if (!owned()) return;
+      intent.adopting = true;
+      await replay.watch(data, label, () => owned() && isCurrent(), token);
+      if (!owned()) return false;
       const session = getSession?.();
-      if (!session || replay.playback()?.replay !== data) throw new Error('The replay didn’t start.');
+      if (!isCurrent(session)) return false;
+      if (!session || replay.playback()?.replay !== data) {
+        if (!isCurrent()) return false;
+        throw new Error('The replay didn’t start.');
+      }
       watch(data, session, typeof details === 'function' ? details(data) : details);
-      // Retain the prestrafe, including when replaying after the end.
-      seek(0);
+      // Ordinary Watch retains the prestrafe; navigation uses the same frame cache.
+      paused = destination ? destination.paused : false;
+      return seek(destination ? destination.tick - Math.round(destination.leadSeconds / dt) : 0);
     } finally {
       if (starting === intent) starting = null;
     }
@@ -270,9 +284,12 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     },
     // True when this game build exposes playback and the run's replay was kept.
     canWatch: run => enabled && !destroyed && !!hooks()?.watch && !!run?.replay && !!archive?.has(run.id),
-    watch(shown) {
+    watch(shown, {rampKey, leadSeconds = 0.5, paused = true, isCurrent} = {}) {
       const run = getRun?.(shown.id) ?? shown;
       const offset = run.replay?.offset ?? 0;
+      const board = rampKey == null ? null : run.boards?.find(([, , key]) => key === rampKey);
+      if (rampKey != null && (!board || !Number.isInteger(board[0]) || board[0] < offset)) return Promise.resolve(false);
+      const navigation = board ? {tick: board[0] - offset, leadSeconds, paused} : null;
       return startPlayback(() => archive.get(run.id), data => ({
         title: `Your run on ${run.mapName} · ${run.outcome === 'finished' ? `finished in ${formatTime(run.time)}` : `reset at ${formatTime(run.time)}`}${run.practice ? ' · practice' : ''}`,
         start: Math.min(run.replay.start ?? 0, data.commands.length),
@@ -281,10 +298,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         boards: (run.boards ?? []).map(([tick, board, key]) => ({tick: tick - offset, board, key})).filter(ramp => Number.isInteger(ramp.tick) && ramp.tick >= 0),
         spots: (run.spots ?? []).filter(tick => Number.isInteger(tick) && tick >= 0 && tick <= data.commands.length).slice(0, MAX_SPOTS),
         run: {id: run.id, mapKey: run.map},
-      }), 'saved run');
+      }), 'saved run', {navigation, isCurrent});
     },
-    watchLoaded(load, {title}) {
-      return startPlayback(load, {title, learn: true}, 'leaderboard replay');
+    watchLoaded(load, {title, navigation = null, isCurrent} = {}) {
+      return startPlayback(load, {title, learn: true}, 'leaderboard replay', {navigation, isCurrent});
     },
     setVisible(next) {
       const shown = !destroyed && enabled && !!next;
@@ -305,6 +322,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       grade?.destroy?.();
     },
     get active() { return !!current(); },
+    // Protect an owned UI handoff from the native menu-hiding observer until
+    // Watch has installed, paused and sought the new replay.
+    get adopting() { return !destroyed && enabled && !!starting?.adopting &&
+      hooks() === starting.replay && starting.replay.isCurrent(starting.token); },
     status() {
       const watched = current();
       if (!watched) return null;
