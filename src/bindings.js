@@ -8,6 +8,7 @@ export function createBindings(getAdapter, settings, onSettings) {
   let signature = '';
   let input = null;
   let installedBindings = null;
+  let sampledBindings = null;
   let removeSampler = null;
   let message = 'Waiting for native input';
 
@@ -22,6 +23,7 @@ export function createBindings(getAdapter, settings, onSettings) {
       else input.setBindings(saved);
     }
     installedBindings = null;
+    sampledBindings = null;
     signature = '';
   }
   function update() {
@@ -36,7 +38,8 @@ export function createBindings(getAdapter, settings, onSettings) {
     const code = settings.crouchJumpKey;
     const nullAD = !!settings.nullAD, nullWSpace = !!settings.nullWSpace;
     const nextSignature = `${settings.crouchJump}:${code}:${nullAD}:${nullWSpace}`;
-    if (adapter === next && input === nextInput && source === current && signature === nextSignature) return;
+    if (adapter === next && input === nextInput && source === current && signature === nextSignature &&
+      (!removeSampler || nextInput.bindings === sampledBindings)) return;
     release();
     adapter = next;
     input = nextInput;
@@ -55,8 +58,8 @@ export function createBindings(getAdapter, settings, onSettings) {
         crouchJump = false;
       }
     }
-    if (nullAD) status.push('A/D null');
-    if (nullWSpace) status.push('W/Space null');
+    if (nullAD) status.push('Left/right null');
+    if (nullWSpace) status.push('Forward/jump null');
     if (!crouchJump && !nullAD && !nullWSpace) {
       message = status.join(' · ') || 'Disabled';
       return;
@@ -71,74 +74,70 @@ export function createBindings(getAdapter, settings, onSettings) {
       status.unshift(`${code}: jump + 1-tick crouch tap`);
     }
     const hookedInput = input;
+    const nativeBindings = sampledBindings = input.bindings;
     const sample = input.sample;
     const peek = input.peek;
     const clear = input.clear;
     const ownSample = Object.getOwnPropertyDescriptor(input, 'sample');
     const ownPeek = Object.getOwnPropertyDescriptor(input, 'peek');
     const ownClear = Object.getOwnPropertyDescriptor(input, 'clear');
-    let held = 0, adWinner = 0, wsWinner = 0;
+    let serial = 0, repeatSerial = 0, adWinner = 0, wsWinner = 0;
     let wasDown = crouchJump && input.keys.has(code);
-    const keyBit = key => {
-      switch (key) {
-        case 'KeyA': return nullAD ? 1 : 0;
-        case 'KeyD': return nullAD ? 2 : 0;
-        case 'KeyW': return nullWSpace ? 4 : 0;
-        case 'Space': return nullWSpace ? 8 : 0;
-        default: return 0;
+    const keys = new Map();
+    for (const [action, bit] of [['left', 1], ['right', 2], ['forward', 4], ['jump', 8]]) {
+      if (!(bit & (nullAD ? 3 : 0) || bit & (nullWSpace ? 12 : 0))) continue;
+      for (const key of nativeBindings[action] ?? []) {
+        const entry = keys.get(key);
+        if (entry) entry.bit |= bit;
+        else keys.set(key, {bit, down: false, order: 0});
+      }
+    }
+    const reset = () => {
+      serial = repeatSerial = adWinner = wsWinner = 0;
+      wasDown = false;
+      for (const entry of keys.values()) { entry.down = false; entry.order = 0; }
+    };
+    const activate = (key, repeatCode) => {
+      const entry = keys.get(key);
+      if (entry && !entry.down) {
+        entry.down = true;
+        entry.order = key === repeatCode ? --repeatSerial : ++serial;
       }
     };
-    const reset = () => { held = adWinner = wsWinner = 0; wasDown = false; };
     const sync = repeatCode => {
-      const keys = hookedInput.keys;
-      const down = (nullAD && keys.has('KeyA') ? 1 : 0) |
-        (nullAD && keys.has('KeyD') ? 2 : 0) |
-        (nullWSpace && keys.has('KeyW') ? 4 : 0) |
-        (nullWSpace && keys.has('Space') ? 8 : 0);
-      if (held === down) return;
-      if (!(adWinner & down)) adWinner = down & 1 || down & 2;
-      if (!(wsWinner & down)) wsWinner = down & 4 || down & 8;
-      const added = down & ~held;
-      // Native keys are insertion-ordered. This also handles keys already held
-      // when enabling nulls, or native presses made without a DOM keydown.
-      if (added) for (const key of keys) {
-        const bit = keyBit(key);
-        if (!(bit & added)) continue;
-        if (bit & 3) {
-          if (key !== repeatCode || !adWinner) adWinner = bit;
-        } else if (key !== repeatCode || !wsWinner) wsWinner = bit;
+      const wheel = !hookedInput.wheelReleaseTick ? hookedInput.wheelPending : null;
+      for (const [key, entry] of keys) {
+        if (!hookedInput.keys.has(key) && !wheel?.has(key)) entry.down = false;
       }
-      held = down;
-    };
-    let physicalKeys = input.keys, keyIterator = null, hideAD = null, hideWS = null;
-    const filteredIterator = {
-      next() {
-        let entry;
-        do { entry = keyIterator.next(); } while (!entry.done && (entry.value === hideAD || entry.value === hideWS));
-        return entry;
+      // Insertion order recovers distinct presses made without DOM events too.
+      for (const key of hookedInput.keys) activate(key, repeatCode);
+      if (wheel) for (const key of wheel) activate(key);
+      let adOrder = -Infinity, wsOrder = -Infinity;
+      adWinner = wsWinner = 0;
+      for (const entry of keys.values()) {
+        if (!entry.down) continue;
+        if (entry.bit & 3 && entry.order > adOrder) { adWinner = entry.bit & 3; adOrder = entry.order; }
+        if (entry.bit & 12 && entry.order > wsOrder) { wsWinner = entry.bit & 12; wsOrder = entry.order; }
       }
     };
-    // peek() already copies its key iterable. Reuse a view and its iterator so
-    // filtering adds no tick-time copy/allocation or changes to physical order.
-    const filteredKeys = {
-      has: key => key !== hideAD && key !== hideWS && physicalKeys.has(key),
-      [Symbol.iterator]() {
-        keyIterator = physicalKeys[Symbol.iterator]();
-        return filteredIterator;
-      }
-    };
+    const empty = [];
+    const filteredBindings = {...nativeBindings};
     const peekFiltered = function () {
-      if (this !== hookedInput || !this.locked || this.suppressed) return peek.apply(this, arguments);
+      if (this !== hookedInput || this.bindings !== nativeBindings || !this.locked || this.suppressed ||
+        (!nullAD && !nullWSpace)) return peek.apply(this, arguments);
       sync();
-      physicalKeys = this.keys;
-      hideAD = (held & 3) === 3 ? adWinner === 1 ? 'KeyD' : 'KeyA' : null;
-      hideWS = (held & 12) === 12 ? wsWinner === 4 ? 'Space' : 'KeyW' : null;
-      if (!hideAD && !hideWS) return peek.apply(this, arguments);
-      this.keys = filteredKeys;
+      if ((!adWinner || adWinner === 3) && (!wsWinner || wsWinner === 12)) return peek.apply(this, arguments);
+      // Filter actions, not physical keys: a shared duck/back/shortcut binding
+      // must survive when its movement action loses priority.
+      filteredBindings.left = adWinner === 2 ? empty : nativeBindings.left;
+      filteredBindings.right = adWinner === 1 ? empty : nativeBindings.right;
+      filteredBindings.forward = wsWinner === 8 ? empty : nativeBindings.forward;
+      filteredBindings.jump = wsWinner === 4 ? empty : nativeBindings.jump;
+      this.bindings = filteredBindings;
       try {
         return peek.apply(this, arguments);
       } finally {
-        this.keys = physicalKeys;
+        this.bindings = nativeBindings;
       }
     };
     const sampleFiltered = function () {
@@ -149,7 +148,7 @@ export function createBindings(getAdapter, settings, onSettings) {
       }
       const command = sample.apply(this, arguments);
       const down = crouchJump && this.bindings === installedBindings &&
-        command.jump && this.keys.has(code) && code !== hideAD && code !== hideWS;
+        command.jump && this.keys.has(code);
       if (down && !wasDown) command.duck = true;
       wasDown = down;
       return command;
@@ -160,9 +159,19 @@ export function createBindings(getAdapter, settings, onSettings) {
     };
     const pressed = event => {
       if (!hookedInput.locked || hookedInput.suppressed) { reset(); return; }
+      if (event.type === 'wheel') {
+        const key = event.deltaY > 0 ? 'WheelDown' : event.deltaY < 0 ? 'WheelUp' : null;
+        const entry = keys.get(key);
+        // Native wheel pulses may coalesce before sampling; a later scroll is
+        // still the newest press, but previews must never consume the pulse.
+        if (entry && !hookedInput.wheelReleaseTick && hookedInput.wheelPending?.has(key)) {
+          entry.down = true;
+          entry.order = ++serial;
+        }
+      }
       sync(event.repeat ? event.code : null);
-      const bit = keyBit(code);
-      if ((bit & 3 && adWinner !== bit) || (bit & 12 && wsWinner !== bit)) wasDown = false;
+      const bit = keys.get(code)?.bit ?? 0;
+      if ((bit & 3 && !(adWinner & bit)) || (bit & 12 && !(wsWinner & bit))) wasDown = false;
     };
     const released = event => {
       sync();
@@ -175,6 +184,11 @@ export function createBindings(getAdapter, settings, onSettings) {
     if (typeof clear === 'function') hookedInput.clear = cleared;
     hookedInput.doc.addEventListener('keydown', pressed);
     hookedInput.doc.addEventListener('keyup', released);
+    if (nullAD || nullWSpace) {
+      hookedInput.doc.addEventListener('mousedown', pressed);
+      hookedInput.doc.addEventListener('mouseup', released);
+      hookedInput.doc.addEventListener('wheel', pressed, {passive: true});
+    }
     hookedInput.doc.addEventListener('pointerlockchange', lockChanged);
     hookedInput.doc.addEventListener('visibilitychange', visibilityChanged);
     hookedInput.win?.addEventListener('blur', reset);
@@ -194,6 +208,9 @@ export function createBindings(getAdapter, settings, onSettings) {
       hookedInput.doc.removeEventListener('keydown', pressed);
       hookedInput.doc.removeEventListener('keyup', released);
       hookedInput.doc.removeEventListener('pointerlockchange', lockChanged);
+      hookedInput.doc.removeEventListener('mousedown', pressed);
+      hookedInput.doc.removeEventListener('mouseup', released);
+      hookedInput.doc.removeEventListener('wheel', pressed);
       hookedInput.doc.removeEventListener('visibilitychange', visibilityChanged);
       hookedInput.win?.removeEventListener('blur', reset);
       reset();
