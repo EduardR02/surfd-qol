@@ -1,10 +1,9 @@
 // Everything this extension keeps beyond settings lives in one IndexedDB
-// database on surfd.net: replay metadata, the replays themselves and the run
-// history. Nothing goes in the game's localStorage, whose small quota it
-// shares with the game's own saves.
+// database on surfd.net: replay metadata, the replays themselves, runs and
+// each map's bests. Nothing goes in the game's localStorage, whose small
+// quota it shares with the game's own saves.
 const DB_NAME = 'surfd-qol';
-const VERSION = 2;
-export const REPLAYS_PER_MAP = 30;
+const VERSION = 3;
 
 const done = request => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -21,7 +20,7 @@ export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
   const request = indexedDB.open(DB_NAME, VERSION);
   request.onupgradeneeded = () => {
     const db = request.result;
-    for (const name of ['meta', 'replays', 'runs']) {
+    for (const name of ['meta', 'replays', 'runs', 'bests']) {
       if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, {keyPath: 'id'});
     }
   };
@@ -34,9 +33,25 @@ export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
 
 // Saved replays are gzipped JSON: exact for every value, about an eighth of
 // the size of the game's command objects, and unpacked in about a millisecond.
-export async function packReplay(replay) {
-  const stream = new Blob([JSON.stringify(replay)]).stream().pipeThrough(new CompressionStream('gzip'));
-  return new Response(stream).arrayBuffer();
+// Packing streams the commands in chunks, yielding between them, so a long
+// replay never holds the page.
+const PACK_COMMANDS = 1024;
+const pause = () => new Promise(resolve => setTimeout(resolve, 0));
+export async function packReplay(replay, {chunk = PACK_COMMANDS, yieldTask = pause} = {}) {
+  const {commands, ...rest} = replay;
+  const compression = new CompressionStream('gzip');
+  const packed = new Response(compression.readable).arrayBuffer();
+  const writer = compression.writable.getWriter(), encoder = new TextEncoder();
+  const head = JSON.stringify(rest);
+  await writer.write(encoder.encode(`${head.slice(0, -1)}${head.length > 2 ? ',' : ''}"commands":[`));
+  for (let i = 0; i < commands.length; i += chunk) {
+    if (i) await yieldTask();
+    const part = commands.slice(i, i + chunk).map(command => JSON.stringify(command)).join(',');
+    await writer.write(encoder.encode(i ? `,${part}` : part));
+  }
+  await writer.write(encoder.encode(']}'));
+  await writer.close();
+  return packed;
 }
 export async function unpackReplay(bytes) {
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -48,46 +63,41 @@ const idle = () => new Promise(resolve => {
   else setTimeout(resolve, 0);
 });
 
-// One record per run, so ending a run writes only that run.
-export function createRunStore(database) {
-  async function write(work) {
+// Runs and per-map bests, one record each, so ending a run writes only that
+// run and its map's bests.
+export function createHistoryStore(database) {
+  async function write(name, work) {
     const db = await database;
     if (!db) return;
-    const transaction = db.transaction('runs', 'readwrite');
-    work(transaction.objectStore('runs'));
+    const transaction = db.transaction(name, 'readwrite');
+    work(transaction.objectStore(name));
     await committed(transaction);
   }
+  const getAll = (db, name) => done(db.transaction(name).objectStore(name).getAll());
+  const removeAll = name => ids => ids.length ? write(name, store => { for (const id of ids) store.delete(id); }) : Promise.resolve();
   return {
     // null when there is no database to load from or save to.
     async load() {
       const db = await database;
-      return db ? done(db.transaction('runs').objectStore('runs').getAll()) : null;
+      if (!db) return null;
+      const [runs, bests] = await Promise.all([getAll(db, 'runs'), getAll(db, 'bests')]);
+      return {runs, bests};
     },
-    put: run => write(store => store.put(run)),
-    remove: ids => ids.length ? write(store => { for (const id of ids) store.delete(id); }) : Promise.resolve(),
+    put: run => write('runs', store => store.put(run)),
+    remove: removeAll('runs'),
+    putBests: record => write('bests', store => store.put(record)),
+    removeBests: removeAll('bests'),
   };
 }
 
-// Newest `perMap` per map, plus each map's fastest clean finish when `keepBest`.
-export function pruneList(entries, perMap = REPLAYS_PER_MAP, keepBest = true) {
-  const keep = new Set(), counts = new Map(), best = new Map();
-  for (const entry of [...entries].sort((a, b) => b.at - a.at)) {
-    const count = counts.get(entry.map) ?? 0;
-    if (count < perMap) keep.add(entry.id);
-    counts.set(entry.map, count + 1);
-    if (Number.isFinite(entry.best) && !(best.get(entry.map)?.best <= entry.best)) best.set(entry.map, entry);
-  }
-  if (keepBest) for (const entry of best.values()) keep.add(entry.id);
-  return entries.filter(entry => !keep.has(entry.id)).map(entry => entry.id);
-}
-
-export function createReplayArchive({database = openSiteDatabase(), limits = () => ({})} = {}) {
-  const limit = () => {
-    let value = {};
-    try { value = limits() ?? {}; } catch { /* defaults */ }
-    return {perMap: value.perMap ?? REPLAYS_PER_MAP, keepBest: value.keepBest !== false};
-  };
+// Saved replays follow the run history: a replay is kept exactly while its
+// run is (retain), so the archive has no limits of its own.
+export function createReplayArchive({database = openSiteDatabase()} = {}) {
   const meta = new Map();
+  // A run can be pruned while its replay waits for idle time or compression.
+  // Cancelling its pending save prevents it from reappearing afterward.
+  const pending = new Map();
+  let retained = null;
   const listeners = new Set();
   const notify = () => { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } };
   // Only the small metadata store is read at startup; replays are read to watch one.
@@ -111,49 +121,78 @@ export function createReplayArchive({database = openSiteDatabase(), limits = () 
     await committed(transaction);
     notify();
   }
+  function drop(ids) {
+    for (const id of ids) pending.delete(id);
+    return remove(ids);
+  }
 
   return {
     ready: opened.then(db => !!db),
     has: id => meta.has(id),
-    async save(run, replay) {
-      const db = await opened;
-      if (!db) return false;
-      await idle();
-      let packed;
-      try { packed = await packReplay(replay); } catch (error) {
-        console.warn('[Surfd QoL] Could not pack replay:', error);
-        return false;
-      }
-      const clean = run.outcome === 'finished' && !run.practice && !run.invalid;
-      const entry = {id: run.id, map: run.map, at: run.at, best: clean ? run.time : null, bytes: packed.byteLength};
+    // `prepare` may resolve to a trimmed replay; it runs with the packing, when idle.
+    // Resolves to {offset} once saved (offset > 0 when trimmed), or null.
+    async save(run, replay, prepare = null) {
+      const job = {map: run.map};
+      pending.set(run.id, job);
+      const current = () => pending.get(run.id) === job;
       try {
-        const transaction = db.transaction(['meta', 'replays'], 'readwrite');
-        transaction.objectStore('replays').put({id: run.id, packed});
-        transaction.objectStore('meta').put(entry);
-        await committed(transaction);
-      } catch (error) {
-        // Most likely over quota: drop this map's oldest replays and give up on this one.
-        console.warn('[Surfd QoL] Could not save replay:', error);
-        await remove(pruneList([...meta.values()], Math.max(1, Math.floor(limit().perMap / 2)), limit().keepBest));
-        return false;
+        const db = await opened;
+        if (!db || !current()) return null;
+        await idle();
+        if (!current()) return null;
+        let offset = 0;
+        try {
+          const trimmed = await prepare?.();
+          if (trimmed) { replay = trimmed.replay; offset = trimmed.offset; }
+        } catch { /* keep the full replay */ }
+        if (!current()) return null;
+        let packed;
+        try { packed = await packReplay(replay); } catch (error) {
+          console.warn('[Surfd QoL] Could not pack replay:', error);
+          return null;
+        }
+        if (!current()) return null;
+        const entry = {id: run.id, map: run.map, at: run.at, bytes: packed.byteLength};
+        try {
+          const transaction = db.transaction(['meta', 'replays'], 'readwrite');
+          transaction.objectStore('replays').put({id: run.id, packed});
+          transaction.objectStore('meta').put(entry);
+          await committed(transaction);
+        } catch (error) {
+          console.warn('[Surfd QoL] Could not save replay:', error);
+          return null;
+        }
+        if (!current()) return null;
+        meta.set(entry.id, entry);
+        notify();
+        return {offset};
+      } finally {
+        if (current()) pending.delete(run.id);
       }
-      meta.set(entry.id, entry);
-      notify();
-      await remove(pruneList([...meta.values()], limit().perMap, limit().keepBest));
-      return true;
     },
     async get(id) {
       const db = await opened;
       if (!db || !meta.has(id)) return null;
       const record = await done(db.transaction('replays').objectStore('replays').get(id));
-      // Replays saved before packing are plain objects.
-      return record?.packed ? unpackReplay(record.packed) : record?.replay ?? null;
+      return record?.packed ? unpackReplay(record.packed) : null;
     },
-    clearMap: map => remove([...meta.values()].filter(entry => !map || entry.map === map).map(entry => entry.id)),
-    // Re-applies the History limits after they change.
-    async prune() { await opened; return remove(pruneList([...meta.values()], limit().perMap, limit().keepBest)); },
-    // Drops replays whose run is no longer in the history.
-    async retain(ids) { await opened; return remove([...meta.keys()].filter(id => !ids.has(id))); },
+    async clearMap(map) {
+      const cancelled = [...pending].filter(([, job]) => !map || job.map === map).map(([id]) => id);
+      for (const id of cancelled) pending.delete(id);
+      await opened;
+      return drop([...new Set([
+        ...cancelled,
+        ...[...meta.values()].filter(entry => !map || entry.map === map).map(entry => entry.id),
+      ])]);
+    },
+    async retain(ids) {
+      retained = new Set(ids);
+      const cancelled = [...pending.keys()].filter(id => !retained.has(id));
+      for (const id of cancelled) pending.delete(id);
+      await opened;
+      // Include cancelled IDs so an in-flight write is deleted after committing.
+      return remove([...new Set([...meta.keys(), ...cancelled])].filter(id => !retained.has(id)));
+    },
     usage() {
       let bytes = 0;
       for (const entry of meta.values()) bytes += entry.bytes ?? 0;

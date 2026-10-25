@@ -1,7 +1,8 @@
 import { createMetrics } from './metrics.js';
 import { createStartFeedback } from './start.js';
 import { createRunHistory } from './run-history.js';
-import { createReplayArchive, createRunStore, openSiteDatabase } from './replay-archive.js';
+import { createReplayArchive, createHistoryStore, openSiteDatabase } from './replay-archive.js';
+import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
@@ -15,24 +16,29 @@ try { applySettings(JSON.parse(localStorage.getItem(storageKey) ?? '{}')); } cat
 const metrics = createMetrics(settings);
 const start = createStartFeedback();
 const database = openSiteDatabase();
-const replays = createReplayArchive({
-  database,
-  limits: () => ({ perMap: settings.replaysPerMap, keepBest: settings.keepBestReplay })
-});
+const replays = createReplayArchive({ database });
 const history = createRunHistory({
   metrics, start,
   getState: () => window.__SURF__?.snapshot?.() ?? null,
+  getMap: () => api.adapter?.getSession()?.map ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
-  onReplay: (run, replay) => { if (settings.saveReplays !== false) replays.save(run, replay); },
-  limits: () => ({ runsPerMap: settings.historyRunsPerMap, maps: settings.historyMaps, sessions: settings.historySessions }),
+  wantsReplay: () => settings.saveReplays !== false,
+  // The replay is trimmed to a few seconds before the start when the game's
+  // own simulation confirms the trimmed one reaches the same start.
+  onReplay: (run, replay, clip) => {
+    replays.save(run, replay, clip ? () => trimReplay(api.adapter?.Session, replay, clip) : null)
+      .then(saved => { if (saved?.offset) history.setReplayOffset(run.id, saved.offset); });
+  },
+  limits: () => ({ runsPerMap: settings.historyRunsPerMap, minSeconds: settings.historyMinSeconds }),
   // Also runs once the saved history has loaded, dropping replays left over
   // from runs that are no longer kept.
   onPrune: ids => { replays.retain(ids); },
-  store: createRunStore(database)
+  store: createHistoryStore(database)
 });
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
+  getRun: id => history.run(id),
   onSpots: (runId, spots) => history.setSpots(runId, spots)
 });
 let observer = null;
@@ -44,7 +50,7 @@ const bindings = createBindings(() => api.adapter, settings, onSettings);
 function onSettings(patch) {
   applySettings(patch);
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch { /* private/storage-limited mode */ }
-  if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) { history.prune(); replays.prune(); }
+  if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) history.prune();
   if (patch?.keepHistory === false) history.discard();
   bindings.update();
 }

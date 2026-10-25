@@ -14,4 +14,7 @@ test('a packed replay unpacks to exactly the same commands, much smaller', async
   const back = await unpackReplay(packed);
   expect(back).toEqual(replay);
   expect(back.commands.every((command, i) => Object.is(command.yaw, commands[i].yaw) && Object.is(command.pitch, commands[i].pitch))).toBe(true);
+  // Chunk joins (here every 7 commands) must not change anything.
+  expect(await unpackReplay(await packReplay(replay, { chunk: 7, yieldTask: async () => {} }))).toEqual(replay);
+  expect(await unpackReplay(await packReplay({ ...replay, commands: [] }))).toEqual({ ...replay, commands: [] });
 });
