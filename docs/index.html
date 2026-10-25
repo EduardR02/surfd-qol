@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Surfd QoL: a better HUD for surfd.net</title>
-<meta name="description" content="A Chrome extension for surfd.net that shows where you lose speed on each ramp and in the air, so you can find your mistakes and learn what an optimal run does differently.">
+<title>Surfd QoL: feedback and replay tools for surfd.net</title>
+<meta name="description" content="A Chrome extension for surfd.net with ramp-by-ramp speed feedback, replay controls and local run history. Review your mistakes and save replay moments to practice.">
 <meta property="og:title" content="Surfd QoL">
-<meta property="og:description" content="Shows where you lose speed on surfd.net, ramp by ramp, so you can find your mistakes and learn what an optimal run does differently.">
+<meta property="og:description" content="See where you lose speed on surfd.net, review your runs with replay controls, and save moments to practice.">
 <meta property="og:image" content="https://eduardr02.github.io/surfd-qol/hud.jpg">
 <meta name="color-scheme" content="dark">
 <style>
@@ -50,6 +50,8 @@ header.top{display:flex;align-items:center;justify-content:space-between;padding
 .shot img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
 .shot figcaption{margin-top:10px;max-width:76ch;font-size:14px;color:var(--dust)}
 .shot.full{margin:40px 0 0}
+.replay-scroll{overflow-x:auto;border-radius:14px;border:1px solid var(--line)}
+.replay-scroll img{min-width:1000px;border:0;border-radius:0}
 
 section{padding:72px 0 0}
 section h2{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.015em}
@@ -67,6 +69,9 @@ code,kbd{font:inherit;font-weight:700;color:var(--paper)}
 .copy{margin-left:8px;padding:3px 10px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--dust);font:inherit;font-size:13.5px;cursor:pointer;vertical-align:1px}
 .copy:hover{color:var(--paper);border-color:rgba(255,232,226,.25)}
 .note{margin:22px 0 0;font-size:15.5px;color:var(--dust)}
+.update-guide{margin-top:36px}
+.update-guide h3{margin:0 0 12px;font-size:24px;line-height:1.2;letter-spacing:-.01em}
+.update-guide .steps{margin-top:22px}
 
 /* The feedback row, set in the HUD's own type: dark edge under each glyph, fraction smaller. */
 .row{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 0;margin:30px 0 8px;padding:34px 8px 28px;border-radius:14px;
@@ -115,8 +120,8 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
 <main>
   <div class="hero wrap">
     <h1>See where your speed goes.</h1>
-    <p class="measure">Surfd QoL is a Chrome extension for <a href="https://surfd.net/">surfd.net</a>. It shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently.</p>
-    <p class="measure">Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent.</p>
+    <p class="measure">Surfd QoL is a Chrome extension for <a href="https://surfd.net/">surfd.net</a>. See where you lose speed on each ramp and in the air, review the moment in a replay, then try the section yourself.</p>
+    <p class="measure">Choose the feedback you want, with a configurable HUD, optional replay controls and local run history.</p>
     <div class="cta">
       <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -141,7 +146,32 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
         <li><b>Click Load unpacked and pick the unzipped folder.</b><span>It's the folder that contains <code>manifest.json</code>.</span></li>
         <li><b>Open surfd.net.</b><span>The tab reloads once while the extension hooks in. Settings are under <b>QoL</b>, bottom right of the game menu.</span></li>
       </ol>
-      <p class="note measure">Chrome will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only touches surfd.net. You can close the bar; everything keeps working until you reload. To update, download the new zip, replace the folder and click reload on the extension.</p>
+      <p class="note measure">Chrome will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only attaches to surfd.net. You can close the bar; everything keeps working until you reload.</p>
+      <div class="update-guide" id="update">
+        <h3>Updating</h3>
+        <p class="lede measure">A link above Runs and QoL in the game menu lets you know when a new version is available. Chrome won't install it automatically.</p>
+        <ol class="steps">
+          <li><b><a href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">Download the latest zip</a> and unzip it.</b><span>Replace the contents of the extension folder you already loaded into Chrome.</span></li>
+          <li><b>Reload the extension, then refresh Surfd.</b><span>Open <code>chrome://extensions</code> and click the reload icon on Surfd QoL. Your settings and saved runs stay in this browser.</span></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="replays">
+    <div class="wrap">
+      <h2>Replays and run history</h2>
+      <p class="lede measure">Pause, seek, step frame by frame or change playback speed to see what happened. Use the same controls on your recorded runs, leaderboard replays and the KSF record route.</p>
+      <dl class="defs">
+        <div><dt>Practice from a replay</dt><dd>Save a position with Saveloc or your usual save bind, then leave the replay and load it in practice to try the section yourself.</dd></div>
+        <div><dt>Local run history</dt><dd>Open Runs for your latest attempt, recent runs and best recorded finish. Choose what to keep, or turn recording and replay controls off, under QoL → History.</dd></div>
+      </dl>
+      <figure class="shot full">
+        <div class="replay-scroll" role="region" aria-label="Replay bar screenshot; scroll horizontally to see all controls" tabindex="0">
+          <img src="replay-bar.jpg" width="1375" height="113" alt="The bottom replay bar on Cannonball's KSF Watch route, with playback controls, a timeline, playback speed and savelocs." loading="lazy">
+        </div>
+        <figcaption>Cannonball's KSF record route. Scroll sideways on smaller screens to see all the controls.</figcaption>
+      </figure>
     </div>
   </section>
 
@@ -174,6 +204,7 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
     </div>
   </section>
 
+
   <section id="settings">
     <div class="wrap split">
       <div>
@@ -183,10 +214,10 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
           <li>Move, resize and recolor the HUD with a live preview.</li>
           <li>Grade each value against fixed targets, your PB, the KSF record or Surfd's #1.</li>
           <li>Optional crouch-jump on any key: one tick of crouch per jump.</li>
-          <li>Nullbinds for A/D and W/Space.</li>
+          <li>Optional nullbinds for left/right and forward/jump, following your game's movement bindings.</li>
           <li>Speed counter and timer refresh rates, so digits stay readable.</li>
         </ul>
-        <p class="note measure">It never changes physics, timing or replays, and sends nothing anywhere. Anything you hide isn't computed.</p>
+        <p class="note measure">The game's physics and timing stay unchanged. Settings and recorded runs stay in your browser. Hidden feedback skips its analysis.</p>
       </div>
       <img src="settings.jpg" width="590" height="885" alt="The Surfd QoL settings panel open in the game menu, with a live HUD preview, layout sliders and color choices.">
     </div>
