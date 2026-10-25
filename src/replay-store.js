@@ -8,6 +8,17 @@ const SLICE_COMMANDS = 32;
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const micros = seconds => Math.round(seconds * 1e6);
 const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && speeds.every(speed => Number.isFinite(speed) && speed >= 0 && speed <= 100000);
+// Saved analysis outlives the page. Its key carries a hash of the extension's
+// source (set by build.js), so changed analysis code never reuses old results.
+const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev';
+// The KSF record route has no ID, so a saved analysis of it is matched by
+// a fingerprint of the downloaded route.
+export function routeFingerprint(replay) {
+  const text = JSON.stringify([replay.commands.length, replay.initialState, replay.commands.filter((_, index) => index % 32 === 0), replay.commands.at(-1)]);
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+  return (hash >>> 0).toString(36);
+}
 const resetEvents = new Set(['fall', 'teleport', 'restart', 'practice-restore', 'stage-restarted', 'start-return', 'stage-return']);
 
 export function visitKey(measurement) {
@@ -146,7 +157,10 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
 // Cache only summaries, not downloaded commands. A later feedback upgrade of
 // a completed checkpoint-only result may fetch again; in-flight consumers
 // share the download and request the highest active capability.
-export function createReferenceReplayStore({getAdapter, yieldTask = defer}) {
+// saved: {get(id), put(id, {result, feedback})} keeps summaries across page
+// loads (replay-archive.js): an official PB/WR replay is named by its run, so
+// a saved one needs no download; the KSF route is fingerprinted once fetched.
+export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved = null}) {
   const pending = new Map(), cache = new Map();
   let adapter = null, destroyed = false;
   function clearPending() {
@@ -179,11 +193,32 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer}) {
       }};
       pending.set(key, job);
       const work = job;
+      const keep = summary => {
+        cache.set(key, summary);
+        while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
+        return summary.result;
+      };
+      // A saved summary that covers what the consumers need.
+      const stored = async id => {
+        if (!saved || !id) return null;
+        try {
+          const summary = await saved.get(id);
+          return summary?.result && (summary.feedback || !work.wantsFeedback()) ? summary : null;
+        } catch { return null; }
+      };
       work.promise = Promise.resolve().then(async () => {
         try {
+          let id = key.includes(':official:') ? `${ANALYSIS}|${key}` : null;
+          let found = work.current() ? await stored(id) : null;
+          if (found) return work.current() ? keep(found) : null;
           const replay = work.current() ? await load?.() : null;
           if (!work.current()) return null;
           if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
+          if (key.endsWith(':ksf') && Array.isArray(replay.commands)) {
+            id = `${ANALYSIS}|${key}|${routeFingerprint(replay)}`;
+            found = await stored(id);
+            if (found) return work.current() ? keep(found) : null;
+          }
           const reconstruct = () => reconstructReferenceReplay({
             adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask,
             feedback: () => work.feedback = work.wantsFeedback()
@@ -195,8 +230,8 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer}) {
           if (!work.current()) return null;
           const result = {...data, status: 'unmatched'};
           if (result.checkpoint || result.feedback) {
-            cache.set(key, {result, feedback: work.feedback});
-            while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
+            keep({result, feedback: work.feedback});
+            if (id) Promise.resolve().then(() => saved?.put(id, {result, feedback: work.feedback})).catch(() => { /* kept for this page */ });
           }
           return result;
         } catch {

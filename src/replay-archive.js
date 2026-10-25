@@ -1,9 +1,9 @@
 // Everything this extension keeps beyond settings lives in one IndexedDB
-// database on surfd.net: replay metadata, the replays themselves, runs and
-// each map's bests. Nothing goes in the game's localStorage, whose small
+// database on surfd.net: replay metadata, the replays themselves, runs, each
+// map's bests and the analysis of PB/WR replays. Nothing goes in the game's localStorage, whose small
 // quota it shares with the game's own saves.
 const DB_NAME = 'surfd-qol';
-const VERSION = 3;
+const VERSION = 4;
 
 const done = request => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -20,7 +20,7 @@ export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
   const request = indexedDB.open(DB_NAME, VERSION);
   request.onupgradeneeded = () => {
     const db = request.result;
-    for (const name of ['meta', 'replays', 'runs', 'bests']) {
+    for (const name of ['meta', 'replays', 'runs', 'bests', 'analysis']) {
       if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, {keyPath: 'id'});
     }
   };
@@ -87,6 +87,28 @@ export function createHistoryStore(database) {
     remove: removeAll('runs'),
     putBests: record => write('bests', store => store.put(record)),
     removeBests: removeAll('bests'),
+  };
+}
+
+// PB/WR replay analysis (replay-store.js), so a reference already analysed
+// needs no download or re-simulation on the next visit. A few KB each; the
+// least recently saved go beyond MAX_ANALYSES.
+const MAX_ANALYSES = 40;
+export function createAnalysisStore(database) {
+  return {
+    async get(id) {
+      const db = await database;
+      return db ? (await done(db.transaction('analysis').objectStore('analysis').get(id))) ?? null : null;
+    },
+    async put(id, {result, feedback}) {
+      const db = await database;
+      if (!db) return;
+      const transaction = db.transaction('analysis', 'readwrite'), store = transaction.objectStore('analysis');
+      store.put({id, result, feedback, at: Date.now()});
+      const all = await done(store.getAll());
+      if (all.length > MAX_ANALYSES) for (const old of all.sort((a, b) => a.at - b.at).slice(0, all.length - MAX_ANALYSES)) store.delete(old.id);
+      await committed(transaction);
+    },
   };
 }
 

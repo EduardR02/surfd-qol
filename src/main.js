@@ -1,7 +1,7 @@
 import { createMetrics } from './metrics.js';
 import { createStartFeedback } from './start.js';
 import { createRunHistory } from './run-history.js';
-import { createReplayArchive, createHistoryStore, openSiteDatabase } from './replay-archive.js';
+import { createReplayArchive, createHistoryStore, createAnalysisStore, openSiteDatabase } from './replay-archive.js';
 import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
 import { createReferenceReplayStore } from './replay-store.js';
@@ -37,9 +37,9 @@ const history = createRunHistory({
   onPrune: ids => { replays.retain(ids); },
   store: createHistoryStore(database)
 });
-// PB/WR replays are re-simulated once and shared by the HUD's comparisons,
-// the Runs panel's ramps and the replay timeline's ramp colours.
-const replayStore = createReferenceReplayStore({ getAdapter: () => api.adapter });
+// PB/WR replays are re-simulated once, saved across visits, and shared by the
+// HUD's comparisons, the Runs panel's ramps and the replay timeline's colours.
+const replayStore = createReferenceReplayStore({ getAdapter: () => api.adapter, saved: createAnalysisStore(database) });
 const rampReference = createRampReference({
   getSession: () => api.adapter?.getSession() ?? null, getReferences: () => api.adapter?.getReferences() ?? null,
   getAdapter: () => api.adapter, replayStore, settings

@@ -25,7 +25,7 @@ const startCommands = ({speed = 350, fromHeight = 180, toHeight = 160, grounded 
 // This boundary double performs the native method calls used by the observer,
 // rather than mocking the metrics or reproducing its Board-entry formula.
 function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wrSource = 'ksf', commands = [contact(), finish],
-  floorHeight = 100, platformEdge = 100, yieldTask = async () => {}, shared = false} = {}) {
+  floorHeight = 100, platformEdge = 100, yieldTask = async () => {}, shared = false, saved = null} = {}) {
   const config = {dt:.015,gravity:800,airAccelerate:150,airCap:30,groundNormal:.7,float32:false,
     standHeight:62,duckHeight:45,stepSize:18,unrestrictedStart:false};
   const map = {id:'surf_test',version:'map-1',zones:[startZone],brushes:['a','b','c'].map((id,index) => ({
@@ -100,7 +100,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
   let loadReplay = async id => { replayCalls.push(id); return replay; };
   let loadRecordRoute = async () => { routeCalls++; return replay; };
   const getReferences = () => ({boardId:'board',own,record,loadReplay:id => loadReplay(id),loadRecordRoute:() => loadRecordRoute()});
-  const replayStore = shared ? createReferenceReplayStore({getAdapter:() => adapter,yieldTask}) : undefined;
+  const replayStore = shared || saved ? createReferenceReplayStore({getAdapter:() => adapter,yieldTask,saved}) : undefined;
   if (replayStore) cleanups.push(() => replayStore.destroy());
   const controller = createRunReferences({getSession:() => session,getAdapter:() => adapter,
     getReferences,settings,yieldTask,replayStore});
@@ -114,6 +114,44 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
     replay:() => replay, setReplay(value) { replay = value; }, setOwn(value) { own = value; }, setRecord(value) { record = value; },
     setLoader(value) { loadReplay = value; }, setRouteLoader(value) { loadRecordRoute = value; }, calls:() => ({replay:replayCalls,route:routeCalls})};
 }
+
+// What IndexedDB would keep between page loads, as structured clones.
+const savedAnalysis = () => {
+  const data = new Map();
+  return {data, async get(id) { return data.has(id) ? structuredClone(data.get(id)) : null; }, async put(id, value) { data.set(id, structuredClone(value)); }};
+};
+
+describe('Saved reference analysis', () => {
+  test('a PB analysed on an earlier visit needs no download or re-simulation', async () => {
+    const saved = savedAnalysis();
+    const first = fixture({saved});
+    const board = first.step(contact('a',20)); first.update(board); await flush();
+    expect(first.update(board)).toEqual({loss:5,status:'ready',source:'pb'});
+    expect(saved.data.size).toBe(1);
+    first.controller.destroy();
+    const next = fixture({saved});
+    const again = next.step(contact('a',20)); next.update(again); await flush();
+    expect(next.update(again)).toEqual({loss:5,status:'ready',source:'pb'});
+    expect(next.calls().replay).toEqual([]);
+    expect(next.native().loads).toBe(0);
+  });
+  test('the KSF route is fetched to check it is unchanged, and re-simulated only when it changed', async () => {
+    const saved = savedAnalysis();
+    const first = fixture({source:'wr',saved});
+    first.update(first.step(contact())); await flush();
+    first.controller.destroy();
+    const same = fixture({source:'wr',saved});
+    const board = same.step(contact()); same.update(board); await flush();
+    expect(same.update(board)).toEqual({loss:5,status:'ready',source:'wr'});
+    expect([same.calls().route, same.native().loads]).toEqual([1, 0]);
+    same.controller.destroy();
+    const changed = fixture({source:'wr',saved,commands:[contact('a',8),finish]});
+    const other = changed.step(contact()); changed.update(other); await flush();
+    expect(changed.update(other)).toEqual({loss:8,status:'ready',source:'wr'});
+    expect(changed.native().loads).toBe(1);
+    expect(saved.data.size).toBe(2);
+  });
+});
 
 describe('Native run replay references', () => {
   test('uses the native metrics, allows historical format, and returns the raw PB clip', async () => {

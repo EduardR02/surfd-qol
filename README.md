@@ -120,7 +120,7 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 ## Performance and privacy
 
-- Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each one is processed once and cached.
+- Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each one is analysed once: the result is saved, so later visits skip that work until the PB or WR changes.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
 - No telemetry. Settings, run history, replays of your runs and local checkpoint PB speeds live in surfd.net's site storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net and, at most once a day, a check with GitHub for a newer release, which sends nothing about you or your runs.
 
