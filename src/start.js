@@ -70,7 +70,10 @@ function isExit(zone, segment, height, fraction) {
   return false;
 }
 
-export function createStartFeedback(clock = () => performance.now()) {
+// The exit's age is game time (ticks since it), not wall time: a replay's
+// speed, pauses and seeks then show it exactly when the run had it, and a
+// seek that re-simulates past the start doesn't make it look new.
+export function createStartFeedback() {
   let latest = null;
   let sessionIdentity = null;
   let ground = null;
@@ -81,13 +84,12 @@ export function createStartFeedback(clock = () => performance.now()) {
     saveState() {
       return {
         latest: latest ? { ...latest } : null,
-        age: latest ? clock() - latest.recordedAt : 0,
         ground: ground ? { ...ground } : null,
         sessionIdentity,
       };
     },
     restoreState(saved) {
-      latest = saved.latest ? { ...saved.latest, recordedAt: clock() - saved.age } : null;
+      latest = saved.latest ? { ...saved.latest } : null;
       ground = saved.ground ? { ...saved.ground } : null;
       sessionIdentity = saved.sessionIdentity;
     },
@@ -127,9 +129,14 @@ export function createStartFeedback(clock = () => performance.now()) {
         exitHeight: crossing?.z ?? null, floorHeight,
         heightAboveFloor: floorHeight === null ? null : crossing.z - floorHeight,
         label: config.unrestrictedStart ? 'Unrestricted start' : state.grounded ? 'Ground start' : 'Airborne start',
-        recordedAt: clock()
+        tick: state.tick, dt: config.dt ?? 0.015
       };
     },
-    snapshot() { return latest ? { ...latest, age: clock() - latest.recordedAt } : { available: false }; }
+    // age: milliseconds of game time since the exit; none before it.
+    snapshot() {
+      const now = sessionIdentity?.state?.tick;
+      const ticks = latest && Number.isFinite(now) ? now - latest.tick : 0;
+      return latest && ticks >= 0 ? { ...latest, age: ticks * latest.dt * 1000 } : { available: false };
+    }
   };
 }

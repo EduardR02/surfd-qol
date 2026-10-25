@@ -221,14 +221,14 @@ describe('replay coaching checkpoints', () => {
       expect(saved).not.toHaveProperty('accelerationInputs');
       expect(saved).not.toHaveProperty('tickPlane');
       expect(expected.ramp.available).toBe(true);
-      expect(savedStart.age).toBe(25);
+      const expectedStart = start.snapshot();
       session.loadReplay(replay);
       now.mockReturnValue(100000);
       thaw(session, native, replay, 128);
       metrics.restoreState(saved);
       start.restoreState(savedStart);
       expect(metrics.snapshot()).toEqual(expected);
-      expect(start.snapshot()).toMatchObject({available: true, age: 25});
+      expect(start.snapshot()).toEqual(expectedStart);
       now.mockReturnValue(101601);
       expect(metrics.snapshot().ramp.available).toBe(false);
       expect(observer.healthy).toBe(true);

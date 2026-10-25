@@ -6,7 +6,7 @@ const zone = { id: 'start', kind: 'start', min: { x: -100, y: -100, z: 100 }, ma
 function scene({ ducked = false, exitHeight = 100, floorHeight = 100, platformEdge = 100 } = {}) {
   return {
     state: { tick: 11, ducked, grounded: false, position: { x: 122, y: 0, z: exitHeight }, velocity: { x: 350, y: 0, z: -100 } },
-    config: { standHeight: 62, duckHeight: 45, stepSize: 18, groundNormal: 0.7, unrestrictedStart: false },
+    config: { dt: 0.015, standHeight: 62, duckHeight: 45, stepSize: 18, groundNormal: 0.7, unrestrictedStart: false },
     timer: { state: { startTick: 10.5 }, startSpeedCap: () => 350 },
     map: { zones: [zone] },
     movement: { world: {
@@ -41,14 +41,13 @@ describe('start platform height', () => {
   });
 
   test('uses the fractional crossing rather than the end-of-tick height', () => {
-    let now = 100;
-    const feedback = createStartFeedback(() => now);
+    const feedback = createStartFeedback();
     const session = scene({ exitHeight: 160 });
     session.lastResult.segments[0].from.z = 180;
     feedback.observe(session, ['start']);
     expect(feedback.snapshot()).toMatchObject({ available: true, speed: 350, speedDelta: 0, exitHeight: 170, floorHeight: 100, heightAboveFloor: 70, age: 0 });
-    now = 250;
-    expect(feedback.snapshot().age).toBe(150);
+    session.state.tick += 10;
+    expect(feedback.snapshot().age).toBeCloseTo(150, 6);
     feedback.observe(session, ['fall']);
     expect(feedback.snapshot().available).toBe(false);
   });
@@ -77,8 +76,7 @@ describe('start platform height', () => {
   });
 
   test('checkpoints retain takeoff support and restore independent start feedback with its age', () => {
-    let now = 100;
-    const feedback = createStartFeedback(() => now);
+    const feedback = createStartFeedback();
     const session = scene({ platformEdge: 80, exitHeight: 90 });
     session.state.grounded = true;
     session.state.position = { x: 0, y: 0, z: 100 };
@@ -91,19 +89,30 @@ describe('start platform height', () => {
     session.state.grounded = false;
     session.state.position = { x: 122, y: 0, z: 90 };
     feedback.observe(session, ['start']);
-    now = 125;
+    session.state.tick += 2;
     const started = feedback.saveState();
-    expect(feedback.snapshot()).toMatchObject({floorHeight: 100, heightAboveFloor: -10, age: 25});
+    expect(feedback.snapshot()).toMatchObject({floorHeight: 100, heightAboveFloor: -10, age: 30});
     feedback.observe(session, ['fall']);
-    now = 10000;
     feedback.restoreState(started);
-    expect(feedback.snapshot()).toMatchObject({available: true, floorHeight: 100, heightAboveFloor: -10, age: 25});
+    expect(feedback.snapshot()).toMatchObject({available: true, floorHeight: 100, heightAboveFloor: -10, age: 30});
     feedback.observe(session, ['start']);
     feedback.restoreState(started);
-    expect(feedback.snapshot().age).toBe(25);
-    expect(started.latest.recordedAt).toBe(100);
+    expect(feedback.snapshot().age).toBe(30);
+    expect(started.latest.tick).toBe(11);
     feedback.observe(scene(), []);
     expect(feedback.snapshot().available).toBe(false);
+  });
+
+  test('a seek shows the start only when the replay is at it: never as if the run just began', () => {
+    const feedback = createStartFeedback();
+    const session = scene();
+    // Re-simulating through the start zone exit, then on to a moment 3 s later.
+    feedback.observe(session, ['start']);
+    session.state.tick += 200;
+    expect(feedback.snapshot().age).toBeCloseTo(3000, 6);
+    // Back before the exit (a restored session): nothing to show.
+    session.state.tick = 5;
+    expect(feedback.snapshot()).toEqual({available: false});
   });
 
   test('an empty start checkpoint clears later feedback', () => {
