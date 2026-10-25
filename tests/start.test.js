@@ -113,5 +113,10 @@ describe('start platform height', () => {
     expect(feedback.snapshot().available).toBe(true);
     feedback.restoreState(empty);
     expect(feedback.snapshot()).toEqual({available: false});
+
+    feedback.observe(scene(), ['start']);
+    feedback.reset();
+    expect(feedback.saveState().sessionIdentity).toBeNull();
+    expect(feedback.snapshot()).toEqual({available: false});
   });
 });

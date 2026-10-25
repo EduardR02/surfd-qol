@@ -20,7 +20,7 @@ const start = createStartFeedback();
 const database = openSiteDatabase();
 const replays = createReplayArchive({ database });
 const history = createRunHistory({
-  metrics, start,
+  metrics, start, archive: replays,
   getState: () => window.__SURF__?.snapshot?.() ?? null,
   getMap: () => api.adapter?.getSession()?.map ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
@@ -45,6 +45,7 @@ const rampReference = createRampReference({
 });
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
+  settings,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
   getRun: id => history.run(id),
   onSpots: (runId, spots) => history.setSpots(runId, spots),
@@ -68,7 +69,10 @@ let failed = false;
 let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
 function onSettings(patch) {
+  const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
+  if (startWasShown && (settings.hud === false || settings.showStart === false)) start.reset();
+  replayControl.settingsChanged();
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch { /* private/storage-limited mode */ }
   if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) history.prune();
   if (patch?.keepHistory === false) history.discard();

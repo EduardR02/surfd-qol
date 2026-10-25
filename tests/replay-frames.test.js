@@ -3,6 +3,8 @@ import {createFrames, freeze, thaw, FRAME_TICKS} from '../src/replay-frames.js';
 import {createMetrics} from '../src/metrics.js';
 import {createStartFeedback} from '../src/start.js';
 import {observePhysics} from '../src/observer.js';
+import {createReplayControl} from '../src/replay-control.js';
+import {defaults} from '../src/settings.js';
 
 // A replay session whose state is how many commands it has played.
 class Session {
@@ -238,5 +240,103 @@ describe('replay coaching checkpoints', () => {
     frames.keep(played(128), 128);
     expect(frames.size).toBe(0);
     expect(frames.resume(new Session(), 0, 128)).toBe(-1);
+  });
+});
+
+// Exercises the controller's actual seek/cache path with the same observer
+// and setting gates as main, rather than comparing cache wiring.
+function controlledCoaching(settings) {
+  const {session, adapter} = coachingGame();
+  const metrics = createMetrics(settings), start = createStartFeedback();
+  let index = 0, steps = 0;
+  class Stepper {
+    advance(seconds, tick) { if (seconds > 0) tick(); }
+    reset() {}
+  }
+  const stepper = new Stepper();
+  adapter.replay = {
+    Stepper, stepper: () => stepper, playback: () => ({replay, index}),
+    seek(data, target, frames) {
+      const at = session.commands.length;
+      let from = at !== index || target < at ? 0 : at;
+      if (!from) session.loadReplay(data);
+      from = Math.max(from, frames.resume(session, from, target));
+      index = from;
+      while (index < target) { session.step(data.commands[index++]); frames.keep(session, index); }
+      stepper.reset();
+      return true;
+    },
+  };
+  const observer = observePhysics(adapter, metrics, {
+    onTick(session, command, events) {
+      steps++;
+      if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
+    },
+    onReset() { start.reset(); },
+  });
+  const control = createReplayControl({
+    getAdapter: () => adapter, getSession: () => session, settings,
+    coaching: {
+      save: () => ({metrics: metrics.saveState(), start: start.saveState()}),
+      restore(state) { metrics.restoreState(state.metrics); start.restoreState(state.start); },
+    },
+  });
+  control.status(); // Adopt this native Watch session and wrap its stepper.
+  return {
+    control,
+    get steps() { return steps; },
+    advanceTo(target) {
+      while (index < target) stepper.advance(0.015, () => session.step(replay.commands[index++]));
+    },
+    read: () => ({
+      metrics: metrics.snapshot(), board: metrics.boardSnapshot(), surf: metrics.surfSnapshot(-1),
+      start: start.snapshot(), state: structuredClone(session.state), timer: structuredClone(session.timer.state),
+      commands: session.commands.length,
+    }),
+    destroy() { control.destroy(); observer.destroy(); },
+  };
+}
+
+describe('replay analysis setting changes', () => {
+  test('hidden coaching and continuous Surf rebuild on backward, forward and same-cursor seeks', () => {
+    const now = spyOn(performance, 'now').mockReturnValue(1000);
+    const changes = [
+      [{hud: false}, {hud: true}],
+      [{showStart: false}, {showStart: true}],
+      [{showSurf: false}, {showSurf: true}],
+      [{continuousFeedback: true}, {continuousFeedback: false}],
+      [{showAir: false}, {showAir: true}],
+      [{showBoard: false, showAir: false, showSurf: false}, {showBoard: true}],
+      [{strafeLookbackSeconds: 0.05}, {strafeLookbackSeconds: 0.5}],
+    ];
+    try {
+      for (const [initial, patch] of changes) for (const target of [300, 380, 384]) {
+        const settings = {...defaults, ...initial};
+        const baseline = controlledCoaching({...settings, ...patch});
+        const changed = controlledCoaching(settings);
+        try {
+          baseline.advanceTo(target);
+          const expected = baseline.read();
+          changed.advanceTo(350); // Native and coaching frames at 128 and 256.
+          Object.assign(settings, patch);
+          changed.control.settingsChanged();
+          // Ordinary playback may still contain partial analysis, but must not
+          // repopulate the cache at 384 before the next explicit seek.
+          if (target === 384) changed.advanceTo(384);
+          changed.control.pause();
+          changed.control.setSpeed(2);
+          const before = changed.steps;
+          expect(changed.control.seek(target)).toBe(true);
+          expect(changed.steps - before).toBe(target);
+          expect(changed.read()).toEqual(expected);
+          expect(changed.control.status()).toMatchObject({index: target, playing: false, speed: 2});
+          // The rebuilt checkpoints are reusable, not permanently disabled.
+          const resumed = changed.steps;
+          changed.control.seek(280);
+          expect(changed.steps - resumed).toBe(280 - 256);
+          expect(changed.control.status()).toMatchObject({playing: false, speed: 2});
+        } finally { changed.destroy(); baseline.destroy(); }
+      }
+    } finally { now.mockRestore(); }
   });
 });

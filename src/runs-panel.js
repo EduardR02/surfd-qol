@@ -176,8 +176,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     if (!run) return '';
     const id = run.official ? `official-pb:${run.runId}` : run.id;
     const playing = !run.official && watching() === run.id;
-    const ok = run.official ? typeof replayControl?.watchLoaded === 'function' : canWatch(run);
-    const title = playing ? 'Playing now' : ok ? label : 'This run’s replay wasn’t kept';
+    const enabled = settings.replayControls !== false;
+    const ok = enabled && (run.official ? typeof replayControl?.watchLoaded === 'function' : canWatch(run));
+    const title = !enabled ? 'Replay controls are off in History settings' : playing ? 'Playing now' : ok ? label : 'This run’s replay wasn’t kept';
     return `<button type="button" class="rn-watch${big ? ' big' : ''}${playing ? ' now' : ''}" data-watch="${escape(id)}" aria-label="${escape(title)}" title="${escape(title)}"${ok && !playing && busy !== id ? '' : ' disabled'}${busy === id ? ' aria-busy="true"' : ''}>${PLAY}</button>`;
   }
 
@@ -286,7 +287,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   function render(force = false) {
-    syncReplayCache();
+    if (replayCache) syncReplayCache();
     if (panel.hidden) return;
     let data = null;
     try { data = key ? history.view(key) : null; } catch { /* unavailable */ }
@@ -332,7 +333,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   async function watch(id) {
-    if (busy === id || !replayControl) return;
+    if (busy === id || !replayControl || settings.replayControls === false) return;
     let data = null;
     try { data = history.view(key); } catch { /* unavailable */ }
     const best = currentBest(data);
@@ -435,7 +436,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     close: closePanel,
     // Where the panel can be: in menus from the dock; during a replay from the replay bar.
     setContext(next) {
-      syncReplayCache();
+      if (replayCache) syncReplayCache();
       menu = !!next.menu; replay = !!next.replay;
       if (opener.hidden === menu) opener.hidden = !menu;
       if (!panel.hidden && !menu && !(replay && panel.classList.contains('over-replay'))) closePanel();
@@ -443,7 +444,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       if (!panel.hidden) {
         const session = getSession(), refs = getReferences();
         const context = JSON.stringify([key, replayIdentity(), refs?.own?.createdAt, refs?.boardId, refs?.ownerKey,
-          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference]);
+          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference, settings.replayControls]);
         if (context !== referenceContext || session !== referenceSession) {
           referenceContext = context; referenceSession = session; render();
         }

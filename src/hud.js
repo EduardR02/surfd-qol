@@ -88,7 +88,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onOpen: () => runs.close(),
     storage: history ? {
       usage: () => ({history: history.usage(), replays: replays?.usage?.() ?? null}),
-      clear: () => Promise.all([history.clear(), replays?.clearMap?.()]),
+      clear: () => history.clear(),
     } : null,
   });
   const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, now: services.now, onOpen: () => panel.close(),

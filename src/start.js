@@ -75,7 +75,7 @@ export function createStartFeedback(clock = () => performance.now()) {
   let sessionIdentity = null;
   let ground = null;
   return {
-    reset() { latest = ground = null; },
+    reset() { latest = ground = sessionIdentity = null; },
     // Zone and Session identities are static for a watched replay; retain them
     // without copying geometry or the native command log.
     saveState() {

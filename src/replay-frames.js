@@ -30,6 +30,7 @@ export function createFrames(replay, coaching) {
   let broken = false;
   return {
     get size() { return frames.size; },
+    clear() { frames.clear(); },
     keep(session, tick) {
       if (broken || !tick || tick % FRAME_TICKS || frames.has(tick)) return;
       try {

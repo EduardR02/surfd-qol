@@ -2092,6 +2092,24 @@ test('live ramp Input runs only with Live feedback and Ramp both enabled', () =>
   assert.equal(contact().strafe.available, true);
 });
 
+test('disabling analysis releases the previous Session before caching inactive replay feedback', () => {
+  const settings = {};
+  const metrics = createMetrics(settings);
+  const previous = mappedSession();
+  coastContact(metrics, previous);
+  assert.equal(metrics.saveState().previousSession, previous);
+  settings.hud = false;
+  const current = mappedSession();
+  tick(metrics, current);
+  const inactive = metrics.saveState();
+  assert.equal(inactive.previousSession, null);
+  metrics.restoreState(inactive);
+  settings.hud = true;
+  const resumed = coastContact(metrics, current).board;
+  assert.equal(resumed.available, true);
+  assert.equal(resumed.routePrefix, null);
+});
+
 test('metrics checkpoints require completed ticks and restore empty or idle state', () => {
   const settings = {};
   const metrics = createMetrics(settings);

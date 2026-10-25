@@ -290,6 +290,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     rampHead = rampCount = 0;
     mode = 'air';
     tickPlane = tickBrush = null;
+    surfaces = tickSurface = null;
     tickMultiplePlanes = false;
     rollingGain = rollingOptimum = strafeTotal = rampTotal = 0;
     elapsed = 0;
@@ -452,6 +453,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
 
   function begin(session) {
     if (!active()) {
+      if (!idle) reset();
       idle = true;
       open = false;
       return;

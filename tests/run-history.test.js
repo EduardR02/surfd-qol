@@ -529,6 +529,138 @@ describe('minimum history duration', () => {
   });
 });
 
+describe('runs completed during explicit deletion', () => {
+  test('bookmark edits during a successful clear cannot resurrect deleted runs on disk', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.run({ticks: 200});
+    await flush();
+    const id = r.history.view().pb.id, clear = r.store.clear;
+    let started, finish;
+    const waiting = new Promise(resolve => { started = resolve; });
+    r.store.clear = (...args) => new Promise(resolve => {
+      finish = async () => { await clear(...args); resolve(); };
+      started();
+    });
+    const clearing = r.history.clear();
+    await waiting;
+    r.history.setSpots(id, [10]);
+    await finish();
+    await clearing;
+    await flush();
+    expect(r.history.view()).toBeNull();
+    expect(r.store.data.runs.has(id)).toBe(false);
+  });
+
+  for (const abort of [false, true]) {
+    test(`${abort ? 'aborting' : 'committing'} a delayed clear preserves a new finish and its aggregates`, async () => {
+      const r = rig();
+      await r.history.ready;
+      r.run({ticks: 200});
+      await flush();
+      const oldId = r.history.view().pb.id;
+      const clear = r.store.clear;
+      let started, finish;
+      const waiting = new Promise(resolve => { started = resolve; });
+      r.store.clear = (...args) => new Promise((resolve, reject) => {
+        finish = async () => {
+          if (abort) reject(new Error('Transaction aborted'));
+          else { await clear(...args); resolve(); }
+        };
+        started();
+      });
+      const clearing = r.history.clear();
+      const result = clearing.then(() => null, error => error);
+      await waiting;
+      r.go();
+      r.checkpoint(2100);
+      r.ramp({boardLoss: 2, surfLoss: 8, down: 3, up: 5});
+      r.finish();
+      // A pending clear never mutates the visible pre-clear aggregates.
+      expect(r.history.view().totals).toEqual({attempts: 1, finishes: 1});
+      await finish();
+      expect((await result)?.message ?? null).toBe(abort ? 'Transaction aborted' : null);
+      await flush();
+      const view = r.history.view(), freshId = view.pb.id;
+      expect(freshId).not.toBe(oldId);
+      expect(view.totals).toEqual({attempts: abort ? 2 : 1, finishes: abort ? 2 : 1});
+      expect(view.start.count).toBe(abort ? 2 : 1);
+      expect(view.splits).toEqual([expect.objectContaining({speed: 2100, pb: expect.any(Number)})]);
+      expect(view.ramps).toEqual([expect.objectContaining({board: 2, down: 3, up: 5, surf: 8})]);
+      const reload = rig({store: r.store});
+      await reload.history.ready;
+      expect(reload.history.view('utopia:3')).toEqual(view);
+      expect(r.history.runs().map(run => run.id)).toEqual(abort ? [oldId, freshId] : [freshId]);
+    });
+  }
+
+  test('back-to-back clears serialize after rejection and retain only finishes after the second began', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.run();
+    await flush();
+    const clear = r.store.clear, gates = [];
+    let firstStarted, secondStarted;
+    const firstWaiting = new Promise(resolve => { firstStarted = resolve; });
+    const secondWaiting = new Promise(resolve => { secondStarted = resolve; });
+    r.store.clear = (...args) => new Promise((resolve, reject) => {
+      gates.push({reject, commit: async () => { await clear(...args); resolve(); }});
+      (gates.length === 1 ? firstStarted : secondStarted)();
+    });
+    const first = r.history.clear().catch(error => error.message);
+    const second = r.history.clear();
+    await firstWaiting;
+    expect(gates).toHaveLength(1);
+    r.run({ticks: 50});
+    gates[0].reject(new Error('Transaction aborted'));
+    expect(await first).toBe('Transaction aborted');
+    await secondWaiting;
+    expect(gates).toHaveLength(2);
+    r.run({ticks: 10});
+    await gates[1].commit();
+    await second;
+    await flush();
+    expect(r.history.runs()).toHaveLength(1);
+    expect(r.history.view().totals).toEqual({attempts: 1, finishes: 1});
+    expect(r.history.view().pb.time).toBeCloseTo(11 * DT, 6);
+    expect((await r.store.load()).runs).toEqual(r.history.runs());
+  });
+});
+
+test('finished, reset and discarded runs release their native session and command log', async () => {
+  const record = outcome => {
+    const history = createRunHistory();
+    const live = {
+      map: {id: 'lifetime', version: 1}, config: {dt: DT}, replayFormat: 8,
+      state: {velocity: {x: 350, y: 0, z: 0}},
+      initialState: {position: {x: 0, y: 0, z: 0}},
+      commands: [{forward: 400}],
+      timer: {state: {phase: 'running', elapsed: 0, startTick: 1}},
+    };
+    const reference = new WeakRef(live);
+    const log = new WeakRef(live.commands);
+    history.observe(live, ['start']);
+    if (outcome === 'discard') history.discard();
+    else if (outcome === 'reset') history.reset();
+    else {
+      live.timer.state = {...live.timer.state, phase: 'finished', elapsed: 1};
+      history.observe(live, ['finish']);
+    }
+    history.observe(live, []);
+    return {history, reference, log};
+  };
+  for (const outcome of ['finished', 'reset', 'discard']) {
+    const {history, reference, log} = record(outcome);
+    await history.ready;
+    // WeakRef keeps a dereferenced/new target alive until the current job ends.
+    await flush();
+    Bun.gc(true);
+    expect(history.running).toBe(false);
+    expect(reference.deref()).toBeUndefined();
+    expect(log.deref()).toBeUndefined();
+  }
+});
+
 describe('replay trimming', () => {
   // A tiny deterministic game: x moves by `forward`; reaching x >= 100 starts
   // the run. With `hidden`, jumps (state the initial state doesn't carry) change the start.

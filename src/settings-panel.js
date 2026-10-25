@@ -153,6 +153,10 @@ export const panelMarkup = `
         ${number('historyMinSeconds', 'Skip short resets', 0, 300, 1, 's', '', ' sub')}
       </div>
       <p id="history-rule" class="hist-rule" role="status"></p>
+      <h3>Playback</h3>
+      <div class="group">
+        ${toggle('replayControls', 'Replay controls', 'Adds seeking, playback speed and replay savelocs. Off leaves the game’s playback alone. Recording is separate.')}
+      </div>
       <h3>Storage</h3>
       <div class="group hist-store">
         <div class="hist-total"><b id="size-total"></b><span id="size-where">in this browser only</span></div>

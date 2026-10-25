@@ -78,7 +78,7 @@ const runsMap = params.get('runs');
 const emptyHistory = params.get('history') === 'empty';
 const history = createHistory({settings, empty: emptyHistory});
 const replays = createReplays({empty: emptyHistory});
-const replayControl = createReplayControl({params, active: () => scenario.watching === true});
+const replayControl = createReplayControl({params, active: () => scenario.watching === true && settings.replayControls !== false});
 const rampReference = createRampReference({params, settings});
 const leaderboardReferences = createLeaderboardReferences(params);
 const binds = createBinds(params);

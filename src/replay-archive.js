@@ -126,6 +126,9 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
   // A run can be pruned while its replay waits for idle time or compression.
   // Cancelling its pending save prevents it from reappearing afterward.
   const pending = new Map();
+  // Explicit history deletion pauses saves at their transaction boundary.
+  // Jobs are cancelled only once all four stores have committed together.
+  let clearing = null, loadError = null;
   let retained = null;
   const listeners = new Set();
   const notify = () => { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } };
@@ -136,7 +139,7 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
     for (const entry of await done(db.transaction('meta').objectStore('meta').getAll())) meta.set(entry.id, entry);
     notify();
     return db;
-  })().catch(error => { console.warn('[Surfd QoL] Replay storage unavailable:', error); return null; });
+  })().catch(error => { loadError = error; console.warn('[Surfd QoL] Replay storage unavailable:', error); return null; });
 
   async function remove(ids) {
     const db = await opened;
@@ -150,9 +153,38 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
     for (const id of ids) meta.delete(id);
     notify();
   }
-  function drop(ids) {
-    for (const id of ids) pending.delete(id);
-    return remove(ids);
+  async function clearSaved(runs, bests, map) {
+    const jobs = [...pending].filter(([, job]) => !map || job.map === map);
+    while (clearing) await clearing;
+    let resume;
+    clearing = new Promise(resolve => { resume = resolve; });
+    try {
+      const db = await opened;
+      if (loadError) throw loadError;
+      const ids = new Set(jobs.map(([id]) => id));
+      for (const entry of meta.values()) if (!map || entry.map === map) ids.add(entry.id);
+      if (db) {
+        const names = runs ? ['runs', 'bests', 'meta', 'replays'] : ['meta', 'replays'];
+        const transaction = db.transaction(names, 'readwrite');
+        if (!map && runs) {
+          for (const name of names) transaction.objectStore(name).clear();
+        } else {
+          for (const id of runs ?? []) transaction.objectStore('runs').delete(id);
+          for (const id of bests ?? []) transaction.objectStore('bests').delete(id);
+          for (const id of ids) {
+            transaction.objectStore('meta').delete(id);
+            transaction.objectStore('replays').delete(id);
+          }
+        }
+        await committed(transaction);
+      }
+      for (const [id, job] of jobs) if (pending.get(id) === job) pending.delete(id);
+      for (const id of ids) meta.delete(id);
+      notify();
+    } finally {
+      clearing = null;
+      resume();
+    }
   }
 
   return {
@@ -167,7 +199,11 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
       try {
         const db = await opened;
         if (!db || !current()) return null;
+        while (clearing) await clearing;
+        if (!current()) return null;
         await idle();
+        if (!current()) return null;
+        while (clearing) await clearing;
         if (!current()) return null;
         let offset = 0;
         try {
@@ -175,11 +211,15 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
           if (trimmed) { replay = trimmed.replay; offset = trimmed.offset; }
         } catch { /* keep the full replay */ }
         if (!current()) return null;
+        while (clearing) await clearing;
+        if (!current()) return null;
         let packed;
         try { packed = await packReplay(replay); } catch (error) {
           console.warn('[Surfd QoL] Could not pack replay:', error);
           return null;
         }
+        if (!current()) return null;
+        while (clearing) await clearing;
         if (!current()) return null;
         const entry = {id: run.id, map: run.map, at: run.at, bytes: packed.byteLength};
         try {
@@ -205,15 +245,9 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
       const record = await done(db.transaction('replays').objectStore('replays').get(id));
       return record?.packed ? unpackReplay(record.packed) : null;
     },
-    async clearMap(map) {
-      const cancelled = [...pending].filter(([, job]) => !map || job.map === map).map(([id]) => id);
-      for (const id of cancelled) pending.delete(id);
-      await opened;
-      return drop([...new Set([
-        ...cancelled,
-        ...[...meta.values()].filter(entry => !map || entry.map === map).map(entry => entry.id),
-      ])]);
-    },
+    // Only run history calls this; its completed runs are queued until we settle.
+    clearHistory: clearSaved,
+    clearMap: map => clearSaved(null, null, map),
     async retain(ids) {
       retained = new Set(ids);
       const cancelled = [...pending.keys()].filter(id => !retained.has(id));

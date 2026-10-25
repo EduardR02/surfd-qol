@@ -124,7 +124,7 @@ function copyState(state, template) {
 
 // getMap() is the map the game has loaded, so the Runs panel opens on it before any run starts.
 export function createRunHistory({metrics, start, getState = () => null, getMap = () => null, getMapName = () => null, onReplay = null,
-  limits = () => ({}), onPrune = null, store = null, clock = () => Date.now()} = {}) {
+  limits = () => ({}), onPrune = null, store = null, archive = null, clock = () => Date.now()} = {}) {
   const session = clock();
   let runs = [];
   let runSequence = 0;
@@ -133,6 +133,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   // `loaded` only when it was read: deleting anything needs the full picture.
   let settled = false, loaded = false;
   const pending = [];
+  let clearing = null, clearTail = Promise.resolve();
   const sizes = new WeakMap();
   const sizeOf = record => {
     let size = sizes.get(record);
@@ -253,10 +254,12 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     delete run.ramps;
     delete run.clip;
     run.time = round(run.time, 3);
-    runs.push(run);
+    if (!clearing) runs.push(run);
     saveReplay(run, owner, clip);
+    owner = startTick = null;
     // Boards only mark a saved replay's timeline.
     if (!run.replay || !run.boards?.length) delete run.boards;
+    if (clearing) { clearing.runs.push([run, ramps]); return; }
     if (!settled) { pending.push([run, ramps]); commit([run]); }
     else { const record = addRun(run, ramps); commit([run], loaded ? [record] : []); }
     notify();
@@ -354,14 +357,14 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         startTick = timer.startTick;
         begin(live);
       }
-      if (!current) { if (!playback) snapshot(live); return; }
+      if (!current) { if (!playback && timer.phase === 'ready') snapshot(live); return; }
       track(live);
       if (events.includes('finish') || timer.phase === 'finished') end('finished', live);
     },
     // Restart, practice restore, replay load or station visit.
     reset() { if (current) end('reset', owner); },
     // Drops the run in progress without recording it (recording turned off).
-    discard() { current = board = commands = initialState = null; clearSnapshots(); },
+    discard() { current = board = commands = initialState = owner = startTick = null; clearSnapshots(); },
     // Resolves once the saved history has loaded.
     ready,
     get currentMap() {
@@ -423,26 +426,41 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       return index < 0 ? null : index + 1;
     },
     // Re-applies the limits after they change.
-    prune() { commit(); notify(); },
+    prune() { if (!clearing) commit(); notify(); },
     usage() {
       let bytes = 0;
       for (const run of runs) bytes += sizeOf(run);
       for (const record of bests.values()) bytes += sizeOf(record);
       return {bytes, runs: runs.length, maps: this.maps().length};
     },
-    // Clears one map's runs and bests, or everything.
-    async clear(key) {
-      await ready;
-      const removed = runs.filter(run => !key || run.map === key).map(run => run.id);
-      const dropped = key ? (bests.has(key) ? [key] : []) : [...bests.keys()];
-      // Unlike background saves, an explicit deletion must report failure.
-      // Delete runs and their aggregate records atomically before publishing it.
-      if (store) await store.clear(removed, dropped);
-      const ids = new Set(removed);
-      runs = runs.filter(run => !ids.has(run.id));
-      for (const id of dropped) bests.delete(id);
-      commit();
-      notify();
+    // Clears serialize, including after rejection. Runs ending during the
+    // transaction apply only after its result, against fresh or preserved bests.
+    clear(key) {
+      const operation = clearTail.then(async () => {
+        await ready;
+        const queued = clearing = {runs: [], changed: new Set()};
+        try {
+          const removed = runs.filter(run => !key || run.map === key).map(run => run.id);
+          const dropped = key ? (bests.has(key) ? [key] : []) : [...bests.keys()];
+          if (archive) await archive.clearHistory(removed, dropped, key);
+          else if (store) await store.clear(removed, dropped);
+          const ids = new Set(removed);
+          runs = runs.filter(run => !ids.has(run.id));
+          for (const id of dropped) bests.delete(id);
+        } finally {
+          clearing = null;
+          const touched = new Set();
+          for (const [run, ramps] of queued.runs) {
+            runs.push(run);
+            queued.changed.add(run);
+            touched.add(addRun(run, ramps));
+          }
+          commit([...queued.changed], loaded ? [...touched] : []);
+          notify();
+        }
+      });
+      clearTail = operation.catch(() => {});
+      return operation;
     },
     // The saved replay was trimmed: it now starts `offset` commands into the run.
     setReplayOffset(id, offset) {
@@ -450,7 +468,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       if (!run?.replay || !(offset > 0) || run.replay.offset) return;
       run.replay = {...run.replay, start: run.replay.start - offset, length: run.replay.length - offset, offset};
       sizes.delete(run);
-      if (store) write(() => store.put(run));
+      if (clearing) clearing.changed.add(run);
+      else if (store) write(() => store.put(run));
       notify();
     },
     // Replay spots (bookmarks) the player saved while watching this run.
@@ -459,7 +478,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       if (!run) return;
       if (spots.length) run.spots = spots; else delete run.spots;
       sizes.delete(run);
-      if (store) write(() => store.put(run));
+      if (clearing) clearing.changed.add(run);
+      else if (store) write(() => store.put(run));
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };

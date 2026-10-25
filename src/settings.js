@@ -14,6 +14,7 @@ export const defaults = {
   // Binds change what the game receives, so each one is opt-in.
   crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
+  replayControls: true,
   // Run history: the newest runs per map (each with its replay) plus every
   // map's bests, which are never pruned.
   keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10,

@@ -338,6 +338,49 @@ describe('replay control', () => {
     expect(control.status().index).toBe(before + 21);
   });
 
+  test('disabling replay controls restores native speed and permits later takeover without reloading', async () => {
+    const {world, run, control} = game();
+    const nativeAdvance = world.hooks.Stepper.prototype.advance;
+    await control.watch(run);
+    control.setSpeed(4);
+    control.pause();
+    control.setEnabled(false);
+    expect(control.status()).toBeNull();
+    expect(control.canWatch(run)).toBe(false);
+    expect(world.hooks.Stepper.prototype.advance).toBe(nativeAdvance);
+    world.frame(DT * 3);
+    expect(world.index).toBe(3);
+    control.setEnabled(true);
+    expect(control.status()).toMatchObject({index: 3, speed: 1, playing: true});
+    control.pause();
+    world.frame(DT * 3);
+    expect(world.index).toBe(3);
+    control.seek(2);
+    expect(control.status().index).toBe(2);
+  });
+
+  test('disabled replay controls cancel pending loads without reserving over newer native Watch requests', async () => {
+    const {world, replay} = game();
+    const settings = {replayControls: true};
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session, settings});
+    let finish;
+    const pending = control.watchLoaded(() => new Promise(resolve => { finish = resolve; }), {title: 'Old extension request'});
+    const native = {...replay};
+    await world.watchNative(async () => native);
+    settings.replayControls = false;
+    control.settingsChanged();
+    finish(replay);
+    await pending;
+    expect(world.playing).toBe(native);
+    expect(control.status()).toBeNull();
+    let loads = 0;
+    await control.watchLoaded(() => { loads++; return replay; }, {title: 'Disabled'});
+    expect(loads).toBe(0);
+    settings.replayControls = true;
+    control.settingsChanged();
+    expect(control.status()).toMatchObject({title: 'Watching a replay', index: 0, playing: true});
+  });
+
   test('seeking forward continues; back resumes from the nearest snapshot', async () => {
     const { world, run, control } = game();
     await control.watch(run);
@@ -463,6 +506,24 @@ describe('replay control', () => {
     expect(control.status().index).toBe(12);
   });
 
+  test('learning checkpoints and editing bookmarks never mutates an earlier timeline snapshot', async () => {
+    const {world, replay, control} = game();
+    await control.watchLoaded(async () => replay, {title: 'Leaderboard run'});
+    world.session.timer.state = {phase: 'running', startTick: 120.4, splits: [1.5]};
+    const first = control.status();
+    world.session.timer.state.splits.push(3);
+    const later = control.status();
+    expect(first.markers).toEqual([220]);
+    expect(later.markers).toEqual([220, 320]);
+    control.seek(150);
+    control.saveSpot();
+    const saved = control.status();
+    control.removeSpot(150);
+    expect(first.spots).toEqual([]);
+    expect(saved.spots).toEqual([150]);
+    expect(control.status().spots).toEqual([]);
+  });
+
   test('spots bookmark ticks, jump back keeping play state, and persist for your own runs', async () => {
     const { world, run, control } = game();
     await control.watch({ ...run, spots: [300, 9999] });
@@ -580,6 +641,72 @@ describe('replay control', () => {
     world.playing = null;
     expect(control.active).toBe(false);
     expect(control.status()).toBeNull();
+  });
+
+  test('presentation changes and unchanged analysis settings keep cached seeks and playback controls', async () => {
+    const {world, replay, run} = game();
+    const settings = {hud: true, showStart: true, continuousFeedback: false};
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {get: async () => replay}, settings});
+    try {
+      await control.watch(run);
+      control.seek(350);
+      control.setSpeed(2);
+      Object.assign(settings, {
+        hud: true, showStart: true, continuousFeedback: false, showSync: false,
+        speedColor: '#ffffff', goodColor: '#ffffff', opacity: 0.5, scale: 1.5, speedFps: 30, timerFps: 15,
+        rampResult: 'total', airMetric: 'missed', boardColorReference: 'wr', startColorReference: 'pb',
+        surfColorReference: 'fixed', referenceLossTolerance: 10, startHeightAmazing: 5,
+        startDeficitGood: 20, boardLossGood: 30, airLossGood: 30, checkpointReference: 'pb', wrSource: 'leaderboard',
+      });
+      control.settingsChanged();
+      world.steps = 0;
+      const reloads = world.reloads;
+      expect(control.seek(300)).toBe(true);
+      expect(world.steps).toBe(300 - 256);
+      expect(world.reloads - reloads).toBe(1);
+      expect(control.status()).toMatchObject({index: 300, playing: true, speed: 2});
+      world.steps = 0;
+      control.seek(380);
+      expect(world.steps).toBe(80);
+      expect(world.reloads - reloads).toBe(1);
+    } finally { control.destroy(); }
+  });
+
+  test('invalidated coaching never takes native ownership and does not disturb practice captures', async () => {
+    const {world, replay, run} = game();
+    const settings = {continuousFeedback: true};
+    const store = {banks: new Map(), nextId: 1, revision: 0};
+    world.practice = {store: () => store};
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {get: async () => replay}, settings});
+    try {
+      await control.watch(run);
+      control.seek(300);
+      world.session.capturePractice = () => ({tick: world.session.state.x});
+      settings.continuousFeedback = false;
+      control.settingsChanged();
+      const reloads = world.reloads;
+      // Saving still captures the current physical moment without a seek.
+      control.saveSpot();
+      expect(world.reloads).toBe(reloads);
+      const foreign = {...replay};
+      world.playing = foreign;
+      expect(control.seek(380)).toBe(false);
+      expect(world.playing).toBe(foreign);
+      expect(world.session.state.x).toBe(300);
+      expect(world.reloads).toBe(reloads);
+      world.playing = replay;
+      world.steps = 0;
+      control.setSpeed(4);
+      expect(control.seek(380)).toBe(true);
+      expect(world.steps).toBe(380);
+      expect(control.status()).toMatchObject({index: 380, playing: true, speed: 4});
+      world.playing = null;
+      world.session = {map: {id: 'utopia'}, practiceKey: () => 'live'};
+      control.status();
+      expect(store.banks.get('live').entries[0].snapshot).toMatchObject({tick: 300});
+    } finally { control.destroy(); }
   });
 });
 
