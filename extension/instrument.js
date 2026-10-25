@@ -20,22 +20,26 @@ function replayHooks(source, state) {
     replay: {
       Stepper: ${[...stepperClasses][0]},
       stepper: () => ${stepper},
-      watch: (replay, label) => ${watch}(replay, () => true, label),
+      watch: (replay, label, isCurrent = () => true) => ${watch}(replay, isCurrent, label),
       // The cursor outlives playback: after Esc or the end, index is where it stopped.
       playback: () => ({replay: ${replay}, index: ${index}}),
       // Re-simulates the watched session to \`index\` commands into \`replay\`:
       // forward from where it is, or from the start when going back or when
-      // live input moved it after playback stopped.
-      seek(replay, index) {
+      // live input moved it after playback stopped. \`frames\` (replay-scan.js)
+      // resumes from a snapshot closer to the target and keeps new ones.
+      seek(replay, index, frames = null) {
         const session = ${state};
         if (!session || !replay || session.map.id !== replay.mapId || (${replay} && ${replay} !== replay)) return false;
         const length = replay.commands.length;
         index = Math.max(0, Math.min(length, Math.floor(index)));
         const at = session.commands.length;
-        if (at > length || at !== Math.min(${index}, length) || index < at) { session.loadReplay(replay); ${index} = 0; }
-        else ${index} = at;
-        while (${index} < index) session.step(replay.commands[${index}++]);
-        ${replay} = index < length ? replay : null;
+        let from = at > length || at !== Math.min(${index}, length) || index < at ? 0 : at;
+        if (!from) session.loadReplay(replay);
+        from = Math.max(from, frames?.resume(session, from, index) ?? -1);
+        ${index} = from;
+        while (${index} < index) { session.step(replay.commands[${index}++]); frames?.keep(session, ${index}); }
+        // Still the replay at its end: replay-control holds the last frame there.
+        ${replay} = replay;
         ${stepper}.reset();
         return true;
       },
@@ -46,23 +50,29 @@ function replayHooks(source, state) {
   }
 }
 
-// The game's practice savelocs, also optional: a replay moment can be saved
-// into them, and "practice from here" leaves the replay and loads it.
-function practiceHooks(source, state) {
+// The game's practice savelocs, also optional: moments saved while watching
+// a replay are filed into them when you leave it.
+function practiceHooks(source) {
   try {
     const store = unique(source, new RegExp(`const ${identifier}=(${identifier})\\.entries\\((${identifier})\\)\\.length>=${identifier},${identifier}=\\1\\.save\\(\\2\\)`, 'g'), 'saveloc store')[1];
-    const load = unique(source, new RegExp(`function (${identifier})\\(\\)\\{if\\(!(${identifier})\\(\\)\\)\\{${identifier}\\("Return to play before loading a location\\."\\);return\\}`, 'g'), 'saveloc load');
-    const leave = unique(source, new RegExp(`function ${identifier}\\((${identifier})\\)\\{if\\((${identifier})\\)\\{\\1\\|\\|(${identifier})\\(\\);return\\}`, 'g'), 'replay exit')[3];
     return `
     practice: {
       // The saveloc store: one bank of snapshots per practice key (map and movement rules).
       store: () => ${store},
-      canLoad: () => ${load[2]}(),
-      leaveReplay: () => ${leave}(),
-      load: () => ${load[1]}(),
     },`;
   } catch (error) {
     console.warn('[Surfd QoL] Practice savelocs from replays unavailable:', error.message);
+    return '';
+  }
+}
+// The game's own notice line (where "Saved location #1" appears), optional.
+function noticeHook(source) {
+  try {
+    const notice = unique(source, new RegExp(`\\{(${identifier})\\("Return to play before saving a location\\."\\);return\\}`, 'g'), 'notice')[1];
+    return `
+    notice: text => ${notice}(text),`;
+  } catch (error) {
+    console.warn('[Surfd QoL] Game notices unavailable:', error.message);
     return '';
   }
 }
@@ -98,7 +108,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}${practiceHooks(source, state)}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}${practiceHooks(source)}${noticeHook(source)}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

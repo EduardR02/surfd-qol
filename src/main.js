@@ -4,6 +4,8 @@ import { createRunHistory } from './run-history.js';
 import { createReplayArchive, createHistoryStore, openSiteDatabase } from './replay-archive.js';
 import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
+import { createReferenceReplayStore } from './replay-store.js';
+import { createRampReference } from './ramp-reference.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
@@ -35,11 +37,25 @@ const history = createRunHistory({
   onPrune: ids => { replays.retain(ids); },
   store: createHistoryStore(database)
 });
+// PB/WR replays are re-simulated once and shared by the HUD's comparisons,
+// the Runs panel's ramps and the replay timeline's ramp colours.
+const replayStore = createReferenceReplayStore({ getAdapter: () => api.adapter });
+const rampReference = createRampReference({
+  getSession: () => api.adapter?.getSession() ?? null, getReferences: () => api.adapter?.getReferences() ?? null,
+  getAdapter: () => api.adapter, replayStore, settings
+});
 const replayControl = createReplayControl({
   getAdapter: () => api.adapter, getSession: () => api.adapter?.getSession() ?? null, archive: replays,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
   getRun: id => history.run(id),
-  onSpots: (runId, spots) => history.setSpots(runId, spots)
+  onSpots: (runId, spots) => history.setSpots(runId, spots),
+  grade: rampReference,
+  rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
+  // Explains that replay locs become practice savelocs until you've saved one.
+  teach: {
+    due: () => { try { return localStorage.getItem(`${storageKey}-replay-locs`) !== '1'; } catch { return true; } },
+    done: () => { try { localStorage.setItem(`${storageKey}-replay-locs`, '1'); } catch { /* shown again next time */ } }
+  }
 });
 let observer = null;
 let hud = null;
@@ -151,7 +167,8 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings, history, replays, replayControl,
+    settings, onSettings, bindings, history, replays, replayControl, rampReference,
+    services: { replayStore },
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
   hud.setUpdate(availableUpdate);
