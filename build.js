@@ -1,12 +1,13 @@
-import { mkdir, copyFile, readdir, readFile } from 'node:fs/promises';
+import { mkdir, copyFile, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 await mkdir('dist', { recursive: true });
 for (const name of ['manifest.json', 'background.js', 'instrument.js', 'update-check.js']) await copyFile(`extension/${name}`, `dist/${name}`);
 // The bundled HUD font (Instrument Sans, subset) ships with its licence.
 await copyFile('docs/fonts/OFL.txt', 'dist/InstrumentSans-OFL.txt');
 await copyFile('LICENSE', 'dist/LICENSE');
-// Saved PB/WR analysis is keyed by the source it was made with (replay-store.js).
-const sources = (await readdir('src')).filter(name => name.endsWith('.js')).sort();
+// Only the replay-analysis dependency closure invalidates saved PB/WR results.
+// Keep this list in sync with replay-store.js and its analysis imports.
+const sources = ['metrics.js', 'observer.js', 'replay-store.js', 'start.js', 'surfaces.js'];
 const hash = createHash('sha256');
 for (const name of sources) hash.update(name).update(await readFile(`src/${name}`));
 const define = { __QOL_ANALYSIS__: JSON.stringify(hash.digest('hex').slice(0, 16)) };

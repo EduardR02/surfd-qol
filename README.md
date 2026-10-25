@@ -33,6 +33,8 @@ You can close the bar with × or **Cancel**. Everything already loaded keeps wor
 
 Speed sits big on the centre line of the screen, with the timer and strafe sync just above it. Run labels only appear when they matter (PRACTICE, REPLAY, INVALID, SPECTATING); a normal ranked run shows none. Size, height, opacity and all colors are adjustable, and the HUD uses its own bundled font (Instrument Sans), so nothing is fetched from the web. The HUD hides in menus, loading screens and dialogs, and stays up for replays and spectating.
 
+**Zen** keeps just speed and the brief start stats. The replay’s crouched/standing indicator stays in the game’s key display.
+
 Under the speed is a row of up to three feedback values, all in u/s. Each one stays until the next one replaces it, so you can glance at it in the air instead of mid-ramp.
 
 | Value | What it measures |
@@ -85,7 +87,7 @@ Both work inside the game's own input sampling, so the commands it records are e
 **Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
 
 - **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each. **Recent best** keeps your fastest retained finish from the last 24 hours.
-- **Ramps:** switch between your best, last 10 measurements and average on each ramp, compared with your PB or the WR. Expand a ramp to watch it in your PB, WR or Recent best, paused half a second before the board. If that route skips the ramp, it isn’t available. Reset averages separately without losing bests or replays.
+- **Ramps:** switch between your best, last 10 measurements and average on each ramp, compared with your PB or the WR. Click a ramp’s name to watch it in the selected reference, paused half a second before the board; the chevron offers other replays. If that route skips the ramp, it isn’t available. Reset averages separately without losing bests or replays.
 
 Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
 
@@ -93,13 +95,15 @@ The last 10 count measurements of each ramp, not your last 10 runs. Averages sta
 
 ### Watching replays
 
-▶ in Runs plays a recording with the full HUD, including the prestrafe. The same controls work on the game's other replays: leaderboard runs, the record route and server replays.
+▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd’s own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
 
-The timeline shows the start, checkpoints and, on your own runs, ramp boards coloured like the HUD. Click or drag to seek, pause and step through a section, or change playback speed. The controls fade while playing and hold on the final frame when the run ends.
+By default, the extension adds Saveloc, Runs and saved-location marks to the game’s replay bar. Your recorded runs also get ramp-board marks coloured like the HUD. Playback shortcuts stay the game’s own, so each press acts once.
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself.
 
-The keyboard button lists shortcuts and your saveloc binds. Turn **QoL → History → Replay controls** off to use only the game's own playback. You can switch it back on without reloading; recording is separate.
+Prefer the extension’s timeline? Enable **QoL → History → Custom replay bar**. It drives the same native player, and you can switch while watching. Recording is separate.
+
+Seeking to an unvisited section can leave feedback grey: the game’s keyframe has movement state, but not the extension’s analysis of the earlier ramp or flight. Incomplete segments are excluded rather than shown as complete measurements.
 
 ### What's kept
 
@@ -154,7 +158,7 @@ Source layout:
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
 - `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.
 - `src/replay-archive.js`, `src/replay-trim.js`: saved replays (compressed, in IndexedDB), trimmed to a few seconds before the start.
-- `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`: playback speed, seeking from snapshots, savelocs, and the replay bar.
+- `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`, `src/native-replay-ui.js`: native-player integration, bounded analysis checkpoints, replay savelocs and the native/custom replay bars.
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License

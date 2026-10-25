@@ -172,7 +172,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       const movement = Object.keys(session?.config ?? {}).filter(name => name !== 'version' && name !== 'unrestrictedStart')
         .sort().map(name => [name, session.config[name]]);
       return JSON.stringify([key, session?.map?.id, session?.map?.version, movement, refs?.boardId, refs?.ownerKey,
-        referenceIdentity(refs?.own), referenceIdentity(refs?.record), settings.wrSource, settings.surfColorReference, settings.replayControls]);
+        referenceIdentity(refs?.own), referenceIdentity(refs?.record), settings.wrSource, settings.surfColorReference]);
     } catch { return null; }
   }
   function cancelRampNavigation() {
@@ -209,9 +209,8 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     if (!run) return '';
     const id = run.official ? `official-pb:${run.runId}` : run.id;
     const playing = !run.official && watching() === run.id;
-    const enabled = settings.replayControls !== false;
-    const ok = enabled && (run.official ? typeof replayControl?.watchLoaded === 'function' : canWatch(run));
-    const title = !enabled ? 'Replay controls are off in History settings' : playing ? 'Playing now' : ok ? label : 'This run’s replay wasn’t kept';
+    const ok = run.official ? typeof replayControl?.watchLoaded === 'function' : canWatch(run);
+    const title = playing ? 'Playing now' : ok ? label : 'This run’s replay wasn’t kept';
     return `<button type="button" class="rn-watch${big ? ' big' : ''}${playing ? ' now' : ''}" data-watch="${escape(id)}" aria-label="${escape(title)}" title="${escape(title)}"${ok && !playing && busy !== id ? '' : ' disabled'}${busy === id ? ' aria-busy="true"' : ''}>${PLAY}</button>`;
   }
 
@@ -286,7 +285,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       ${asking || (rampMode === 'best' ? '' : `<p class="rn-caption rn-samples"><span>${note}</span><button type="button" class="rn-reset" data-reset-averages="ask"${resetting ? ' disabled' : ''}>Reset</button></p>`)}`;
   }
   function playbackReason(data, rampKey, destination, refs, selected, picked) {
-    if (settings.replayControls === false) return 'Replay controls are off';
     if (destination === 'recentBest') {
       const run = data.recentBest;
       if (!run) return 'No recent best in the last 24h';
@@ -465,7 +463,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   async function watch(id) {
-    if (busy === id || !replayControl || settings.replayControls === false) return;
+    if (busy === id || !replayControl) return;
     let data = null;
     try { data = history.view(key); } catch { /* unavailable */ }
     const best = currentBest(data);
@@ -510,7 +508,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   async function watchRamp(rampKey) {
-    if (panel.hidden || view !== 'ramps' || busy || !replayControl || settings.replayControls === false) return;
+    if (panel.hidden || view !== 'ramps' || busy || !replayControl) return;
     const data = history.view(key, {rampMode}), refs = references();
     if (!data) return;
     const preferred = settings.surfColorReference === 'wr' ? 'wr' : 'pb';
@@ -653,7 +651,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       if (!panel.hidden) {
         const session = getSession(), refs = getReferences();
         const context = JSON.stringify([key, replayIdentity(), refs?.own?.createdAt, refs?.boardId, refs?.ownerKey,
-          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference, settings.wrSource, settings.replayControls]);
+          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference, settings.wrSource]);
         if (context !== referenceContext || session !== referenceSession) {
           referenceContext = context; referenceSession = session; render();
         }

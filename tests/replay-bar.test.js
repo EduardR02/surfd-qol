@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { bindAction, createWheelGate, keyRows, markTip, pointerCode, railTime, timelineMarks } from '../src/replay-bar.js';
 import { savelocBinds } from '../src/key-names.js';
+import {createReplayBindRouter} from '../src/native-replay-ui.js';
 
 const status = {
   title: 'Your run on Utopia · finished in 00:41.233', index: 1590, length: 3082, start: 333, dt: 0.015,
@@ -77,5 +78,63 @@ describe('replay bar', () => {
     expect([0, 16, 32, 48].map(gate)).toEqual([true, false, false, false]);
     expect(gate(300)).toBe(true);
     expect(gate(320)).toBe(false);
+  });
+
+  test('a native finish before the recorded command tail excludes later marks instead of stacking them at the end', () => {
+    const marks = timelineMarks({...status, length: 1008});
+    expect(marks.filter(mark => mark.type === 'cp').map(mark => mark.tick)).toEqual([1008]);
+    expect(marks.filter(mark => mark.type === 'ramp').map(mark => mark.tick)).toEqual([600, 900]);
+    expect(marks.filter(mark => mark.type === 'loc').map(mark => mark.tick)).toEqual([500]);
+    expect(marks.find(mark => mark.type === 'cp').at).toBe(1);
+    expect(timelineMarks({...status, length: 0})).toEqual([]);
+  });
+
+  const input = (type, values = {}) => ({
+    type, defaultPrevented: false, stopped: false, ...values,
+    preventDefault() { this.defaultPrevented = true; },
+    stopImmediatePropagation() { this.stopped = true; },
+  });
+
+  test('native playback shortcuts pass through while configured loc binds consume down, repeat and up only once', () => {
+    const route = createReplayBindRouter();
+    const binds = savelocBinds(null);
+    for (const code of ['Space', 'KeyK', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyL', 'Comma', 'Period', 'BracketLeft', 'BracketRight', 'PageUp', 'PageDown', 'Home', 'End', 'Digit5']) {
+      const event = input('keydown', {code});
+      expect(route(event, binds)).toBeNull();
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.stopped).toBe(false);
+    }
+    const first = input('keydown', {code: 'F5'});
+    expect(route(first, binds)).toBe('save');
+    expect(first.defaultPrevented && first.stopped).toBe(true);
+    for (const event of [input('keydown', {code: 'F5', repeat: true}), input('keyup', {code: 'F5'})]) {
+      expect(route(event, binds)).toBeNull();
+      expect(event.defaultPrevented && event.stopped).toBe(true);
+    }
+  });
+
+  test('the shared loc router follows live rebinding, ignores modified/claimed input and gates wheel bursts', () => {
+    let time = 0;
+    const route = createReplayBindRouter(() => time);
+    const defaults = savelocBinds(null);
+    const custom = savelocBinds({save: ['Mouse4'], load: ['KeyE'], previousSave: ['WheelUp'], nextSave: ['WheelDown']});
+    expect(route(input('keydown', {code: 'F5'}), defaults)).toBe('save');
+    expect(route(input('keydown', {code: 'F5'}), custom)).toBeNull();
+    expect(route(input('keydown', {code: 'KeyE'}), custom)).toBe('load');
+    const modified = input('keydown', {code: 'KeyE', ctrlKey: true});
+    expect(route(modified, custom)).toBeNull();
+    expect(modified.stopped).toBe(false);
+    expect(route(input('keydown', {code: 'KeyE', defaultPrevented: true}), custom)).toBeNull();
+    expect(route(input('mousedown', {button: 4}), custom)).toBe('save');
+    const up = input('mouseup', {button: 4});
+    expect(route(up, custom)).toBeNull();
+    expect(up.stopped).toBe(true);
+    expect(route(input('wheel', {deltaY: -100}), custom)).toBe('previousSave');
+    time = 40;
+    const repeated = input('wheel', {deltaY: -30});
+    expect(route(repeated, custom)).toBeNull();
+    expect(repeated.stopped).toBe(true);
+    time = 220;
+    expect(route(input('wheel', {deltaY: 100}), custom)).toBe('nextSave');
   });
 });

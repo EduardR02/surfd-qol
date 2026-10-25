@@ -1,4 +1,4 @@
-// Replay bar, shown while any replay plays. It is drawn on the scene the way
+// Opt-in custom replay bar. It is drawn on the scene the way
 // the HUD is, over a soft pool of shade instead of a box: one line with Play,
 // the timeline and a few tools. The timeline is the run itself: the start,
 // each checkpoint, every ramp board graded in the HUD's colours, and your
@@ -11,8 +11,7 @@ const REST_MS = 2600;
 const WHEEL_MS = 150;
 const SNAP_PX = 7;
 const BIND_ACTIONS = ['save', 'load', 'previousSave', 'nextSave'];
-// Our own keys. Steps and skips go through one coalesced seek per frame.
-const KEYS = {Space: 'toggle', ArrowLeft: 'back', ArrowRight: 'forward', Comma: 'previous', Period: 'next', BracketLeft: 'slower', BracketRight: 'faster'};
+// Native document shortcuts own playback in both presentation modes.
 const TONES = new Set(['good', 'warn', 'loss', 'muted']);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
 
@@ -39,13 +38,14 @@ const sameList = (a = [], b = []) => a === b || (a.length === b.length && a.ever
 // name their markers by the stage they open.
 export function timelineMarks(status, kind = 'CP') {
   const length = Math.max(1, status.length), at = tick => Math.max(0, Math.min(1, tick / length));
+  const playable = tick => Number.isFinite(tick) && tick >= 0 && tick <= status.length;
   const marks = [];
-  if (status.start > 0) marks.push({type: 'start', tick: status.start, at: at(status.start), label: 'Start'});
-  (status.markers ?? []).forEach((tick, index) => marks.push({type: 'cp', tick, at: at(tick), label: kind === 'S' ? `Stage ${index + 2}` : `CP${index + 1}`}));
+  if (status.start > 0 && playable(status.start)) marks.push({type: 'start', tick: status.start, at: at(status.start), label: 'Start'});
+  (status.markers ?? []).forEach((tick, index) => { if (playable(tick)) marks.push({type: 'cp', tick, at: at(tick), label: kind === 'S' ? `Stage ${index + 2}` : `CP${index + 1}`}); });
   for (const ramp of status.ramps ?? []) {
-    if (Number.isFinite(ramp.tick)) marks.push({type: 'ramp', tick: ramp.tick, at: at(ramp.tick), label: ramp.label, board: ramp.board, tone: TONES.has(ramp.tone) ? ramp.tone : 'muted'});
+    if (playable(ramp.tick)) marks.push({type: 'ramp', tick: ramp.tick, at: at(ramp.tick), label: ramp.label, board: ramp.board, tone: TONES.has(ramp.tone) ? ramp.tone : 'muted'});
   }
-  (status.spots ?? []).forEach((tick, index) => marks.push({type: 'loc', tick, at: at(tick), label: `Loc ${index + 1}`, selected: tick === status.lastSpot}));
+  (status.spots ?? []).forEach((tick, index) => { if (playable(tick)) marks.push({type: 'loc', tick, at: at(tick), label: `Loc ${index + 1}`, selected: tick === status.lastSpot}); });
   return marks;
 }
 // What hovering a mark (or a bare point of the timeline) says.
@@ -85,6 +85,7 @@ export const replayBarMarkup = `
       <div class="rb-track"></div>
       <div class="rb-marks" aria-hidden="true"></div>
       <div class="rb-headway" aria-hidden="true"><i class="rb-head"></i></div>
+      <div class="rb-indexed" aria-hidden="true"></div>
     </div>
     <div class="rb-pins"></div>
     <div class="rb-tip" aria-hidden="true" hidden><b class="t-title"></b><b class="t-val"></b><span class="t-lab"></span></div>
@@ -96,6 +97,8 @@ export const replayBarMarkup = `
       <button class="rb-btn rb-save" type="button" data-act="save" title="Save a location here (see Keyboard shortcuts for your keys)">Saveloc</button>
       <button class="rb-btn rb-icon" type="button" data-pop="keys" aria-haspopup="true" aria-expanded="false" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">${ICONS.keys}</button>
       <button class="rb-runs" type="button" data-act="runs" aria-expanded="false" aria-controls="runs-panel" title="Your runs on this map">${ICONS.runs}<span>Runs</span></button>
+      <button class="rb-btn rb-leave" type="button" data-act="return" hidden>Return to server</button>
+      <button class="rb-btn rb-leave" type="button" data-act="exit">Exit replay</button>
     </span>
   </span>
   <span class="rb-notice" data-rb="notice" role="status"></span>
@@ -137,6 +140,7 @@ export const replayBarStyles = `
 .rb-headway{position:absolute;inset:0;pointer-events:none;transform:translateX(0)}
 .rb-head{position:absolute;left:-4px;top:11px;width:8px;height:25px;border-radius:2px;background:var(--rose);transform:skewX(-20deg);
   box-shadow:0 0 0 1.5px var(--rb-edge),0 2px 8px rgba(0,0,0,.5)}
+.rb-indexed{position:absolute;top:30px;left:0;height:2px;background:rgba(255,255,255,.55);pointer-events:none}
 .rb-marks{position:absolute;inset:0;pointer-events:none}
 .rb-marks i{position:absolute;top:15px;width:4px;height:17px;margin-left:-2px;border-radius:1px;transform:skewX(-20deg);background:var(--muted);
   box-shadow:0 0 0 1.25px rgba(8,8,8,.72)}
@@ -164,6 +168,7 @@ export const replayBarStyles = `
 
 .rb-tools{display:flex;align-items:center;gap:4px}
 .rb-speed,.rb-save{min-width:44px;font-size:13.5px}
+.rb-leave{white-space:nowrap;font-size:12px;padding-inline:7px}
 .rb-speed.off{color:var(--warn)}
 .rb-runs{height:34px;display:flex;align-items:center;gap:7px;margin-left:6px;padding:0 14px 0 11px;border:0;border-radius:999px;font-size:13px;font-weight:700;
   background:var(--ink);-webkit-text-stroke:0!important;text-shadow:none!important;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 4px 14px rgba(0,0,0,.4)}
@@ -191,13 +196,14 @@ export const replayBarStyles = `
 .rb.rest .rb-marks span{opacity:0}
 .rb.rest .rb-pins button{pointer-events:none}
 
-@media (max-width:1100px){
+@media (max-width:1750px){
   .rb{grid-template-columns:auto auto minmax(0,1fr) auto;row-gap:2px;column-gap:12px}
   .rb-play{justify-self:start}
   .rb-side{display:contents}
   .rb-line{grid-column:1/-1;grid-row:2}
   .rb-total{grid-column:2;grid-row:1}
-  .rb-tools{grid-column:4;grid-row:1}
+  .rb-tools{grid-column:4;grid-row:1;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 150px)}
+  .rb-leave{height:28px;min-height:28px}
   .rb-total,.rb-tools{transition:opacity .35s}
   .rb.rest .rb-total,.rb.rest .rb-tools{opacity:0}
   .rb-runs span{display:none}.rb-runs{padding:0 9px}
@@ -224,12 +230,10 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   let status = null, frame = 0, open = null, lastActivity = now(), dragging = false, hovering = false;
   let pendingSeek = null, seekFrame = 0, marks = [], bindsKey = null, bindsAge = 0, binds = savelocBinds(null);
   let progress = -1, playState = '', speedShown = null, totalShown = '', reserve = 0, sections = [], drawn = null, ariaAge = 0;
-  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { reserve = 0; }) : null;
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { reserve = 0; drawn = null; }) : null;
   sizes?.observe(bar);
-  const wheelGate = createWheelGate();
 
   const wake = () => { lastActivity = now(); };
-  const ticks = seconds => status ? seconds / status.dt : 0;
   function readBinds() {
     let value = null;
     try { value = getBindings?.(); } catch { /* unavailable */ }
@@ -244,10 +248,10 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
       <p>Locs you save here show on the timeline as <i class="rb-diamond"></i> marks, and become practice savelocs when you leave the replay.</p>`;
   }
 
-  // Seeking re-simulates the replay, so a drag or a held key seeks at most once a frame.
+  // Coalesce drag requests; the native controller owns keyframed seeking.
   function seekTo(index) {
     if (!status) return;
-    pendingSeek = Math.max(0, Math.min(status.length, Math.round(index)));
+    pendingSeek = Math.max(0, Math.min(status.reachable ?? status.length, Math.round(index)));
     paintPosition(pendingSeek);
     if (!seekFrame) seekFrame = requestAnimationFrame(flushSeek);
   }
@@ -259,21 +263,14 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     control.seek(target);
   }
   const position = () => pendingSeek ?? status?.index ?? 0;
-  const nudge = delta => seekTo(position() + delta);
 
   function act(action) {
     if (!status) return;
     wake();
     if (action === 'toggle') control.toggle();
-    else if (action === 'back') nudge(-ticks(5));
-    else if (action === 'forward') nudge(ticks(5));
-    else if (action === 'previous' || action === 'next') { control.pause(); nudge(action === 'next' ? 1 : -1); }
-    else if (action === 'slower') control.slower();
-    else if (action === 'faster') control.faster();
     else if (action === 'save') control.saveSpot();
-    else if (action === 'load') control.goToSpot();
-    else if (action === 'previousSave') control.cycleSpot(-1);
-    else if (action === 'nextSave') control.cycleSpot(1);
+    else if (action === 'exit') control.exit();
+    else if (action === 'return') control.returnToServer();
     else if (action === 'runs') onRuns?.(bar.getBoundingClientRect());
     refresh();
   }
@@ -420,6 +417,12 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     rail.title = status.title ?? '';
   }
   function paint() {
+    const indexed = q('.rb-indexed');
+    const reach = Math.min(1, (status.indexed ?? status.length) / Math.max(1, status.length));
+    const indexedWidth = `${reach * 100}%`;
+    indexed.hidden = status.complete !== false;
+    if (indexed.style.width !== indexedWidth) indexed.style.width = indexedWidth;
+    q('[data-act="return"]').hidden = !status.parked;
     paintMarks();
     paintPosition(position());
     const state = status.ended ? 'again' : status.playing ? 'pause' : 'play';
@@ -438,7 +441,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     }
     const length = railTime((status.length - status.start) * status.dt);
     if (length !== totalShown) { totalShown = length; write(total, length); }
-    write(notice, status.notice ?? '');
+    write(notice, status.notice || (status.complete === false ? `Indexing ${Math.floor(reach * 100)}%` : ''));
     if (++bindsAge > 30) { bindsAge = 0; readBinds(); }
     const rest = status.playing && !dragging && !hovering && !open && !held() && !status.notice && now() - lastActivity > REST_MS;
     toggleClass(bar, 'rest', rest);
@@ -515,26 +518,9 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
         if (event.type === 'keydown') closePopover(true);
         return;
       }
-      const action = KEYS[event.code] ?? bindAction(binds, event.code);
-      if (!action) return;
-      event.preventDefault(); event.stopImmediatePropagation();
-      if (event.type !== 'keydown') return;
-      // Holding a seek or step key repeats it; holding Space, speed or a loc bind does not.
-      if (event.repeat && (action === 'toggle' || BIND_ACTIONS.includes(action) || action === 'slower' || action === 'faster')) return;
-      act(action);
+      // Playback keys pass through to the game's sole document handler.
     },
-    // Window mousedown, mouseup and wheel, for loc binds on mouse buttons and the wheel.
-    handlePointer(event) {
-      if (bar.hidden || !status) return;
-      if (host && event.composedPath().includes(host)) return;
-      if (event.type === 'mousedown') { wake(); closePopover(); }
-      const action = bindAction(binds, pointerCode(event));
-      if (!action) return;
-      event.preventDefault(); event.stopImmediatePropagation();
-      if (event.type === 'mouseup') return;
-      if (event.type === 'wheel' && !wheelGate(now())) return;
-      act(action);
-    },
+    // Saveloc binds are routed by the shared native/custom presentation owner.
     // Dev harness: open a popover.
     showPopover(name) { if (!bar.hidden && popovers[name]) openPopover(name); },
     destroy() { hide(); sizes?.disconnect(); },

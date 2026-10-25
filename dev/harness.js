@@ -8,6 +8,7 @@ import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
 import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds} from './fixtures.js';
+import {mountNativeTransport} from './native-transport.js';
 
 const params = new URLSearchParams(location.search);
 const DT = 0.015, GRAVITY = 800;
@@ -78,10 +79,11 @@ const runsMap = params.get('runs');
 const emptyHistory = params.get('history') === 'empty';
 const history = createHistory({settings, empty: emptyHistory});
 const replays = createReplays({empty: emptyHistory});
-const replayControl = createReplayControl({params, active: () => scenario.watching === true && settings.replayControls !== false});
+const replayControl = createReplayControl({params, active: () => scenario.watching === true});
 const rampReference = createRampReference({params, settings});
 const leaderboardReferences = createLeaderboardReferences(params);
 const binds = createBinds(params);
+const nativeTransport = mountNativeTransport(replayControl, params);
 const inMenu = scenario.menu || panelPage !== null || (runsMap !== null && !scenario.watching);
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
 // Backdrops are local game screenshots (gitignored); a neutral sky stands in when one is missing.
@@ -125,7 +127,7 @@ const hud = mountHud({
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
-    references: {update: () => scenario.refs ?? null, destroy() {}},
+    references: {update: () => scenario.refs ?? null, observeFinish() {}, destroy() {}},
     runReferences: {update: () => runRefs, destroy() {}},
     // A frozen clock keeps checkpoint splits on screen for screenshots.
     createModel: () => createHudModel(() => 0),
@@ -135,7 +137,10 @@ const hud = mountHud({
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
 // With ?state=watching: ?pop=keys|speed opens that popover; ?runs opens the Runs panel over the bar.
-if (params.has('pop')) setTimeout(() => hud.showReplayPopover(params.get('pop')), 50);
+if (params.has('pop')) setTimeout(() => {
+  if (!settings.customReplayUi && params.get('pop') === 'speed') nativeTransport.root.querySelector('[data-rt="speed"]').click();
+  else hud.showReplayPopover(params.get('pop'));
+}, 50);
 if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
 // With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
@@ -158,7 +163,7 @@ const select = (label, options, current, key) => {
 };
 select('Scenario', Object.keys(scenarios), name, 'state');
 select('Backdrop', backdrops, bg, 'bg');
-window.__harness = {hud, settings, scenario: name, note: scenario.note};
+window.__harness = {hud, settings, replayControl, nativeTransport, scenario: name, note: scenario.note};
 
 // Design experiments: ?css=<rules> is appended to the HUD's shadow root.
 if (params.has('css')) {

@@ -254,6 +254,21 @@ describe('run history', () => {
     expect(r.snapshots.count).toBe(1);
   });
 
+  test('a session reused after native replay exit records later live attempts', async () => {
+    const r = rig({playback: true});
+    await r.history.ready;
+    const session = r.live;
+    r.run();
+    expect(r.history.runs()).toHaveLength(0);
+    r.state.playback = false;
+    r.restart();
+    r.run({ticks: 200});
+    expect(r.live).toBe(session);
+    expect(r.history.runs()).toHaveLength(1);
+    expect(r.history.runs()[0]).toMatchObject({outcome: 'finished', practice: false});
+    expect(r.history.view().totals).toEqual({attempts: 1, finishes: 1});
+  });
+
   test('discard drops the run in progress without recording it', () => {
     const r = rig();
     r.go();
@@ -341,6 +356,59 @@ describe('bests', () => {
     await quiet.history.ready;
     quiet.go(); quiet.ramp({ boardLoss: 4, surfLoss: 30 }); quiet.idle(1); quiet.finish();
     expect(quiet.history.runs()[0].boards).toBeUndefined();
+  });
+
+  test('metric sequence resets leave earlier timeline boards intact and revise only the current positive board', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go();
+    r.publishBoard({surfaceId: 7, loss: 4});
+    const first = r.live.commands.length;
+    r.reviseBoard({loss: 6});
+    r.publishBoard({surfaceId: 8, loss: 9});
+    const second = r.live.commands.length;
+    // Teleport/stage-reset and analysis-disable snapshots have no board.
+    r.reviseBoard({sequence: 0, available: false, surfaceId: null, visit: null});
+    r.reviseBoard({sequence: 0, loss: 99});
+    r.publishBoard({surfaceId: 9, loss: 11});
+    const third = r.live.commands.length;
+    r.reviseBoard({loss: 13});
+    r.publishBoard({surfaceId: 10, loss: 15});
+    const fourth = r.live.commands.length;
+    r.finish();
+    const expected = [[first, 6, '[7,0,1]'], [second, 9, '[8,0,1]'],
+      [third, 13, '[9,0,1]'], [fourth, 15, '[10,0,1]']];
+    expect(r.history.view().latest.boards).toEqual(expected);
+    await flush();
+    const restored = rig({store: r.store});
+    await restored.history.ready;
+    expect(restored.history.view('utopia:3').pb.boards).toEqual(expected);
+  });
+
+  test('a board after the timeline cap cannot revise the last retained mark', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go();
+    for (let surfaceId = 1; surfaceId <= 120; surfaceId++) r.publishBoard({surfaceId, loss: surfaceId});
+    r.publishBoard({surfaceId: 121, loss: 999});
+    r.reviseBoard({loss: 1000});
+    r.finish();
+    const marks = r.history.view().latest.boards;
+    expect(marks).toHaveLength(120);
+    expect(marks.at(-1).slice(1)).toEqual([120, '[120,0,1]']);
+  });
+
+  test('a decreasing positive sequence starts a distinct board when the zero reset snapshot was missed', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go();
+    r.publishBoard({sequence: 5, surfaceId: 7, loss: 4});
+    const first = r.live.commands.length;
+    r.publishBoard({sequence: 1, surfaceId: 8, loss: 9});
+    const second = r.live.commands.length;
+    r.reviseBoard({loss: 11});
+    r.finish();
+    expect(r.history.view().latest.boards).toEqual([[first, 4, '[7,0,1]'], [second, 11, '[8,0,1]']]);
   });
 
   test('totals count every attempt; each checkpoint best carries the PB split; ramps keep their best down and up', async () => {

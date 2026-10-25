@@ -6,45 +6,23 @@ function unique(source, pattern, label) {
   return matches[0];
 }
 
-// Replay playback hooks are optional: when the game's watch function or its
-// playback cursor can't be found, Watch is unavailable and nothing else changes.
-function replayHooks(source, state) {
+// Replay hooks are optional: when the game's watch function or its replay
+// player can't be found, Watch is unavailable and nothing else changes.
+// Surfd's own player (the transport behind its replay bar) does playback,
+// seeking, speed and the timeline; the extension drives it and adds to it.
+function replayHooks(source) {
   try {
     const watch = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})=\\+\\+(${identifier})\\)\\{if\\(!\\3\\(\\)\\)return;`, 'g'), 'replay watch');
-    const cursor = unique(source, new RegExp(`const ${identifier}=(${identifier})\\?\\1\\.commands\\[(${identifier})\\+\\+\\]:`, 'g'), 'replay cursor');
-    const stepper = unique(source, new RegExp(`(${identifier})\\.advance\\(`, 'g'), 'fixed stepper')[1];
-    const stepperClasses = new Set([...source.matchAll(new RegExp(`[,;]${stepper.replace(/\$/g, '\\$')}=new (${identifier})\\(`, 'g'))].map(match => match[1]));
-    if (stepperClasses.size !== 1) throw new Error('Unsupported Surfd build: fixed stepper class');
-    const [replay, index] = [cursor[1], cursor[2]];
+    // The game's own debug snapshot reads the player: replay:<player>.snapshot().
+    const transport = unique(source, new RegExp(`replay:(${identifier})\\.snapshot\\(\\)`, 'g'), 'replay player')[1];
     return `
     replay: {
-      Stepper: ${[...stepperClasses][0]},
-      stepper: () => ${stepper},
       reserve: () => ++${watch[6]},
       isCurrent: token => token === ${watch[6]},
       watch: (replay, label, isCurrent, token) => ${watch[1]}(replay, isCurrent, label, token),
-      // The cursor outlives playback: after Esc or the end, index is where it stopped.
-      playback: () => ({replay: ${replay}, index: ${index}}),
-      // Re-simulates the watched session to \`index\` commands into \`replay\`:
-      // forward from where it is, or from the start when going back or when
-      // live input moved it after playback stopped. \`frames\` (replay-scan.js)
-      // resumes from a snapshot closer to the target and keeps new ones.
-      seek(replay, index, frames = null) {
-        const session = ${state};
-        if (!session || !replay || session.map.id !== replay.mapId || (${replay} && ${replay} !== replay)) return false;
-        const length = replay.commands.length;
-        index = Math.max(0, Math.min(length, Math.floor(index)));
-        const at = session.commands.length;
-        let from = at > length || at !== Math.min(${index}, length) || index < at ? 0 : at;
-        if (!from) session.loadReplay(replay);
-        from = Math.max(from, frames?.resume(session, from, index) ?? -1);
-        ${index} = from;
-        while (${index} < index) { session.step(replay.commands[${index}++]); frames?.keep(session, ${index}); }
-        // Still the replay at its end: replay-control holds the last frame there.
-        ${replay} = replay;
-        ${stepper}.reset();
-        return true;
-      },
+      transport: () => ${transport},
+      // What's playing and where: index counts the commands played.
+      playback: () => ({replay: ${transport}.replay ?? null, index: ${transport}.replay ? ${transport}.host.position() : 0}),
     },`;
   } catch (error) {
     console.warn('[Surfd QoL] Replay controls unavailable:', error.message);
@@ -54,13 +32,25 @@ function replayHooks(source, state) {
 
 // The game's practice savelocs, also optional: moments saved while watching
 // a replay are filed into them when you leave it.
-function practiceHooks(source) {
+function practiceHooks(source, sessionClass, state) {
   try {
     const store = unique(source, new RegExp(`const ${identifier}=(${identifier})\\.entries\\((${identifier})\\)\\.length>=${identifier},${identifier}=\\1\\.save\\(\\2\\)`, 'g'), 'saveloc store')[1];
+    // Use the same map, rules and replay format as native Restart. A replay
+    // session can remain alive after Exit with an older format/rules bank.
+    const fresh = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const ${identifier}=new ${sessionClass}\\(\\2,(${identifier})\\(\\2\\),(${identifier})\\),`, 'g'), 'live session factory');
+    const maps = [...new Set([...source.matchAll(new RegExp(`${fresh[1]}\\((${identifier})\\?\\?${state}\\.map\\)`, 'g'))].map(match => match[1]))];
+    if (maps.length !== 1) throw new Error('Unsupported Surfd build: practice destination map');
     return `
     practice: {
       // The saveloc store: one bank of snapshots per practice key (map and movement rules).
       store: () => ${store},
+      destination: () => {
+        const map = ${maps[0]} ?? ${state}?.map;
+        if (!map) return null;
+        // practiceKey is native's pure metadata key, not a synthetic Session.
+        const key = ${sessionClass}.prototype.practiceKey.call({map, config: ${fresh[3]}(map), replayFormat: ${fresh[4]}});
+        return {mapId: map.id, mapVersion: map.version, key};
+      },
     },`;
   } catch (error) {
     console.warn('[Surfd QoL] Practice savelocs from replays unavailable:', error.message);
@@ -110,7 +100,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source, state)}${practiceHooks(source)}${noticeHook(source)}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practiceHooks(source, sessionClass, state)}${noticeHook(source)}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

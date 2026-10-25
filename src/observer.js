@@ -7,7 +7,7 @@ function copyVector(target, source) {
   target.z = source.z;
 }
 
-export function observePhysics(adapter, metrics, { onTick = noop, onReset = noop, onError = noop } = {}) {
+export function observePhysics(adapter, metrics, { onBeforeTick = noop, onTick = noop, onReset = noop, onError = noop } = {}) {
   const sessionPrototype = adapter.Session.prototype;
   const movementPrototype = adapter.Movement.prototype;
   const originals = [];
@@ -40,7 +40,7 @@ export function observePhysics(adapter, metrics, { onTick = noop, onReset = noop
       const previousActive = active;
       active = this;
       try {
-        try { metrics.begin(this, command); } catch (error) { fail(error); }
+        try { onBeforeTick(this); metrics.begin(this, command); } catch (error) { fail(error); }
         const events = original.apply(this, arguments);
         if (healthy) {
           try { metrics.end(this, command, events); onTick(this, command, events); }

@@ -184,6 +184,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tick: null, sequence: 0, surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
     unsupportedTicks: 0, reason: '',
   };
+  // Cold native seeks can restore a worker keyframe we never analysed.
+  // Do not publish the interrupted flight/visit as a complete measurement.
+  let unknownAir = false, unknownRamp = false, unknownRampGap = 0, episodeUnknown = false;
   let entryLoss = 0;
   let turnLoss = 0;
   let eventLoss = 0;
@@ -214,7 +217,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // Tiny contact-grace gaps are not useful flights. Unsupported/coasting
     // ticks contribute neither time nor invented input opportunity. Contact
     // closes the segment even when too short to replace the retained summary.
-    if (airSkippedSeconds > 0 && airSkippedSeconds + airMeasuredSeconds >= MIN_AIR_SECONDS) {
+    if (unknownAir) {
+      unknownAir = false;
+    } else if (airSkippedSeconds > 0 && airSkippedSeconds + airMeasuredSeconds >= MIN_AIR_SECONDS) {
       // Part of this flight was not analysed while Air was hidden.
       air.available = false;
       air.loss = air.brakingLoss = air.missedGain = 0;
@@ -242,12 +247,13 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     episodeSurface = null;
     episodeActive = false;
     airborneGapSeconds = 0;
+    episodeUnknown = false;
   }
 
   function finishSurf() {
     if (surfContactSeconds + TIME_EPSILON >= MIN_SURF_SECONDS) {
       const expectedSquared = surfEntrySpeedSquared + 2 * surfGravity * (surfEntryHeight - surfExitHeight);
-      surf.available = surfUnsupportedTicks === 0 && surfSkippedTicks === 0 && Number.isFinite(expectedSquared) &&
+      surf.available = !episodeUnknown && surfUnsupportedTicks === 0 && surfSkippedTicks === 0 && Number.isFinite(expectedSquared) &&
         expectedSquared >= 0 && Number.isFinite(surfExitSpeedSquared) && Number.isFinite(surfLowEnergy);
       surf.entrySpeed = Number.isFinite(surfEntrySpeedSquared) ? Math.sqrt(surfEntrySpeedSquared) : null;
       surf.exitSpeed = Number.isFinite(surfExitSpeedSquared) ? Math.sqrt(surfExitSpeedSquared) : null;
@@ -267,7 +273,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         surf.downLoss = (entryEnergy - surfLowEnergy) / scale;
         surf.upLoss = (surfLowEnergy - exitEnergy) / scale;
       } else surf.downLoss = surf.upLoss = surf.available ? 0 : null;
-      surf.reason = surfSkippedTicks ? 'not-tracked-while-hidden'
+      surf.reason = episodeUnknown ? 'replay-gap' : surfSkippedTicks ? 'not-tracked-while-hidden'
         : surfUnsupportedTicks ? 'unsupported-contact-or-endpoint'
         : !Number.isFinite(expectedSquared) || !Number.isFinite(surfExitSpeedSquared) ? 'invalid-endpoint'
         : expectedSquared < 0 ? 'above-gravity-only-height' : '';
@@ -283,7 +289,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     clearSurfEpisode();
   }
 
-  function reset() {
+  function reset({replayGap = false} = {}) {
     boardVersion++;
     accelerationCount = 0;
     head = count = 0;
@@ -323,6 +329,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     surf.reason = '';
     surf.sequence = surf.unsupportedTicks = 0;
     surf.tick = surf.surfaceId = surf.visit = surf.checkpoint = surf.routePrefix = null;
+    unknownAir = unknownRamp = replayGap;
+    unknownRampGap = 0;
+    episodeUnknown = false;
+    if (replayGap) routePrefix = null;
   }
 
   function removeOldest() {
@@ -453,7 +463,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
 
   function begin(session) {
     if (!active()) {
-      if (!idle) reset();
+      if (!idle) reset({replayGap: unknownAir || unknownRamp});
       idle = true;
       open = false;
       return;
@@ -461,7 +471,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     const resumed = idle;
     idle = false;
     if (resumed || (previousSession && (session !== previousSession || session.state !== previousState ||
-      session.state.tick !== previousTick))) reset();
+      session.state.tick !== previousTick))) reset({replayGap: resumed && (unknownAir || unknownRamp)});
     // Visits counted before the pause are unknown: until the next run start
     // resets the route, nothing may claim a PB/WR visit match.
     if (resumed) routePrefix = null;
@@ -669,6 +679,15 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     const surface = tickSurfaceUnknown || tickSurfaceConflict ? null : tickSurface;
     const sameSurface = episodeActive && surface !== null && surface === episodeSurface;
     const ambiguous = tickBoardAmbiguous || tickMixedContact;
+    if (unknownRamp) {
+      if (grounded || (episodeActive && episodeContact && surface !== null && episodeSurface !== null && !sameSurface && !ambiguous))
+        unknownRamp = false;
+      else if (episodeContact || tickMixedContact) unknownRampGap = 0;
+      else {
+        unknownRampGap += duration;
+        if (unknownRampGap > SURFACE_CONTACT_GRACE + TIME_EPSILON) unknownRamp = false;
+      }
+    }
     // A known new surface is a new entry even without free air. A pure
     // unknown contact gets only the short grace; obstructions cannot prove
     // a departure or replace an accepted entry inside its existing grace.
@@ -723,12 +742,13 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         surfEntrySpeedSquared = tickStartSpeedSquared;
         surfEntryHeight = tickStartHeight;
         surfGravity = tickGravity;
+        episodeUnknown = unknownRamp;
         if (surface !== null) surfaceVisits.set(surface, (surfaceVisits.get(surface) ?? 0) + 1);
         if (surface === null || ambiguous) routePrefix = null;
         rampHead = rampCount = 0;
         turnLoss = 0;
         clearBoard();
-        if (!ambiguous) {
+        if (!ambiguous && !episodeUnknown) {
           boardVersion++;
           board.available = true;
           board.speedBefore = tickBoardSpeedBefore;
@@ -807,7 +827,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     }
     if (tickRampContact && !tickMixedContact) {
       if (boarding) {
-        if (!ambiguous) entryLoss = tickRampLoss;
+        if (!ambiguous && !episodeUnknown) entryLoss = tickRampLoss;
       } else {
         if (rampCount === SAMPLE_CAPACITY) removeRampOldest();
         const index = (rampHead + rampCount) % SAMPLE_CAPACITY;
@@ -821,7 +841,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         // Raw turn clips retain their rolling simulation half-second, even
         // when a brief recontact also contributes to the retained entry.
         eventLoss = boarding ? tickRampLoss : turnLoss;
-        eventKind = boarding ? (ambiguous ? 'contact' : 'board') : 'turn';
+        eventKind = boarding ? (ambiguous || episodeUnknown ? 'contact' : 'board') : 'turn';
         eventAt = clock();
         eventSimulationAt = elapsed;
       }
@@ -888,6 +908,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
       surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
       surfLowHeight, surfLowEnergy, surfTick,
+      unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
       entryPlane: { ...entryPlane }, surfaceVisits: new Map(surfaceVisits), routePrefix, routeEntries,
       airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
       board: { ...board }, boardVersion, air: { ...air }, surf: { ...surf },
@@ -908,6 +929,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
       surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
       surfLowHeight, surfLowEnergy, surfTick, routePrefix, routeEntries,
+      unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
       airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
       boardVersion, entryLoss, turnLoss, eventLoss, eventKind, eventSimulationAt,
     } = saved);

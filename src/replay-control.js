@@ -1,41 +1,40 @@
-// Playback control for any replay the game plays: your saved runs, which we
-// start, and leaderboard runs, the record route and server replays, which the
-// game starts from its own Watch buttons and we take over. Speed and pause
-// scale the frame time the game's fixed stepper receives, so physics still
-// advances in whole native ticks, and playback holds on the last frame instead
-// of dropping to the game's menu. Seeking re-simulates the deterministic
-// replay to the target tick (adapter.replay.seek), from the nearest snapshot
-// playback and earlier seeks kept (replay-frames.js).
+// Replays play in Surfd's own player (the transport behind its replay bar):
+// playback, seeking, speed, frame steps, stage jumps and the timeline's
+// markers are the game's. This adds what it lacks: watching your saved runs
+// (and a given ramp in them, your PB or the WR), ramp boards and savelocs on
+// the timeline, savelocs that become practice savelocs, and a status the
+// optional custom replay bar renders. Replays the game starts itself
+// (leaderboard, record route, server) are taken over the same way.
 import {formatTime} from './hud-model.js';
 import {bindLabel, savelocBinds} from './key-names.js';
-import {createFrames} from './replay-frames.js';
+import {createCoachingFrames} from './replay-frames.js';
 
-export const SPEEDS = [0.25, 0.5, 1, 2, 4];
-const MAX_FRAME = 0.25;
+// The game's playback speeds.
+export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 export const MAX_SPOTS = 20;
 const NOTICE_MS = 4000;
 // The game keeps this many savelocs per bank, dropping the oldest.
 const BANK_SIZE = 20;
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Only settings that change collected analysis, not its presentation or colours.
-const ANALYSIS_SETTINGS = ['hud', 'showBoard', 'showAir', 'showSurf', 'showStart',
-  'continuousFeedback', 'strafeLookbackSeconds'];
+const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'showStart', 'continuousFeedback', 'strafeLookbackSeconds'];
 
 // getRun(id) returns the stored run (its checkpoint ticks) for a run shown in the UI.
 // grade is an owned ramp-reference consumer, released while the timeline is hidden.
-// coaching: {save(), restore(state)} keeps HUD analysis with native replay frames.
 // teach: {due(), done()} says when to explain that replay locs become practice savelocs.
 // rampNumber(mapKey, rampKey) numbers ramp boards the way the Runs view does.
+// coaching: {save(), restore(state), reset(commandIndex)} is the HUD's analysis.
+// Missing native keyframes reset with a replay gap; only coherent playback is cached.
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
-  grade = null, coaching = null, settings = {}, teach = null, rampNumber = null, clock = () => performance.now()}) {
-  let watching = null, speed = 1, paused = false, installed = null, notice = null;
-  let requestVersion = 0, starting = null, destroyed = false, visible = false;
-  let enabled = settings.replayControls !== false;
+  grade = null, teach = null, rampNumber = null, coaching = null, settings = {}, clock = () => performance.now()}) {
+  let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null;
+  let detached = null;
   const analysisSettings = ANALYSIS_SETTINGS.map(key => settings[key]);
   // Replay moments waiting to become practice savelocs: they are filed into
   // the bank of the game you return to, so they always load there.
   let pending = [];
-  const replaySessions = new WeakSet();
   const hooks = () => getAdapter?.()?.replay ?? null;
+  const player = () => { try { return hooks()?.transport?.() ?? null; } catch { return null; } };
   const practice = () => getAdapter?.()?.practice ?? null;
   // Messages go to the game's own notice line, like its saveloc messages.
   const say = text => {
@@ -51,49 +50,56 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     return savelocBinds(bindings);
   };
   const due = () => { try { return teach?.due?.() !== false; } catch { return true; } };
+  const samePlayer = (watched, t) => watched?.replay === t?.replay && watched.transport === t && watched.revision === t?.revision;
+  // The player while it plays this replay, else null.
+  const playing = watched => {
+    const t = player();
+    return t && watched && getSession?.() === watched.session && t.replay === watched.replay &&
+      (!t.host?.session || t.host.session() === watched.session) && t === watched.transport && t.revision === watched.revision ? t : null;
+  };
 
-  // Wraps the stepper class once; only the game's main stepper, while it plays
-  // the replay being watched, is ever scaled.
+  // A seek in the game's player restores a keyframe with restorePractice and
+  // steps on from it: put the HUD's analysis back to that same tick, or clear
+  // it when it wasn't kept, rather than show values from before the seek.
   function uninstall() {
-    if (!installed) return;
-    const {prototype, original, wrapper} = installed;
-    if (prototype.advance === wrapper) prototype.advance = original;
-    installed = null;
+    if (!wrapped) return;
+    if (wrapped.prototype.restorePractice === wrapped.wrapper) wrapped.prototype.restorePractice = wrapped.original;
+    wrapped = null;
   }
-  function install(replay) {
-    if (destroyed || !replay?.Stepper || installed?.prototype === replay.Stepper.prototype) return;
+  function install() {
+    const prototype = getAdapter?.()?.Session?.prototype;
+    if (destroyed || !coaching || typeof prototype?.restorePractice !== 'function' || wrapped?.prototype === prototype) return;
     uninstall();
-    const prototype = replay.Stepper.prototype, original = prototype.advance;
-    const wrapper = function (seconds, tick, ...rest) {
-      const watched = watching, playback = hooks()?.playback?.();
-      if (watched && Number.isFinite(seconds) && this === hooks()?.stepper?.() && playback?.replay === watched.replay) {
-        seconds = paused ? 0 : Math.min(MAX_FRAME, seconds * speed);
-        // Hold on the last frame: past it the game leaves the replay for its menu.
-        const left = watched.length - playback.index;
-        if (left <= 0) { paused = true; seconds = 0; }
-        else seconds = Math.min(seconds, (left + 0.5) * (this.dt ?? watched.dt) - (this.accumulator ?? 0));
-        const step = tick;
-        tick = function () {
-          const result = step.apply(this, arguments), index = hooks()?.playback?.()?.index;
-          if (!watched.analysisDirty) watched.frames.keep(watched.session, index);
-          if (index >= watched.length) paused = true;
-          return result;
-        };
+    const original = prototype.restorePractice;
+    const wrapper = function () {
+      const restored = original.apply(this, arguments);
+      const watched = watching;
+      if (restored && watched && this === watched.session) {
+        const tick = (this.state?.tick ?? 0) - watched.base;
+        watched.coherent = watched.frames.restore(tick);
+        if (!watched.coherent) {
+          try { coaching.reset?.(tick); } catch { /* analysis restarts on its own */ }
+          watched.coherent = tick === 0;
+        }
       }
-      return original.call(this, seconds, tick, ...rest);
+      return restored;
     };
-    prototype.advance = wrapper;
-    installed = {prototype, original, wrapper};
+    prototype.restorePractice = wrapper;
+    wrapped = {prototype, original, wrapper};
   }
   function watch(replay, session, details) {
-    speed = 1;
-    paused = false;
-    replaySessions.add(session);
+    detached = null;
+    const transport = player();
+    install();
     // Spots are bookmarks in this replay (a saveloc for watching): saved for
     // your own runs through onSpots, kept until you leave for anyone else's.
-    const watched = watching = {replay, session, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
-      start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null, frames: createFrames(replay, coaching), analysisDirty: false,
-      ramps: [], rampsKey: '', publishedMarkers: null, ...details};
+    const watched = watching = {replay, session, transport, revision: transport?.revision, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
+      start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null,
+      ramps: [], rampsKey: '', nativeMarkers: null, base: replay.initialState?.tick ?? 0, coherent: true,
+      frames: createCoachingFrames(coaching ?? {save() {}, restore() {}}), ...details};
+    const tick = (session.state?.tick ?? 0) - watched.base;
+    watched.coherent = tick === 0;
+    try { coaching?.reset?.(tick); } catch { /* analysis restarts on its own */ }
     if (!watched.boards.length) grade?.release?.();
     if (practice()?.store && due()) {
       const keys = bindLabel(binds().save);
@@ -104,37 +110,38 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   }
   function current() {
     if (destroyed) return null;
-    const session = getSession?.();
-    if (watching && session !== watching.session) { watching = null; grade?.release?.(); }
-    if (!watching && session && !hooks()?.playback?.()?.replay) file(session);
-    if (!enabled) return null;
-    if (!watching && session) {
-      // A replay the game started itself (someone else's run): take it over.
-      const replay = hooks()?.playback?.()?.replay;
+    const session = getSession?.(), t = player();
+    const replay = t?.replay;
+    const nativeSession = !t?.host?.session || t.host.session() === session;
+    if (detached && !samePlayer(detached, t)) detached = null;
+    if (watching && (session !== watching.session || !samePlayer(watching, t) || !nativeSession)) {
+      // Session replacement without native open/close is not another Watch.
+      // Do not attach an old player to a new live session.
+      if (session !== watching.session && samePlayer(watching, t))
+        detached = {replay, transport: t, revision: t?.revision};
+      watching = null;
+      grade?.release?.();
+    }
+    if (!watching && session && !replay) file();
+    if (!watching && session && nativeSession && !detached) {
+      // A replay the game started itself (someone else's run): augment it.
       if (replay && Array.isArray(replay.commands)) {
-        install(hooks());
         let name = null;
         try { name = getMapName?.(); } catch { /* optional */ }
-        watch(replay, session, {title: `Watching a replay${name ? ` on ${name}` : ''}`, learn: true});
+        watch(replay, session, {title: `Watching a replay${name ? ` on ${name}` : ''}`});
       }
     }
     return watching;
   }
-  // Someone else's run has no recorded start or checkpoint ticks: read them off
-  // the game's timer as playback passes them.
-  function learn(watched) {
-    const timer = watched.session.timer?.state;
-    if (!watched.learn || !timer || timer.phase === 'ready' || !Number.isFinite(timer.startTick)) return;
-    const clamp = value => Math.max(0, Math.min(watched.length, value));
-    watched.start = clamp(Math.floor(timer.startTick) - (watched.replay.initialState?.tick ?? 0));
-    timer.splits?.forEach((split, index) => {
-      if (!Number.isFinite(split)) return;
-      const tick = clamp(watched.start + Math.round(split / watched.dt));
-      if (watched.markers[index] !== tick) {
-        watched.markers[index] = tick;
-        watched.publishedMarkers = null;
-      }
-    });
+  // Someone else's run has no recorded ticks: the game's index marks its start
+  // and checkpoints as it reads the replay.
+  function marks(watched) {
+    if (watched.run) return;
+    const native = playing(watched)?.index?.markers;
+    if (!Array.isArray(native) || native === watched.nativeMarkers) return;
+    watched.nativeMarkers = native;
+    watched.start = native.find(marker => marker.kind === 'start')?.index ?? null;
+    watched.markers = native.filter(marker => marker.kind === 'checkpoint').map(marker => marker.index).filter(Number.isInteger);
   }
   // Ramp boards on the timeline, recorded during your own runs.
   function ramps(watched) {
@@ -150,39 +157,41 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     const number = ramp => { try { return rampNumber?.(watched.run?.mapKey, ramp.key) ?? null; } catch { return null; } };
     return watched.ramps = list.map(ramp => ({tick: ramp.tick, label: number(ramp) ? `Ramp ${number(ramp)}` : 'Ramp', board: ramp.board, tone: tone(ramp)}));
   }
-  function position() {
-    const watched = current();
-    if (!watched) return 0;
-    const playback = hooks()?.playback?.();
-    // Stopped (Esc), the session may keep stepping on live input; the cursor
-    // still says where the replay stopped.
-    return Math.max(0, Math.min(Number.isFinite(playback?.index) ? playback.index : watched.length, watched.length));
+  const end = watched => Math.max(0, Math.min(watched.length, playing(watched)?.index?.end ?? watched.length));
+  function position(watched = current()) {
+    const t = playing(watched);
+    if (!t) return 0;
+    try { return Math.max(0, Math.min(t.host.position(), end(watched))); } catch { return 0; }
   }
   function seek(index) {
-    const watched = current();
-    if (!watched) return false;
-    const replay = hooks(), target = Math.max(0, Math.min(watched.length, Math.round(index)));
-    // Clearing snapshots alone would let forward seeks reuse the current
-    // analyzer state. Reload through the native hook so its observer resets
-    // both coaching controllers, without taking ownership from another replay.
-    if (watched.analysisDirty) {
-      if (replay?.seek?.(watched.replay, 0, watched.frames) !== true) return false;
-      watched.analysisDirty = false;
-      if (!target) return true;
-    }
-    return replay?.seek?.(watched.replay, target, watched.frames) === true;
+    const watched = current(), t = playing(watched);
+    if (!t || !Number.isFinite(index)) return false;
+    t.requestSeek(Math.max(0, Math.min(end(watched), Math.round(index))));
+    t.applyPending();
+    return true;
   }
-  // Files pending moments into a live session's bank, the way the game's own
-  // Save position does; the last one filed becomes the selected saveloc.
-  // A saveloc is only position, speed, view and timer, so a replay made under
-  // older rules still practices fine under today's.
-  function file(session) {
-    if (!pending.length || replaySessions.has(session) || typeof session.practiceKey !== 'function') return;
-    const store = practice()?.store?.();
-    if (!(store?.banks instanceof Map)) return;
-    const key = session.practiceKey();
+  // The game seeks only as far as it has indexed the replay; a jump right
+  // after Watch waits for it.
+  async function reach(watched, tick, owned) {
+    // Native indexing owns its watchdog/fallback; wait while this jump owns
+    // playback instead of timing out before the worker fallback can run.
+    for (;;) {
+      const t = playing(watched);
+      if (!t || !owned()) return false;
+      if (t.index?.complete && tick > end(watched)) return false;
+      if ((t.index?.reachable ?? 0) >= tick) return seek(tick);
+      await wait(50);
+    }
+  }
+  // File once into native Restart's authoritative practice bank, even if Exit
+  // retains a legacy replay Session. Rebase only the key, never the snapshot.
+  function file() {
+    if (!pending.length) return;
+    const native = practice(), store = native?.store?.(), destination = native?.destination?.();
+    if (!(store?.banks instanceof Map) || typeof destination?.key !== 'string') return;
+    const {key, mapId, mapVersion} = destination;
     pending = pending.filter(entry => {
-      if (entry.mapId !== session.map?.id || entry.mapVersion !== session.map?.version) return true;
+      if (entry.mapId !== mapId || entry.mapVersion !== mapVersion) return true;
       const bank = store.banks.get(key) ?? {entries: [], selected: null};
       if (bank.entries.length >= BANK_SIZE) bank.entries.shift();
       const id = store.nextId++;
@@ -193,15 +202,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       return false;
     });
   }
-  // The session must sit exactly on the replay cursor before it is captured.
-  function settle(watched) {
-    if (hooks()?.playback?.()?.replay === watched.replay) return true;
-    paused = true;
-    return seek(position());
-  }
   // Captures this moment of the replay for practice; null once the run has finished.
   function capture(watched) {
-    if (!(practice()?.store?.() instanceof Object) || !settle(watched)) return null;
+    // While the game plays this replay its session sits exactly on the cursor.
+    if (!(practice()?.store?.() instanceof Object) || !playing(watched)) return null;
     let snapshot = null;
     try { snapshot = watched.session.capturePractice?.() ?? null; } catch { /* unsupported */ }
     if (!snapshot) return null;
@@ -212,21 +216,24 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   function persist(watched) {
     if (watched.run) { try { onSpots?.(watched.run.id, watched.spots.slice()); } catch { /* optional */ } }
   }
-  const playing = () => !!current() && !paused && hooks()?.playback?.()?.replay === watching.replay;
 
   async function startPlayback(load, details, label, {navigation = null, isCurrent = () => true} = {}) {
-    if (destroyed || !enabled) return false;
+    if (destroyed) return false;
     const request = ++requestVersion, previousSession = getSession?.(), replay = hooks();
+    const previousMap = previousSession?.map, mapId = previousMap?.id, mapVersion = previousMap?.version;
+    const owner = getAdapter?.()?.getReferences?.()?.ownerKey;
+    const contextCurrent = () => getAdapter?.()?.getReferences?.()?.ownerKey === owner;
     if (!replay?.watch) throw new Error('Replays aren’t supported by this version of Surfd.');
     // Reserve the game's Watch generation before either archive or network I/O.
     // Native Watch buttons reserve the same generation before their downloads.
     const token = replay.reserve();
-    const owned = () => !destroyed && enabled && request === requestVersion && hooks() === replay && replay.isCurrent(token);
+    const owned = () => !destroyed && request === requestVersion && hooks() === replay && replay.isCurrent(token) && contextCurrent();
     const intent = starting = {replay, token, adopting: false};
     try {
       const data = await load(owned);
       // Session identity still rejects an actual map/context change while loading.
-      if (!owned() || getSession?.() !== previousSession || !isCurrent()) return false;
+      if (!owned() || getSession?.() !== previousSession || previousSession?.map?.id !== mapId ||
+        previousSession?.map?.version !== mapVersion || !isCurrent()) return false;
       if (!data) {
         if (navigation) return false;
         throw new Error('This run’s replay is no longer available.');
@@ -236,7 +243,6 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (navigation && (!destination || !Number.isInteger(destination.tick) || destination.tick < 0 ||
         destination.tick > data.commands.length || !Number.isFinite(dt) || dt <= 0 ||
         !Number.isFinite(destination.leadSeconds) || destination.leadSeconds < 0)) return false;
-      install(replay);
       intent.adopting = true;
       await replay.watch(data, label, () => owned() && isCurrent(), token);
       if (!owned()) return false;
@@ -246,65 +252,49 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         if (!isCurrent()) return false;
         throw new Error('The replay didn’t start.');
       }
-      watch(data, session, typeof details === 'function' ? details(data) : details);
-      // Ordinary Watch retains the prestrafe; navigation uses the same frame cache.
-      paused = destination ? destination.paused : false;
-      return seek(destination ? destination.tick - Math.round(destination.leadSeconds / dt) : 0);
+      const watched = watch(data, session, typeof details === 'function' ? details(data) : details);
+      // Ordinary Watch plays from the very start, prestrafe included.
+      if (!destination) return true;
+      const t = playing(watched);
+      t?.pause();
+      const target = Math.max(0, destination.tick - Math.round(destination.leadSeconds / dt));
+      if (!await reach(watched, target, () => owned() && watching === watched && isCurrent(session))) return false;
+      if (!destination.paused) playing(watched)?.play();
+      return true;
     } finally {
       if (starting === intent) starting = null;
     }
   }
 
   return {
-    setEnabled(next) {
-      if (destroyed || enabled === !!next) return;
-      enabled = !!next;
-      if (enabled) return;
-      requestVersion++;
-      if (starting?.replay.isCurrent(starting.token)) starting.replay.reserve();
-      starting = null;
-      watching = null;
-      notice = null;
-      visible = false;
-      uninstall();
-      grade?.release?.();
-      // Already saved practice captures still file when native playback ends.
-    },
-    // Called after settings are applied, never from the per-tick hot path.
-    settingsChanged() {
-      this.setEnabled(settings.replayControls !== false);
-      let changed = false;
-      for (let i = 0; i < ANALYSIS_SETTINGS.length; i++) {
-        const value = settings[ANALYSIS_SETTINGS[i]];
-        if (analysisSettings[i] !== value) { analysisSettings[i] = value; changed = true; }
-      }
-      if (!changed || !watching) return;
-      watching.frames.clear();
-      watching.analysisDirty = true;
-    },
     // True when this game build exposes playback and the run's replay was kept.
-    canWatch: run => enabled && !destroyed && !!hooks()?.watch && !!run?.replay && !!archive?.has(run.id),
+    canWatch: run => !destroyed && !!hooks()?.watch && !!run?.replay && !!archive?.has(run.id),
     watch(shown, {rampKey, leadSeconds = 0.5, paused = true, isCurrent} = {}) {
       const run = getRun?.(shown.id) ?? shown;
-      const offset = run.replay?.offset ?? 0;
+      const recordedOffset = run.replay?.offset ?? 0;
+      let offset = recordedOffset;
       const board = rampKey == null ? null : run.boards?.find(([, , key]) => key === rampKey);
-      if (rampKey != null && (!board || !Number.isInteger(board[0]) || board[0] < offset)) return Promise.resolve(false);
-      const navigation = board ? {tick: board[0] - offset, leadSeconds, paused} : null;
-      return startPlayback(() => archive.get(run.id), data => ({
+      const navigation = rampKey == null ? null : () => board && Number.isInteger(board[0]) && board[0] >= offset
+        ? {tick: board[0] - offset, leadSeconds, paused} : null;
+      return startPlayback(async () => {
+        const data = await archive.get(run.id);
+        offset = archive.offset?.(run.id) ?? recordedOffset;
+        return data;
+      }, data => ({
         title: `Your run on ${run.mapName} · ${run.outcome === 'finished' ? `finished in ${formatTime(run.time)}` : `reset at ${formatTime(run.time)}`}${run.practice ? ' · practice' : ''}`,
-        start: Math.min(run.replay.start ?? 0, data.commands.length),
-        markers: (run.checkpoints ?? []).map(checkpoint => checkpoint.command - offset).filter(tick => Number.isInteger(tick) && tick >= 0),
+        start: Math.max(0, Math.min((run.replay.start ?? 0) + recordedOffset - offset, data.commands.length)),
+        markers: (run.checkpoints ?? []).map(checkpoint => checkpoint.command - offset).filter(tick => Number.isInteger(tick) && tick >= 0 && tick <= data.commands.length),
         // [tick, board loss, ramp key] for each board of the run.
-        boards: (run.boards ?? []).map(([tick, board, key]) => ({tick: tick - offset, board, key})).filter(ramp => Number.isInteger(ramp.tick) && ramp.tick >= 0),
+        boards: (run.boards ?? []).map(([tick, board, key]) => ({tick: tick - offset, board, key})).filter(ramp => Number.isInteger(ramp.tick) && ramp.tick >= 0 && ramp.tick <= data.commands.length),
         spots: (run.spots ?? []).filter(tick => Number.isInteger(tick) && tick >= 0 && tick <= data.commands.length).slice(0, MAX_SPOTS),
         run: {id: run.id, mapKey: run.map},
       }), 'saved run', {navigation, isCurrent});
     },
     watchLoaded(load, {title, navigation = null, isCurrent} = {}) {
-      return startPlayback(load, {title, learn: true}, 'leaderboard replay', {navigation, isCurrent});
+      return startPlayback(load, {title}, 'leaderboard replay', {navigation, isCurrent});
     },
     setVisible(next) {
-      const shown = !destroyed && enabled && !!next;
+      const shown = !destroyed && !!next;
       if (visible !== shown && watching) watching.rampsKey = '';
       visible = shown;
       if (!visible) grade?.release?.();
@@ -316,51 +306,89 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (starting?.replay.isCurrent(starting.token)) starting.replay.reserve();
       starting = null;
       watching = null;
+      detached = null;
       pending = [];
       notice = null;
       uninstall();
       grade?.destroy?.();
     },
+    // Adopt native Watch before metrics.begin, including the very first tick.
+    observe(session) { if (session === getSession?.()) current(); },
+    // After each tick of the watched replay: keep the HUD's analysis at keyframe ticks.
+    tick(session) {
+      const watched = watching;
+      if (!watched || session !== watched.session || !coaching || !watched.coherent ||
+        settings.hud === false || settings.zen === true) return;
+      if (settings.showBoard !== false || settings.showAir !== false || settings.showSurf !== false || settings.showStart !== false)
+        watched.frames.keep((session.state?.tick ?? 0) - watched.base);
+    },
+    // Called after settings are applied, never from the per-tick hot path: analysis
+    // kept under other settings no longer matches what the HUD collects.
+    settingsChanged() {
+      let changed = false;
+      for (let i = 0; i < ANALYSIS_SETTINGS.length; i++) {
+        const value = settings[ANALYSIS_SETTINGS[i]];
+        if (analysisSettings[i] !== value) { analysisSettings[i] = value; changed = true; }
+      }
+      if (changed && watching) {
+        watching.frames.clear();
+        watching.coherent = position(watching) === 0;
+        try { coaching?.reset?.(position(watching)); } catch { /* analysis restarts on its own */ }
+      }
+    },
     get active() { return !!current(); },
     // Protect an owned UI handoff from the native menu-hiding observer until
-    // Watch has installed, paused and sought the new replay.
-    get adopting() { return !destroyed && enabled && !!starting?.adopting &&
+    // Watch has started and sought the new replay.
+    get adopting() { return !destroyed && !!starting?.adopting &&
       hooks() === starting.replay && starting.replay.isCurrent(starting.token); },
     status() {
       const watched = current();
       if (!watched) return null;
-      learn(watched);
-      const index = position();
+      marks(watched);
+      const t = playing(watched);
+      const length = end(watched);
+      if (length < watched.length && watched.boundedEnd !== length) {
+        watched.boundedEnd = length;
+        watched.markers = watched.markers.filter(tick => tick <= length);
+        watched.boards = watched.boards.filter(ramp => ramp.tick <= length);
+        watched.spots = watched.spots.filter(tick => tick <= length);
+        if (watched.lastSpot > length) watched.lastSpot = null;
+        watched.rampsKey = '';
+      }
+      let ended = true, speed = 1, paused = true, parked = false, reachable = 0;
+      try {
+        if (t) {
+          ended = t.atEnd(); paused = t.paused; speed = t.clock?.speed ?? 1;
+          parked = !!t.host?.parked?.(); reachable = t.index?.reachable ?? 0;
+        }
+      } catch { /* the player changed shape */ }
       return {
-        title: watched.title, index, length: watched.length, start: watched.start ?? 0, dt: watched.dt,
-        playing: playing(), ended: index >= watched.length, speed,
-        // Published arrays are read-only; marker learning invalidates its copy,
-        // and bookmark edits replace their array instead of mutating it.
-        markers: watched.publishedMarkers ??= watched.markers.filter(Number.isInteger), ramps: ramps(watched),
+        title: watched.title, index: position(watched), length, start: Math.min(watched.start ?? 0, length), dt: watched.dt,
+        playing: !!t && !paused && !ended, ended, speed, parked, reachable,
+        indexed: t?.index?.indexed ?? reachable, complete: t?.index?.complete ?? false,
+        markers: watched.markers, ramps: ramps(watched),
         spots: watched.spots, lastSpot: watched.lastSpot,
         notice: notice && clock() - notice.at < NOTICE_MS ? notice.text : '', run: watched.run,
       };
     },
-    play() {
-      const watched = current();
-      if (!watched) return;
-      paused = false;
-      const index = position();
-      if (index >= watched.length) seek(0);
-      else if (hooks()?.playback?.()?.replay !== watched.replay) seek(index);
-    },
-    pause() { if (current()) paused = true; },
-    toggle() { if (playing()) this.pause(); else this.play(); },
+    play() { playing(current())?.play(); },
+    pause() { playing(current())?.pause(); },
+    toggle() { playing(current())?.toggle(); },
     seek,
-    // skip() moves by seconds; step() moves by ticks and pauses.
-    skip(seconds) { const watched = current(); if (watched) seek(position() + seconds / watched.dt); },
-    step(ticks) { if (current()) { paused = true; seek(position() + ticks); } },
-    setSpeed(next) { if (SPEEDS.includes(next)) speed = next; },
+    // skip() moves by seconds; step() moves by ticks and pauses; stage() jumps a stage or checkpoint.
+    skip(seconds) { playing(current())?.seekBy(seconds); },
+    step(ticks) { playing(current())?.stepTick(ticks); },
+    stage(direction) { playing(current())?.stage(direction); },
+    setSpeed(next) { if (SPEEDS.includes(next)) playing(current())?.setSpeed(next); },
+    faster() { playing(current())?.shiftSpeed(1); },
+    slower() { playing(current())?.shiftSpeed(-1); },
+    exit() { playing(current())?.host?.exit?.(); },
+    returnToServer() { playing(current())?.host?.returnToServer?.(); },
     // Saves the current tick as a spot, also kept for practice; false when there is no room.
     saveSpot() {
       const watched = current();
       if (!watched) return false;
-      const tick = position();
+      const tick = position(watched);
       if (!watched.spots.includes(tick)) {
         if (watched.spots.length >= MAX_SPOTS) { say(`You can keep up to ${MAX_SPOTS} locations in a replay; delete one first.`); return false; }
         watched.spots = [...watched.spots, tick].sort((a, b) => a - b);
@@ -401,7 +429,5 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (watched.lastSpot === tick) watched.lastSpot = null;
       persist(watched);
     },
-    faster() { speed = SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(speed) + 1)]; },
-    slower() { speed = SPEEDS[Math.max(0, SPEEDS.indexOf(speed) - 1)]; },
   };
 }

@@ -199,6 +199,12 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
   return {
     ready: opened.then(db => !!db),
     has: id => meta.has(id),
+    // The trim belongs to the replay transaction, not the separately saved run.
+    // null distinguishes legacy metadata from a replay known to be untrimmed.
+    offset: id => {
+      const offset = meta.get(id)?.offset;
+      return Number.isSafeInteger(offset) && offset >= 0 ? offset : null;
+    },
     // `prepare` may resolve to a trimmed replay; it runs with the packing, when idle.
     // Resolves to {offset} once saved (offset > 0 when trimmed), or null.
     async save(run, replay, prepare = null) {
@@ -230,7 +236,7 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
         if (!packed || !current()) return null;
         while (clearing) await clearing;
         if (!current()) return null;
-        const entry = {id: run.id, map: run.map, at: run.at, bytes: packed.byteLength};
+        const entry = {id: run.id, map: run.map, at: run.at, bytes: packed.byteLength, offset};
         try {
           const transaction = db.transaction(['meta', 'replays'], 'readwrite');
           transaction.objectStore('replays').put({id: run.id, packed});

@@ -101,7 +101,7 @@ function sharedDatabase() {
   };
   let held = null;
   const db = {
-    records, abortStore: null,
+    records, abortStore: null, abortSaveStore: null,
     holdNextClear() {
       let started;
       const gate = {started: new Promise(resolve => { started = resolve; }), begin: started};
@@ -124,8 +124,9 @@ function sharedDatabase() {
       if (mode === 'readwrite') queueMicrotask(() => {
         const deleting = changes.some(([operation]) => operation !== 'put');
         const complete = () => {
-          if (deleting && db.abortStore && names.includes(db.abortStore)) {
-            transaction.error = new Error(`Aborted ${db.abortStore}`);
+          const abortStore = deleting ? db.abortStore : db.abortSaveStore;
+          if (abortStore && names.includes(abortStore)) {
+            transaction.error = new Error(`Aborted ${abortStore}`);
             transaction.onabort?.();
             return;
           }
@@ -333,4 +334,59 @@ test('compression already started before a committed clear cannot resurrect its 
   expect(r.history.view()).toBeNull();
   expect(await r.archive.get(id)).toBeNull();
   for (const rows of Object.values(db.records)) expect(rows.size).toBe(0);
+});
+
+test('trim offset survives reload with the archived replay even when the run-record update never happened', async () => {
+  const db = sharedDatabase(), database = Promise.resolve(db), store = createHistoryStore(database);
+  const run = {id: 'trimmed', map: 'utopia:3', at: 10, replay: {start: 8, length: 10, dt: 0.015}};
+  const replay = {format: 8, mapId: 'utopia', mapVersion: 3, initialState: {tick: 100},
+    commands: Array.from({length: 10}, (_, tick) => ({tick}))};
+  const trimmed = {...replay, initialState: {tick: 104}, commands: replay.commands.slice(4)};
+  await store.put(run);
+  const archive = createReplayArchive({database});
+  await archive.ready;
+  expect(archive.offset(run.id)).toBeNull();
+  expect(await archive.save(run, replay, async () => ({replay: trimmed, offset: 4}))).toEqual({offset: 4});
+  expect(archive.offset(run.id)).toBe(4);
+  // Simulate closing the page before history.setReplayOffset could save.
+  const restored = createReplayArchive({database});
+  await restored.ready;
+  expect(restored.offset(run.id)).toBe(4);
+  expect(await restored.get(run.id)).toEqual(trimmed);
+  expect((await store.load()).runs[0].replay).toEqual(run.replay);
+});
+
+test('untrimmed archives persist zero while missing and legacy metadata have no known offset', async () => {
+  const db = sharedDatabase(), database = Promise.resolve(db);
+  const replay = {format: 8, mapId: 'utopia', commands: [{forward: 400}]};
+  const packed = await packReplay(replay);
+  db.records.meta.set('legacy', {id: 'legacy', map: 'utopia:3', bytes: packed.byteLength});
+  db.records.replays.set('legacy', {id: 'legacy', packed});
+  const archive = createReplayArchive({database});
+  await archive.ready;
+  expect(archive.offset('absent')).toBeNull();
+  expect(archive.offset('legacy')).toBeNull();
+  expect(await archive.get('legacy')).toEqual(replay);
+  expect(await archive.save({id: 'full', map: 'utopia:3', at: 10}, replay)).toEqual({offset: 0});
+  const restored = createReplayArchive({database});
+  await restored.ready;
+  expect(restored.offset('full')).toBe(0);
+  expect(await restored.get('full')).toEqual(replay);
+});
+
+test('an aborted replay transaction cannot publish its trim offset or replace the previous replay', async () => {
+  const db = sharedDatabase(), database = Promise.resolve(db), archive = createReplayArchive({database});
+  const run = {id: 'run', map: 'utopia:3', at: 10};
+  const replay = {format: 8, mapId: 'utopia', commands: [{tick: 1}, {tick: 2}]};
+  const trimmed = {...replay, commands: replay.commands.slice(1)};
+  await archive.ready;
+  await archive.save(run, replay);
+  db.abortSaveStore = 'meta';
+  expect(await archive.save(run, replay, async () => ({replay: trimmed, offset: 1}))).toBeNull();
+  expect(archive.offset(run.id)).toBe(0);
+  expect(await archive.get(run.id)).toEqual(replay);
+  const restored = createReplayArchive({database});
+  await restored.ready;
+  expect(restored.offset(run.id)).toBe(0);
+  expect(await restored.get(run.id)).toEqual(replay);
 });

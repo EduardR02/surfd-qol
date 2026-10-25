@@ -160,7 +160,7 @@ export const panelMarkup = `
       <p id="history-rule" class="hist-rule" role="status"></p>
       <h3>Playback</h3>
       <div class="group">
-        ${toggle('replayControls', 'Replay controls', 'Adds seeking, playback speed and replay savelocs. Off leaves the game’s playback alone. Recording is separate.')}
+        ${toggle('customReplayUi', 'Custom replay bar', 'Replays use Surfd’s own bar, with ramp boards, savelocs and Runs added to it. This swaps in Surfd QoL’s bar instead.')}
       </div>
       <h3>Storage</h3>
       <div class="group hist-store">

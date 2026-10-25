@@ -5,32 +5,39 @@ import {instrumentGame} from '../extension/instrument.js';
 // This miniature native module keeps the signatures used by instrumentation
 // and the game's pre-download generation / guarded startup behavior.
 const nativeSource = `
+let sessions=0;
 class Movement {}
 class Session{
-  constructor() { this.movement=new Movement(); this.timer={state:{}}; this.map={id:'map'}; }
+  constructor(map={id:'map',version:1},config={rule:'legacy'},format=1) {
+    sessions++; this.movement=new Movement(); this.timer={state:{}}; this.map=map; this.config=config; this.replayFormat=format;
+  }
   checkpointSpeeds=[];startJumps=0;
+  practiceKey() { return JSON.stringify([this.map.id,this.map.version,this.config.rule,this.replayFormat]); }
 }
-class Stepper { advance() {} reset() {} }
-let nativeSession=new Session(),generation=0,playing=null,index=0,target=null,view=null;
-let unused,stepper=new Stepper();
+// Surfd's replay player: what plays and where.
+const player={replay:null,position:0,host:{position:()=>player.position},open(data){player.replay=data;player.position=0;},snapshot(){return {open:!!player.replay};}};
+let nativeSession=new Session(),generation=0,target=null,view=null;
 let startup=()=>Promise.resolve();
 const input={setBindings(){}},settings={bindings:{}};
 input.setBindings(settings.bindings);
+const currentFormat=8,liveRules=map=>({rule:settings.rule??'current'});
+let replayMap=null;
+function fresh(map){const session=new Session(map,liveRules(map),currentFormat),saved=null;return session;}
+function restart(){nativeSession=fresh(replayMap??nativeSession.map);replayMap=null;return nativeSession;}
 const client={session:{user:{id:'account-a'}},config:{maps:[{id:'map',slug:'test-map'}]},
   board:()=>({boardId:'board'}),replay:async()=>null};
 const boards={key:'board:account-a',current:{boardId:'board',own:{runId:'pb-a'},entries:[]}};
 const route={prepare(){}},bank={entries:()=>[],save(){}},limit=20;
 function references() { const record=boards.current?.entries.find(entry=>entry.rank===1);route.prepare('map',()=>client.replay(record.runId)); }
 function lookup() { return client.board(nativeSession.map); }
-function snapshot() { return {state:nativeSession?.state,run:nativeSession?.timer.state,spectator:{target:target,view:view}}; }
-function frame() { const command=playing?playing.commands[index++]:null;stepper.advance(0,()=>{}); }
+function snapshot() { return {state:nativeSession?.state,run:nativeSession?.timer.state,replay:player.snapshot(),spectator:{target:target,view:view}}; }
 function save() { const full=bank.entries(nativeSession).length>=limit,result=bank.save(nativeSession); }
 function notify() {}
 function saveNotice() { if(false){notify("Return to play before saving a location.");return} }
 async function watch(data,current,label,token=++generation){if(!current())return;
   await startup();
   if(token!==generation||!current())return;
-  playing=data;index=0;nativeSession=new Session();
+  nativeSession=new Session();player.open(data);
 }
 function nativeWatch(load) {
   const token=++generation;
@@ -42,7 +49,9 @@ function fixture() {
   let adapter;
   const runtime = new Function('globalThis', instrumentGame(nativeSource) + `
     return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},
-      setOwner:id=>{client.session=id?{user:{id}}:null;}};
+      setOwner:id=>{client.session=id?{user:{id}}:null;},
+      sessions:()=>sessions,restart,
+      setRules:rule=>{settings.rule=rule;},setReplayMap:map=>{replayMap=map;}};
   `)({__SURFD_QOL__: {attach: value => { adapter = value; }}});
   return {adapter, runtime};
 }
@@ -85,5 +94,31 @@ describe('native replay instrumentation', () => {
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'account-b', own: null});
     runtime.setOwner(null);
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'guest', own: null});
+  });
+});
+
+describe('native practice destinations', () => {
+  test('a legacy replay uses Restart’s current rules and format without constructing or changing a Session', () => {
+    const {adapter, runtime} = fixture();
+    const legacy = adapter.getSession(), legacyKey = legacy.practiceKey(), count = runtime.sessions();
+    const destination = adapter.practice.destination();
+    expect(destination).toEqual({mapId: 'map', mapVersion: 1, key: JSON.stringify(['map', 1, 'current', 8])});
+    expect(runtime.sessions()).toBe(count);
+    expect(adapter.getSession()).toBe(legacy);
+    expect(legacy.practiceKey()).toBe(legacyKey);
+    expect(runtime.restart().practiceKey()).toBe(destination.key);
+  });
+
+  test('destination metadata follows native map override and live movement settings rather than replay metadata', () => {
+    const {adapter, runtime} = fixture();
+    runtime.setReplayMap({id: 'map', version: 2});
+    runtime.setRules('unrestricted');
+    const destination = adapter.practice.destination();
+    expect(destination).toEqual({mapId: 'map', mapVersion: 2,
+      key: JSON.stringify(['map', 2, 'unrestricted', 8])});
+    expect(adapter.getSession().map.version).toBe(1);
+    expect(runtime.restart().practiceKey()).toBe(destination.key);
+    runtime.setRules('ranked');
+    expect(adapter.practice.destination().key).toBe(JSON.stringify(['map', 2, 'ranked', 8]));
   });
 });

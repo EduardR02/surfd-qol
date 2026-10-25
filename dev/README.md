@@ -1,6 +1,6 @@
 # HUD harness
 
-Renders the real HUD, settings panel, Runs panel and replay bar (`src/hud.js`, `src/hud-model.js`, the views and styles) with fixture data over screenshots from actual Surfd replays. Only the game session, the replay-reference loaders, run history, ramp references, saveloc binds and replay playback are faked (`dev/fixtures.js`, in the exact shapes `src/run-history.js`, `src/ramp-reference.js` and `src/replay-control.js` hand to the UI), so what you see here is what ships.
+Renders the real HUD, settings panel, Runs panel and replay extras/custom bar (`src/hud.js`, `src/hud-model.js`, the views and styles) with fixture data over screenshots from actual Surfd replays. Only the game session, replay-reference loaders, run history, ramp references, saveloc binds and playback are faked (`dev/fixtures.js`). Native replay uses the actual transport structure and shipping `rt-*` stylesheet in `dev/native-transport.js` / `dev/native-transport.css`; its controller is a fixture, not the game engine.
 
 The backdrops are not in the repository (they are screenshots of the game). Save your own 1920×1080 JPEG captures as `dev/backdrops/<name>.jpg` for `snow`, `fog`, `ice`, `neon`, `warm`, `dark` and `menu`; the folder is gitignored. Without them the harness draws a plain gradient sky.
 
@@ -17,8 +17,10 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `scale`, `y`, `opacity` | Layout settings, e.g. `scale=1.6&y=10` |
 | `palette=custom` | A non-default palette |
 | `panel=display\|feedback\|compare\|controls\|history` | Opens the settings panel on that section |
-| `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s while playing, everything but the timeline fades |
-| `locs=<0–20>`, `at=<tick>`, `speed=<0.25–4>` | With `state=watching`: locs on the timeline (default 3), the start position and the speed |
+| `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s, native transport and extras fade together; custom mode retains its timeline |
+| `set.customReplayUi=true` | Opt into the existing custom bar; otherwise native transport plus graded ramp marks, saved locs and tools is shown |
+| `parked=true`, `indexing` | Show Return to server, or partial native indexing reach |
+| `locs=<0–20>`, `at=<tick>`, `speed=<0.25–8>` | With `state=watching`: locs on the timeline (default 3), the start position and the speed |
 | `notice=saved\|full\|<text>` | With `state=watching`: a control notice, as after saving a loc |
 | `title=other` | With `state=watching`: someone else's replay (no run, so Runs opens on the current map) |
 | `binds=custom\|none` | With `state=watching`: the game's saveloc binds (custom puts extras on the mouse and wheel; default F5 / F9) |
@@ -41,7 +43,7 @@ The checkpoint clock is frozen, so splits stay on screen. The energy states driv
 PUPPETEER=<puppeteer ESM entry or package> CHROME=<chrome.exe> bun dev/shoot.js [outDir]
 ```
 
-Writes the HUD states, each settings section, the Runs panel (overview and Ramps) and the replay bar at 1920×1080, 700×900 and 540×600 into `outDir` (default: `<tmp>/surfd-qol-shots`). Puppeteer is not a project dependency.
+Writes the HUD states, each settings section, Runs panel (overview and Ramps), native transport/extras and custom replay bar at desktop and narrow sizes into `outDir` (default: `<tmp>/surfd-qol-shots`). Includes native ramp hover, idle, indexing, Return to server and custom keyboard-sheet scenarios. Puppeteer is not a project dependency.
 
 ## Fonts
 

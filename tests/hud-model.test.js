@@ -76,15 +76,19 @@ describe('HUD model', () => {
     expect(build({ snapshot: {}, view, settings: settings() }).checkpoint.hidden).toBe(true);
   });
 
-  test('zen shows only the speed and the start values', () => {
+  test('zen keeps replay hull state while hiding run feedback', () => {
     const build = createHudModel(() => 0);
-    const session = { timer: { state: { phase: 'running', splits: [12.5] } }, checkpointSpeeds: [1500], map: {} };
+    const session = { timer: { state: { phase: 'running', splits: [12.5] } }, checkpointSpeeds: [1500], map: {}, state: { ducked: true } };
     const start = { available: true, speed: 349, speedDelta: -1, heightAboveFloor: 4, age: 100 };
     const model = build({ snapshot: { playback: true, strafeSync: { percentage: 90 } }, session, metrics: { ...metrics, start }, settings: settings({ zen: true }) });
     expect(model).toMatchObject({ zen: true, clock: { hidden: true }, sync: { hidden: true }, feedback: { hidden: true },
-      checkpoint: { hidden: true }, hull: { hidden: true }, start: { hidden: false } });
+      checkpoint: { hidden: true }, hull: { hidden: false, crouched: true }, start: { hidden: false } });
     expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings({ zen: true, showStart: false }) }).start.hidden).toBe(true);
     expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings() })).toMatchObject({ zen: false, clock: { hidden: false } });
+    session.state.ducked = false;
+    expect(build({ snapshot: { playback: true }, session, settings: settings({ zen: true }) }).hull).toEqual({ hidden: false, crouched: false });
+    expect(build({ snapshot: {}, session, settings: settings({ zen: true }) }).hull.hidden).toBe(true);
+    expect(build({ snapshot: { playback: true }, session, inSurf: false, settings: settings({ zen: true }) }).hull.hidden).toBe(true);
   });
 
   test('ranked runs show no run label; practice and replays do', () => {

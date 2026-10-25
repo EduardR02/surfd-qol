@@ -277,6 +277,146 @@ describe('personal checkpoint references', () => {
     refs.update(); await microtasks();
     expect(refs.update()).toMatchObject({own:null,ownStatus:'missing'}); refs.destroy();
   });
+
+  test.each(['pb', 'leaderboard', 'ksf'])('unchanged unusable %s references survive finish bookkeeping and visibility changes without repeated work', async source => {
+    const session = makeSession();
+    const settings = {checkpointReference: source === 'pb' ? 'pb' : 'wr', wrSource: source === 'leaderboard' ? 'leaderboard' : 'ksf'};
+    let downloads = 0, steps = 0;
+    class CountedSession extends ReplaySession {
+      step(command) { steps++; return super.step(command); }
+    }
+    const load = async () => { downloads++; return replayFor(session, [-1, 1200]); };
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => CountedSession,
+      getReferences: () => ({boardId: 'board', own: entry, record: entry, loadReplay: load, loadRecordRoute: load}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    const status = source === 'pb' ? 'ownStatus' : 'recordStatus';
+    refs.update(); await microtasks();
+    expect(refs.update()[status]).toBe('missing');
+    expect({downloads, steps}).toEqual({downloads: 1, steps: 2});
+    for (let attempt = 0; attempt < 3; attempt++) {
+      session.timer.state.phase = 'running'; session.timer.state.startTick = 0;
+      refs.update();
+      finish(session, 11, [1000, 1200]);
+      refs.observeFinish();
+      refs.update(false); refs.update(); await microtasks();
+      restart(session); refs.update(); await microtasks();
+      expect(refs.update()[status]).toBe('missing');
+    }
+    expect({downloads, steps}).toEqual({downloads: 1, steps: 2});
+    refs.destroy();
+  });
+
+  test('a negative PB result never blocks a new official identity or a changed map context', async () => {
+    const session = makeSession(), settings = {checkpointReference: 'pb'};
+    let own = entry, downloads = [];
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own, loadReplay: async runId => {
+        downloads.push([runId, session.map.version]);
+        return replayFor(session, runId === entry.runId && session.map.version === 'map-1' ? [-1, 1200] : [700, 800]);
+      }}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    refs.update(); await microtasks();
+    expect(refs.update().ownStatus).toBe('missing');
+    own = {...entry, runId: 'new-pb'};
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own: [700, 800], ownStatus: 'ready'});
+    own = entry; session.map = {...session.map, version: 'map-2'};
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own: [700, 800], ownStatus: 'ready'});
+    expect(downloads).toEqual([['old-pb', 'map-1'], ['new-pb', 'map-1'], ['old-pb', 'map-2']]);
+    refs.destroy();
+  });
+
+  test.each(['missing', 'exception'])('a transient %s replay load can retry after references become visible again', async failure => {
+    const session = makeSession(), settings = {checkpointReference: 'pb'};
+    let downloads = 0;
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own: entry, loadReplay: async () => {
+        if (++downloads === 1) {
+          if (failure === 'exception') throw new Error('Network unavailable');
+          return null;
+        }
+        return replayFor(session);
+      }}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    refs.update(); await microtasks();
+    expect(refs.update().ownStatus).toBe('missing');
+    refs.update(false); refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own: [900, 1200], ownStatus: 'ready'});
+    expect(downloads).toBe(2);
+    refs.destroy();
+  });
+
+  test('finish bookkeeping retains a pending reference rather than cancelling and downloading it again', async () => {
+    const session = makeSession(), settings = {checkpointReference: 'pb'};
+    let downloads = 0, release;
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own: entry, loadReplay: () => {
+        downloads++;
+        return new Promise(resolve => { release = resolve; });
+      }}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    refs.update(); await microtasks();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0;
+    refs.update();
+    finish(session, 11, [1000, 1200]);
+    expect(refs.observeFinish().ownStatus).toBe('loading');
+    release(replayFor(session)); await microtasks();
+    expect(refs.update()).toMatchObject({own: [900, 1200], ownStatus: 'ready'});
+    expect(downloads).toBe(1);
+    refs.destroy();
+  });
+
+  test('finish bookkeeping for a hidden HUD records a local PB without starting replay work', async () => {
+    const session = makeSession(), settings = {checkpointReference: 'pb'};
+    let downloads = 0;
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own: entry, loadReplay: async () => {
+        downloads++; return replayFor(session);
+      }}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    refs.update(false);
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0;
+    refs.update(false);
+    finish(session, 9, [800, 1400]);
+    refs.observeFinish(); await microtasks();
+    expect(downloads).toBe(0);
+    restart(session);
+    expect(refs.update()).toMatchObject({own: [800, 1400], ownStatus: 'ready'});
+    refs.destroy();
+  });
+
+  test('finish bookkeeping retries a transient download failure without discarding an unchanged baseline', async () => {
+    const session = makeSession(), settings = {checkpointReference: 'pb'};
+    let downloads = 0;
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own: entry, loadReplay: async () => {
+        if (++downloads === 1) throw new Error('Temporary download failure');
+        return replayFor(session);
+      }}),
+      settings, storage: null, yieldTask: instantYield,
+    });
+    refs.update(); await microtasks();
+    expect(refs.update().ownStatus).toBe('missing');
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0;
+    refs.update();
+    finish(session, 11, [1000, 1200]);
+    refs.observeFinish(); await microtasks();
+    expect(refs.update()).toMatchObject({own: [900, 1200], ownStatus: 'ready'});
+    expect(downloads).toBe(2);
+    refs.destroy();
+  });
 });
 
 describe('Personal checkpoint ownership', () => {

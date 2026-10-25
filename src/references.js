@@ -88,7 +88,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
   }
   function clear(slot) {
     release(slot);
-    Object.assign(slot, {key: '', speeds: null, splitsUs: null, timeUs: null, status: 'missing'});
+    Object.assign(slot, {key: '', speeds: null, splitsUs: null, timeUs: null, status: 'missing', retryable: false});
   }
   function request(slot, entry, exact, session, refs, ksf = false) {
     const identity = referenceIdentity(entry);
@@ -120,6 +120,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       const route = result?.checkpoint;
       slot.speeds = route?.speeds ?? null;
       slot.status = route ? 'ready' : 'missing';
+      slot.retryable = result?.status === 'missing';
       if (route) {
         slot.splitsUs = route.splitsUs; slot.timeUs = route.timeUs;
         if (cacheKey) { cache.set(cacheKey, route.speeds); save(); }
@@ -220,5 +221,17 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     phase = timer.phase;
     return result;
   }
-  return {update, destroy() { destroyed = true; clear(ownSlot); clear(recordSlot); if (ownsStore) replayStore.destroy(); }};
+  return {
+    update,
+    // Finish bookkeeping must not masquerade as hiding the HUD: keep active
+    // reference slots (including pending and negative results) in their context.
+    observeFinish() {
+      // A failed download may recover on the next finish, as before. A
+      // completed mismatch and an in-flight request need no new work.
+      if (ownSlot.retryable) clear(ownSlot);
+      if (recordSlot.retryable) clear(recordSlot);
+      return update(visible);
+    },
+    destroy() { destroyed = true; clear(ownSlot); clear(recordSlot); if (ownsStore) replayStore.destroy(); },
+  };
 }

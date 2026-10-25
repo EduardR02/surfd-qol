@@ -40,6 +40,14 @@ const shots = [
   ['watching-700x900', 'state=watching&bg=ice&play=paused&binds=custom', 700, 900], ['watching-540x600', 'state=watching&bg=snow&play=paused', 540, 600],
   // Left alone while playing, the bar recedes to the timeline.
   ['watching-rest', 'state=watching&bg=snow', 1920, 1080, 3400],
+  ['native-ramp-hover', 'state=watching&bg=snow&play=paused&hover=ramp'],
+  ['native-indexing', 'state=watching&bg=snow&play=paused&indexing'],
+  ['native-return-540x600', 'state=watching&bg=snow&play=paused&parked=true', 540, 600],
+  ['custom-watching', 'state=watching&bg=snow&play=paused&set.customReplayUi=true&parked=true'],
+  ['custom-watching-1280', 'state=watching&bg=snow&play=paused&set.customReplayUi=true&parked=true', 1280, 720],
+  ['custom-watching-540x600', 'state=watching&bg=snow&play=paused&set.customReplayUi=true&parked=true', 540, 600],
+  ['custom-keys', 'state=watching&bg=neon&play=paused&set.customReplayUi=true&pop=keys&binds=custom'],
+  ['custom-idle', 'state=watching&bg=snow&set.customReplayUi=true', 1920, 1080, 3400],
 ];
 await mkdir(out, {recursive: true});
 const browser = await puppeteer.launch({executablePath: process.env.CHROME, headless: true});
@@ -49,6 +57,8 @@ for (const [name, query, width = 1920, height = 1080, wait = 500] of shots) {
   await page.goto(base + query, {waitUntil: 'load'});
   await page.evaluate(() => document.fonts.ready);
   await new Promise(done => setTimeout(done, wait));
+  if (new URLSearchParams(query).get('hover') === 'ramp') await page.hover('pierce/.nr-mark.loss');
+  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
   await page.screenshot({path: `${out}/${name}.png`});
   console.log(name);
 }

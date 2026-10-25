@@ -58,7 +58,8 @@ const replayControl = createReplayControl({
   grade: rampReference.createConsumer(),
   coaching: {
     save: () => ({metrics: metrics.saveState(), start: start.saveState()}),
-    restore: state => { metrics.restoreState(state.metrics); start.restoreState(state.start); }
+    restore: state => { metrics.restoreState(state.metrics); start.restoreState(state.start); },
+    reset: tick => { metrics.reset({replayGap: tick > 0}); start.reset(); }
   },
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
   // Explains that replay locs become practice savelocs until you've saved one.
@@ -99,12 +100,14 @@ const api = {
     if (destroyed || api.adapter) return;
     try {
       observer = observePhysics(adapter, metrics, {
+        onBeforeTick(session) { replayControl.observe(session); },
         onTick(session, command, events) {
           // The Start flash costs nothing while hidden; a stale flash ages out.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
           // Recording off costs nothing per tick.
           if (settings.keepHistory !== false) history.observe(session, events);
           if (events.includes('finish')) hud?.observeFinish();
+          replayControl.tick(session);
         },
         onReset() { start.reset(); history.reset(); },
         onError: fail
@@ -130,9 +133,10 @@ const api = {
     clearInterval(bindingTimer);
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
+    // Remove the replay restore wrapper before the observer it wraps.
+    replayControl.destroy();
     observer?.destroy();
     hud?.destroy();
-    replayControl.destroy();
     rampReference.destroy();
     document.removeEventListener('DOMContentLoaded', mount);
     window.removeEventListener('surfd-qol-release', receiveRelease);

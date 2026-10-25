@@ -37,14 +37,27 @@ function navigationRig(settings) {
     {valid: true, tick: 5, loss: 3}, {valid: true, tick: 300, loss: 4}]};
   const summary = {feedback: {route, dt: .015}, fingerprint: routeFingerprint(data)};
   let generation = 0, playing = null, index = 0, starts = 0, reads = [];
+  f.seeks = 0;
+  // Surfd's player: the game plays, pauses and seeks; it has indexed the whole replay.
+  const player = {
+    get replay() { return playing; }, clock: {speed: 1, paused: false}, pending: null,
+    index: {markers: [], get reachable() { return playing?.commands.length ?? 0; }, complete: true},
+    host: {position: () => index, parked: () => false},
+    get paused() { return this.clock.paused; },
+    atEnd: () => !playing || index >= playing.commands.length,
+    play() { this.clock.paused = false; },
+    pause() { this.clock.paused = true; },
+    requestSeek(tick) { this.pending = tick; },
+    applyPending() { if (this.pending === null || !playing) return; f.seeks++; index = this.pending; this.pending = null; },
+  };
   f.adapter.replay = {
     reserve: () => ++generation, isCurrent: token => token === generation,
     playback: () => ({replay: playing, index}),
     async watch(replay, _label, isCurrent, token) {
       if (token !== generation || !isCurrent()) return;
-      starts++; playing = replay; index = 0; f.session = {...f.session};
+      starts++; playing = replay; index = 0; player.clock.paused = false; f.session = {...f.session};
     },
-    seek(replay, tick) { if (replay !== playing) return false; index = tick; return true; },
+    transport: () => player,
   };
   f.refs.loadReplay = async id => { reads.push(id); return data; };
   f.refs.loadRecordRoute = async () => { reads.push('ksf'); return data; };
@@ -400,9 +413,7 @@ describe('ramp Watch ownership regressions', () => {
 
   test.each(['account', 'release', 'config'])('post-start %s changes cannot seek a stale ramp', async change => {
     const {f, summary, control} = navigationRig();
-    let seeks = 0;
     const nativeWatch = f.adapter.replay.watch;
-    f.adapter.replay.seek = () => { seeks++; return true; };
     f.adapter.replay.watch = async (...args) => {
       await nativeWatch(...args);
       if (change === 'account') f.refs.ownerKey = 'other-account';
@@ -412,7 +423,7 @@ describe('ramp Watch ownership regressions', () => {
     const request = f.consumer.watchRamp('utopia:3', 'pb', '[7,0,2]', control);
     f.finish(0, summary);
     expect(await request).toBe(false);
-    expect(seeks).toBe(0);
+    expect(f.seeks).toBe(0);
     control.destroy(); f.reference.destroy();
   });
 });

@@ -1,52 +1,32 @@
-// Snapshots of a replay session while it's watched, so seeking back never
-// re-simulates more than FRAME_TICKS. Replays store only inputs, so a
-// moment's position exists only by simulating up to it; playback and seeks
-// already do that, and keep a snapshot every FRAME_TICKS on the way.
+// The HUD's own analysis (movement metrics and start feedback) at the ticks
+// where the game keeps replay keyframes. A seek in the game's player restores
+// its nearest keyframe and steps forward from it; restoring the analysis
+// kept at that same tick lets the HUD show exactly what it showed when the
+// replay first played through there.
 export const FRAME_TICKS = 128;
+// About ten minutes of native keyframes; evicted seeks use replay-gap analysis.
+export const MAX_FRAMES = 320;
 
-// Session fields that are fixed while a replay plays, or rebuilt by every step
-// (lastResult, which can reference map geometry).
-const FIXED = new Set(['map', 'config', 'movement', 'replayFormat', 'timer', 'commands', 'lastResult']);
-const TIMER_FIXED = new Set(['zones', 'dt', 'restrictStart', 'startPolicy', 'restartOnStartEntry']);
-
-// A copy of everything the session's next step depends on, except its command log.
-export function freeze(session) {
-  const fields = {}, timer = {};
-  for (const key of Object.keys(session)) if (!FIXED.has(key)) fields[key] = session[key];
-  for (const key of Object.keys(session.timer)) if (!TIMER_FIXED.has(key)) timer[key] = session.timer[key];
-  return structuredClone({fields, timer});
-}
-// Puts a session back to a frozen moment `tick` commands into `replay`.
-export function thaw(session, frame, replay, tick) {
-  const {fields, timer} = structuredClone(frame);
-  Object.assign(session, fields);
-  Object.assign(session.timer, timer);
-  session.commands = replay.commands.slice(0, tick);
-}
-
-// Snapshots of one replay, keyed by how many commands had been played.
-export function createFrames(replay, coaching) {
+// coaching: {save(), restore(state)}.
+export function createCoachingFrames(coaching) {
   const frames = new Map();
   let broken = false;
   return {
     get size() { return frames.size; },
-    clear() { frames.clear(); },
-    keep(session, tick) {
-      if (broken || !tick || tick % FRAME_TICKS || frames.has(tick)) return;
+    clear() { frames.clear(); broken = false; },
+    keep(tick) {
+      if (broken || !(tick > 0) || tick % FRAME_TICKS || frames.has(tick)) return;
       try {
-        frames.set(tick, { native: freeze(session), coaching: coaching?.save() });
+        const state = coaching.save();
+        if (frames.size === MAX_FRAMES) frames.delete(frames.keys().next().value);
+        frames.set(tick, state);
       } catch { broken = true; frames.clear(); }
     },
-    // Restores the latest snapshot after `from` and at or before `to`; returns its tick, or -1.
-    resume(session, from, to) {
-      for (let tick = to - to % FRAME_TICKS; tick > from; tick -= FRAME_TICKS) {
-        if (!frames.has(tick)) continue;
-        const frame = frames.get(tick);
-        thaw(session, frame.native, replay, tick);
-        coaching?.restore(frame.coaching);
-        return tick;
-      }
-      return -1;
+    // False when nothing was kept at that tick.
+    restore(tick) {
+      if (!frames.has(tick)) return false;
+      try { coaching.restore(frames.get(tick)); return true; }
+      catch { broken = true; frames.clear(); return false; }
     },
   };
 }

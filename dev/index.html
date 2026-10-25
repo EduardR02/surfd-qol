@@ -4,11 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Surfd QoL harness</title>
+<link rel="stylesheet" href="./native-transport.css">
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#111 center/cover no-repeat}
   #picker{position:fixed;left:12px;bottom:12px;z-index:2000;display:flex;gap:6px;font:12px system-ui;color:#eee}
   #picker select{font:inherit;background:#000c;color:#eee;border:1px solid #fff3;border-radius:6px;padding:4px}
   body.shot #picker{display:none}
+  [hidden]{display:none!important}
+  :root{--ink:#d8e0e4;--green:#baff79;--gold:#e4c681;--light:#64727c;--dark:#131b21;--panel:#27343e;--muted:#8c9aa5;--selection:#365163}
+  .replay-transport{font-family:Tahoma,sans-serif}
+  .replay-transport button{display:inline-flex;align-items:center;justify-content:center;border:1px solid;border-color:var(--light) var(--dark) var(--dark) var(--light);border-radius:0;background:#34424d;color:var(--ink);font-family:inherit;cursor:pointer}
+  .replay-transport button:hover{background:#405460}
+  .replay-transport .vgui-window{border:1px solid var(--light);background:var(--panel)}
 </style>
 </head>
 <body>

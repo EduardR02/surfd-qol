@@ -217,7 +217,7 @@ export function createReplayControl({params, active}) {
   let spots = Array.from({length: count}, (_, i) => Math.round(ownStart + 150 + i * (length - ownStart - 300) / Math.max(1, count))), lastSpot = spots[1] ?? spots[0] ?? null;
   let notice = NOTICES[params.get('notice')] ?? params.get('notice') ?? '', noticeAt = performance.now(), last = performance.now();
   let run = other ? null : {id: 'utopia-pb', mapKey: 'utopia:3'};
-  let external = false, visible = false;
+  let external = false, visible = false, closed = false;
   const clamp = value => Math.max(0, Math.min(length, Math.round(value)));
   const say = text => { notice = text; noticeAt = performance.now(); };
   const tick = () => {
@@ -249,18 +249,21 @@ export function createReplayControl({params, active}) {
       spots = []; lastSpot = null;
     },
     setVisible(next) { visible = !!next; },
-    get active() { return active(); },
+    get active() { return !closed && active(); },
+    get visible() { return visible; },
     status() {
-      if (!active()) return null;
+      if (closed || !active()) return null;
       tick();
       return {title, index: Math.round(index), length, start: external ? 0 : ownStart, dt: DT, playing, ended: index >= length, speed,
+        parked: params.get('parked') === 'true', indexed: params.has('indexing') ? Math.round(length * .65) : length,
+        reachable: params.has('indexing') ? Math.round(length * .65) : length, complete: !params.has('indexing'),
         markers: ownMarkers, ramps: visible ? ramps : ramps.map(ramp => ({...ramp, tone: 'muted'})), spots: spots.slice(), lastSpot,
         notice: notice && (params.has('notice') || performance.now() - noticeAt < 4000) ? notice : '', run};
     },
     play() { if (index >= length) index = ownStart - 66; playing = true; },
     pause() { playing = false; },
     toggle() { if (playing) this.pause(); else this.play(); },
-    seek(value) { index = clamp(value); },
+    seek(value) { index = Math.min(clamp(value), params.has('indexing') ? Math.round(length * .65) : length); },
     skip(seconds) { index = clamp(index + seconds / DT); },
     step(ticks) { playing = false; index = clamp(index + ticks); },
     setSpeed(value) { if (SPEEDS.includes(value)) speed = value; },
@@ -283,5 +286,7 @@ export function createReplayControl({params, active}) {
       return this.goToSpot(spots[at < 0 ? (delta > 0 ? 0 : spots.length - 1) : (at + delta + spots.length) % spots.length]);
     },
     removeSpot(target) { spots = spots.filter(spot => spot !== target); if (lastSpot === target) lastSpot = null; },
+    exit() { closed = true; },
+    returnToServer() { closed = true; },
   };
 }

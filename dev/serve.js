@@ -4,7 +4,7 @@
 import {resolve, sep, extname} from 'node:path';
 
 const root = resolve(import.meta.dir, '..');
-const types = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png'};
+const types = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png'};
 
 export function serve(port = 5178) {
   return Bun.serve({

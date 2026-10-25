@@ -488,6 +488,24 @@ describe('Native run replay references', () => {
     expect(f.update(board)).toMatchObject({status:'ready',loss:5});
     expect(f.calls().replay).toEqual(['official-pb']);
   });
+
+  test.each(['pb', 'wr'])('caches deterministic negative %s feedback across consumer visibility changes', async source => {
+    // An otherwise valid download that never finishes is not a transient
+    // download failure; the unchanged context cannot make it a valid baseline.
+    const f = fixture({source, commands: [contact()]});
+    const board = f.step(contact());
+    f.update(board); await flush();
+    expect(f.update(board)).toMatchObject({loss: null, status: 'unmatched', source});
+    const native = f.native(), calls = structuredClone(f.calls());
+    for (let i = 0; i < 3; i++) {
+      f.controller.update(board, null, false);
+      f.update(board); await flush();
+      expect(f.update(board)).toMatchObject({loss: null, status: 'unmatched', source});
+    }
+    expect(f.native()).toEqual(native);
+    expect(f.calls()).toEqual(calls);
+    expect(native).toEqual({loads: 1, steps: 1});
+  });
 });
 
 describe('Independent start and Board reference measurements', () => {

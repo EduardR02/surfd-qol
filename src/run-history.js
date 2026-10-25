@@ -198,12 +198,10 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   };
   const listeners = new Set();
   let current = null, owner = null, startTick = null, lastMap = '', lastMapName = '';
-  let boardRevision = -1, board = null, boardSequence = 0, surfSequence = 0;
+  let boardRevision = -1, board = null, boardSequence = 0, boardMark = null, surfSequence = 0;
   // The session's own command log and spawn state. A restart swaps in a new
   // array, so this reference still holds the whole run when it ends.
   let commands = null, initialState = null, commandCount = 0;
-  // Replay sessions keep stepping after playback stops; they never record.
-  const replaySessions = new WeakSet();
   const snapshots = [], stills = [];
   let snapshotLog = null, snapshotTick = 0, wasStill = false;
   const clearSnapshots = () => { snapshots.length = stills.length = 0; snapshotLog = null; wasStill = false; };
@@ -303,6 +301,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     clearSnapshots();
     boardRevision = metrics?.boardRevision?.() ?? -1;
     boardSequence = metrics?.boardSnapshot?.()?.sequence ?? 0;
+    boardMark = null;
     if (commands) current.boards = [];
     board = null;
     surfSequence = metrics?.surfSnapshot?.(-1)?.sequence ?? 0;
@@ -380,12 +379,18 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         const entry = rampEntry(run, board);
         if (entry && board.available && Number.isFinite(board.loss)) entry.board = round(board.loss);
       }
-      // Each board, for the replay timeline: [tick, loss, ramp key]. Quick
-      // re-touches while landing are the same board.
-      if (run.boards && Number.isSafeInteger(board?.sequence) && board.sequence >= boardSequence) {
-        const loss = board.available && Number.isFinite(board.loss) ? round(board.loss) : null;
-        if (board.sequence === boardSequence) { if (run.boards.length) run.boards.at(-1)[1] = loss; }
-        else if (run.boards.length < MAX_RAMPS) run.boards.push([commands.length, loss, visitKey(board)]);
+      // Sequence numbers restart at zero on teleport or analysis reset. Only
+      // positive equal sequences revise a mark from this observation epoch.
+      // Keep its reference: after the cap, revisions must not edit an older mark.
+      if (run.boards && Number.isSafeInteger(board?.sequence) && board.sequence >= 0) {
+        if (!board.sequence || board.sequence !== boardSequence) {
+          boardMark = null;
+          if (board.sequence > 0 && run.boards.length < MAX_RAMPS) {
+            boardMark = [commands.length, null, visitKey(board)];
+            run.boards.push(boardMark);
+          }
+        }
+        if (boardMark) boardMark[1] = board.available && Number.isFinite(board.loss) ? round(board.loss) : null;
         boardSequence = board.sequence;
       }
     }
@@ -431,14 +436,15 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const starting = events.includes('start');
       // The game snapshot is a full copy of its state, so it is read only when
       // a run would start. A replay loaded mid-run ends that run via reset().
-      let playback = replaySessions.has(live), spectating = false;
-      if (starting && !playback) {
+      // Native Exit reuses the replay's Session for practice/live play.
+      // Playback ownership belongs to this start, not the Session forever.
+      let playback = false, spectating = false;
+      if (starting) {
         try {
           const state = getState?.();
           playback = state?.playback === true;
           spectating = state?.spectator?.target != null;
         } catch { /* optional */ }
-        if (playback) replaySessions.add(live);
       }
       if (current && (live !== owner || events.some(event => endEvents.has(event)) ||
         timer.phase === 'ready' || timer.startTick !== startTick)) {

@@ -211,7 +211,7 @@ export function createHudModel(clock = () => performance.now()) {
       feedback: spectator || zen ? buildFeedback(null, null, {...settings, showBoard: false, showAir: false, showSurf: false}) : buildFeedback(metrics, runRefs, settings),
       start: buildStart(metrics?.start, runRefs?.start, settings, spectator),
       checkpoint: zen ? {...checkpoint, hidden: true} : checkpoint,
-      hull: { hidden: zen || snapshot?.playback !== true || spectator || !inSurf || typeof replayDuck !== 'boolean', crouched: replayDuck === true },
+      hull: { hidden: snapshot?.playback !== true || spectator || !inSurf || typeof replayDuck !== 'boolean', crouched: replayDuck === true },
       status: [feedbackStatus, bindingText].filter(Boolean).join(' · '),
     };
   };

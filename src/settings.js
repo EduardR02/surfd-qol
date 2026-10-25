@@ -16,7 +16,9 @@ export const defaults = {
   // Binds change what the game receives, so each one is opt-in.
   crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
-  replayControls: true,
+  // Replays use Surfd's own player and bar, with the extension's additions on
+  // it; this swaps in the extension's bar instead, driving the same player.
+  customReplayUi: false,
   // Run history: the newest runs per map (each with its replay) plus every
   // map's bests, which are never pruned.
   keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10,

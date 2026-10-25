@@ -2134,3 +2134,82 @@ test('metrics checkpoints require completed ticks and restore empty or idle stat
   assert.equal(resumed.available, true);
   assert.equal(resumed.routePrefix, null);
 });
+
+test('cold replay keyframes suppress an interrupted ramp, then measure complete later segments without claiming route grades', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  game.state.tick = 1024;
+  metrics.reset({replayGap: true});
+  for (let i = 0; i < 4; i++) {
+    const result = coastContact(metrics, game);
+    assert.equal(result.board.available, false);
+    assert.notEqual(result.ramp.kind, 'board');
+  }
+  const partial = leaveRamp(metrics, game).surf;
+  assert.equal(partial.available, false);
+  assert.equal(partial.loss, null);
+  assert.equal(partial.downLoss, null);
+  assert.equal(partial.upLoss, null);
+  assert.equal(partial.reason, 'replay-gap');
+  for (let i = 0; i < 4; i++) tick(metrics, game, sample());
+  const entry = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(entry.board.available, true);
+  assert.equal(entry.board.routePrefix, null);
+  assert.equal(entry.air.available, true);
+  for (let i = 0; i < 3; i++) coastContact(metrics, game, {contacts: [separateContact]});
+  const complete = leaveRamp(metrics, game).surf;
+  assert.equal(complete.available, true);
+  assert.equal(complete.routePrefix, null);
+  tick(metrics, game, null, null, ['start']);
+  const restarted = coastContact(metrics, game);
+  assert.equal(restarted.board.available, true);
+  assert.equal(typeof restarted.board.routePrefix, 'string');
+  assert.notEqual(restarted.board.routePrefix, '');
+});
+
+test('cold replay keyframes discard only the first incomplete flight and preserve gap guards through analysis checkpoints', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  metrics.reset({replayGap: true});
+  for (let i = 0; i < 20; i++) tick(metrics, game, sample());
+  const saved = metrics.saveState();
+  metrics.reset();
+  metrics.restoreState(saved);
+  const first = coastContact(metrics, game);
+  assert.equal(first.air.available, false);
+  assert.equal(first.board.available, true);
+  assert.equal(first.board.routePrefix, null);
+  leaveRamp(metrics, game);
+  for (let i = 0; i < 4; i++) tick(metrics, game, sample());
+  const next = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(next.air.available, true);
+  assert.equal(next.board.available, true);
+});
+
+test('cold replay gap guards survive disabled analysis without making disabled ticks do measurement work', () => {
+  const settings = {hud: false};
+  const metrics = createMetrics(settings);
+  const game = mappedSession();
+  metrics.reset({replayGap: true});
+  for (let i = 0; i < 10; i++) coastContact(metrics, game);
+  assert.equal(metrics.snapshot().active, false);
+  assert.equal(metrics.saveState().elapsed, 0);
+  settings.hud = true;
+  const resumed = coastContact(metrics, game);
+  assert.equal(resumed.board.available, false);
+  assert.equal(resumed.air.available, false);
+});
+
+test('a real surface transition after a cold replay seek opens a complete subsequent ramp without waiting for an air gap', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  metrics.reset({replayGap: true});
+  for (let i = 0; i < 4; i++) coastContact(metrics, game);
+  const next = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(next.board.available, true);
+  assert.equal(next.board.routePrefix, null);
+  for (let i = 0; i < 3; i++) coastContact(metrics, game, {contacts: [separateContact]});
+  const complete = leaveRamp(metrics, game).surf;
+  assert.equal(complete.available, true);
+  assert.equal(complete.routePrefix, null);
+});

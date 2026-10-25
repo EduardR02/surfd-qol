@@ -158,6 +158,8 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
 // Cache only summaries, not downloaded commands. A later feedback upgrade of
 // a completed checkpoint-only result may fetch again; in-flight consumers
 // share the download and request the highest active capability.
+// Deterministic unmatched results are cached for this page/context as well.
+// Missing downloads, exceptions and cancellation remain retryable on reacquire.
 // saved: {get(id), put(id, {result, feedback})} keeps summaries across page
 // loads (replay-archive.js): an official PB/WR replay is named by its run, so
 // a saved one needs no download; the KSF route is fingerprinted once fetched.
@@ -218,8 +220,9 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           if (found) return work.current() ? keep(found) : null;
           const replay = work.current() ? await load?.() : null;
           if (!work.current()) return null;
-          if (!replay || !Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
-            return {checkpoint: null, feedback: null, status: 'missing'};
+          if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
+          if (!Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
+            return keep({result: {checkpoint: null, feedback: null, status: 'unmatched'}, feedback: work.wantsFeedback()});
           }
           if (key.endsWith(':ksf')) {
             fingerprint = routeFingerprint(replay);
@@ -237,9 +240,9 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           if (!work.feedback && work.wantsFeedback()) data = await reconstruct();
           if (!work.current()) return null;
           const result = {...data, status: 'unmatched', ...(fingerprint ? {fingerprint} : {})};
-          if (result.checkpoint || result.feedback) {
-            keep({result, feedback: work.feedback});
-            if (id) Promise.resolve().then(() => saved?.put(id, {result, feedback: work.feedback})).catch(() => { /* kept for this page */ });
+          keep({result, feedback: work.feedback || (!data && work.wantsFeedback())});
+          if (id && (result.checkpoint || result.feedback)) {
+            Promise.resolve().then(() => saved?.put(id, {result, feedback: work.feedback})).catch(() => { /* kept for this page */ });
           }
           return result;
         } catch {

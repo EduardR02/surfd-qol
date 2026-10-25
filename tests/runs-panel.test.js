@@ -437,6 +437,18 @@ describe('runs panel', () => {
   test('local Watch cancels changed ramp/map selections but completes its own menu-to-replay handoff', async () => {
     let rig, pendingRead, generation = 0, playing = null, index = 0;
     const replay = {mapId: 'boreas', mapVersion: 2, config: {dt: .015}, commands: Array(1000).fill({})};
+    const player = {
+      get replay() { return playing; }, index: null, pending: null, clock: {speed: 1, paused: false},
+      host: {position: () => index, session: () => rig.session},
+      get paused() { return this.clock.paused; }, atEnd() { return !playing || index >= this.index.end; },
+      pause() { this.clock.paused = true; }, play() { this.clock.paused = false; },
+      requestSeek(tick) { this.pending = tick; },
+      applyPending() {
+        if (this.pending === null) return;
+        index = Math.max(0, Math.min(this.index.reachable, Math.round(this.pending)));
+        this.pending = null;
+      },
+    };
     const hooks = {
       reserve: () => ++generation, isCurrent: token => token === generation,
       playback: () => ({replay: playing, index}),
@@ -444,12 +456,15 @@ describe('runs panel', () => {
         if (token !== generation || !current()) return;
         rig.session = {map: {id: data.mapId, version: data.mapVersion}, config: data.config};
         playing = data; index = 0;
+        player.clock.paused = false;
+        player.index = {end: data.commands.length, indexed: data.commands.length, complete: true, markers: [],
+          get reachable() { return Math.min(this.end, this.indexed); }};
         // The native menu observer runs before Watch's promise continuation,
         // while the bar can still report its previous visibility.
         rig.panel.setContext({menu: false, replay: false});
         await Promise.resolve();
       },
-      seek(data, tick) { if (playing !== data) return false; index = tick; return true; },
+      transport: () => player,
     };
     const control = createReplayControl({getAdapter: () => adapter, getSession: () => rig?.session,
       archive: {has: () => true, get: () => new Promise(resolve => { pendingRead = resolve; })}});

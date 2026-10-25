@@ -10,7 +10,8 @@ import {panelStyles} from './panel-styles.js';
 import {launcherMarkup, zenMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
 import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
 import {runsStyles} from './runs-styles.js';
-import {replayBarMarkup, replayBarStyles, createReplayBar} from './replay-bar.js';
+import {replayBarMarkup, replayBarStyles} from './replay-bar.js';
+import {createReplayUi, nativeExtrasMarkup, nativeExtrasStyles} from './native-replay-ui.js';
 import {defaults} from './settings.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -23,9 +24,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}</style>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
-    ${replayBarMarkup}
+    ${replayBarMarkup}${nativeExtrasMarkup}
     <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
@@ -94,7 +95,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
-  const replayBar = replayControl ? createReplayBar({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
+  const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
+    getCustom: () => settings.customReplayUi === true,
     getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
     onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open}) : null;
 
@@ -120,6 +122,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       pointerLocked: !!document.pointerLockElement,
     });
   }
+  let replayVisible = false;
   function refreshMenu(snapshot, session, view) {
     if (arguments.length === 0) {
       snapshot = getState?.();
@@ -128,11 +131,15 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
     const currentView = view ?? snapshot?.spectator ?? null;
     const inSurf = inSurfContext(snapshot, session, currentView);
-    replayControl?.setVisible(inSurf);
-    panel.setAvailable(!inSurf);
-    runs.setContext({menu: !inSurf, replay: inSurf && !!replayBar?.visible});
-    releaseNotice.hidden = inSurf || releaseVersion === null;
-    if (!inSurf) placeLauncher();
+    const atFinish = !!finishScreen && !finishScreen.hidden;
+    // The finish card blocks in-run HUD and menu launchers, not replay controls.
+    replayVisible = inSurf || atFinish && !!replayControl?.active;
+    replayControl?.setVisible(replayVisible);
+    const inMenu = !inSurf && !atFinish && (!loadingScreen || loadingScreen.hidden);
+    panel.setAvailable(inMenu);
+    runs.setContext({menu: inMenu, replay: replayVisible && !!replayBar?.visible});
+    releaseNotice.hidden = !inMenu || releaseVersion === null;
+    if (inMenu) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
     setOverlayHidden(settings.hud === false || !inSurf || !hasState);
@@ -243,7 +250,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       }
     }
     panel.setStatus(model.status);
-    const reserve = `${replayBar?.render(inSurf) ?? 0}px`;
+    const reserve = `${replayBar?.render(replayVisible) ?? 0}px`;
     replayBar?.setRunsOpen(runs.open);
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }
@@ -259,14 +266,14 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       releaseNotice.title = 'Open the GitHub release. Download and replace your extension folder, then reload the extension and Surfd.';
       refreshMenu();
     },
-    observeFinish() { references.update(false); },
+    observeFinish() { references.observeFinish(); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
     // Dev harness hooks: the Runs panel (optionally on a map, with the map list
     // open) and the replay controls' lists.
     showRuns(key, {maps = false, view = 'runs'} = {}) { runs.show(key); runs.showView(view); if (maps) runs.showMaps(); },
     showReplayPopover(name) { replayBar?.showPopover(name); },
-    showReplayRuns() { if (replayBar?.visible) runs.show(replayBar.status?.run?.mapKey ?? history?.currentMap, root.getElementById('replay').getBoundingClientRect()); },
+    showReplayRuns() { if (replayBar?.visible) runs.show(replayBar.status?.run?.mapKey ?? history?.currentMap, replayBar.anchor()); },
     destroy() {
       destroyed = true;
       replayControl?.setVisible(false);
