@@ -10,7 +10,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
   replayStore ??= createReferenceReplayStore({getAdapter, yieldTask});
   const slots = new Map();
   let live = null, adapter = null, context = '', map = null, config = null, format = null, boardId = null;
-  let mapId = null, mapVersion = null;
+  let mapId = null, mapVersion = null, ownerKey = null;
   let runArray = null, startTick = null, previousTick = -1, phase = null;
   let baseline = null, baselineIdentity = null, destroyed = false, visible = true;
   function invalidate() {
@@ -127,9 +127,14 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
       live = session; adapter = nextAdapter; map = session.map; config = session.config; format = session.replayFormat;
       boardId = refs?.boardId; mapId = map.id; mapVersion = map.version;
       context = sessionKey(session, boardId);
+      ownerKey = refs?.ownerKey ?? 'guest';
       resetRun(session, refs); phase = null;
     } else if (runArray !== session.checkpointSpeeds || session.state.tick < previousTick || timer.startTick !== startTick ||
       (phase === 'finished' && timer.phase !== 'finished')) resetRun(session, refs);
+    if (ownerKey !== (refs?.ownerKey ?? 'guest')) {
+      ownerKey = refs?.ownerKey ?? 'guest';
+      freezePersonal(refs?.own);
+    }
     if (timer.phase === 'ready') freezePersonal(refs?.own);
     previousTick = session.state.tick; phase = timer.phase;
     for (const [source, slot] of slots) if (source !== boardSource && source !== startSource && source !== surfSource) {

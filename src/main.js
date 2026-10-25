@@ -24,7 +24,6 @@ const history = createRunHistory({
   getState: () => window.__SURF__?.snapshot?.() ?? null,
   getMap: () => api.adapter?.getSession()?.map ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
-  wantsReplay: () => settings.saveReplays !== false,
   // The replay is trimmed to a few seconds before the start when the game's
   // own simulation confirms the trimmed one reaches the same start.
   onReplay: (run, replay, clip) => {
@@ -49,7 +48,11 @@ const replayControl = createReplayControl({
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
   getRun: id => history.run(id),
   onSpots: (runId, spots) => history.setSpots(runId, spots),
-  grade: rampReference,
+  grade: rampReference.createConsumer(),
+  coaching: {
+    save: () => ({metrics: metrics.saveState(), start: start.saveState()}),
+    restore: state => { metrics.restoreState(state.metrics); start.restoreState(state.start); }
+  },
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
   // Explains that replay locs become practice savelocs until you've saved one.
   teach: {
@@ -62,6 +65,7 @@ let hud = null;
 let availableUpdate = null;
 let runtimeStatus = 'Connecting physics observer…';
 let failed = false;
+let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
 function onSettings(patch) {
   applySettings(patch);
@@ -82,7 +86,7 @@ const api = {
   adapter: null,
   settings,
   attach(adapter) {
-    if (api.adapter) return;
+    if (destroyed || api.adapter) return;
     try {
       observer = observePhysics(adapter, metrics, {
         onTick(session, command, events) {
@@ -111,11 +115,16 @@ const api = {
   },
   diagnostics() { return { connected: !!api.adapter, healthy: observer?.healthy ?? false, status: runtimeStatus, crouchJump: bindings.status() }; },
   destroy() {
+    if (destroyed) return;
+    destroyed = true;
     clearInterval(bindingTimer);
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
     observer?.destroy();
     hud?.destroy();
+    replayControl.destroy();
+    rampReference.destroy();
+    document.removeEventListener('DOMContentLoaded', mount);
     window.removeEventListener('surfd-qol-release', receiveRelease);
     window.removeEventListener('surfd-qol-status', receiveStatus);
     failed = true;
@@ -159,7 +168,7 @@ function keepSideButtons(event) {
 }
 for (const type of SIDE_BUTTON_EVENTS) window.addEventListener(type, keepSideButtons, true);
 function mount() {
-  if (location.pathname !== '/') return;
+  if (destroyed || location.pathname !== '/') return;
   hud = mountHud({
     getState: () => window.__SURF__?.snapshot() ?? null,
     getView: api.getView,

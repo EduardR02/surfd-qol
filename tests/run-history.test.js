@@ -11,15 +11,34 @@ function memoryStore({ runs = [], bests = [] } = {}) {
     put: async run => { data.runs.set(run.id, structuredClone(run)); },
     remove: async ids => { for (const id of ids) data.runs.delete(id); },
     putBests: async record => { data.bests.set(record.id, structuredClone(record)); },
-    removeBests: async ids => { for (const id of ids) data.bests.delete(id); },
+    clear: async (runs, bests) => {
+      for (const id of runs) data.runs.delete(id);
+      for (const id of bests) data.bests.delete(id);
+    },
   };
 }
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 const DT = 0.015;
 
+
+test('a failed clear preserves visible history and bests, and can be retried', async () => {
+  const r = rig();
+  await r.history.ready;
+  r.run();
+  await flush();
+  const before = structuredClone(r.history.view()), persisted = await r.store.load(), clear = r.store.clear;
+  r.store.clear = async () => { throw new Error('Transaction aborted'); };
+  await expect(r.history.clear()).rejects.toThrow('Transaction aborted');
+  expect(r.history.view()).toEqual(before);
+  expect(await r.store.load()).toEqual(persisted);
+  r.store.clear = clear;
+  await r.history.clear();
+  expect(r.history.view()).toBeNull();
+  expect(await r.store.load()).toEqual({runs: [], bests: []});
+});
 // A fake live session plus the metrics accessors the recorder reads.
 // `now` is the page-load time; run IDs include it, as they do in the game.
-function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null, limits = () => ({ minSeconds: 0 }), onPrune, wantsReplay, now = 1000, clock = null } = {}) {
+function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: [] }, playback = false, onReplay = null, limits = () => ({ minSeconds: 0 }), onPrune, now = 1000, clock = null } = {}) {
   const live = {
     map, practice: false, checkpointSpeeds: [], replayFormat: 8, config: { dt: DT },
     initialState: { position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, tick: 0 }, commands: [],
@@ -38,7 +57,7 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
   const state = { playback };
   const snapshots = { count: 0 };
   const getState = () => { snapshots.count++; return state; };
-  const history = createRunHistory({ metrics, start, store, onReplay, limits, onPrune, wantsReplay, getState, getMapName: () => 'Utopia', clock: clock ?? (() => now) });
+  const history = createRunHistory({ metrics, start, store, onReplay, limits, onPrune, getState, getMapName: () => 'Utopia', clock: clock ?? (() => now) });
   let standing = false;
   const tick = (events = [], seconds = DT) => {
     now += seconds * 1000;
@@ -186,15 +205,6 @@ describe('run history', () => {
     expect(still.state.velocity).toEqual({ x: 0, y: 0, z: 0 });
   });
 
-  test('no replay and no pre-start recording when replays are off', () => {
-    const saved = [];
-    const r = rig({ onReplay: (...args) => saved.push(args), wantsReplay: () => false });
-    r.idle(10);
-    r.run();
-    expect(saved).toHaveLength(0);
-    expect(r.history.runs()[0].replay).toBeUndefined();
-  });
-
   test('a restart ends the run as a reset, keeping the checkpoints reached', () => {
     const r = rig();
     r.go();
@@ -317,7 +327,7 @@ describe('bests', () => {
     expect(run.boards.map(([, loss, key]) => [loss, key])).toEqual([[4, '[7,0,1]'], [9, '[8,0,1]']]);
     expect(run.boards[0][0]).toBeGreaterThan(run.replay.start);
     // No replay, nothing to mark.
-    const quiet = rig({ onReplay: () => {}, wantsReplay: () => false });
+    const quiet = rig();
     await quiet.history.ready;
     quiet.go(); quiet.ramp({ boardLoss: 4, surfLoss: 30 }); quiet.idle(1); quiet.finish();
     expect(quiet.history.runs()[0].boards).toBeUndefined();

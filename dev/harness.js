@@ -7,7 +7,7 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
-import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createBinds} from './fixtures.js';
+import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds} from './fixtures.js';
 
 const params = new URLSearchParams(location.search);
 const DT = 0.015, GRAVITY = 800;
@@ -80,6 +80,7 @@ const history = createHistory({settings, empty: emptyHistory});
 const replays = createReplays({empty: emptyHistory});
 const replayControl = createReplayControl({params, active: () => scenario.watching === true});
 const rampReference = createRampReference({params, settings});
+const leaderboardReferences = createLeaderboardReferences(params);
 const binds = createBinds(params);
 const inMenu = scenario.menu || panelPage !== null || (runsMap !== null && !scenario.watching);
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
@@ -94,7 +95,7 @@ const baseSpeed = scenario.speed ?? 2950;
 const session = {
   practice: false, ...scenario.session,
   config: {dt: DT, gravity: GRAVITY},
-  map: {stages: []},
+  map: {id: 'utopia', version: 3, stages: []},
   get state() {
     const seconds = (performance.now() - started) / 1000;
     const speed = scenario.energy ? baseSpeed + scenario.energy * 140 * (seconds % 4) : baseSpeed;
@@ -111,7 +112,7 @@ const hud = mountHud({
   getView: () => scenario.spectate ? spectatorView : null,
   getMetrics: () => ({active: true, status: '', ...scenario.metrics}),
   getSession: () => scenario.spectate ? null : session,
-  getReferences: () => null,
+  getReferences: () => leaderboardReferences,
   // Only the saveloc binds; every service that would use the game is faked below.
   getAdapter: () => ({getBindings: () => binds}),
   settings,

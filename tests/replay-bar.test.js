@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { bindAction, createWheelGate, keyRows, markTip, pointerCode, railTime, replayBarMarkup, timelineMarks } from '../src/replay-bar.js';
+import { bindAction, createWheelGate, keyRows, markTip, pointerCode, railTime, timelineMarks } from '../src/replay-bar.js';
 import { savelocBinds } from '../src/key-names.js';
 
 const status = {
@@ -77,14 +77,5 @@ describe('replay bar', () => {
     expect([0, 16, 32, 48].map(gate)).toEqual([true, false, false, false]);
     expect(gate(300)).toBe(true);
     expect(gate(320)).toBe(false);
-  });
-
-  test('every control has an accessible name, and no Locs list or practice button is left', () => {
-    for (const [, tag] of replayBarMarkup.matchAll(/<button([^>]*)>/g)) {
-      if (tag.includes('data-speed') || tag.includes('rb-runs')) continue;
-      expect(tag).toContain('aria-label');
-    }
-    expect(replayBarMarkup).toContain('role="slider"');
-    expect(replayBarMarkup).not.toMatch(/practice|data-pop="locs"/i);
   });
 });

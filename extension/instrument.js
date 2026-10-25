@@ -10,7 +10,7 @@ function unique(source, pattern, label) {
 // playback cursor can't be found, Watch is unavailable and nothing else changes.
 function replayHooks(source, state) {
   try {
-    const watch = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})=\\+\\+(${identifier})\\)\\{if\\(!\\3\\(\\)\\)return;`, 'g'), 'replay watch')[1];
+    const watch = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})=\\+\\+(${identifier})\\)\\{if\\(!\\3\\(\\)\\)return;`, 'g'), 'replay watch');
     const cursor = unique(source, new RegExp(`const ${identifier}=(${identifier})\\?\\1\\.commands\\[(${identifier})\\+\\+\\]:`, 'g'), 'replay cursor');
     const stepper = unique(source, new RegExp(`(${identifier})\\.advance\\(`, 'g'), 'fixed stepper')[1];
     const stepperClasses = new Set([...source.matchAll(new RegExp(`[,;]${stepper.replace(/\$/g, '\\$')}=new (${identifier})\\(`, 'g'))].map(match => match[1]));
@@ -20,7 +20,9 @@ function replayHooks(source, state) {
     replay: {
       Stepper: ${[...stepperClasses][0]},
       stepper: () => ${stepper},
-      watch: (replay, label, isCurrent = () => true) => ${watch}(replay, isCurrent, label),
+      reserve: () => ++${watch[6]},
+      isCurrent: token => token === ${watch[6]},
+      watch: (replay, label, isCurrent, token) => ${watch[1]}(replay, isCurrent, label, token),
       // The cursor outlives playback: after Esc or the end, index is where it stopped.
       playback: () => ({replay: ${replay}, index: ${index}}),
       // Re-simulates the watched session to \`index\` commands into \`replay\`:
@@ -113,11 +115,14 @@ export function instrumentGame(source) {
       const session = ${state};
       if (!session) return null;
       const board = ${client}.board(session.map);
-      const refs = board ? ${boardStore}.current : null;
+      const ownerKey = ${client}.session?.user.id ?? 'guest';
+      const key = board ? board.boardId + ':' + ownerKey : '';
+      const current = ${boardStore}.current;
+      const refs = board && ${boardStore}.key === key && current?.boardId === board.boardId ? current : null;
       const mapInfo = ${client}.config.maps.find(entry => entry.id === session.map.id);
       const recordSlug = mapInfo?.slug ?? session.map.slug;
       const record = refs?.entries?.find(entry => entry.rank === 1) ?? null;
-      return {boardId: board?.boardId ?? null, own: refs?.own ?? null, record, mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
+      return {ownerKey, boardId: board?.boardId ?? null, own: refs?.own ?? null, record, mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
         loadReplay: runId => ${client}.replay(runId),
         loadRecordRoute: () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
     }

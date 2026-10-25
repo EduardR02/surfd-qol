@@ -86,7 +86,14 @@ export function createHistoryStore(database) {
     put: run => write('runs', store => store.put(run)),
     remove: removeAll('runs'),
     putBests: record => write('bests', store => store.put(record)),
-    removeBests: removeAll('bests'),
+    async clear(runs, bests) {
+      const db = await database;
+      if (!db) return;
+      const transaction = db.transaction(['runs', 'bests'], 'readwrite');
+      for (const id of runs) transaction.objectStore('runs').delete(id);
+      for (const id of bests) transaction.objectStore('bests').delete(id);
+      await committed(transaction);
+    },
   };
 }
 
@@ -138,9 +145,9 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
     for (const id of ids) {
       transaction.objectStore('meta').delete(id);
       transaction.objectStore('replays').delete(id);
-      meta.delete(id);
     }
     await committed(transaction);
+    for (const id of ids) meta.delete(id);
     notify();
   }
   function drop(ids) {

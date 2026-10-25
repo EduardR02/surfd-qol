@@ -75,4 +75,43 @@ describe('start platform height', () => {
     feedback.observe(session, ['start']);
     expect(feedback.snapshot()).toMatchObject({ available: true, floorHeight: null, heightAboveFloor: null });
   });
+
+  test('checkpoints retain takeoff support and restore independent start feedback with its age', () => {
+    let now = 100;
+    const feedback = createStartFeedback(() => now);
+    const session = scene({ platformEdge: 80, exitHeight: 90 });
+    session.state.grounded = true;
+    session.state.position = { x: 0, y: 0, z: 100 };
+    feedback.observe(session, []);
+    const grounded = feedback.saveState();
+    expect(grounded.ground.zone).toBe(zone);
+    expect(grounded.sessionIdentity).toBe(session);
+    feedback.reset();
+    feedback.restoreState(grounded);
+    session.state.grounded = false;
+    session.state.position = { x: 122, y: 0, z: 90 };
+    feedback.observe(session, ['start']);
+    now = 125;
+    const started = feedback.saveState();
+    expect(feedback.snapshot()).toMatchObject({floorHeight: 100, heightAboveFloor: -10, age: 25});
+    feedback.observe(session, ['fall']);
+    now = 10000;
+    feedback.restoreState(started);
+    expect(feedback.snapshot()).toMatchObject({available: true, floorHeight: 100, heightAboveFloor: -10, age: 25});
+    feedback.observe(session, ['start']);
+    feedback.restoreState(started);
+    expect(feedback.snapshot().age).toBe(25);
+    expect(started.latest.recordedAt).toBe(100);
+    feedback.observe(scene(), []);
+    expect(feedback.snapshot().available).toBe(false);
+  });
+
+  test('an empty start checkpoint clears later feedback', () => {
+    const feedback = createStartFeedback();
+    const empty = feedback.saveState();
+    feedback.observe(scene(), ['start']);
+    expect(feedback.snapshot().available).toBe(true);
+    feedback.restoreState(empty);
+    expect(feedback.snapshot()).toEqual({available: false});
+  });
 });

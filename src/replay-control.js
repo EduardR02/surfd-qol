@@ -18,13 +18,14 @@ const NOTICE_MS = 4000;
 const BANK_SIZE = 20;
 
 // getRun(id) returns the stored run (its checkpoint ticks) for a run shown in the UI.
-// grade: {tone(rampKey, boardLoss), version()} colours ramp boards on the timeline.
+// grade is an owned ramp-reference consumer, released while the timeline is hidden.
+// coaching: {save(), restore(state)} keeps HUD analysis with native replay frames.
 // teach: {due(), done()} says when to explain that replay locs become practice savelocs.
 // rampNumber(mapKey, rampKey) numbers ramp boards the way the Runs view does.
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
-  grade = null, teach = null, rampNumber = null, clock = () => performance.now()}) {
+  grade = null, coaching = null, teach = null, rampNumber = null, clock = () => performance.now()}) {
   let watching = null, speed = 1, paused = false, installed = null, notice = null;
-  let requestVersion = 0;
+  let requestVersion = 0, starting = null, destroyed = false, visible = false;
   // Replay moments waiting to become practice savelocs: they are filed into
   // the bank of the game you return to, so they always load there.
   let pending = [];
@@ -48,10 +49,17 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
 
   // Wraps the stepper class once; only the game's main stepper, while it plays
   // the replay being watched, is ever scaled.
+  function uninstall() {
+    if (!installed) return;
+    const {prototype, original, wrapper} = installed;
+    if (prototype.advance === wrapper) prototype.advance = original;
+    installed = null;
+  }
   function install(replay) {
-    if (!replay?.Stepper || installed === replay.Stepper) return;
+    if (destroyed || !replay?.Stepper || installed?.prototype === replay.Stepper.prototype) return;
+    uninstall();
     const prototype = replay.Stepper.prototype, original = prototype.advance;
-    prototype.advance = function (seconds, tick, ...rest) {
+    const wrapper = function (seconds, tick, ...rest) {
       const watched = watching, playback = hooks()?.playback?.();
       if (watched && Number.isFinite(seconds) && this === hooks()?.stepper?.() && playback?.replay === watched.replay) {
         seconds = paused ? 0 : Math.min(MAX_FRAME, seconds * speed);
@@ -69,7 +77,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       }
       return original.call(this, seconds, tick, ...rest);
     };
-    installed = replay.Stepper;
+    prototype.advance = wrapper;
+    installed = {prototype, original, wrapper};
   }
   function watch(replay, session, details) {
     speed = 1;
@@ -78,8 +87,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     // Spots are bookmarks in this replay (a saveloc for watching): saved for
     // your own runs through onSpots, kept until you leave for anyone else's.
     const watched = watching = {replay, session, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
-      start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null, frames: createFrames(replay),
+      start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null, frames: createFrames(replay, coaching),
       ramps: [], rampsKey: '', ...details};
+    if (!watched.boards.length) grade?.release?.();
     if (practice()?.store && due()) {
       const keys = bindLabel(binds().save);
       say(keys ? `Press ${keys} to save a moment of this replay as a practice location.`
@@ -88,8 +98,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     return watched;
   }
   function current() {
+    if (destroyed) return null;
     const session = getSession?.();
-    if (watching && session !== watching.session) watching = null;
+    if (watching && session !== watching.session) { watching = null; grade?.release?.(); }
     if (!watching && session && !hooks()?.playback?.()?.replay) file(session);
     if (!watching && session) {
       // A replay the game started itself (someone else's run): take it over.
@@ -117,12 +128,13 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   // Ramp boards on the timeline, recorded during your own runs.
   function ramps(watched) {
     const list = watched.boards;
+    if (!visible || !list.length) grade?.release?.();
     let version = 0;
     try { version = grade?.version?.() ?? 0; } catch { /* uncoloured */ }
-    const key = `${list.length}:${list.at(-1)?.board}:${version}`;
+    const key = `${visible}:${list.length}:${list.at(-1)?.board}:${version}`;
     if (watched.rampsKey === key) return watched.ramps;
     watched.rampsKey = key;
-    const tone = ramp => { try { return grade?.tone?.(ramp.key, ramp.board) ?? 'muted'; } catch { return 'muted'; } };
+    const tone = ramp => { try { return visible ? grade?.tone?.(ramp.key, ramp.board) ?? 'muted' : 'muted'; } catch { return 'muted'; } };
     // A board off the map's route (a repeat visit or another line) has no number.
     const number = ramp => { try { return rampNumber?.(watched.run?.mapKey, ramp.key) ?? null; } catch { return null; } };
     return watched.ramps = list.map(ramp => ({tick: ramp.tick, label: number(ramp) ? `Ramp ${number(ramp)}` : 'Ramp', board: ramp.board, tone: tone(ramp)}));
@@ -140,7 +152,6 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     if (!watched) return false;
     return hooks()?.seek?.(watched.replay, Math.max(0, Math.min(watched.length, Math.round(index))), watched.frames) === true;
   }
-  const lead = watched => (watched.start ?? 0) - Math.round(1 / watched.dt);
   // Files pending moments into a live session's bank, the way the game's own
   // Save position does; the last one filed becomes the selected saveloc.
   // A saveloc is only position, speed, view and timer, so a replay made under
@@ -183,27 +194,40 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   }
   const playing = () => !!current() && !paused && hooks()?.playback?.()?.replay === watching.replay;
 
-  return {
-    // True when this game build exposes playback and the run's replay was kept.
-    canWatch: run => !!hooks()?.watch && !!run?.replay && !!archive?.has(run.id),
-    async watch(shown) {
-      const request = ++requestVersion, previousSession = getSession?.();
-      const run = getRun?.(shown.id) ?? shown;
-      // A trimmed replay starts `offset` commands into the run.
-      const offset = run.replay?.offset ?? 0;
-      const replay = hooks();
-      if (!replay?.watch) throw new Error('Replays aren’t supported by this version of Surfd.');
-      const data = await archive.get(run.id);
-      // A slower archive read must not replace a newer Watch or a map the
-      // player entered while it was loading.
-      if (request !== requestVersion || hooks() !== replay || getSession?.() !== previousSession) return;
-      if (!data) throw new Error('This run’s replay is no longer saved.');
+  async function startPlayback(load, details, label) {
+    if (destroyed) return;
+    const request = ++requestVersion, previousSession = getSession?.(), replay = hooks();
+    if (!replay?.watch) throw new Error('Replays aren’t supported by this version of Surfd.');
+    // Reserve the game's Watch generation before either archive or network I/O.
+    // Native Watch buttons reserve the same generation before their downloads.
+    const token = replay.reserve();
+    const owned = () => !destroyed && request === requestVersion && hooks() === replay && replay.isCurrent(token);
+    const intent = starting = {replay, token};
+    try {
+      const data = await load();
+      // Session identity still rejects an actual map/context change while loading.
+      if (!owned() || getSession?.() !== previousSession) return;
+      if (!data) throw new Error('This run’s replay is no longer available.');
       install(replay);
-      await replay.watch(data, 'saved run', () => request === requestVersion && hooks() === replay);
-      if (request !== requestVersion || hooks() !== replay) return;
+      await replay.watch(data, label, owned, token);
+      if (!owned()) return;
       const session = getSession?.();
       if (!session || replay.playback()?.replay !== data) throw new Error('The replay didn’t start.');
-      const watched = watch(data, session, {
+      watch(data, session, typeof details === 'function' ? details(data) : details);
+      // Retain the prestrafe, including when replaying after the end.
+      seek(0);
+    } finally {
+      if (starting === intent) starting = null;
+    }
+  }
+
+  return {
+    // True when this game build exposes playback and the run's replay was kept.
+    canWatch: run => !destroyed && !!hooks()?.watch && !!run?.replay && !!archive?.has(run.id),
+    watch(shown) {
+      const run = getRun?.(shown.id) ?? shown;
+      const offset = run.replay?.offset ?? 0;
+      return startPlayback(() => archive.get(run.id), data => ({
         title: `Your run on ${run.mapName} · ${run.outcome === 'finished' ? `finished in ${formatTime(run.time)}` : `reset at ${formatTime(run.time)}`}${run.practice ? ' · practice' : ''}`,
         start: Math.min(run.replay.start ?? 0, data.commands.length),
         markers: (run.checkpoints ?? []).map(checkpoint => checkpoint.command - offset).filter(tick => Number.isInteger(tick) && tick >= 0),
@@ -211,9 +235,28 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         boards: (run.boards ?? []).map(([tick, board, key]) => ({tick: tick - offset, board, key})).filter(ramp => Number.isInteger(ramp.tick) && ramp.tick >= 0),
         spots: (run.spots ?? []).filter(tick => Number.isInteger(tick) && tick >= 0 && tick <= data.commands.length).slice(0, MAX_SPOTS),
         run: {id: run.id, mapKey: run.map},
-      });
-      // Begin a second before the run left the start, not at spawn.
-      seek(lead(watched));
+      }), 'saved run');
+    },
+    watchLoaded(load, {title}) {
+      return startPlayback(load, {title, learn: true}, 'leaderboard replay');
+    },
+    setVisible(next) {
+      const shown = !destroyed && !!next;
+      if (visible !== shown && watching) watching.rampsKey = '';
+      visible = shown;
+      if (!visible) grade?.release?.();
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      requestVersion++;
+      if (starting?.replay.isCurrent(starting.token)) starting.replay.reserve();
+      starting = null;
+      watching = null;
+      pending = [];
+      notice = null;
+      uninstall();
+      grade?.destroy?.();
     },
     get active() { return !!current(); },
     status() {
@@ -234,7 +277,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (!watched) return;
       paused = false;
       const index = position();
-      if (index >= watched.length) seek(lead(watched));
+      if (index >= watched.length) seek(0);
       else if (hooks()?.playback?.()?.replay !== watched.replay) seek(index);
     },
     pause() { if (current()) paused = true; },
@@ -253,15 +296,15 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         if (watched.spots.length >= MAX_SPOTS) { say(`You can keep up to ${MAX_SPOTS} locations in a replay; delete one first.`); return false; }
         watched.spots = [...watched.spots, tick].sort((a, b) => a - b);
         persist(watched);
-        const saved = `Saved location #${watched.spots.indexOf(tick) + 1} · ${formatTime(watched.session.timer?.state?.elapsed ?? 0)}.`;
-        if (!practice()?.store) say(saved);
-        else if (!capture(watched)) say(`${saved} The run has finished here, so it can’t be practiced.`);
-        else if (due()) {
-          const keys = bindLabel(binds().load);
-          say(`${saved} It’s added to your practice locations when you leave the replay${keys ? `; ${keys} loads it` : ''}.`);
-          try { teach?.done?.(); } catch { /* shown again next time */ }
-        } else say(saved);
       }
+      const saved = `Saved location #${watched.spots.indexOf(tick) + 1} · ${formatTime(watched.session.timer?.state?.elapsed ?? 0)}.`;
+      if (!practice()?.store) say(saved);
+      else if (!capture(watched)) say(`${saved} The run has finished here, so it can’t be practiced.`);
+      else if (due()) {
+        const keys = bindLabel(binds().load);
+        say(`${saved} It’s added to your practice locations when you leave the replay${keys ? `; ${keys} loads it` : ''}.`);
+        try { teach?.done?.(); } catch { /* shown again next time */ }
+      } else say(saved);
       watched.lastSpot = tick;
       return true;
     },

@@ -131,11 +131,11 @@ export const runsStyles = `
 /* Watch: one fixed size whatever it's doing, so nothing beside it moves. */
 .rn-watch{position:relative;flex:none;width:30px;height:30px;display:grid;place-items:center;padding:0;border:0;border-radius:50%;
   background:rgba(255,255,255,.09);color:var(--text)}
-.rn-watch svg{width:14px;height:14px;fill:currentColor;margin-left:1px}
+#runs-panel .rn-watch svg{width:14px;height:14px;fill:currentColor}
 .rn-watch:hover:not(:disabled){background:var(--accent);color:var(--on-accent)}
 .rn-watch:disabled{opacity:.28}
 .rn-watch.big{width:40px;height:40px;background:var(--accent);color:var(--on-accent)}
-.rn-watch.big svg{width:17px;height:17px}
+#runs-panel .rn-watch.big svg{width:17px;height:17px}
 .rn-watch.big:hover:not(:disabled){filter:brightness(1.08)}
 .rn-watch.now{opacity:1;background:none;color:var(--accent);box-shadow:inset 0 0 0 1.5px var(--accent)}
 .rn-watch[aria-busy=true]{opacity:1}
@@ -210,13 +210,4 @@ export const runsStyles = `
 .hist-store{padding:14px 0 6px}
 .hist-total{display:flex;align-items:baseline;gap:10px;font-size:13px;color:var(--text-2)}
 .hist-total b{font-size:24px;line-height:1;color:var(--text);font-variant-numeric:tabular-nums}
-.hist-bar{display:flex;gap:3px;height:8px;margin:12px 0 10px}
-.hist-bar i{min-width:3px;border-radius:2px;transform:skewX(-20deg)}
-.hist-bar .replays{background:var(--accent)}.hist-bar .runs{background:rgba(255,255,255,.55)}.hist-bar .none{flex:1;background:rgba(255,255,255,.1)}
-.hist-keys{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:baseline;margin:0;font-size:13px}
-.hist-keys dt{display:flex;align-items:center;gap:8px;color:var(--text)}
-.hist-keys dt::before{content:"";width:4px;height:11px;border-radius:1px;transform:skewX(-18deg)}
-.hist-keys .replays::before{background:var(--accent)}.hist-keys .runs::before{background:rgba(255,255,255,.55)}
-.hist-keys dd{margin:0;color:var(--text-3);font-size:12.5px}
-.hist-keys dd.size{color:var(--text-2);text-align:right;font-variant-numeric:tabular-nums}
 `;

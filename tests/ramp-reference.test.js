@@ -2,29 +2,37 @@ import {describe, expect, test} from 'bun:test';
 import {createRampReference} from '../src/ramp-reference.js';
 
 function rig({settings = {}} = {}) {
-  const session = {map: {id: 'utopia', version: 3}, config: {dt: 0.015}, replayFormat: 8};
-  const acquired = [];
-  let finish;
+  let session = {map: {id: 'utopia', version: 3}, config: {dt: 0.015}, replayFormat: 8};
+  let adapter = {Session: function () {}, Movement: function () {}};
+  const acquired = [], completed = new Map();
   const replayStore = {
     acquire(request) {
-      acquired.push(request);
-      return {result: null, promise: new Promise(resolve => { finish = resolve; }), release() { request.released = true; }};
+      const result = completed.get(request.key) ?? null;
+      const work = {...request, result, released: false, finish: null};
+      acquired.push(work);
+      return {result, promise: new Promise(resolve => { work.finish = result => {
+        if (request.isCurrent() && result?.feedback) completed.set(request.key, result);
+        resolve(result);
+      }; }), release() { work.released = true; }};
     },
   };
-  const refs = {boardId: 'b1', own: {runId: 'pb1', timeUs: 41e6, splitsUs: [10e6]}, loadReplay: async () => ({}), loadRecordRoute: async () => ({})};
-  const adapter = {Session: function () {}, Movement: function () {}};
-  const reference = createRampReference({getSession: () => session, getReferences: () => refs, getAdapter: () => adapter, replayStore,
-    settings: {boardColorReference: 'pb', referenceLossTolerance: 2, boardLossAmazing: 5, boardLossGood: 20, ...settings}});
+  const refs = {boardId: 'b1', ownerKey: 'account', own: {runId: 'pb1', timeUs: 41e6, splitsUs: [10e6]}, loadReplay: async () => ({}), loadRecordRoute: async () => ({})};
+  const options = {boardColorReference: 'pb', referenceLossTolerance: 2, boardLossAmazing: 5, boardLossGood: 20, ...settings};
+  const reference = createRampReference({getSession: () => session, getReferences: () => refs, getAdapter: () => adapter, replayStore, settings: options});
+  const consumer = reference.createConsumer();
   const route = {indices: new Map([['[7,0,1]', 0], ['[8,0,1]', 1]]), boards: [
     {valid: true, loss: 3, downLoss: 9, upLoss: 2, surfLoss: 11}, {valid: false, loss: 1}]};
-  return {reference, acquired, finish: () => finish({feedback: {route}}), session};
+  return {reference, consumer, acquired, refs, settings: options,
+    finish: (index = acquired.length - 1, result = {feedback: {route}}) => acquired[index].finish(result),
+    get session() { return session; }, set session(value) { session = value; },
+    get adapter() { return adapter; }, set adapter(value) { adapter = value; }};
 }
 
 describe('ramp reference', () => {
   test('loads the PB route for the map in the game and shares the HUD key', async () => {
-    const {reference, acquired, finish} = rig();
-    expect(reference.get('mesa:1', 'pb')).toBeNull();
-    const slot = reference.get('utopia:3', 'pb');
+    const {reference, consumer, acquired, finish} = rig();
+    expect(consumer.get('mesa:1', 'pb')).toBeNull();
+    const slot = consumer.get('utopia:3', 'pb');
     expect(slot).toMatchObject({status: 'loading', label: 'PB'});
     expect(acquired).toHaveLength(1);
     expect(acquired[0]).toMatchObject({feedback: true});
@@ -33,32 +41,115 @@ describe('ramp reference', () => {
     reference.subscribe(() => heard++);
     finish();
     await Promise.resolve();
-    expect(reference.get('utopia:3', 'pb')).toMatchObject({status: 'ready'});
+    expect(consumer.get('utopia:3', 'pb')).toMatchObject({status: 'ready'});
     expect([...slot.ramps]).toEqual([['[7,0,1]', {board: 3, down: 9, up: 2, surf: 11}]]);
     expect(heard).toBe(1);
-    // Asking again reuses the slot.
     expect(acquired).toHaveLength(1);
+    expect(acquired[0].released).toBe(true);
   });
 
-  test('the KSF WR is the record route; a missing source has nothing to compare', () => {
-    const {reference, acquired} = rig();
-    expect(reference.get('utopia:3', 'wr')).toMatchObject({label: 'KSF WR'});
+  test('availability never acquires either source and only the requested source loads', () => {
+    const {reference, consumer, acquired} = rig();
+    expect(reference.sources('utopia:3')).toEqual([{name: 'pb', label: 'PB'}, {name: 'wr', label: 'KSF WR'}]);
+    expect(reference.sources('mesa:1')).toEqual([]);
+    expect(acquired).toHaveLength(0);
+    consumer.get('utopia:3', 'wr');
+    expect(acquired).toHaveLength(1);
     expect(acquired[0].key).toEndWith(':ksf');
     const leaderboard = rig({settings: {wrSource: 'leaderboard'}});
-    expect(leaderboard.reference.get('utopia:3', 'wr')).toBeNull();
+    expect(leaderboard.reference.sources('utopia:3')).toEqual([{name: 'pb', label: 'PB'}]);
+    expect(leaderboard.consumer.get('utopia:3', 'wr')).toBeNull();
+  });
+
+  test('source switches and release cancel only their separately owned consumer', async () => {
+    const {reference, consumer, acquired, finish} = rig();
+    const timeline = reference.createConsumer();
+    consumer.get('utopia:3', 'pb');
+    timeline.tone('[7,0,1]', 4);
+    consumer.get('utopia:3', 'wr');
+    expect(acquired.map(work => work.released)).toEqual([true, false, false]);
+    consumer.release();
+    consumer.release();
+    expect(acquired.map(work => work.isCurrent())).toEqual([false, true, false]);
+    finish(0);
+    finish(2);
+    await Promise.resolve();
+    expect(timeline.tone('[7,0,1]', 4)).toBe('muted');
+    finish(1);
+    await Promise.resolve();
+    expect(timeline.tone('[7,0,1]', 4)).toBe('warn');
+    reference.destroy();
+    expect(timeline.get('utopia:3', 'pb')).toBeNull();
+    expect(reference.sources('utopia:3')).toEqual([]);
+  });
+
+  test.each(['session', 'adapter'])('pending same-key references reacquire after native %s replacement', async owner => {
+    const fixture = rig();
+    const {consumer, acquired, finish} = fixture;
+    const old = consumer.get('utopia:3', 'pb');
+    fixture[owner] = {...fixture[owner]};
+    expect(acquired[0].isCurrent()).toBe(false);
+    const current = consumer.get('utopia:3', 'pb');
+    expect(current).not.toBe(old);
+    expect(current.status).toBe('loading');
+    expect(acquired).toHaveLength(2);
+    expect(acquired[0].released).toBe(true);
+    finish(0, null);
+    await Promise.resolve();
+    expect(consumer.get('utopia:3', 'pb')).toBe(current);
+    expect(current.status).toBe('loading');
+    finish(1);
+    await Promise.resolve();
+    expect(consumer.get('utopia:3', 'pb').status).toBe('ready');
+  });
+
+  test('completed summaries survive same-map Watch and can be reused after release', async () => {
+    const fixture = rig();
+    const {consumer, acquired, finish} = fixture;
+    const slot = consumer.get('utopia:3', 'pb');
+    finish();
+    await Promise.resolve();
+    fixture.session = {...fixture.session};
+    expect(consumer.get('utopia:3', 'pb')).toBe(slot);
+    expect(acquired).toHaveLength(1);
+    consumer.release();
+    expect(consumer.get('utopia:3', 'pb').status).toBe('ready');
+    expect(acquired).toHaveLength(2);
+    expect(acquired[1].result.feedback).toBeDefined();
+  });
+
+  test('changing map or account invalidates pending ownership before publication', async () => {
+    const fixture = rig();
+    const {consumer, acquired, finish, refs} = fixture;
+    consumer.get('utopia:3', 'pb');
+    refs.ownerKey = 'other-account';
+    expect(acquired[0].isCurrent()).toBe(false);
+    consumer.get('utopia:3', 'pb');
+    finish(0);
+    await Promise.resolve();
+    expect(consumer.get('utopia:3', 'pb').status).toBe('loading');
+    fixture.session.map = {id: 'mesa', version: 1};
+    expect(consumer.get('utopia:3', 'pb')).toBeNull();
+    expect(acquired[1].released).toBe(true);
+    finish(1);
+    await Promise.resolve();
+    expect(consumer.get('utopia:3', 'pb')).toBeNull();
   });
 
   test('board tones follow the HUD: against the reference, or fixed cutoffs', async () => {
-    const {reference, finish} = rig();
-    expect(reference.tone('[7,0,1]', 4)).toBe('muted');
+    const {consumer, finish, settings, acquired} = rig();
+    expect(consumer.tone('[7,0,1]', 4)).toBe('muted');
     finish();
     await Promise.resolve();
-    expect(reference.tone('[7,0,1]', 2)).toBe('good');
-    expect(reference.tone('[7,0,1]', 4)).toBe('warn');
-    expect(reference.tone('[7,0,1]', 9)).toBe('loss');
-    expect(reference.tone('[9,0,1]', 2)).toBe('muted');
-    const fixed = rig({settings: {boardColorReference: 'fixed'}});
-    expect(fixed.reference.tone('[7,0,1]', 4)).toBe('good');
-    expect(fixed.reference.tone('[7,0,1]', 30)).toBe('loss');
+    expect(consumer.tone('[7,0,1]', 2)).toBe('good');
+    expect(consumer.tone('[7,0,1]', 4)).toBe('warn');
+    expect(consumer.tone('[7,0,1]', 9)).toBe('loss');
+    expect(consumer.tone('[9,0,1]', 2)).toBe('muted');
+    settings.boardColorReference = 'wr';
+    consumer.tone('[7,0,1]', 4);
+    settings.boardColorReference = 'fixed';
+    expect(consumer.tone('[7,0,1]', 4)).toBe('good');
+    expect(acquired[1].released).toBe(true);
+    expect(consumer.tone('[7,0,1]', 30)).toBe('loss');
   });
 });

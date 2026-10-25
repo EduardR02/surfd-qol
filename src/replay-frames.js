@@ -25,20 +25,24 @@ export function thaw(session, frame, replay, tick) {
 }
 
 // Snapshots of one replay, keyed by how many commands had been played.
-export function createFrames(replay) {
+export function createFrames(replay, coaching) {
   const frames = new Map();
   let broken = false;
   return {
     get size() { return frames.size; },
     keep(session, tick) {
       if (broken || !tick || tick % FRAME_TICKS || frames.has(tick)) return;
-      try { frames.set(tick, freeze(session)); } catch { broken = true; frames.clear(); }
+      try {
+        frames.set(tick, { native: freeze(session), coaching: coaching?.save() });
+      } catch { broken = true; frames.clear(); }
     },
     // Restores the latest snapshot after `from` and at or before `to`; returns its tick, or -1.
     resume(session, from, to) {
       for (let tick = to - to % FRAME_TICKS; tick > from; tick -= FRAME_TICKS) {
         if (!frames.has(tick)) continue;
-        thaw(session, frames.get(tick), replay, tick);
+        const frame = frames.get(tick);
+        thaw(session, frame.native, replay, tick);
+        coaching?.restore(frame.coaching);
         return tick;
       }
       return -1;

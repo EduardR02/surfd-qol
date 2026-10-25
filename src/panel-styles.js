@@ -24,7 +24,6 @@ button{cursor:pointer}
   width:560px;max-width:calc(100vw - 24px);height:min(800px,calc(100dvh - var(--above) - 16px));display:flex;flex-direction:column;
   overflow:hidden;border:1px solid var(--line-2);border-radius:18px;background:var(--bg);-webkit-backdrop-filter:blur(22px) saturate(1.1);
   backdrop-filter:blur(22px) saturate(1.1);box-shadow:0 24px 70px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.25);animation:panel-in .16s ease-out}
-#panel:has(#tab-history[aria-selected=true]){height:auto;max-height:min(800px,calc(100dvh - var(--above) - 16px))}
 #panel:has(#tab-history[aria-selected=true]) .preview{display:none}
 @keyframes panel-in{from{opacity:0;transform:translateY(6px)}}
 

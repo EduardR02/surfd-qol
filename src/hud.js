@@ -91,7 +91,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       clear: () => Promise.all([history.clear(), replays?.clearMap?.()]),
     } : null,
   });
-  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, settings, now: services.now, onOpen: () => panel.close(),
+  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
   const replayBar = replayControl ? createReplayBar({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
@@ -128,6 +128,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
     const currentView = view ?? snapshot?.spectator ?? null;
     const inSurf = inSurfContext(snapshot, session, currentView);
+    replayControl?.setVisible(inSurf);
     panel.setAvailable(!inSurf);
     runs.setContext({menu: !inSurf, replay: inSurf && !!replayBar?.visible});
     releaseNotice.hidden = inSurf || releaseVersion === null;
@@ -268,6 +269,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     showReplayRuns() { if (replayBar?.visible) runs.show(replayBar.status?.run?.mapKey ?? history?.currentMap, root.getElementById('replay').getBoundingClientRect()); },
     destroy() {
       destroyed = true;
+      replayControl?.setVisible(false);
       clearInterval(interval);
       cancelAnimationFrame(liveFrame);
       references.destroy();

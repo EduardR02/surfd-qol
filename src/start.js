@@ -76,6 +76,21 @@ export function createStartFeedback(clock = () => performance.now()) {
   let ground = null;
   return {
     reset() { latest = ground = null; },
+    // Zone and Session identities are static for a watched replay; retain them
+    // without copying geometry or the native command log.
+    saveState() {
+      return {
+        latest: latest ? { ...latest } : null,
+        age: latest ? clock() - latest.recordedAt : 0,
+        ground: ground ? { ...ground } : null,
+        sessionIdentity,
+      };
+    },
+    restoreState(saved) {
+      latest = saved.latest ? { ...saved.latest, recordedAt: clock() - saved.age } : null;
+      ground = saved.ground ? { ...saved.ground } : null;
+      sessionIdentity = saved.sessionIdentity;
+    },
     observe(session, events) {
       if (sessionIdentity !== session) { latest = ground = null; sessionIdentity = session; }
       if (events.some(event => ['fall', 'start-return', 'stage-return'].includes(event))) latest = ground = null;

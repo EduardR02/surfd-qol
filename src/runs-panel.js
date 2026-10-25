@@ -3,7 +3,9 @@
 // headline numbers, how close each checkpoint has come to beating PB pace,
 // your latest attempt, then recent runs to rewatch. Ramps get their own view,
 // each one compared against the PB or WR run with the HUD's colours.
-import {formatTime, formatDelta, referenceTone} from './hud-model.js';
+import {formatTime, formatDelta, formatSplitDelta, referenceTone} from './hud-model.js';
+import {mapKey} from './run-history.js';
+import {referenceIdentity, sessionKey} from './references.js';
 
 const ERROR_MS = 6000;
 const MAX_METER = 12;
@@ -55,25 +57,36 @@ export function reached(run) {
   if (run.totalCheckpoints === 0) return 'Reset';
   return count ? `CP${count}` : 'Before CP1';
 }
+// Native own is scoped to the loaded map/version; historical maps only have
+// their locally recorded best finish. Both carry cumulative checkpoint times.
+export function bestFinish(data, {key = data?.key, session = null, refs = null} = {}) {
+  const own = refs?.own;
+  if (session?.map && key === mapKey(session.map) && referenceIdentity(own)) {
+    const at = typeof own.createdAt === 'string' ? Date.parse(own.createdAt) : own.createdAt;
+    return {official: true, label: 'PB', runId: own.runId, time: own.timeUs / 1e6, at, splitsUs: own.splitsUs};
+  }
+  return data?.pb ? {...data.pb, official: false, label: 'Best finish'} : null;
+}
 // A finished run against your PB, the way the HUD tones split deltas: ahead
 // is teal, behind is red. Unfinished runs have no time to compare.
 export function versusPb(run, pb) {
   if (run?.outcome !== 'finished' || !Number.isFinite(run.time)) return null;
-  if (pb && run.id === pb.id) return {text: 'pb', tone: 'pb'};
   if (!Number.isFinite(pb?.time)) return null;
-  const ms = Math.round((run.time - pb.time) * 1000);
-  return {text: `${ms > 0 ? '+' : ms < 0 ? '−' : '±'}${(Math.abs(ms) / 1000).toFixed(3)}`, tone: ms < 0 ? 'good' : ms > 0 ? 'loss' : 'muted'};
+  const delta = formatSplitDelta(run.time, Math.round(pb.time * 1e6));
+  if (!pb.official && run.id != null && run.id === pb.id) return {...delta, text: 'best'};
+  return delta;
 }
-// Your best time at each checkpoint against your PB's split there. Teal means
-// some run (finished or not) has been ahead of PB pace; rose means the PB itself
-// holds that split.
-export function paceCells(view) {
+// Compare the displayed best checkpoint with the displayed finish's split,
+// never an unrelated local finish's split when the header shows a native PB.
+export function paceCells(view, best = bestFinish(view)) {
   return (view.splits ?? []).map(split => {
-    const ms = Number.isFinite(split.time) && Number.isFinite(split.pb) ? Math.round((split.time - split.pb) * 1000) : null;
+    const referenceUs = best?.official
+      ? Number.isInteger(split.index) && split.index >= 0 ? best.splitsUs[split.index] : null
+      : best && Number.isFinite(split.pb) ? Math.round(split.pb * 1e6) : null;
+    const delta = formatSplitDelta(split.time, referenceUs);
     return {
       label: split.label, time: split.time, speed: split.speed,
-      delta: ms === null ? '' : ms === 0 ? 'pb pace' : `${ms < 0 ? '−' : '+'}${(Math.abs(ms) / 1000).toFixed(3)}`,
-      tone: ms === null ? 'muted' : ms < 0 ? 'good' : ms === 0 ? 'pb' : 'loss',
+      delta: delta?.text ?? '', tone: delta?.tone ?? 'muted',
     };
   });
 }
@@ -126,34 +139,56 @@ function describe(run) {
   const word = run.kind === 'S' ? 'stages' : 'checkpoints';
   return total ? `Reset at ${formatTime(run.time)}, after ${run.checkpoints ?? 0} of ${total} ${word}` : `Reset at ${formatTime(run.time)}`;
 }
-const tags = run => `${run.practice ? '<span class="rn-tag practice" title="Practice runs don’t count for your PB or bests">practice</span>' : ''}${
+const tags = run => `${run.practice ? '<span class="rn-tag practice" title="Practice runs don’t count for your bests">practice</span>' : ''}${
   run.invalid ? `<span class="rn-tag invalid" title="${escape(typeof run.invalid === 'string' && run.invalid ? `Invalid: ${run.invalid}` : 'Invalid run')}">invalid</span>` : ''}`;
 
-export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, settings = {}, onOpen, onOpenSettings, now = () => Date.now()}) {
+export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, getSession = () => null, getReferences = () => null, settings = {}, onOpen, onOpenSettings, now = () => Date.now()}) {
   const node = id => root.getElementById(id);
   const panel = node('runs-panel'), opener = node('runs-open'), close = node('rn-close');
   const mapButton = node('rn-map'), mapName = node('rn-name'), mapList = node('rn-maps'), body = node('rn-body'), status = node('rn-status');
   const tabs = [...panel.querySelectorAll('[role="tab"]')];
+  const rampConsumer = rampReference?.createConsumer();
   let key = null, view = 'runs', source = null, busy = null, errorTimer = 0, menu = false, replay = false;
-  let unsubscribe = [], rendered = '';
+  let unsubscribe = [], rendered = '', watchRequest = 0, replayCache = null, referenceContext = '', referenceSession = null;
+
+  function currentBest(data) {
+    try { return bestFinish(data, {key, session: getSession(), refs: getReferences()}); }
+    catch { return bestFinish(data); }
+  }
+
+  // One raw replay at most, scoped to its real board/map/account identity.
+  // Native Watch replaces Session even when it watches the very same run.
+  function replayIdentity() {
+    try {
+      const session = getSession(), refs = getReferences(), identity = referenceIdentity(refs?.own);
+      return session?.map && identity ? JSON.stringify([sessionKey(session, refs?.boardId), refs?.ownerKey ?? 'guest', identity]) : null;
+    } catch { return null; }
+  }
+  function syncReplayCache() {
+    const identity = replayIdentity();
+    if (replayCache?.identity !== identity) replayCache = null;
+    return identity;
+  }
 
   const watching = () => { try { return replayControl?.status?.()?.run?.id ?? null; } catch { return null; } };
   const canWatch = run => { try { return !!run && !!replayControl?.canWatch?.(run); } catch { return false; } };
   function watchButton(run, label, big = false) {
     if (!run) return '';
-    const playing = watching() === run.id, ok = canWatch(run);
+    const id = run.official ? `official-pb:${run.runId}` : run.id;
+    const playing = !run.official && watching() === run.id;
+    const ok = run.official ? typeof replayControl?.watchLoaded === 'function' : canWatch(run);
     const title = playing ? 'Playing now' : ok ? label : 'This run’s replay wasn’t kept';
-    return `<button type="button" class="rn-watch${big ? ' big' : ''}${playing ? ' now' : ''}" data-watch="${escape(run.id)}" aria-label="${escape(title)}" title="${escape(title)}"${ok && !playing ? '' : ' disabled'}${busy === run.id ? ' aria-busy="true"' : ''}>${PLAY}</button>`;
+    return `<button type="button" class="rn-watch${big ? ' big' : ''}${playing ? ' now' : ''}" data-watch="${escape(id)}" aria-label="${escape(title)}" title="${escape(title)}"${ok && !playing && busy !== id ? '' : ' disabled'}${busy === id ? ' aria-busy="true"' : ''}>${PLAY}</button>`;
   }
 
   function overview(data) {
-    const pb = data.pb, start = data.start, totals = data.totals ?? {attempts: 0, finishes: 0};
+    const pb = currentBest(data), start = data.start, totals = data.totals ?? {attempts: 0, finishes: 0};
     const stat = (value, label, className = '') => `<div class="rn-stat${className}"><dd>${value}</dd><dt>${label}</dt></div>`;
     const head = `<section class="rn-top">
       <div class="rn-pb${pb ? '' : ' none'}">
-        ${pb ? `<div class="rn-pb-line"><b class="rn-pb-time">${clock(pb.time)}</b>${watchButton(pb, 'Watch your PB', true)}</div>
-          <div class="rn-pb-meta"><span class="rn-lab">pb</span><span>${escape(when(pb.at, now()))}</span></div>`
-          : `<div class="rn-pb-line"><b class="rn-pb-time empty">No finish yet</b></div><div class="rn-pb-meta"><span>Your PB shows here once you finish a run.</span></div>`}
+        ${pb ? `<div class="rn-pb-line"><b class="rn-pb-time">${clock(pb.time)}</b>${watchButton(pb, `Watch your ${pb.label}`, true)}</div>
+          <div class="rn-pb-meta"><span class="rn-lab">${pb.label}</span><span>${escape(when(pb.at, now()))}</span></div>`
+          : `<div class="rn-pb-line"><b class="rn-pb-time empty">No finish yet</b></div><div class="rn-pb-meta"><span>Your best finish shows here once you finish a recorded run.</span></div>`}
       </div>
       <dl class="rn-stats">
         ${stat(start ? `<b class="rn-spd">${fixed(start.best)}</b>` : '—', 'best start')}
@@ -162,9 +197,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         ${stat(totals.finishes ?? 0, totals.finishes === 1 ? 'finish' : 'finishes')}
       </dl>
     </section>`;
-    const cells = paceCells(data);
+    const cells = paceCells(data, pb);
     const pace = cells.length ? `<section class="rn-pace" aria-labelledby="rn-pace-title">
-      <h3 id="rn-pace-title">Best at each checkpoint<span>${pb ? 'against your PB’s splits' : 'no PB to compare with yet'}</span></h3>
+      <h3 id="rn-pace-title">Best at each checkpoint<span>${pb ? `against your ${pb.official ? 'PB' : 'best finish'}’s splits` : 'no best finish to compare with yet'}</span></h3>
       <ol class="rn-cps">${cells.map(cell => `<li class="${cell.tone}" title="${escape(`${cell.label}: best ${formatTime(cell.time)}${Number.isFinite(cell.speed) ? ` at ${Math.round(cell.speed)} u/s` : ''}`)}">
         <i aria-hidden="true"></i><span class="rn-cp">${escape(cell.label)}${Number.isFinite(cell.speed) ? `<b class="rn-spd">${Math.round(cell.speed)}</b>` : ''}</span>
         <b class="rn-cp-time">${clock(cell.time)}</b><em>${escape(cell.delta)}</em></li>`).join('')}</ol>
@@ -195,21 +230,20 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
 
   // Ramps against a reference, which only the map loaded in the game can have.
   function references() {
-    if (!rampReference) return [];
-    const list = [];
-    for (const name of ['pb', 'wr']) {
-      let entry = null;
-      try { entry = rampReference.get(key, name); } catch { /* unavailable */ }
-      if (entry) list.push({name, ...entry});
-    }
-    return list;
+    try { return rampReference?.sources(key) ?? []; } catch { return []; }
   }
   function ramps(data) {
     const sections = rampSections(data);
-    if (!sections.length) return `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you board in a recorded run show up here with your best Board, Down and Up on each.</p></div>`;
+    if (!sections.length) {
+      rampConsumer?.release();
+      return `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you board in a recorded run show up here with your best Board, Down and Up on each.</p></div>`;
+    }
     const refs = references();
     const preferred = settings.surfColorReference === 'pb' || settings.surfColorReference === 'wr' ? settings.surfColorReference : 'pb';
-    const picked = refs.find(ref => ref.name === source) ?? refs.find(ref => ref.name === preferred) ?? refs[0] ?? null;
+    const selected = refs.find(ref => ref.name === source) ?? refs.find(ref => ref.name === preferred) ?? refs[0] ?? null;
+    let picked = null;
+    try { picked = selected ? rampConsumer?.get(key, selected.name) : null; } catch { /* unavailable */ }
+    if (!picked) rampConsumer?.release();
     const ready = picked?.status === 'ready';
     const net = settings.rampResult === 'total';
     const fields = net ? [['board', 'board'], ['surf', 'surf']] : [['board', 'board'], ['down', 'down'], ['up', 'up']];
@@ -217,10 +251,10 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const here = history.currentMap === key;
     const note = !here ? `Comparisons need the map loaded in the game. Load ${escape(data.name)} to compare against your PB or the WR.`
       : !refs.length ? 'There’s no PB or WR replay on this map to compare against.'
-        : picked.status === 'loading' ? `Reading the ${escape(picked.label)} run…`
-          : picked.status === 'missing' ? `The ${escape(picked.label)} run couldn’t be read, so there’s nothing to compare against.` : '';
+        : picked?.status === 'loading' ? `Reading the ${escape(picked.label)} run…`
+          : picked?.status === 'missing' ? `The ${escape(picked.label)} run couldn’t be read, so there’s nothing to compare against.` : '';
     const compare = refs.length ? `<div class="rn-seg" role="radiogroup" aria-label="Compare with">${refs.map(ref =>
-      `<button type="button" role="radio" aria-checked="${ref === picked}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
+      `<button type="button" role="radio" aria-checked="${ref === selected}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
     const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${fixed(tolerance)} u/s</span><span class="loss">worse</span></p>` : '';
     const cell = (ramp, field) => {
       const reference = ready ? picked.ramps.get(ramp.key)?.[field] : null;
@@ -248,13 +282,16 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         <button type="button" class="rn-cta" data-settings="history">Open History settings</button></div>`;
     }
     const name = key === history.currentMap ? history.currentMapName : null;
-    return `<div class="rn-empty"><b>No runs ${name ? `on ${escape(name)} ` : ''}yet</b><p>Your attempts on this map show up here as you play: your PB, your best splits and every ramp.</p></div>`;
+    return `<div class="rn-empty"><b>No runs ${name ? `on ${escape(name)} ` : ''}yet</b><p>Your attempts on this map show up here as you play: your best finish, your best splits and every ramp.</p></div>`;
   }
 
   function render(force = false) {
+    syncReplayCache();
     if (panel.hidden) return;
     let data = null;
     try { data = key ? history.view(key) : null; } catch { /* unavailable */ }
+    if (!data && currentBest(null)?.official) data = {name: history.currentMapName, splits: [], recent: [], ramps: []};
+    if (!data || view !== 'ramps') rampConsumer?.release();
     const maps = safeMaps();
     write(mapName, data?.name ?? maps.find(map => map.key === key)?.name ?? (key && key === history.currentMap ? history.currentMapName : null) ?? 'Runs');
     mapButton.disabled = maps.length < (data ? 2 : 1);
@@ -295,20 +332,42 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
 
   async function watch(id) {
-    if (busy) return;
+    if (busy === id || !replayControl) return;
     let data = null;
     try { data = history.view(key); } catch { /* unavailable */ }
-    const run = [data?.pb, data?.latest, ...(data?.recent ?? [])].find(entry => entry?.id === id);
-    if (!run || !replayControl) return;
+    const best = currentBest(data);
+    const run = best?.official && id === `official-pb:${best.runId}` ? best
+      : [data?.pb, data?.latest, ...(data?.recent ?? [])].find(entry => entry?.id === id);
+    if (!run) return;
+    const request = ++watchRequest, expectedKey = key;
+    let isCurrent = () => true;
     busy = id;
     render(true);
     try {
-      await replayControl.watch(run);
+      if (run.official) {
+        const session = getSession(), refs = getReferences(), identity = syncReplayCache();
+        isCurrent = () => key === expectedKey && getSession() === session && mapKey(session.map) === expectedKey &&
+          replayIdentity() === identity;
+        if (!identity) throw new Error('The personal best changed. Choose the run again.');
+        replayCache ??= {identity, promise: null};
+        const cache = replayCache;
+        await replayControl.watchLoaded(async () => {
+          if (!isCurrent()) throw new Error('The personal best changed. Choose the run again.');
+          cache.promise ??= Promise.resolve().then(() => refs.loadReplay(run.runId)).catch(error => { cache.promise = null; throw error; });
+          const replay = await cache.promise;
+          if (!isCurrent()) throw new Error('The personal best changed. Choose the run again.');
+          return replay;
+        }, {title: `Your PB on ${data?.name ?? history.currentMapName ?? 'this map'} · ${formatTime(run.time)}`});
+      } else {
+        await replayControl.watch(run);
+      }
+      if (request !== watchRequest || key !== expectedKey) return;
       busy = null;
       closePanel();
     } catch (error) {
+      if (request !== watchRequest || key !== expectedKey) return;
       busy = null;
-      showError(error?.message || 'The replay didn’t start.');
+      if (isCurrent()) showError(error?.message || 'The replay didn’t start.');
       render(true);
     }
   }
@@ -316,16 +375,18 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   body.addEventListener('click', event => {
     const target = event.target.closest('button');
     if (!target) return;
-    if (target.dataset.watch) watch(target.dataset.watch);
+    if (target.dataset.watch) return watch(target.dataset.watch);
     else if (target.dataset.settings) onOpenSettings?.(target.dataset.settings);
     else if (target.dataset.source) { source = target.dataset.source; render(); }
   });
-  for (const tab of tabs) tab.addEventListener('click', () => { view = tab.dataset.view; toggleMaps(false); render(); body.scrollTop = 0; });
+  for (const tab of tabs) tab.addEventListener('click', () => { rampConsumer?.release(); view = tab.dataset.view; toggleMaps(false); render(); body.scrollTop = 0; });
   mapButton.addEventListener('click', () => toggleMaps());
   mapList.addEventListener('click', event => {
     const target = event.target.closest('[data-map]');
     if (!target) return;
+    rampConsumer?.release();
     key = target.dataset.map;
+    busy = null; watchRequest++;
     toggleMaps(false);
     mapButton.focus();
     render();
@@ -341,7 +402,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   function openPanel(mapKey, anchor = null) {
     onOpen?.();
     key = mapKey ?? key ?? history.currentMap ?? safeMaps()[0]?.key ?? null;
-    if (key && !history.view?.(key)) key = history.currentMap && history.view(history.currentMap) ? history.currentMap : safeMaps()[0]?.key ?? key;
+    if (key && !history.view?.(key) && !currentBest(null)?.official) key = history.currentMap && history.view(history.currentMap) ? history.currentMap : safeMaps()[0]?.key ?? key;
     // Over a replay the panel sits at the right edge just above the replay bar, clear of the HUD; in menus, above the dock.
     panel.classList.toggle('over-replay', !!anchor);
     if (anchor) {
@@ -354,8 +415,11 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     panel.focus({preventScroll: true});
   }
   function closePanel(focus = false) {
+    rampConsumer?.release();
     if (panel.hidden) return;
     panel.hidden = true;
+    referenceSession = null;
+    busy = null; watchRequest++;
     toggleMaps(false);
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
@@ -371,15 +435,24 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     close: closePanel,
     // Where the panel can be: in menus from the dock; during a replay from the replay bar.
     setContext(next) {
+      syncReplayCache();
       menu = !!next.menu; replay = !!next.replay;
       if (opener.hidden === menu) opener.hidden = !menu;
       if (!panel.hidden && !menu && !(replay && panel.classList.contains('over-replay'))) closePanel();
       if (!panel.hidden && menu && panel.classList.contains('over-replay')) closePanel();
+      if (!panel.hidden) {
+        const session = getSession(), refs = getReferences();
+        const context = JSON.stringify([key, replayIdentity(), refs?.own?.createdAt, refs?.boardId, refs?.ownerKey,
+          referenceIdentity(refs?.record), rampReference?.version(), settings.surfColorReference]);
+        if (context !== referenceContext || session !== referenceSession) {
+          referenceContext = context; referenceSession = session; render();
+        }
+      }
     },
     show(mapKey, anchor) { openPanel(mapKey, anchor); },
     toggle(mapKey, anchor) { if (!panel.hidden) closePanel(); else openPanel(mapKey, anchor); },
     showMaps() { if (!panel.hidden) toggleMaps(true); },
-    showView(next) { view = next === 'ramps' ? 'ramps' : 'runs'; render(true); },
+    showView(next) { rampConsumer?.release(); view = next === 'ramps' ? 'ramps' : 'runs'; render(true); },
     handleKey(event) {
       if (panel.hidden) return;
       const inside = event.composedPath().includes(panel);
@@ -392,6 +465,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       if (event.type === 'keydown' && index !== -1 && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
         event.preventDefault();
         const next = tabs[(index + 1) % tabs.length];
+        rampConsumer?.release();
         view = next.dataset.view;
         render();
         next.focus();
@@ -399,6 +473,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       // Keep the panel's keystrokes out of the game's handlers.
       if (inside) event.stopPropagation();
     },
-    destroy() { closePanel(); clearTimeout(errorTimer); },
+    destroy() { closePanel(); rampConsumer?.destroy(); replayCache = null; referenceSession = null; clearTimeout(errorTimer); },
   };
 }

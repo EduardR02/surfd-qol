@@ -16,7 +16,7 @@ export const defaults = {
   nullAD: false, nullWSpace: false,
   // Run history: the newest runs per map (each with its replay) plus every
   // map's bests, which are never pruned.
-  keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10, saveReplays: true,
+  keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10,
 };
 // Changing any of these prunes stored history and replays.
 export const storageLimitKeys = ['historyRunsPerMap', 'historyMinSeconds'];

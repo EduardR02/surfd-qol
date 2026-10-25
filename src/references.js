@@ -50,10 +50,11 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     const saved = JSON.parse(storage?.getItem(CACHE_KEY) ?? 'null');
     for (const [key, value] of saved?.cache ?? []) if (typeof key === 'string' && validSpeeds(value)) cache.set(key, value);
     for (const [key, value] of saved?.personal ?? []) {
-      if (typeof key === 'string' && Number.isSafeInteger(value?.timeUs) && value.timeUs > 0 && validSpeeds(value.speeds) && value.speeds.length === value.splitsUs?.length) personal.set(key, value);
+      if (typeof key === 'string' && typeof value?.ownerKey === 'string' && Number.isSafeInteger(value.timeUs) && value.timeUs > 0 && validSpeeds(value.speeds) && value.speeds.length === value.splitsUs?.length) personal.set(key, value);
     }
   } catch { /* Private browsing or an incompatible cache must not affect play. */ }
   let live = null, adapter = null, context = '', map = null, mapId = null, mapVersion = null, config = null, format = null, board = null;
+  let ownerKey = null, personalContext = '', runOwned = false;
   let runArray = null, startTick = null, previousTick = -1, phase = null, finished = false;
   let baseline = null, baselineLocal = null, completed = null, destroyed = false, recordSource = null, visible = true;
   let ownSlot = {key: '', speeds: null, status: 'missing'};
@@ -72,7 +73,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     finished = false;
     completed = null;
     baseline = copyEntry(refs?.own);
-    baselineLocal = personal.get(context) ?? null;
+    baselineLocal = personal.get(personalContext) ?? null;
+    runOwned = true;
   }
   function choosePersonal(entry) {
     const local = baselineLocal;
@@ -90,7 +92,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
   }
   function request(slot, entry, exact, session, refs, ksf = false) {
     const identity = referenceIdentity(entry);
-    const key = ksf ? `${context}:ksf` : identity ? `${context}:official:${identity}` : exact ? `${context}:local:${entry.timeUs}` : '';
+    const key = ksf ? `${context}:ksf` : identity ? `${context}:official:${identity}` : exact ? `${personalContext}:local:${entry.timeUs}` : '';
     if (slot.key === key) return;
     clear(slot);
     slot.key = key;
@@ -153,16 +155,31 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       live = session; adapter = nextAdapter; map = session.map; config = session.config; format = session.replayFormat; board = boardId;
       mapId = map.id; mapVersion = map.version;
       context = sessionKey(session, boardId);
+      // Official summaries remain replay-keyed; only exact local PBs are owned.
+      ownerKey = refs?.ownerKey ?? 'guest';
+      personalContext = JSON.stringify([context, ownerKey]);
       resetRun(session, refs);
       phase = null;
-    } else if (runArray !== session.checkpointSpeeds || session.state.tick < previousTick || timer.startTick !== startTick || (phase === 'finished' && timer.phase !== 'finished')) {
-      resetRun(session, refs);
+    } else {
+      const nextOwner = refs?.ownerKey ?? 'guest';
+      if (ownerKey !== nextOwner) {
+        ownerKey = nextOwner;
+        personalContext = JSON.stringify([context, ownerKey]);
+        baseline = copyEntry(refs?.own);
+        baselineLocal = personal.get(personalContext) ?? null;
+        completed = null;
+        // A run spanning an account switch has no single personal owner.
+        runOwned = false;
+      }
+      if (runArray !== session.checkpointSpeeds || session.state.tick < previousTick || timer.startTick !== startTick ||
+        (phase === 'finished' && timer.phase !== 'finished')) resetRun(session, refs);
     }
     // Leaderboards may arrive while standing in start. Freeze the pre-run PB
     // once running, so a newly submitted PB never compares against itself.
     if (timer.phase === 'ready') {
       baseline = copyEntry(refs?.own);
-      baselineLocal = personal.get(context) ?? null;
+      baselineLocal = personal.get(personalContext) ?? null;
+      runOwned = true;
     }
     const chosen = choosePersonal(baseline);
     if (enabled && settings.checkpointReference !== 'wr') request(ownSlot, chosen.entry, chosen.exact, session, refs);
@@ -185,10 +202,10 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     if (timer.phase === 'finished' && !finished) {
       finished = true;
       const timeUs = micros(timer.elapsed), splitsUs = timer.splits.map(micros);
-      const old = personal.get(context);
-      if (!session.practice && !timer.invalidReason && timeUs > 0 && validSpeeds(session.checkpointSpeeds) && session.checkpointSpeeds.length === splitsUs.length && (!baseline || timeUs < baseline.timeUs) && (!old || timeUs < old.timeUs)) {
-        completed = {timeUs, splitsUs, speeds: session.checkpointSpeeds.slice(), runId: null};
-        personal.set(context, completed);
+      const old = personal.get(personalContext);
+      if (runOwned && !session.practice && !timer.invalidReason && timeUs > 0 && validSpeeds(session.checkpointSpeeds) && session.checkpointSpeeds.length === splitsUs.length && (!baseline || timeUs < baseline.timeUs) && (!old || timeUs < old.timeUs)) {
+        completed = {ownerKey, timeUs, splitsUs, speeds: session.checkpointSpeeds.slice(), runId: null};
+        personal.set(personalContext, completed);
         save();
       }
     }

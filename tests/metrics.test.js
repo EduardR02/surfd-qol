@@ -2091,3 +2091,28 @@ test('live ramp Input runs only with Live feedback and Ramp both enabled', () =>
   settings.showSurf = true;
   assert.equal(contact().strafe.available, true);
 });
+
+test('metrics checkpoints require completed ticks and restore empty or idle state', () => {
+  const settings = {};
+  const metrics = createMetrics(settings);
+  const game = mappedSession();
+  const empty = metrics.saveState();
+  const expected = metrics.snapshot();
+  metrics.begin(game);
+  assert.throws(() => metrics.saveState(), /unfinished metrics tick/);
+  metrics.restoreState(empty);
+  assert.deepEqual(metrics.snapshot(), expected);
+  coastContact(metrics, game);
+  assert.equal(metrics.boardSnapshot().available, true);
+  settings.hud = false;
+  tick(metrics, game);
+  const idle = metrics.saveState();
+  assert.equal(metrics.snapshot().active, false);
+  settings.hud = true;
+  coastContact(metrics, game);
+  metrics.restoreState(idle);
+  assert.equal(metrics.snapshot().active, false);
+  const resumed = coastContact(metrics, game).board;
+  assert.equal(resumed.available, true);
+  assert.equal(resumed.routePrefix, null);
+});

@@ -104,7 +104,7 @@ export function createHistory({settings, empty = false, current = 'utopia:3'} = 
       const map = shown[key];
       if (!map) return null;
       return {key, name: map.name, kind: map.kind, totals: map.totals, pb: map.pb, latest: map.runs[0] ?? null, recent: recentOf(map),
-        start: map.start, splits: map.splits, ramps: map.ramps};
+        start: map.start, splits: map.splits.map((split, index) => ({...split, index})), ramps: map.ramps};
     },
     run: id => Object.values(shown).flatMap(map => [map.pb, ...map.runs]).find(run => run?.id === id) ?? null,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -116,6 +116,20 @@ export const createReplays = ({empty = false} = {}) => ({
   usage: () => empty ? {bytes: 0, count: 0} : {bytes: 1.6 * 1024 * 1024, count: 26},
   subscribe: () => () => {}, clearMap: async () => {}, has: () => true,
 });
+
+// ?pb=official exercises native PB metadata independently of local history;
+// ?pb=partial leaves later checkpoint references unavailable.
+export function createLeaderboardReferences(params) {
+  const mode = params.get('pb');
+  if (mode !== 'official' && mode !== 'partial') return null;
+  const own = {runId: 'utopia-official-pb', timeUs: 40800000,
+    splitsUs: mode === 'partial' ? [10000000] : [10000000, 21233000, 31100000], createdAt: '2026-10-24T18:00:00'};
+  return {boardId: 'utopia:3:default', mapName: 'Utopia', own,
+    loadReplay: async () => {
+      await new Promise(done => setTimeout(done, 700));
+      return {mapId: 'utopia', mapVersion: 3, commands: Array(2800).fill({})};
+    }};
+}
 
 // The PB and WR runs' ramps on the map loaded in the game (Utopia), as
 // src/ramp-reference.js gives them. ?ref=loading|missing|pb|none.
@@ -130,12 +144,16 @@ export function createRampReference({params, settings, current = 'utopia:3'}) {
   const label = () => settings.wrSource === 'leaderboard' ? 'Site WR' : 'KSF WR';
   const entries = {pb: {status: 'ready', label: 'PB', ramps: table(1)}, wr: {status: 'ready', get label() { return label(); }, ramps: table(2.2)}};
   if (mode === 'loading' || mode === 'missing') for (const entry of Object.values(entries)) { entry.status = mode; entry.ramps = new Map(); }
+  const get = (key, source) => {
+    if (key !== current || mode === 'none' || (mode === 'pb' && source === 'wr')) return null;
+    return entries[source] ?? null;
+  };
   return {
-    get(key, source) {
-      if (key !== current || mode === 'none' || (mode === 'pb' && source === 'wr')) return null;
-      return entries[source] ?? null;
+    sources(key) { return ['pb', 'wr'].flatMap(name => { const entry = get(key, name); return entry ? [{name, label: entry.label}] : []; }); },
+    createConsumer() {
+      return {get, tone(key, loss) { return referenceTone(loss, entries.pb.ramps.get(key)?.board ?? null, settings.referenceLossTolerance); },
+        version: () => mode, release() {}, destroy() {}};
     },
-    tone(key, loss) { return referenceTone(loss, entries.pb.ramps.get(key)?.board ?? null, settings.referenceLossTolerance); },
     version: () => mode,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     destroy() {},
@@ -155,7 +173,7 @@ const NOTICES = {saved: 'Saved location #3 · 00:21.233.', full: `You can keep u
 export function createReplayControl({params, active}) {
   const length = 3082, ownStart = 333, ownMarkers = [1008, 1748, 2391];
   const other = params.get('title') === 'other';
-  const title = other ? 'Watching a replay on Utopia' : 'Your run on Utopia · finished in 00:41.233';
+  let title = other ? 'Watching a replay on Utopia' : 'Your run on Utopia · finished in 00:41.233';
   // Ramp boards along the route, graded the way the lead's tone() does.
   const ramps = maps['utopia:3'].ramps.map((ramp, n) => {
     const section = [ownStart, ...ownMarkers, length - 40];
@@ -170,6 +188,7 @@ export function createReplayControl({params, active}) {
   let spots = Array.from({length: count}, (_, i) => Math.round(ownStart + 150 + i * (length - ownStart - 300) / Math.max(1, count))), lastSpot = spots[1] ?? spots[0] ?? null;
   let notice = NOTICES[params.get('notice')] ?? params.get('notice') ?? '', noticeAt = performance.now(), last = performance.now();
   let run = other ? null : {id: 'utopia-pb', mapKey: 'utopia:3'};
+  let external = false, visible = false;
   const clamp = value => Math.max(0, Math.min(length, Math.round(value)));
   const say = text => { notice = text; noticeAt = performance.now(); };
   const tick = () => {
@@ -186,12 +205,19 @@ export function createReplayControl({params, active}) {
       if (String(entry.id).endsWith('-5')) throw new Error('This run’s replay is no longer saved.');
       if (active()) { run = {id: entry.id, mapKey: 'utopia:3'}; index = ownStart - 66; playing = true; }
     },
+    async watchLoaded(load, options) {
+      const replay = await load();
+      if (!replay) throw new Error('This replay is unavailable.');
+      external = true; run = null; index = 0; playing = true; title = options.title;
+      spots = []; lastSpot = null;
+    },
+    setVisible(next) { visible = !!next; },
     get active() { return active(); },
     status() {
       if (!active()) return null;
       tick();
-      return {title, index: Math.round(index), length, start: ownStart, dt: DT, playing, ended: index >= length, speed,
-        markers: ownMarkers, ramps, spots: spots.slice(), lastSpot,
+      return {title, index: Math.round(index), length, start: external ? 0 : ownStart, dt: DT, playing, ended: index >= length, speed,
+        markers: ownMarkers, ramps: visible ? ramps : ramps.map(ramp => ({...ramp, tone: 'muted'})), spots: spots.slice(), lastSpot,
         notice: notice && (params.has('notice') || performance.now() - noticeAt < 4000) ? notice : '', run};
     },
     play() { if (index >= length) index = ownStart - 66; playing = true; },
@@ -208,8 +234,8 @@ export function createReplayControl({params, active}) {
       if (!spots.includes(at)) {
         if (spots.length >= MAX_SPOTS) { say(NOTICES.full); return false; }
         spots = [...spots, at].sort((a, b) => a - b);
-        say(`Saved location #${spots.indexOf(at) + 1} · ${((at - ownStart) * DT).toFixed(3)} s.`);
       }
+      say(`Saved location #${spots.indexOf(at) + 1} · ${((at - ownStart) * DT).toFixed(3)} s.`);
       lastSpot = at;
       return true;
     },

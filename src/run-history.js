@@ -124,7 +124,7 @@ function copyState(state, template) {
 
 // getMap() is the map the game has loaded, so the Runs panel opens on it before any run starts.
 export function createRunHistory({metrics, start, getState = () => null, getMap = () => null, getMapName = () => null, onReplay = null,
-  wantsReplay = () => true, limits = () => ({}), onPrune = null, store = null, clock = () => Date.now()} = {}) {
+  limits = () => ({}), onPrune = null, store = null, clock = () => Date.now()} = {}) {
   const session = clock();
   let runs = [];
   let runSequence = 0;
@@ -221,7 +221,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     initialState = live.initialState ?? null;
     commandCount = commands?.length ?? 0;
     if (commands) {
-      // The command that left the start; watching begins a moment before it.
+      // The command that left the start, marked on the replay timeline.
       const startIndex = Math.max(0, commandCount - 1);
       const dt = live.config?.dt ?? 0.015;
       current.replay = {start: startIndex, length: 0, dt};
@@ -264,9 +264,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   function saveReplay(run, live, clip) {
     const log = commands, spawn = initialState;
     commands = initialState = null;
-    let wanted = false;
-    try { wanted = wantsReplay(); } catch { /* off */ }
-    if (!run.replay || !onReplay || !wanted || !log || !spawn || !Number.isInteger(live?.replayFormat) ||
+    if (!run.replay || !onReplay || !log || !spawn || !Number.isInteger(live?.replayFormat) ||
       commandCount <= run.replay.start || commandCount > MAX_REPLAY_COMMANDS) { delete run.replay; return; }
     run.replay.length = commandCount;
     const replay = {format: live.replayFormat, mapId: live.map.id, mapVersion: live.map.version, config: {...live.config},
@@ -315,9 +313,6 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   // Keeps recent pre-start states so a replay can start LEAD_SECONDS before its run.
   function snapshot(live) {
     if (!Array.isArray(live.commands)) return;
-    let wanted = false;
-    try { wanted = wantsReplay(); } catch { /* off */ }
-    if (!wanted) return;
     if (snapshotLog !== live.commands) { clearSnapshots(); snapshotLog = live.commands; snapshotTick = 0; }
     if (snapshotTick++ % SNAPSHOT_TICKS) return;
     const entry = {index: live.commands.length, state: copyState(live.state, live.initialState)};
@@ -415,7 +410,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         pb: best ? shape(best, total) : null,
         latest: latest ? shape(latest, total) : null,
         recent: recent.reverse().map(run => shape(run, total)),
-        splits: (record?.splits ?? []).flatMap((split, index) => split ? [{label: `${kind}${index + 1}`, time: split.time, speed: split.speed,
+        splits: (record?.splits ?? []).flatMap((split, index) => split ? [{index, label: `${kind}${index + (kind === 'S' ? 2 : 1)}`, time: split.time, speed: split.speed,
           at: split.at, pb: Number.isFinite(pbSplits[index]) ? pbSplits[index] : null}] : []),
         ramps: routeOf(record).map(([rampKey, ramp], index) => ({key: rampKey, label: `Ramp ${index + 1}`, checkpoint: ramp.checkpoint,
             board: ramp.board, down: ramp.down ?? null, up: ramp.up ?? null, surf: ramp.surf})),
@@ -439,11 +434,13 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     async clear(key) {
       await ready;
       const removed = runs.filter(run => !key || run.map === key).map(run => run.id);
-      runs = key ? runs.filter(run => run.map !== key) : [];
       const dropped = key ? (bests.has(key) ? [key] : []) : [...bests.keys()];
+      // Unlike background saves, an explicit deletion must report failure.
+      // Delete runs and their aggregate records atomically before publishing it.
+      if (store) await store.clear(removed, dropped);
+      const ids = new Set(removed);
+      runs = runs.filter(run => !ids.has(run.id));
       for (const id of dropped) bests.delete(id);
-      if (store && removed.length) await write(() => store.remove(removed));
-      if (store && dropped.length) await write(() => store.removeBests(dropped));
       commit();
       notify();
     },

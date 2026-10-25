@@ -148,20 +148,14 @@ export const panelMarkup = `
 
     <section id="page-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
       <div class="group">
-        ${toggle('keepHistory', 'Record runs', 'Keeps your attempts on each map for the Runs panel.')}
+        ${toggle('keepHistory', 'Record runs', 'Keeps your attempts and their replays in this browser.')}
         ${number('historyRunsPerMap', 'Runs kept per map', 3, 100, 1, 'runs', '', ' sub')}
         ${number('historyMinSeconds', 'Skip short resets', 0, 300, 1, 's', '', ' sub')}
-        ${toggle('saveReplays', 'Save replays', '<span id="replay-size">So you can rewatch your runs.</span>', ' sub')}
       </div>
       <p id="history-rule" class="hist-rule" role="status"></p>
       <h3>Storage</h3>
       <div class="group hist-store">
         <div class="hist-total"><b id="size-total"></b><span id="size-where">in this browser only</span></div>
-        <div id="size-bar" class="hist-bar" aria-hidden="true"></div>
-        <dl class="hist-keys">
-          <dt class="replays">Replays</dt><dd id="usage-replays"></dd><dd class="size" id="size-replays"></dd>
-          <dt class="runs">Runs and bests</dt><dd id="usage-runs"></dd><dd class="size" id="size-runs"></dd>
-        </dl>
         <div class="actions clear-row"><span class="note" id="clear-note" role="status"></span>
           <span class="clear-buttons"><button id="clear-cancel" class="ghost" type="button" hidden>Cancel</button><button id="clear-history" class="ghost" type="button">Clear all</button></span></div>
       </div>
@@ -207,8 +201,8 @@ export function formatBytes(bytes) {
 export function historyRule(settings) {
   if (settings.keepHistory === false) return 'Recording is off. Nothing new is added, and what you already have stays until you clear it.';
   const runs = settings.historyRunsPerMap, short = settings.historyMinSeconds;
-  return `On each map you keep <b>your PB</b>, <b>your latest attempt</b> and <b>your ${runs} newest runs</b>${
-    short > 0 ? `, not counting resets under ${short} s` : ''}. Your best splits and ramps stay even after the runs that set them are gone.`;
+  return `On each map you keep <b>your best recorded finish</b> and <b>your ${runs} newest runs</b>${
+    short > 0 ? `, skipping resets under ${short} s` : ''}. Your latest attempt is always available, even a short reset. Best splits and ramps stay after the runs that set them are gone.`;
 }
 
 export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
@@ -248,7 +242,6 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     const recording = settings.keepHistory !== false;
     setDisabled('historyRunsPerMap', !recording);
     setDisabled('historyMinSeconds', !recording);
-    setDisabled('saveReplays', !recording);
     showUsage();
     write(node('air-explain'), AIR_EXPLAIN[settings.airMetric] ?? AIR_EXPLAIN.combined);
     if (!capturing) write(keyButton, keyName(settings.crouchJumpKey));
@@ -262,22 +255,13 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   // which asks once before deleting.
   let clearState = 'idle';
   const clearButton = node('clear-history'), cancelButton = node('clear-cancel');
-  const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
-  let ruleShown = '', barShown = '';
+  let ruleShown = '';
   function showUsage() {
     let usage = null;
     try { usage = storage?.usage(); } catch { /* unavailable */ }
     const runs = usage?.history, saved = usage?.replays;
-    write(node('usage-runs'), runs ? (runs.runs || runs.maps ? `${plural(runs.runs, 'run')} on ${plural(runs.maps, 'map')}` : 'None yet') : 'Unavailable');
-    write(node('size-runs'), runs ? formatBytes(runs.bytes) : '');
-    write(node('usage-replays'), saved ? (saved.count ? plural(saved.count, 'replay') : 'None yet') : 'Unavailable');
-    write(node('size-replays'), saved ? formatBytes(saved.bytes) : '');
-    const runBytes = runs?.bytes ?? 0, replayBytes = saved?.bytes ?? 0, all = runBytes + replayBytes;
-    write(node('size-total'), formatBytes(all));
-    write(node('replay-size'), saved?.count ? `So you can rewatch your runs. About ${formatBytes(replayBytes / saved.count)} each so far.` : 'So you can rewatch your runs.');
-    // The bar splits what's stored between replays and runs; it has no capacity to fill.
-    const bar = all ? `<i class="replays" style="flex:${replayBytes}"></i><i class="runs" style="flex:${runBytes}"></i>` : '<i class="none"></i>';
-    if (bar !== barShown) { barShown = bar; node('size-bar').innerHTML = bar; }
+    const all = (runs?.bytes ?? 0) + (saved?.bytes ?? 0);
+    write(node('size-total'), usage ? formatBytes(all) : 'Unavailable');
     const rule = historyRule(settings);
     if (rule !== ruleShown) { ruleShown = rule; node('history-rule').innerHTML = rule; }
     node('history-rule').classList.toggle('off', settings.keepHistory === false);
@@ -288,16 +272,16 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     cancelButton.hidden = clearState !== 'confirm';
     write(clearButton, clearState === 'clearing' ? 'Clearing…' : 'Clear all');
     clearButton.classList.toggle('danger', asking);
-    write(node('clear-note'), clearState === 'confirm' ? 'Clear every run, best and replay on every map? This can’t be undone.'
-      : clearState === 'done' ? 'Cleared.' : '');
-    node('clear-note').classList.toggle('warn', clearState === 'confirm');
+    write(node('clear-note'), clearState === 'confirm' ? 'Clear all recorded runs and bests on every map? This can’t be undone.'
+      : clearState === 'done' ? 'Cleared.' : clearState === 'failed' ? 'Couldn’t clear. Try again.' : '');
+    node('clear-note').classList.toggle('warn', clearState === 'confirm' || clearState === 'failed');
   }
   function setClear(next) { clearState = next; showUsage(); }
   clearButton.addEventListener('click', () => {
-    if (clearState === 'idle' || clearState === 'done') { setClear('confirm'); cancelButton.focus(); return; }
+    if (clearState === 'idle' || clearState === 'done' || clearState === 'failed') { setClear('confirm'); cancelButton.focus(); return; }
     if (clearState !== 'confirm') return;
     setClear('clearing');
-    Promise.resolve(storage?.clear()).catch(() => {}).then(() => { setClear('done'); clearButton.focus(); });
+    Promise.resolve().then(() => storage?.clear()).then(() => setClear('done'), () => setClear('failed')).then(() => clearButton.focus());
   });
   cancelButton.addEventListener('click', () => { setClear('idle'); clearButton.focus(); });
   function setDisabled(key, disabled) {

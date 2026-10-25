@@ -25,7 +25,7 @@ const startCommands = ({speed = 350, fromHeight = 180, toHeight = 160, grounded 
 // This boundary double performs the native method calls used by the observer,
 // rather than mocking the metrics or reproducing its Board-entry formula.
 function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wrSource = 'ksf', commands = [contact(), finish],
-  floorHeight = 100, platformEdge = 100, yieldTask = async () => {}, shared = false, saved = null} = {}) {
+  floorHeight = 100, platformEdge = 100, yieldTask = async () => {}, shared = false, saved = null, ownerKey = 'guest'} = {}) {
   const config = {dt:.015,gravity:800,airAccelerate:150,airCap:30,groundNormal:.7,float32:false,
     standHeight:62,duckHeight:45,stepSize:18,unrestrictedStart:false};
   const map = {id:'surf_test',version:'map-1',zones:[startZone],brushes:['a','b','c'].map((id,index) => ({
@@ -99,7 +99,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
   const liveStep = Session.prototype.step, liveSlide = Movement.prototype.slide;
   let loadReplay = async id => { replayCalls.push(id); return replay; };
   let loadRecordRoute = async () => { routeCalls++; return replay; };
-  const getReferences = () => ({boardId:'board',own,record,loadReplay:id => loadReplay(id),loadRecordRoute:() => loadRecordRoute()});
+  const getReferences = () => ({boardId:'board',ownerKey,own,record,loadReplay:id => loadReplay(id),loadRecordRoute:() => loadRecordRoute()});
   const replayStore = shared || saved ? createReferenceReplayStore({getAdapter:() => adapter,yieldTask,saved}) : undefined;
   if (replayStore) cleanups.push(() => replayStore.destroy());
   const controller = createRunReferences({getSession:() => session,getAdapter:() => adapter,
@@ -112,6 +112,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
     native:() => ({loads:nativeLoads,steps:nativeSteps}),
     feedbackSteps:() => feedbackSteps,
     replay:() => replay, setReplay(value) { replay = value; }, setOwn(value) { own = value; }, setRecord(value) { record = value; },
+    setOwner(value) { ownerKey = value; },
     setLoader(value) { loadReplay = value; }, setRouteLoader(value) { loadRecordRoute = value; }, calls:() => ({replay:replayCalls,route:routeCalls})};
 }
 
@@ -150,6 +151,70 @@ describe('Saved reference analysis', () => {
     expect(changed.update(other)).toEqual({loss:8,status:'ready',source:'wr'});
     expect(changed.native().loads).toBe(1);
     expect(saved.data.size).toBe(2);
+  });
+});
+
+describe('Personal replay ownership', () => {
+  test('A to guest to B replaces frozen board and start references mid-attempt and after restart', async () => {
+    const f = fixture({ownerKey:'A',startSource:'pb',commands:startCommands()});
+    const clips = new Map([
+      ['A-pb',{speed:350,loss:5}],['B-pb',{speed:420,loss:12}],['B-new',{speed:450,loss:20}]
+    ]);
+    f.setLoader(async id => {
+      const clip = clips.get(id);
+      return {...f.replay(),commands:startCommands({speed:clip.speed}).map(command =>
+        command.brush ? {...command,loss:clip.loss} : command)};
+    });
+    f.setOwn({...entry,runId:'A-pb'});
+    const board = f.step(contact()); f.references(board); await flush();
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:5},start:{status:'ready',speed:350}});
+    f.setOwner('guest'); f.setOwn(null);
+    expect(f.references(board)).toMatchObject({board:{status:'missing',loss:null},start:{status:'missing',speed:null}});
+    f.setOwner('B'); f.setOwn({...entry,runId:'B-pb'});
+    expect(f.references(board)).toMatchObject({board:{status:'loading',loss:null},start:{status:'loading',speed:null}});
+    await flush();
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:12},start:{status:'ready',speed:420}});
+    f.setOwn({...entry,runId:'B-new'});
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:12},start:{status:'ready',speed:420}});
+    f.session.state.tick = 0; f.session.checkpointSpeeds = [];
+    f.session.timer.state.phase = 'ready'; f.session.timer.state.startTick = null;
+    f.references(board); await flush();
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:20},start:{status:'ready',speed:450}});
+  });
+
+  test('an old owner response cannot publish after a mid-attempt account switch', async () => {
+    const f = fixture({ownerKey:'A',startSource:'pb',commands:startCommands()});
+    let release;
+    f.setLoader(() => new Promise(resolve => { release = resolve; }));
+    const board = f.step(contact()); f.references(board); await flush();
+    f.setOwner('guest'); f.setOwn(null); f.references(board);
+    f.setOwner('B'); f.setOwn({...entry,runId:'B-pb'});
+    f.setLoader(async () => ({...f.replay(),commands:startCommands({speed:420}).map(command =>
+      command.brush ? {...command,loss:12} : command)}));
+    f.references(board); await flush();
+    release(f.replay()); await flush();
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:12},start:{status:'ready',speed:420}});
+  });
+
+  test('ownership tags do not duplicate pending, completed or persisted official replay analysis', async () => {
+    const saved = savedAnalysis();
+    const f = fixture({ownerKey:'A',saved,startSource:'pb',commands:startCommands()});
+    let release, loads = 0;
+    f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
+    const board = f.step(contact()); f.references(board); await flush();
+    for (const owner of ['guest','B']) { f.setOwner(owner); f.references(board); }
+    await flush(); expect(loads).toBe(1);
+    release(f.replay()); await flush();
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:5},start:{status:'ready',speed:350}});
+    const native = f.native();
+    f.setOwner('A');
+    expect(f.references(board)).toMatchObject({board:{status:'ready',loss:5},start:{status:'ready',speed:350}});
+    expect(loads).toBe(1); expect(f.native()).toEqual(native); expect(saved.data.size).toBe(1);
+    f.controller.destroy();
+    const restored = fixture({ownerKey:'B',saved,startSource:'pb',commands:startCommands()});
+    const nextBoard = restored.step(contact()); restored.references(nextBoard); await flush();
+    expect(restored.references(nextBoard)).toMatchObject({board:{status:'ready',loss:5},start:{status:'ready',speed:350}});
+    expect(restored.calls().replay).toEqual([]); expect(restored.native()).toEqual({loads:0,steps:0});
   });
 });
 

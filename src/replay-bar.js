@@ -71,8 +71,7 @@ export function keyRows(binds) {
 const svg = body => `<svg viewBox="0 0 20 20" aria-hidden="true">${body}</svg>`;
 const ICONS = {
   play: svg('<path d="M6.6 3.9v12.2c0 .6.6.9 1.1.6l9.4-6.1a.7.7 0 0 0 0-1.2L7.7 3.3c-.5-.3-1.1 0-1.1.6z"/>'),
-  // Pause is the product's slanted bar, twice.
-  pause: svg('<path d="M7.3 3.5h3.1L7.8 16.5H4.7zM14.3 3.5h3.1l-2.6 13h-3.1z"/>'),
+  pause: svg('<path d="M5 3.5h3.5v13H5zM11.5 3.5H15v13h-3.5z"/>'),
   again: svg('<path d="M10 3.6a6.4 6.4 0 1 1-6.2 8 1 1 0 0 1 1.9-.5A4.4 4.4 0 1 0 10 5.6H8.6l1.6 1.6a1 1 0 0 1-1.4 1.4L5.5 5.3a1 1 0 0 1 0-1.4L8.8.6a1 1 0 0 1 1.4 1.4L8.6 3.6z"/>'),
   keys: svg('<path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M2.8 5.6h14.4v8.8H2.8z"/><path d="M5 7.6h1.7v1.6H5zm3 0h1.7v1.6H8zm3 0h1.7v1.6H11zm3 0h1.4v1.6H14zM6.5 11h7v1.6h-7z"/>'),
   runs: svg('<path d="M4.4 4.5h2.8L5.6 8H2.8zm0 3.8M8.5 5.1h8.7v2.2H8.5zM4 10.3h2.8l-1.6 3.5H2.4zM8.5 10.9h8.7v2.2H8.5z"/>'),
@@ -90,16 +89,16 @@ export const replayBarMarkup = `
     <div class="rb-pins"></div>
     <div class="rb-tip" aria-hidden="true" hidden><b class="t-title"></b><b class="t-val"></b><span class="t-lab"></span></div>
   </div>
-  <span class="rb-total" data-rb="total"></span>
-  <span class="rb-say">
-    <span class="rb-hint" data-rb="hint"></span>
-    <span class="rb-notice" data-rb="notice" role="status"></span>
+  <span class="rb-side">
+    <span class="rb-total" data-rb="total"></span>
+    <span class="rb-tools">
+      <button class="rb-btn rb-speed" type="button" data-pop="speed" aria-haspopup="true" aria-expanded="false" aria-label="Playback speed" title="Playback speed ( [ and ] )">1×</button>
+      <button class="rb-btn rb-save" type="button" data-act="save" title="Save a location here (see Keyboard shortcuts for your keys)">Saveloc</button>
+      <button class="rb-btn rb-icon" type="button" data-pop="keys" aria-haspopup="true" aria-expanded="false" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">${ICONS.keys}</button>
+      <button class="rb-runs" type="button" data-act="runs" aria-expanded="false" aria-controls="runs-panel" title="Your runs on this map">${ICONS.runs}<span>Runs</span></button>
+    </span>
   </span>
-  <span class="rb-tools">
-    <button class="rb-btn rb-speed" type="button" data-pop="speed" aria-haspopup="true" aria-expanded="false" aria-label="Playback speed" title="Playback speed ( [ and ] )">1×</button>
-    <button class="rb-btn rb-icon" type="button" data-pop="keys" aria-haspopup="true" aria-expanded="false" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">${ICONS.keys}</button>
-    <button class="rb-runs" type="button" data-act="runs" aria-expanded="false" aria-controls="runs-panel" title="Your runs on this map">${ICONS.runs}<span>Runs</span></button>
-  </span>
+  <span class="rb-notice" data-rb="notice" role="status"></span>
   <div class="rb-pop rb-speeds" data-popover="speed" role="group" aria-label="Playback speed" hidden>
     ${SPEEDS.map(speed => `<button type="button" data-speed="${speed}" aria-pressed="false">${speedText(speed)}</button>`).join('')}
   </div>
@@ -108,9 +107,9 @@ export const replayBarMarkup = `
 
 export const replayBarStyles = `
 .rb{--rose:var(--accent);--loc:#f2f2f2;--rb-edge:rgba(8,8,8,.78);--ink:rgba(18,18,18,.9);position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
-  width:min(1180px,calc(100vw - 32px));display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;column-gap:16px;
+  width:min(1320px,calc(100vw - 32px));display:grid;grid-template-columns:minmax(330px,1fr) minmax(0,3fr) minmax(330px,1fr);align-items:center;column-gap:16px;
   pointer-events:auto;color:var(--paper);font-size:13px;line-height:1.2;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"case" 1;
-  -webkit-text-stroke:1.25px var(--rb-edge);paint-order:stroke fill;text-shadow:0 1px 2px rgba(0,0,0,.5);container-type:inline-size;isolation:isolate}
+  -webkit-text-stroke:1.25px var(--rb-edge);paint-order:stroke fill;text-shadow:0 1px 2px rgba(0,0,0,.5);isolation:isolate}
 /* No box: a pool of shade under the bar keeps it legible on snow and neon alike. */
 .rb::before{content:"";position:absolute;z-index:-1;left:-14%;right:-14%;top:-64px;bottom:-26px;pointer-events:none;
   background:radial-gradient(50% 62% at 50% 66%,rgba(8,8,8,.72),rgba(8,8,8,.5) 48%,rgba(8,8,8,0));transition:opacity .4s}
@@ -119,7 +118,7 @@ export const replayBarStyles = `
 .rb svg{display:block;width:20px;height:20px;fill:currentColor;filter:drop-shadow(0 0 1px rgba(8,8,8,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.45))}
 .rb-btn{height:34px;min-width:34px;display:grid;place-items:center;padding:0 9px;border:0;border-radius:10px;background:transparent;font-weight:700}
 .rb-btn:hover,.rb-btn[aria-expanded=true]{background:rgba(255,255,255,.14)}
-.rb-play{width:42px;height:42px;padding:0;border-radius:50%;background:var(--rose);color:#141414;box-shadow:0 0 0 1.5px var(--rb-edge),0 3px 10px rgba(0,0,0,.35)}
+.rb-play{justify-self:end;width:42px;height:42px;padding:0;border-radius:50%;background:var(--rose);color:#141414;box-shadow:0 0 0 1.5px var(--rb-edge),0 3px 10px rgba(0,0,0,.35)}
 .rb-play:hover{background:var(--rose);filter:brightness(1.08)}
 .rb-play svg{width:22px;height:22px;filter:none;color:#141414}
 
@@ -157,18 +156,14 @@ export const replayBarStyles = `
 .t-val.good{color:var(--good)}.t-val.warn{color:var(--warn)}.t-val.loss{color:var(--bad)}.t-val.muted{color:var(--muted)}.t-val.loc{color:var(--loc)}
 .rb-total{font-size:13px;font-weight:700;opacity:.8}
 
-/* The quiet loc hint: the user's own Save bind, and saved notices in loc colour. */
-.rb-say{display:flex;align-items:center;min-width:0}
-.rb-hint{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;font-weight:700}
-.rb-hint kbd{display:inline-block;padding:3px 6px 2px;border-radius:5px;font:inherit;font-size:11px;color:var(--paper);-webkit-text-stroke:0;
-  text-shadow:none;background:rgba(8,8,8,.55);box-shadow:inset 0 0 0 1px rgba(255,255,255,.3),0 1px 0 rgba(255,255,255,.18)}
-.rb-hint i{font-style:normal;opacity:.6}
-.rb-hint-label{margin-left:3px;opacity:.8}
-.rb-notice{display:none;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:700;color:var(--loc)}
-.rb.saying .rb-hint{display:none}.rb.saying .rb-notice{display:block}
+/* Notices never resize or shift the timeline. Save binds live in the shortcut sheet. */
+.rb-side{display:flex;align-items:center;gap:16px}
+.rb-notice{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);max-width:min(320px,100%);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:12.5px;font-weight:700;color:var(--loc)}
+.rb-notice:empty{display:none}
 
 .rb-tools{display:flex;align-items:center;gap:4px}
-.rb-speed{min-width:44px;font-size:13.5px}
+.rb-speed,.rb-save{min-width:44px;font-size:13.5px}
 .rb-speed.off{color:var(--warn)}
 .rb-runs{height:34px;display:flex;align-items:center;gap:7px;margin-left:6px;padding:0 14px 0 11px;border:0;border-radius:999px;font-size:13px;font-weight:700;
   background:var(--ink);-webkit-text-stroke:0!important;text-shadow:none!important;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 4px 14px rgba(0,0,0,.4)}
@@ -190,19 +185,21 @@ export const replayBarStyles = `
 .rb-sheet .rb-diamond{display:inline-block;width:7px;height:7px;margin:0 3px;border-radius:1px;background:var(--loc);transform:rotate(45deg);vertical-align:1px}
 
 /* At rest (playing, untouched): only the timeline stays. */
-.rb>.rb-play,.rb>.rb-total,.rb>.rb-say,.rb>.rb-tools{transition:opacity .35s}
-.rb.rest>.rb-play,.rb.rest>.rb-total,.rb.rest>.rb-say,.rb.rest>.rb-tools{opacity:0}
+.rb>.rb-play,.rb>.rb-side{transition:opacity .35s}
+.rb.rest>.rb-play,.rb.rest>.rb-side{opacity:0}
 .rb.rest::before{opacity:.45}
 .rb.rest .rb-marks span{opacity:0}
 .rb.rest .rb-pins button{pointer-events:none}
 
-@container (max-width:900px){.rb-hint-label,.rb-hint i,.rb-hint kbd+i+kbd{display:none}}
-@container (max-width:680px){
+@media (max-width:1100px){
   .rb{grid-template-columns:auto auto minmax(0,1fr) auto;row-gap:2px;column-gap:12px}
+  .rb-play{justify-self:start}
+  .rb-side{display:contents}
   .rb-line{grid-column:1/-1;grid-row:2}
   .rb-total{grid-column:2;grid-row:1}
-  .rb-say{grid-column:3;grid-row:1;justify-self:end}
   .rb-tools{grid-column:4;grid-row:1}
+  .rb-total,.rb-tools{transition:opacity .35s}
+  .rb.rest .rb-total,.rb.rest .rb-tools{opacity:0}
   .rb-runs span{display:none}.rb-runs{padding:0 9px}
 }
 @media (prefers-reduced-motion:reduce){.rb *,.rb::before{transition:none!important}}
@@ -216,7 +213,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   const play = q('.rb-play'), rail = q('.rb-rail'), track = q('.rb-track');
   const headway = q('.rb-headway'), marksLayer = q('.rb-marks'), pins = q('.rb-pins'), tip = q('.rb-tip');
   const [tipTitle, tipValue, tipLabel] = tip.children;
-  const total = q('[data-rb="total"]'), hint = q('[data-rb="hint"]'), notice = q('[data-rb="notice"]');
+  const total = q('[data-rb="total"]'), notice = q('[data-rb="notice"]');
   const speedButton = q('.rb-speed'), runsButton = q('.rb-runs');
   const popovers = Object.fromEntries([...bar.querySelectorAll('[data-popover]')].map(element => [element.dataset.popover, element]));
   const openers = Object.fromEntries([...bar.querySelectorAll('[data-pop]')].map(element => [element.dataset.pop, element]));
@@ -240,10 +237,6 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     const key = JSON.stringify(binds);
     if (key === bindsKey) return;
     bindsKey = key;
-    const save = binds.save.map(code => bindLabel([code])).filter(Boolean);
-    hint.hidden = !save.length;
-    hint.innerHTML = save.map(label => `<kbd>${escape(label)}</kbd>`).join('<i>/</i>') + '<span class="rb-hint-label">save loc</span>';
-    hint.title = save.length ? `Save a loc with ${save.join(' / ')}. Your locs become practice savelocs when you leave the replay.` : '';
     if (open === 'keys') sheet();
   }
   function sheet() {
@@ -446,7 +439,6 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     const length = railTime((status.length - status.start) * status.dt);
     if (length !== totalShown) { totalShown = length; write(total, length); }
     write(notice, status.notice ?? '');
-    toggleClass(bar, 'saying', !!status.notice);
     if (++bindsAge > 30) { bindsAge = 0; readBinds(); }
     const rest = status.playing && !dragging && !hovering && !open && !held() && !status.notice && now() - lastActivity > REST_MS;
     toggleClass(bar, 'rest', rest);
