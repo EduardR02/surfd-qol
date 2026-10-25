@@ -14,7 +14,13 @@ export const defaults = {
   // Binds change what the game receives, so each one is opt-in.
   crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
+  replayControls: true,
+  // Run history: the newest runs per map (each with its replay) plus every
+  // map's bests, which are never pruned.
+  keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10,
 };
+// Changing any of these prunes stored history and replays.
+export const storageLimitKeys = ['historyRunsPerMap', 'historyMinSeconds'];
 export const colorKeys = ['speedColor', 'goodColor', 'warnColor', 'badColor'];
 const choices = {
   checkpointReference: ['pb', 'wr', 'both'],
@@ -49,6 +55,8 @@ export function applySettings(settings, patch) {
   settings.airLossGood = Math.max(settings.airLossAmazing, settings.airLossGood);
   settings.referenceLossTolerance = Math.max(0, settings.referenceLossTolerance);
   settings.strafeLookbackSeconds = Math.max(0.05, Math.min(0.5, settings.strafeLookbackSeconds));
+  settings.historyRunsPerMap = Math.round(Math.max(3, Math.min(100, settings.historyRunsPerMap)));
+  settings.historyMinSeconds = Math.max(0, Math.min(300, settings.historyMinSeconds));
   for (const key of colorKeys) if (!/^#[a-f\d]{6}$/i.test(settings[key])) settings[key] = defaults[key];
   for (const [key, allowed] of Object.entries(choices)) if (!allowed.includes(settings[key])) settings[key] = defaults[key];
   return settings;

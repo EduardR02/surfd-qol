@@ -13,16 +13,17 @@ const choice = (key, label, options, help = '', extra = '') =>
   }</span></div>`;
 const range = (key, label, min, max, step, help = '') =>
   `<label class="row">${text(label, help)}<span class="range"><input type="range" min="${min}" max="${max}" step="${step}" data-setting="${key}"><output data-output="${key}"></output></span></label>`;
-const number = (key, label, min, max, step, unit, help = '') =>
-  `<label class="row">${text(label, help)}<span class="num"><input type="number" min="${min}"${max ? ` max="${max}"` : ''} step="${step}" data-setting="${key}"><span class="unit">${unit}</span></span></label>`;
+const number = (key, label, min, max, step, unit, help = '', extra = '') =>
+  `<label class="row${extra}">${text(label, help)}<span class="num"><input type="number" min="${min}"${max ? ` max="${max}"` : ''} step="${step}" data-setting="${key}"><span class="unit">${unit}</span></span></label>`;
 const cutoff = (key, label, step, unit) =>
   `<input type="number" min="0" step="${step}" data-setting="${key}" aria-label="${label}"><span class="unit">${unit}</span>`;
 const color = (key, label) =>
   `<label class="color"><input type="color" data-setting="${key}"><span>${label}</span></label>`;
 const references = [['fixed', 'Fixed'], ['pb', 'PB'], ['wr', 'WR']];
 
+export const launcherMarkup = `<button id="open" class="launcher" type="button" aria-expanded="false" aria-controls="panel" hidden><span class="mark" aria-hidden="true"></span>QoL</button>`;
+
 export const panelMarkup = `
-<button id="open" class="launcher" type="button" aria-expanded="false" aria-controls="panel" hidden><span class="mark" aria-hidden="true"></span>QoL</button>
 <section id="panel" role="dialog" aria-labelledby="panel-title" hidden>
   <header class="head">
     <h2 id="panel-title"><span class="mark" aria-hidden="true"></span>Surfd QoL</h2>
@@ -49,6 +50,7 @@ export const panelMarkup = `
     <button id="tab-feedback" type="button" role="tab" aria-selected="false" aria-controls="page-feedback" data-page="feedback" tabindex="-1">Feedback</button>
     <button id="tab-compare" type="button" role="tab" aria-selected="false" aria-controls="page-compare" data-page="compare" tabindex="-1">Compare</button>
     <button id="tab-controls" type="button" role="tab" aria-selected="false" aria-controls="page-controls" data-page="controls" tabindex="-1">Controls</button>
+    <button id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="page-history" data-page="history" tabindex="-1">History</button>
   </nav>
   <div class="body">
     <section id="page-display" role="tabpanel" aria-labelledby="tab-display" tabindex="0">
@@ -139,8 +141,27 @@ export const panelMarkup = `
       </div>
       <h3>Null binds</h3>
       <div class="group">
-        ${toggle('nullAD', 'A / D')}
-        ${toggle('nullWSpace', 'W / Space', 'In each pair the latest key wins; let go to resume the other.')}
+        ${toggle('nullAD', 'Left / Right', 'Uses your movement bindings in Surfd’s settings.')}
+        ${toggle('nullWSpace', 'Forward / Jump', 'Uses your bindings, including extra keys. Latest press wins; release it to resume the other action.')}
+      </div>
+    </section>
+
+    <section id="page-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
+      <div class="group">
+        ${toggle('keepHistory', 'Record runs', 'Keeps your attempts and their replays in this browser.')}
+        ${number('historyRunsPerMap', 'Runs kept per map', 3, 100, 1, 'runs', '', ' sub')}
+        ${number('historyMinSeconds', 'Skip short resets', 0, 300, 1, 's', '', ' sub')}
+      </div>
+      <p id="history-rule" class="hist-rule" role="status"></p>
+      <h3>Playback</h3>
+      <div class="group">
+        ${toggle('replayControls', 'Replay controls', 'Adds seeking, playback speed and replay savelocs. Off leaves the game’s playback alone. Recording is separate.')}
+      </div>
+      <h3>Storage</h3>
+      <div class="group hist-store">
+        <div class="hist-total"><b id="size-total"></b><span id="size-where">in this browser only</span></div>
+        <div class="actions clear-row"><span class="note" id="clear-note" role="status"></span>
+          <span class="clear-buttons"><button id="clear-cancel" class="ghost" type="button" hidden>Cancel</button><button id="clear-history" class="ghost" type="button">Clear all</button></span></div>
       </div>
     </section>
   </div>
@@ -176,7 +197,19 @@ export function previewModel(settings) {
   };
 }
 
-export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange}) {
+// Sizes for the Storage row: KB below a megabyte, then MB.
+export function formatBytes(bytes) {
+  return bytes < 1024 * 1024 ? `${Math.max(bytes ? 1 : 0, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+// What the History settings keep, said as one plain sentence (HTML).
+export function historyRule(settings) {
+  if (settings.keepHistory === false) return 'Recording is off. Nothing new is added, and what you already have stays until you clear it.';
+  const runs = settings.historyRunsPerMap, short = settings.historyMinSeconds;
+  return `On each map you keep <b>your best recorded finish</b> and <b>your ${runs} newest runs</b>${
+    short > 0 ? `, skipping resets under ${short} s` : ''}. Your latest attempt is always available, even a short reset. Best splits and ramps stay after the runs that set them are gone.`;
+}
+
+export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
   const node = id => root.getElementById(id);
   const panel = node('panel'), opener = node('open'), close = node('close'), keyButton = node('key'), keyHelp = node('key-help');
   const body = panel.querySelector('.body');
@@ -210,6 +243,10 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     setDisabled('speedEnergyRamps', settings.speedEnergyColor !== true);
     setDisabled('rampResult', live || settings.showSurf === false);
     setDisabled('airMetric', live || settings.showAir === false);
+    const recording = settings.keepHistory !== false;
+    setDisabled('historyRunsPerMap', !recording);
+    setDisabled('historyMinSeconds', !recording);
+    showUsage();
     write(node('air-explain'), AIR_EXPLAIN[settings.airMetric] ?? AIR_EXPLAIN.combined);
     if (!capturing) write(keyButton, keyName(settings.crouchJumpKey));
     panel.style.setProperty('--opacity', settings.opacity);
@@ -218,6 +255,39 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     preview.setTime('00:41.233');
     preview.render(previewModel(settings));
   }
+  // Storage: what history and replays take in this browser, and Clear all,
+  // which asks once before deleting.
+  let clearState = 'idle';
+  const clearButton = node('clear-history'), cancelButton = node('clear-cancel');
+  let ruleShown = '';
+  function showUsage() {
+    let usage = null;
+    try { usage = storage?.usage(); } catch { /* unavailable */ }
+    const runs = usage?.history, saved = usage?.replays;
+    const all = (runs?.bytes ?? 0) + (saved?.bytes ?? 0);
+    write(node('size-total'), usage ? formatBytes(all) : 'Unavailable');
+    const rule = historyRule(settings);
+    if (rule !== ruleShown) { ruleShown = rule; node('history-rule').innerHTML = rule; }
+    node('history-rule').classList.toggle('off', settings.keepHistory === false);
+    const empty = !runs?.runs && !runs?.maps && !saved?.count;
+    clearButton.hidden = !storage;
+    const asking = clearState === 'confirm' || clearState === 'clearing';
+    clearButton.disabled = clearState === 'clearing' || (!asking && empty);
+    cancelButton.hidden = clearState !== 'confirm';
+    write(clearButton, clearState === 'clearing' ? 'Clearing…' : 'Clear all');
+    clearButton.classList.toggle('danger', asking);
+    write(node('clear-note'), clearState === 'confirm' ? 'Clear all recorded runs and bests on every map? This can’t be undone.'
+      : clearState === 'done' ? 'Cleared.' : clearState === 'failed' ? 'Couldn’t clear. Try again.' : '');
+    node('clear-note').classList.toggle('warn', clearState === 'confirm' || clearState === 'failed');
+  }
+  function setClear(next) { clearState = next; showUsage(); }
+  clearButton.addEventListener('click', () => {
+    if (clearState === 'idle' || clearState === 'done' || clearState === 'failed') { setClear('confirm'); cancelButton.focus(); return; }
+    if (clearState !== 'confirm') return;
+    setClear('clearing');
+    Promise.resolve().then(() => storage?.clear()).then(() => setClear('done'), () => setClear('failed')).then(() => clearButton.focus());
+  });
+  cancelButton.addEventListener('click', () => { setClear('idle'); clearButton.focus(); });
   function setDisabled(key, disabled) {
     for (const control of controls) {
       if (control.dataset.setting !== key) continue;
@@ -255,6 +325,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   }
   function selectPage(tab) {
     cancelCapture();
+    if (clearState !== 'clearing') setClear('idle');
     for (const item of tabs) {
       const selected = item === tab;
       item.setAttribute('aria-selected', String(selected));
@@ -266,6 +337,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   for (const tab of tabs) tab.addEventListener('click', () => selectPage(tab));
   function closePanel(focus = false) {
     cancelCapture();
+    if (clearState !== 'clearing') clearState = 'idle';
     panel.hidden = true;
     opener.setAttribute('aria-expanded', 'false');
     if (focus && available) opener.focus();
@@ -273,6 +345,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   opener.addEventListener('click', () => {
     if (!available) return;
     if (!panel.hidden) { closePanel(true); return; }
+    onOpen?.();
     bindings?.release?.();
     panel.hidden = false;
     opener.setAttribute('aria-expanded', 'true');
@@ -326,6 +399,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   return {
     sync,
     handleKey,
+    close: closePanel,
     get open() { return !panel.hidden; },
     // Settings are reachable only outside a run (menus).
     setAvailable(next) {

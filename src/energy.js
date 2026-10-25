@@ -36,7 +36,10 @@ export function createEnergyTrend() {
     const energy = speedSquared + 2 * gravity * z;
     const dt = time - lastTime;
     const repeated = energy === lastEnergy && x === lastX && y === lastY && z === lastZ;
-    if (dt === 0 || (repeated && !exact)) return publish();
+    if (dt === 0 || (repeated && !exact)) {
+      if (suppressed) { rate = 0; tone = 'neutral'; }
+      return publish();
+    }
     const speed = Math.sqrt(speedSquared);
     // Restarts, seeks and teleports move the player further than its own
     // velocity could; they start a fresh baseline instead of a fake spike.

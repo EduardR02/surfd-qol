@@ -279,6 +279,147 @@ describe('personal checkpoint references', () => {
   });
 });
 
+describe('Personal checkpoint ownership', () => {
+  test('isolates equal-time local baselines across A, guest and B while running and after reload', () => {
+    const session = makeSession(), storage = memoryStorage();
+    let ownerKey = 'A';
+    const getReferences = () => ({boardId:'board',ownerKey});
+    const create = () => createCheckpointReferences({getSession:() => session,getReferences,storage,settings:{checkpointReference:'pb'}});
+    let refs = create();
+    const records = [
+      {owner:'A',time:9,speeds:[800,1400]},
+      {owner:'guest',time:11,speeds:[600,1000]},
+      {owner:'B',time:9,speeds:[1000,1300]}
+    ];
+    for (const record of records) {
+      ownerKey = record.owner; restart(session); refs.update();
+      session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+      finish(session,record.time,record.speeds); refs.update();
+    }
+    ownerKey = 'A'; restart(session); refs.update();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+    for (const record of records) {
+      ownerKey = record.owner;
+      expect(refs.update()).toMatchObject({
+        own:record.speeds,ownTimeUs:record.time * 1e6,
+        ownSplitsUs:[record.time * .5e6,record.time * .8e6],ownStatus:'ready'
+      });
+    }
+    // The current attempt crossed owners, so its finish cannot become B's PB.
+    finish(session,8,[2000,2200]); refs.update(); restart(session);
+    expect(refs.update()).toMatchObject({own:[1000,1300],ownTimeUs:9000000});
+    refs.destroy();
+    for (const record of records) {
+      ownerKey = record.owner; restart(session); refs = create();
+      expect(refs.update()).toMatchObject({own:record.speeds,ownTimeUs:record.time * 1e6,ownStatus:'ready'});
+      refs.destroy();
+    }
+  });
+
+  test('a finished A run is never credited or linked to guest or B and B uses its own slower official PB', async () => {
+    const session = makeSession(), storage = memoryStorage();
+    let ownerKey = 'A', own = null;
+    const officialB = {runId:'B-pb',timeUs:12000000,splitsUs:[6000000,9600000]};
+    const getReferences = () => ({
+      boardId:'board',ownerKey,own,
+      loadReplay:async () => replayFor(session,[700,1100],{elapsed:12,splits:[6,9.6]})
+    });
+    const create = () => createCheckpointReferences({
+      getSession:() => session,getReferences,getSessionClass:() => ReplaySession,
+      storage,settings:{checkpointReference:'pb'},yieldTask:instantYield
+    });
+    let refs = create(); refs.update();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+    finish(session,9,[900,1500]); refs.update();
+    ownerKey = 'guest';
+    expect(refs.update()).toMatchObject({own:null,ownTimeUs:null,ownStatus:'missing'});
+    ownerKey = 'B'; own = officialB; refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[700,1100],ownEntry:officialB,ownTimeUs:12000000,ownSplitsUs:[6000000,9600000]});
+    restart(session);
+    expect(refs.update()).toMatchObject({own:[700,1100],ownTimeUs:12000000});
+    refs.destroy();
+    for (const owner of ['A','guest','B']) {
+      ownerKey = owner; own = owner === 'B' ? officialB : null; refs = create();
+      refs.update(); await microtasks();
+      expect(refs.update()).toMatchObject(owner === 'A'
+        ? {own:[900,1500],ownTimeUs:9000000}
+        : owner === 'B' ? {own:[700,1100],ownTimeUs:12000000} : {own:null,ownTimeUs:null});
+      refs.destroy();
+    }
+  });
+
+  test('discards legacy unowned personal records rather than assigning them to guest or an account', () => {
+    const session = makeSession(), storage = memoryStorage();
+    storage.setItem('surfd.qol.checkpoints.v1',JSON.stringify({
+      cache:[],personal:[[sessionKey(session,'board'),{timeUs:9000000,splitsUs:[4500000,7200000],speeds:[900,1500],runId:null}]]
+    }));
+    for (const ownerKey of ['A','guest','B']) {
+      const refs = createCheckpointReferences({
+        getSession:() => session,getReferences:() => ({boardId:'board',ownerKey}),storage,settings:{checkpointReference:'pb'}
+      });
+      expect(refs.update()).toMatchObject({own:null,ownTimeUs:null,ownStatus:'missing'});
+      refs.destroy();
+    }
+  });
+
+  test('ownership changes retain pending and completed analysis for the same immutable official replay', async () => {
+    const session = makeSession(), storage = memoryStorage();
+    let ownerKey = 'A', release, loads = 0, steps = 0;
+    class CountedSession extends ReplaySession {
+      step(command) { steps++; return super.step(command); }
+    }
+    const getReferences = () => ({
+      boardId:'board',ownerKey,own:entry,
+      loadReplay:() => { loads++; return new Promise(resolve => { release = resolve; }); }
+    });
+    const create = () => createCheckpointReferences({
+      getSession:() => session,getReferences,getSessionClass:() => CountedSession,
+      storage,settings:{checkpointReference:'pb'},yieldTask:instantYield
+    });
+    const refs = create(); refs.update(); await microtasks();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+    ownerKey = 'guest'; refs.update(); ownerKey = 'B'; refs.update(); await microtasks();
+    expect(loads).toBe(1);
+    release(replayFor(session)); await microtasks();
+    expect(refs.update()).toMatchObject({own:[900,1200],ownTimeUs:10000000,ownStatus:'ready'});
+    ownerKey = 'A';
+    expect(refs.update()).toMatchObject({own:[900,1200],ownStatus:'ready'});
+    expect({loads,steps}).toEqual({loads:1,steps:2});
+    refs.destroy();
+    ownerKey = 'B'; const restored = create();
+    expect(restored.update()).toMatchObject({own:[900,1200],ownStatus:'ready'});
+    expect({loads,steps}).toEqual({loads:1,steps:2});
+    restored.destroy();
+  });
+  test('switches frozen official timing and speeds together during a running attempt and ignores A replies', async () => {
+    const session = makeSession();
+    let ownerKey = 'A', own = entry, releaseA;
+    const officialB = {runId:'B-pb',timeUs:12000000,splitsUs:[6000000,9600000]};
+    const refs = createCheckpointReferences({
+      getSession:() => session,
+      getReferences:() => ({
+        boardId:'board',ownerKey,own,
+        loadReplay:id => id === entry.runId
+          ? new Promise(resolve => { releaseA = resolve; })
+          : Promise.resolve(replayFor(session,[700,1100],{elapsed:12,splits:[6,9.6]}))
+      }),
+      getSessionClass:() => ReplaySession,storage:memoryStorage(),settings:{checkpointReference:'pb'},yieldTask:instantYield
+    });
+    refs.update(); await microtasks();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+    ownerKey = 'guest'; own = null;
+    expect(refs.update()).toMatchObject({own:null,ownTimeUs:null,ownSplitsUs:null,ownStatus:'missing'});
+    ownerKey = 'B'; own = officialB;
+    expect(refs.update()).toMatchObject({own:null,ownTimeUs:12000000,ownSplitsUs:[6000000,9600000],ownStatus:'loading'});
+    await microtasks(); releaseA(replayFor(session)); await microtasks();
+    expect(refs.update()).toMatchObject({own:[700,1100],ownTimeUs:12000000,ownSplitsUs:[6000000,9600000],ownStatus:'ready'});
+    own = {runId:'B-new',timeUs:11000000,splitsUs:[5500000,8800000]};
+    expect(refs.update()).toMatchObject({own:[700,1100],ownTimeUs:12000000,ownSplitsUs:[6000000,9600000]});
+    refs.destroy();
+  });
+
+});
+
 describe('Shared checkpoint job lifecycle', () => {
   test('equal PB and leaderboard identities load and reconstruct nonempty checkpoint scalars once', async () => {
     const session = makeSession();

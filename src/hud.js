@@ -7,7 +7,10 @@ import {createEnergyTrend, energySample} from './energy.js';
 import {hudMarkup, createHudView, installFonts} from './hud-view.js';
 import {hudStyles} from './hud-styles.js';
 import {panelStyles} from './panel-styles.js';
-import {panelMarkup, createSettingsPanel} from './settings-panel.js';
+import {launcherMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
+import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
+import {runsStyles} from './runs-styles.js';
+import {replayBarMarkup, replayBarStyles, createReplayBar} from './replay-bar.js';
 import {defaults} from './settings.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -15,16 +18,20 @@ const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}</style>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
-    ${panelMarkup}`;
+    ${replayBarMarkup}
+    <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${runsLauncherMarkup}${launcherMarkup}</div>
+    ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
   const overlay = root.getElementById('overlay');
+  const releaseNotice = root.getElementById('release-notice');
+  let releaseVersion = null;
   const hud = createHudView(overlay);
 
   const nativeStyle = document.createElement('style');
@@ -58,7 +65,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     // Keep the core stack on screen at the extremes of position and size;
     // with no room above for splits, they drop below the feedback instead.
     const top = 84 * scale, bottom = 112 * scale;
-    overlay.style.setProperty('--y', `clamp(${top}px, ${clamp(settings.y, 10, 90)}%, calc(100% - ${bottom}px))`);
+    // --reserve keeps the stack above the replay controls while they are up.
+    overlay.style.setProperty('--y', `clamp(${top}px, ${clamp(settings.y, 10, 90)}%, calc(100% - ${bottom}px - var(--reserve, 0px)))`);
     const anchor = Math.max(top, Math.min(innerHeight * clamp(settings.y, 10, 90) / 100, innerHeight - bottom));
     overlay.classList.toggle('flip', anchor < 250 * scale);
     overlay.style.setProperty('--scale', scale);
@@ -77,11 +85,24 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     onResetColors,
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },
+    onOpen: () => runs.close(),
+    storage: history ? {
+      usage: () => ({history: history.usage(), replays: replays?.usage?.() ?? null}),
+      clear: () => history.clear(),
+    } : null,
   });
+  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, now: services.now, onOpen: () => panel.close(),
+    onOpenSettings: page => { runs.close(); panel.show(page); }});
+  // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
+  const replayBar = replayControl ? createReplayBar({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
+    getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
+    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open}) : null;
 
-  function onKey(event) { panel.handleKey(event); }
+  function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
+  function onPointer(event) { replayBar?.handlePointer(event); }
+  for (const type of ['mousedown', 'mouseup', 'wheel']) window.addEventListener(type, onPointer, {capture: true, passive: false});
   window.addEventListener('resize', syncSettings);
 
   const menu = document.getElementById('menu');
@@ -107,7 +128,10 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
     const currentView = view ?? snapshot?.spectator ?? null;
     const inSurf = inSurfContext(snapshot, session, currentView);
+    replayControl?.setVisible(inSurf);
     panel.setAvailable(!inSurf);
+    runs.setContext({menu: !inSurf, replay: inSurf && !!replayBar?.visible});
+    releaseNotice.hidden = inSurf || releaseVersion === null;
     if (!inSurf) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
@@ -219,6 +243,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       }
     }
     panel.setStatus(model.status);
+    const reserve = `${replayBar?.render(inSurf) ?? 0}px`;
+    replayBar?.setRunsOpen(runs.open);
+    if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }
 
   syncSettings();
@@ -226,20 +253,35 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   render();
   const interval = setInterval(render, 67);
   return {
+    setUpdate(update) {
+      releaseVersion = typeof update?.version === 'string' && /^\d{1,5}(?:\.\d{1,5}){2,3}$/.test(update.version) ? update.version : null;
+      releaseNotice.textContent = releaseVersion ? `Surfd QoL ${releaseVersion} available ↗` : '';
+      releaseNotice.title = 'Open the GitHub release. Download and replace your extension folder, then reload the extension and Surfd.';
+      refreshMenu();
+    },
     observeFinish() { references.update(false); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
+    // Dev harness hooks: the Runs panel (optionally on a map, with the map list
+    // open) and the replay controls' lists.
+    showRuns(key, {maps = false, view = 'runs'} = {}) { runs.show(key); runs.showView(view); if (maps) runs.showMaps(); },
+    showReplayPopover(name) { replayBar?.showPopover(name); },
+    showReplayRuns() { if (replayBar?.visible) runs.show(replayBar.status?.run?.mapKey ?? history?.currentMap, root.getElementById('replay').getBoundingClientRect()); },
     destroy() {
       destroyed = true;
+      replayControl?.setVisible(false);
       clearInterval(interval);
       cancelAnimationFrame(liveFrame);
       references.destroy();
       runReferences.destroy();
+      runs.destroy();
+      replayBar?.destroy();
       replayStore.destroy?.();
       menuObserver.disconnect();
       document.removeEventListener('pointerlockchange', onPointerLockChange);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('keyup', onKey, true);
+      for (const type of ['mousedown', 'mouseup', 'wheel']) window.removeEventListener(type, onPointer, {capture: true});
       window.removeEventListener('resize', syncSettings);
       bindings?.release?.();
       hullState?.remove();

@@ -7,6 +7,7 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
+import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds} from './fixtures.js';
 
 const params = new URLSearchParams(location.search);
 const DT = 0.015, GRAVITY = 800;
@@ -51,7 +52,12 @@ export const scenarios = {
   'energy-loss': {note: 'Speed tint: losing', ...ramp, energy: -1, settings: {speedEnergyColor: true}},
   'energy-neutral': {note: 'Speed tint: neutral', ...ramp, energy: 0, settings: {speedEnergyColor: true}},
   menu: {note: 'In a menu (settings entry point)', ...ramp, menu: true},
+  watching: {note: 'Watching a saved run with replay controls', ...ramp, ...checkpoint, snapshot: {playback: true}, watching: true},
 };
+
+// Run history, replays, playback and ramp references in the shapes the UI is
+// given (dev/fixtures.js). The watching state reads ?play, ?locs, ?notice,
+// ?title, ?speed, ?at and ?binds; the Runs panel's Ramps view reads ?ref.
 
 const palettes = {custom: {speedColor: '#f4f1ea', goodColor: '#6fe0b0', warnColor: '#ffcf5c', badColor: '#ff5f6d'}};
 const backdrops = ['snow', 'fog', 'ice', 'neon', 'warm', 'dark', 'menu'];
@@ -66,7 +72,17 @@ for (const [key, value] of params) {
   applySettings(settings, {[field]: typeof defaults[field] === 'number' ? Number(value) : typeof defaults[field] === 'boolean' ? value === 'true' : value});
 }
 const panelPage = params.get('panel');
-const inMenu = scenario.menu || panelPage !== null;
+// ?runs opens the Runs panel on the current map, ?runs=<map key> on another;
+// ?maps opens its map list; ?history=empty has no runs at all.
+const runsMap = params.get('runs');
+const emptyHistory = params.get('history') === 'empty';
+const history = createHistory({settings, empty: emptyHistory});
+const replays = createReplays({empty: emptyHistory});
+const replayControl = createReplayControl({params, active: () => scenario.watching === true && settings.replayControls !== false});
+const rampReference = createRampReference({params, settings});
+const leaderboardReferences = createLeaderboardReferences(params);
+const binds = createBinds(params);
+const inMenu = scenario.menu || panelPage !== null || (runsMap !== null && !scenario.watching);
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
 // Backdrops are local game screenshots (gitignored); a neutral sky stands in when one is missing.
 document.body.style.backgroundImage = `url(./backdrops/${bg}.jpg), linear-gradient(#1b2430, #4a566a 55%, #b8a09c)`;
@@ -79,7 +95,7 @@ const baseSpeed = scenario.speed ?? 2950;
 const session = {
   practice: false, ...scenario.session,
   config: {dt: DT, gravity: GRAVITY},
-  map: {stages: []},
+  map: {id: 'utopia', version: 3, stages: []},
   get state() {
     const seconds = (performance.now() - started) / 1000;
     const speed = scenario.energy ? baseSpeed + scenario.energy * 140 * (seconds % 4) : baseSpeed;
@@ -96,11 +112,16 @@ const hud = mountHud({
   getView: () => scenario.spectate ? spectatorView : null,
   getMetrics: () => ({active: true, status: '', ...scenario.metrics}),
   getSession: () => scenario.spectate ? null : session,
-  getReferences: () => null,
-  getAdapter: () => null,
+  getReferences: () => leaderboardReferences,
+  // Only the saveloc binds; every service that would use the game is faked below.
+  getAdapter: () => ({getBindings: () => binds}),
   settings,
   onSettings: patch => applySettings(settings, patch),
   onResetColors: () => applySettings(settings, Object.fromEntries(colorKeys.map(key => [key, defaults[key]]))),
+  history,
+  replays,
+  replayControl,
+  rampReference,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -108,9 +129,15 @@ const hud = mountHud({
     runReferences: {update: () => runRefs, destroy() {}},
     // A frozen clock keeps checkpoint splits on screen for screenshots.
     createModel: () => createHudModel(() => 0),
+    // Run dates are shown against a fixed day.
+    now: () => NOW,
   },
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
+// With ?state=watching: ?pop=keys|speed opens that popover; ?runs opens the Runs panel over the bar.
+if (params.has('pop')) setTimeout(() => hud.showReplayPopover(params.get('pop')), 50);
+if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
+else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
 
 // Small picker for manual browsing; hidden in screenshot mode.
 const picker = document.getElementById('picker');

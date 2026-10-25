@@ -290,6 +290,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     rampHead = rampCount = 0;
     mode = 'air';
     tickPlane = tickBrush = null;
+    surfaces = tickSurface = null;
     tickMultiplePlanes = false;
     rollingGain = rollingOptimum = strafeTotal = rampTotal = 0;
     elapsed = 0;
@@ -452,6 +453,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
 
   function begin(session) {
     if (!active()) {
+      if (!idle) reset();
       idle = true;
       open = false;
       return;
@@ -872,9 +874,60 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     };
   }
 
+  // Replay checkpoints are taken between completed steps. Only persistent
+  // analysis belongs here: native vectors, contact payloads and solver scratch
+  // are borrowed/rebuilt by begin(), and map geometry remains shared.
+  function saveState() {
+    if (open) throw new Error('Cannot checkpoint an unfinished metrics tick');
+    return {
+      sampleTimes: sampleTimes.slice(), sampleGains: sampleGains.slice(), sampleOptima: sampleOptima.slice(),
+      rampTimes: rampTimes.slice(), rampLosses: rampLosses.slice(),
+      head, count, rampHead, rampCount, mode, rollingGain, rollingOptimum, strafeTotal, rampTotal,
+      elapsed, eligible, status, idle, previousSession, previousTick,
+      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
+      surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
+      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
+      surfLowHeight, surfLowEnergy, surfTick,
+      entryPlane: { ...entryPlane }, surfaceVisits: new Map(surfaceVisits), routePrefix, routeEntries,
+      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
+      board: { ...board }, boardVersion, air: { ...air }, surf: { ...surf },
+      entryLoss, turnLoss, eventLoss, eventKind, eventSimulationAt, eventAge: clock() - eventAt,
+    };
+  }
+
+  function restoreState(saved) {
+    sampleTimes.set(saved.sampleTimes);
+    sampleGains.set(saved.sampleGains);
+    sampleOptima.set(saved.sampleOptima);
+    rampTimes.set(saved.rampTimes);
+    rampLosses.set(saved.rampLosses);
+    ({
+      head, count, rampHead, rampCount, mode, rollingGain, rollingOptimum, strafeTotal, rampTotal,
+      elapsed, eligible, status, idle, previousSession, previousTick,
+      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
+      surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
+      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
+      surfLowHeight, surfLowEnergy, surfTick, routePrefix, routeEntries,
+      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
+      boardVersion, entryLoss, turnLoss, eventLoss, eventKind, eventSimulationAt,
+    } = saved);
+    Object.assign(entryPlane, saved.entryPlane);
+    Object.assign(board, saved.board);
+    Object.assign(air, saved.air);
+    Object.assign(surf, saved.surf);
+    surfaceVisits.clear();
+    for (const [surface, visits] of saved.surfaceVisits) surfaceVisits.set(surface, visits);
+    // Native thaw replaces state, but not the watched Session. Rebind this
+    // continuity guard or the next begin() would discard the restored episode.
+    previousState = previousSession?.state ?? null;
+    eventAt = clock() - saved.eventAge;
+    open = false;
+    accelerationCount = 0;
+  }
+
   const boardSnapshot = () => ({...board});
   const boardRevision = () => boardVersion;
   // Reference reconstruction reads completed Surf visits only, not per-tick copies.
   const surfSnapshot = sequence => surf.sequence !== sequence ? {...surf} : null;
-  return { begin, acceleration, collision, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot };
+  return { begin, acceleration, collision, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, saveState, restoreState };
 }

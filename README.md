@@ -4,7 +4,7 @@
 
 *What it looks like most of the time. Each part can be shown or hidden on its own.*
 
-A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, a crouch-jump bind and nullbinds.
+A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay controls, a crouch-jump bind and nullbinds.
 
 Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It never changes physics, maps or your runs: it watches the game's own movement code and reports what happened.
 
@@ -19,7 +19,7 @@ You need desktop Chrome 118 or newer. The extension isn't on the Chrome Web Stor
 3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-**Updating:** download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
+**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 
@@ -76,9 +76,34 @@ At each checkpoint you get your split time and speed, plus time and speed deltas
 ### Binds
 
 - **Crouch-jump** (off by default; turn it on under **Controls**, Space unless you rebind it): holding jump presses crouch for exactly one physics tick per jump. That's enough for the crouched jump impulse (+6 u/s vertical, the same as holding crouch) without staying crouched. Rebind it to any free key.
-- **Nullbinds** (off by default): for A/D and for W/Space, the newest key you press wins, and releasing it hands control back to the other key if it's still held. W/Space cuts forward input while Space wins (not your momentum) and blocks jump while W wins.
+- **Nullbinds** (off by default): for left/right and for forward/jump, the newest key you press wins, and releasing it hands control back to the other one if it's still held. They follow your Surfd key bindings, including alternate and mouse binds. Forward/jump cuts forward input while jump wins (not your momentum) and blocks jump while forward wins.
 
 Both work inside the game's own input sampling, so the commands it records are exactly what you'd get from a keyboard that did this in hardware. Your binds on disk aren't changed.
+
+### Run history
+
+**Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
+
+- **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each.
+- **Ramps:** your best Board, Down and Up on each ramp, compared with your PB or the WR, so you can see where you have room to improve.
+
+Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
+
+### Watching replays
+
+▶ in Runs plays a recording with the full HUD, including the prestrafe. The same controls work on the game's other replays: leaderboard runs, the record route and server replays.
+
+The timeline shows the start, checkpoints and, on your own runs, ramp boards coloured like the HUD. Click or drag to seek, pause and step through a section, or change playback speed. The controls fade while playing and hold on the final frame when the run ends.
+
+**Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself.
+
+The keyboard button lists shortcuts and your saveloc binds. Turn **QoL → History → Replay controls** off to use only the game's own playback. You can switch it back on without reloading; recording is separate.
+
+### What's kept
+
+Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Each run includes its replay. Your best recorded finish, best splits and ramp bests stay even after older attempts are removed.
+
+Everything is stored in this browser. The same page shows storage use and has **Clear all**.
 
 ### Replays and spectating
 
@@ -95,9 +120,9 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 ## Performance and privacy
 
-- Anything you hide is not computed. With the HUD off, or Board, Air and Ramp all off, the extension skips movement analysis entirely. PB/WR replays are only downloaded and re-simulated while a comparison that uses them is visible, and each replay is processed once and cached.
+- Hidden feedback skips its analysis. PB/WR comparisons share saved results rather than analysing the same replay repeatedly.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
-- No telemetry. Settings and local checkpoint PB speeds live in surfd.net's local storage in your browser; clearing site data removes them. The only network requests are replay downloads from surfd.net.
+- No telemetry. Settings and recordings stay in your browser. The extension downloads reference replays from surfd.net and checks GitHub for updates at most once a day, without sending your runs or settings.
 
 ## Troubleshooting
 
@@ -125,6 +150,9 @@ Source layout:
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
 - `src/energy.js`: the speed tint's energy trend.
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
+- `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.
+- `src/replay-archive.js`, `src/replay-trim.js`: saved replays (compressed, in IndexedDB), trimmed to a few seconds before the start.
+- `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`: playback speed, seeking from snapshots, savelocs, and the replay bar.
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License

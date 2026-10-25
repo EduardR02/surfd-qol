@@ -128,6 +128,16 @@ function nullControls(options = {}, nativeBindings = {}) {
     if (input.locked && !input.suppressed && Object.values(input.bindings).some(codes => codes.includes(event.code))) input.keys.add(event.code);
   });
   input.doc.addEventListener('keyup', event => { input.keys.delete(event.code); });
+  input.doc.addEventListener('mousedown', event => {
+    const code = `Mouse${event.button}`;
+    if (input.locked && !input.suppressed && Object.values(input.bindings).some(codes => codes.includes(code))) input.keys.add(code);
+  });
+  input.doc.addEventListener('mouseup', event => { input.keys.delete(`Mouse${event.button}`); });
+  input.doc.addEventListener('wheel', event => {
+    if (!input.locked || input.suppressed || !Number.isFinite(event.deltaY) || !event.deltaY) return;
+    const code = event.deltaY > 0 ? 'WheelDown' : 'WheelUp';
+    if (Object.values(input.bindings).some(codes => codes.includes(code))) input.wheelPending.add(code);
+  });
   input.doc.addEventListener('pointerlockchange', () => { if (!input.locked) input.clear(); });
   input.doc.addEventListener('visibilitychange', () => { if (input.doc.hidden) input.clear(); });
   input.win.addEventListener('blur', () => { input.clear(); input.locked = false; });
@@ -148,6 +158,16 @@ function nullControls(options = {}, nativeBindings = {}) {
     input, binding, settings, nativeSample, nativeClear,
     press: (code, repeat = false) => keyEvent('keydown', code, repeat),
     release: code => keyEvent('keyup', code),
+    mouse(type, button) {
+      const event = new Event(type);
+      Object.defineProperty(event, 'button', {value: button});
+      input.doc.dispatchEvent(event);
+    },
+    wheel(deltaY) {
+      const event = new Event('wheel');
+      Object.defineProperty(event, 'deltaY', {value: deltaY});
+      input.doc.dispatchEvent(event);
+    },
     changeNative(patch, update = true) {
       native = { ...native, ...patch };
       input.setBindings(native);
@@ -252,8 +272,6 @@ test('crouch conflicts and invalid crouch keys do not disable unrelated null fil
     const c = nullControls({ crouchJump: true, crouchJumpKey, nullAD: true, nullWSpace: true });
     c.press('KeyA'); c.press('KeyD'); c.press('Space'); c.press('KeyW');
     expect(c.input.sample()).toEqual({ side: 400, forward: 400, jump: false, duck: false });
-    expect(c.binding.status()).toContain('A/D null');
-    expect(c.binding.status()).toContain('W/Space null');
     expect(c.binding.status()).toContain(crouchJumpKey === 'KeyW' ? 'already bound to forward' : 'Choose a keyboard key');
     c.binding.release();
   }
@@ -309,12 +327,16 @@ test('disabled nulls and teardown restore native sampling without losing physica
   }
 });
 
-test('nulls keep fixed physical pairs and preserve changed native controls on release', () => {
+test('nulls follow changed native controls and leave a replacement map untouched until refreshed', () => {
   for (const update of [false, true]) {
-    const c = nullControls({ crouchJump: true, nullAD: true, nullWSpace: true });
+    const c = nullControls({ nullAD: true, nullWSpace: true });
     c.changeNative({ left: ['KeyD'], right: ['KeyA'], forward: ['Space'], jump: ['KeyW'] }, update);
     c.press('KeyA'); c.press('KeyD'); c.press('Space'); c.press('KeyW');
-    expect(c.input.sample()).toMatchObject({ side: -400, forward: 0, jump: true, duck: false });
+    expect(c.input.sample()).toMatchObject({ side: update ? -400 : 0, forward: update ? 0 : 400, jump: true });
+    if (!update) {
+      c.binding.update();
+      expect(c.input.sample()).toMatchObject({side: -400, forward: 0, jump: true});
+    }
     c.binding.release();
     expect(c.input.sample()).toEqual({ side: 0, forward: 400, jump: true, duck: false });
     c.release('KeyD'); c.release('Space');
@@ -322,16 +344,18 @@ test('nulls keep fixed physical pairs and preserve changed native controls on re
   }
 });
 
-test('other keys, native mouse binds and wheel command consumption stay independent', () => {
+test('secondary movement keys and wheel jumps participate without consuming preview pulses', () => {
   const c = nullControls({ crouchJump: true, nullAD: true, nullWSpace: true }, {
     left: ['KeyA', 'ArrowLeft'], forward: ['KeyW', 'Mouse0'], jump: ['Space', 'WheelUp']
   });
   c.press('KeyA'); c.press('KeyD'); c.press('Space');
-  c.input.sample(); // Consume only the physical Space duck edge.
-  c.press('KeyW'); c.press('ArrowLeft'); c.input.keys.add('Mouse0');
-  c.input.wheelPending.add('WheelUp');
-  expect(c.input.sample()).toEqual({ side: 0, forward: 400, jump: true, duck: false });
-  expect(c.input.sample()).toEqual({ side: 0, forward: 400, jump: false, duck: false });
+  c.input.sample();
+  c.press('KeyW'); c.press('ArrowLeft'); c.mouse('mousedown', 0);
+  c.wheel(-1);
+  expect(c.input.peek()).toEqual({ side: -400, forward: 0, jump: true, duck: false });
+  expect(c.input.peek()).toEqual({ side: -400, forward: 0, jump: true, duck: false });
+  expect(c.input.sample()).toEqual({ side: -400, forward: 0, jump: true, duck: true });
+  expect(c.input.sample()).toEqual({ side: -400, forward: 400, jump: false, duck: false });
   expect(c.input.keys.has('Space')).toBe(true);
   expect(c.input.keys.has('Mouse0')).toBe(true);
   c.binding.release();
@@ -395,7 +419,7 @@ test('an unbound physical pair key is not injected into native controls or comma
   expect(c.input.keys.has('KeyA')).toBe(false);
   expect(c.input.keys.has('Space')).toBe(false);
   c.press('ArrowLeft'); c.press('KeyJ');
-  expect(c.input.sample()).toEqual({ side: 0, forward: 400, jump: true, duck: false });
+  expect(c.input.sample()).toEqual({ side: -400, forward: 0, jump: true, duck: false });
   c.binding.release();
 });
 
@@ -423,7 +447,7 @@ test('a replacement native map cannot attribute an alternate jump to the old cro
   c.release('ControlLeft');
   c.binding.update();
   expect(c.binding.status()).toContain('already bound to forward');
-  expect(c.input.sample()).toMatchObject({ forward: 400, jump: true, duck: false });
+  expect(c.input.sample()).toMatchObject({ forward: 0, jump: true, duck: false });
   c.binding.release();
 });
 
@@ -493,8 +517,79 @@ test('repeats arriving after clear cannot steal priority from a new distinct pre
   c.binding.release();
 });
 
-// Deliberately separate from the implementation: ordered press history, action
-// sets and a delivered-edge latch, rather than winner bits or filtered iterators.
+test('configured arrow and letter controls replace every default nullbind key', () => {
+  const c = nullControls({nullAD: true, nullWSpace: true, crouchJump: true, crouchJumpKey: 'KeyJ'}, {
+    left: ['ArrowLeft'], right: ['ArrowRight'], forward: ['ArrowUp'], jump: ['KeyJ'],
+  });
+  c.press('ArrowLeft'); c.press('ArrowRight'); c.press('ArrowUp'); c.press('KeyJ');
+  expect(c.input.peek()).toEqual({side: 400, forward: 0, jump: true, duck: false});
+  expect(c.input.sample()).toEqual({side: 400, forward: 0, jump: true, duck: true});
+  expect(c.input.sample()).toEqual({side: 400, forward: 0, jump: true, duck: false});
+  c.release('ArrowRight'); c.release('KeyJ');
+  expect(c.input.sample()).toEqual({side: -400, forward: 400, jump: false, duck: false});
+  c.binding.release();
+});
+
+test('a second key for the same action wins anew and fallback uses the newest remaining key', () => {
+  const c = nullControls({nullAD: true}, {left: ['KeyA', 'ArrowLeft']});
+  c.press('KeyA'); c.press('KeyD'); c.press('ArrowLeft');
+  expect(c.input.sample().side).toBe(-400);
+  c.release('ArrowLeft');
+  expect(c.input.sample().side).toBe(400);
+  c.release('KeyD');
+  expect(c.input.sample().side).toBe(-400);
+  c.binding.release();
+});
+
+test('suppressing a movement action preserves other actions sharing its physical key', () => {
+  const c = nullControls({nullAD: true, nullWSpace: true}, {
+    left: ['Mouse4'], right: ['Mouse3'], duck: ['Mouse4'],
+    forward: ['KeyE'], back: ['KeyE'], jump: ['KeyJ'],
+  });
+  c.mouse('mousedown', 4); c.mouse('mousedown', 3); c.press('KeyE'); c.press('KeyJ');
+  expect(c.input.sample()).toEqual({side: 400, forward: -400, jump: true, duck: true});
+  c.release('KeyJ'); c.mouse('mouseup', 3);
+  expect(c.input.sample()).toEqual({side: -400, forward: 0, jump: false, duck: true});
+  c.binding.release();
+});
+
+test('a shared opposing-action key keeps its native meaning rather than choosing arbitrarily', () => {
+  const c = nullControls({nullAD: true, nullWSpace: true}, {
+    left: ['KeyE'], right: ['KeyE'], forward: ['KeyJ'], jump: ['KeyJ'],
+  });
+  c.press('KeyE'); c.press('KeyJ');
+  expect(c.input.sample()).toEqual({side: 0, forward: 400, jump: true, duck: false});
+  c.binding.release();
+});
+
+test('wheel and mouse re-press order controls forward/jump without replaying consumed pulses', () => {
+  const c = nullControls({nullWSpace: true}, {forward: ['Mouse4'], jump: ['WheelUp']});
+  c.mouse('mousedown', 4);
+  expect(c.input.sample()).toMatchObject({forward: 400, jump: false});
+  c.wheel(-1);
+  expect(c.input.peek()).toMatchObject({forward: 0, jump: true});
+  c.mouse('mouseup', 4); c.mouse('mousedown', 4);
+  expect(c.input.peek()).toMatchObject({forward: 400, jump: false});
+  c.wheel(-1);
+  expect(c.input.peek()).toMatchObject({forward: 0, jump: true});
+  expect(c.input.sample()).toMatchObject({forward: 0, jump: true});
+  expect(c.input.sample()).toMatchObject({forward: 400, jump: false});
+  c.binding.release();
+});
+
+test('a crouch-jump key added by this extension participates in the jump action', () => {
+  const c = nullControls({nullWSpace: true, crouchJump: true, crouchJumpKey: 'KeyC'});
+  c.press('KeyC');
+  expect(c.input.sample()).toMatchObject({jump: true, duck: true});
+  c.press('KeyW');
+  expect(c.input.sample()).toMatchObject({forward: 400, jump: false, duck: false});
+  c.release('KeyW');
+  expect(c.input.sample()).toMatchObject({forward: 0, jump: true, duck: true});
+  c.binding.release();
+});
+
+// Independent model: chronological physical presses resolve action sets.
+// Unrelated actions are evaluated before null priority is applied.
 function commandOracle(options) {
   const bindings = {
     forward: ['KeyW'], back: ['KeyS', 'WheelDown'],
@@ -504,16 +599,22 @@ function commandOracle(options) {
   const keys = new Set(), wheel = new Set();
   let presses = [], delivered = false, wheelRelease = false, suppressed = false, locked = true;
   const effective = () => {
-    const result = new Set(locked && !suppressed ? keys : []);
-    for (const [enabled, pair] of [[options.nullAD, ['KeyA', 'KeyD']], [options.nullWSpace, ['KeyW', 'Space']]]) {
-      if (!enabled || !pair.every(key => result.has(key))) continue;
-      const order = presses.filter(key => pair.includes(key));
-      result.delete(pair.find(key => key !== order.at(-1)));
+    const held = new Set(locked && !suppressed ? keys : []);
+    if (locked && !suppressed && !wheelRelease) for (const code of wheel) {
+      held.add(code);
+      if (!presses.includes(code)) presses.push(code);
     }
-    return result;
+    const actions = Object.fromEntries(Object.entries(bindings).map(([name, codes]) => [name, codes.some(code => held.has(code))]));
+    for (const [enabled, pair] of [[options.nullAD, ['left', 'right']], [options.nullWSpace, ['forward', 'jump']]]) {
+      if (!enabled) continue;
+      const latest = presses.findLast(code => held.has(code) && pair.some(action => bindings[action].includes(code)));
+      const owners = pair.filter(action => bindings[action].includes(latest));
+      if (owners.length === 1) actions[pair.find(action => action !== owners[0])] = false;
+    }
+    return {actions, jumpKey: actions.jump && keys.has('Space')};
   };
   const reset = () => { keys.clear(); wheel.clear(); presses = []; delivered = wheelRelease = false; };
-  const updateEdge = () => { if (!effective().has('Space')) delivered = false; };
+  const updateEdge = () => { if (!effective().jumpKey) delivered = false; };
   return {
     keys,
     press(code, repeat) {
@@ -526,15 +627,19 @@ function commandOracle(options) {
       updateEdge();
     },
     release(code) { keys.delete(code); presses = presses.filter(key => key !== code); updateEdge(); },
-    wheel(code) { if (locked && !suppressed) wheel.add(code); },
+    wheel(code) {
+      if (locked && !suppressed) {
+        wheel.add(code);
+        if (!wheelRelease) { presses = presses.filter(key => key !== code); presses.push(code); }
+        updateEdge();
+      }
+    },
     clear: reset,
     suppress(value) { suppressed = value; reset(); },
     lock(value) { locked = value; if (!value) reset(); },
     command(sample) {
-      const held = effective();
-      const jumpKey = held.has('Space');
-      if (locked && !suppressed && !wheelRelease) for (const code of wheel) held.add(code);
-      const action = name => bindings[name].some(code => held.has(code));
+      const {actions, jumpKey} = effective();
+      const action = name => actions[name];
       const command = {
         forward: 400 * (Number(action('forward')) - Number(action('back'))),
         side: 400 * (Number(action('right')) - Number(action('left'))),
@@ -544,7 +649,10 @@ function commandOracle(options) {
         if (options.crouchJump && jumpKey && !delivered) command.duck = true;
         delivered = jumpKey;
         if (wheelRelease) wheelRelease = false;
-        else if (wheel.size) { wheel.clear(); wheelRelease = true; }
+        else if (wheel.size) {
+          presses = presses.filter(code => !wheel.has(code));
+          wheel.clear(); wheelRelease = true;
+        }
       }
       return command;
     }

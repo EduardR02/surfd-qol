@@ -4,8 +4,8 @@
   "version": "1.0.1",
   "description": "Custom HUD, per-tick surf feedback, start splits, PB/WR checkpoint speeds and a native crouch-jump binding.",
   "minimum_chrome_version": "118",
-  "permissions": ["debugger"],
-  "host_permissions": ["https://surfd.net/*"],
+  "permissions": ["debugger", "storage"],
+  "host_permissions": ["https://surfd.net/*", "https://api.github.com/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_title": "Surfd QoL — connect or reload observer" },
   "content_scripts": [
