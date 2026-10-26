@@ -1,6 +1,7 @@
 // Settings panel: markup, live preview and control binding. Opened only from
 // menus; every change is saved through onSettings immediately.
 import {hudMarkup, createHudView} from './hud-view.js';
+import {buildMeter} from './hud-model.js';
 
 const swatch = tone => `<i class="sw ${tone}" aria-hidden="true"></i>`;
 const hint = text => text ? `<span class="hint">${text}</span>` : '';
@@ -61,6 +62,7 @@ export const panelMarkup = `
       <div class="group">
         ${toggle('hud', 'Custom HUD', 'Off brings back the game’s own speed and timer.')}
         ${toggle('zen', 'Zen mode', 'Only the speed, plus your start speed and height.')}
+        ${choice('surfHud', 'While surfing', [['compact', 'Compact'], ['full', 'Full']], 'Compact keeps the speed, the ramp bar with air and ramp loss under it, and checkpoint deltas. Replays and spectating always show everything.')}
       </div>
       <h3>Layout</h3>
       <div class="group">
@@ -182,6 +184,12 @@ const KEY_HELP = 'Click, then press the new key. Esc cancels.';
 
 // A fixed, illustrative HUD for the preview: it follows the palette and the
 // feedback options, never real measurements.
+// Sample measurements for the preview: a flight, then a finished ramp.
+const PREVIEW_METRICS = {air: {available: true, loss: 3.2, brakingLoss: 1.4, missedGain: 1.8, tick: 10},
+  board: {available: true, loss: 2.6, tick: 20}, surf: {available: true, loss: 52.7, downLoss: 14.6, upLoss: 38.1, tick: 30}};
+const PREVIEW_REFERENCE = {board: {status: 'ready', loss: 3.1}, surf: {status: 'ready', loss: 46.6},
+  down: {status: 'ready', loss: 15.2}, up: {status: 'ready', loss: 31.4}};
+
 export function previewModel(settings) {
   const live = settings.continuousFeedback === true;
   const split = settings.rampResult !== 'total';
@@ -194,12 +202,15 @@ export function previewModel(settings) {
   const board = value(settings.showBoard === false, 'BOARD', '−3.2', 'good');
   const up = value(live || !ramp || !split, 'UP', '−38.1', 'loss');
   const zen = settings.zen === true;
+  const layout = zen ? 'zen' : settings.surfHud === 'full' ? 'full' : 'surf';
   return {
-    zen, clock: {hidden: zen},
-    sync: {hidden: zen || settings.showSync === false, text: '96.4%', tone: 'good'},
+    zen, layout, clock: {hidden: zen},
+    sync: {hidden: zen || layout === 'surf' || settings.showSync === false, text: '96.4%', tone: 'good'},
     runState: {text: '', title: ''},
-    feedback: {hidden: zen || (result.hidden && board.hidden && up.hidden), result, board, up},
+    feedback: {hidden: zen || !live || (result.hidden && board.hidden && up.hidden), result, board, up},
+    meter: zen || live ? {hidden: true} : buildMeter(PREVIEW_METRICS, PREVIEW_REFERENCE, {...settings, boardColorReference: 'wr', surfColorReference: 'wr'}),
     start: {hidden: true},
+    startSync: {hidden: true},
     checkpoint: {hidden: true},
   };
 }

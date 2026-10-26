@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildFeedback, createHudModel } from '../src/hud-model.js';
+import { buildFeedback, buildMeter, createHudModel } from '../src/hud-model.js';
 import { defaults } from '../src/settings.js';
 
 const surf = { available: true, tick: 40, loss: 30, downLoss: 18, upLoss: 12 };
@@ -84,7 +84,7 @@ describe('HUD model', () => {
     expect(model).toMatchObject({ zen: true, clock: { hidden: true }, sync: { hidden: true }, feedback: { hidden: true },
       checkpoint: { hidden: true }, hull: { hidden: false, crouched: true }, start: { hidden: false } });
     expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings({ zen: true, showStart: false }) }).start.hidden).toBe(true);
-    expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings() })).toMatchObject({ zen: false, clock: { hidden: false } });
+    expect(build({ snapshot: {}, session, metrics: { ...metrics, start }, settings: settings({ surfHud: 'full' }) })).toMatchObject({ zen: false, layout: 'full', clock: { hidden: false } });
     session.state.ducked = false;
     expect(build({ snapshot: { playback: true }, session, settings: settings({ zen: true }) }).hull).toEqual({ hidden: false, crouched: false });
     expect(build({ snapshot: {}, session, settings: settings({ zen: true }) }).hull.hidden).toBe(true);
@@ -117,4 +117,68 @@ test('motion reports ramp contact for the speed tint, and unknown while analysis
   expect(build({ snapshot: {}, session, metrics: { ...metrics, active: true }, settings: settings() }).motion).toBe('air');
   expect(build({ snapshot: {}, session, metrics: { ...metrics, active: false }, settings: settings() }).motion).toBe(null);
   expect(build({ snapshot: {}, view: { target: {}, view: {} }, settings: settings() }).motion).toBe(null);
+});
+
+describe('ramp meter and layouts', () => {
+  const runRefs = { board: { status: 'ready', loss: 3 }, surf: { status: 'ready', loss: 46.6 }, down: { status: 'ready', loss: 15.2 }, up: { status: 'ready', loss: 31.4 } };
+  const ramp = { air: { ...air, tick: 20 }, board: { ...board, tick: 30 }, surf: { ...surf, tick: 40 } };
+  const meterSettings = patch => settings({ boardColorReference: 'wr', surfColorReference: 'wr', ...patch });
+
+  test('the last flight, then the finished ramp: board included in Down and Surf', () => {
+    const meter = buildMeter(ramp, runRefs, meterSettings());
+    expect(meter).toMatchObject({ hidden: false, fresh: false, split: true, reference: 46.6,
+      air: { text: '−9.0' }, board: { text: '−3.0', tone: 'good' }, down: { text: '−18.0', stale: false }, up: { text: '−12.0' },
+      surf: { text: '−30.0', tone: 'good' }, ramp: { text: '−30.0' } });
+  });
+
+  test('right after boarding, the ramp so far is its board and the last ramp is a ghost', () => {
+    const meter = buildMeter({ ...ramp, board: { ...board, tick: 50 } }, runRefs, meterSettings());
+    expect(meter).toMatchObject({ fresh: true, reference: 46.6, ramp: { text: '−3.0' }, surf: { stale: true }, down: { stale: true } });
+  });
+
+  test('hidden values drop out, and everything hidden hides the meter', () => {
+    expect(buildMeter(ramp, runRefs, meterSettings({ showAir: false })).air).toBeNull();
+    expect(buildMeter(ramp, runRefs, meterSettings({ showSurf: false }))).toMatchObject({ surf: null, down: null, ramp: { text: '−3.0' } });
+    expect(buildMeter(ramp, runRefs, meterSettings({ showBoard: false, showSurf: false, showAir: false })).hidden).toBe(true);
+  });
+
+  test('a live run is compact: the deltas or the start replace the clock, sync joins the start', () => {
+    const build = createHudModel(() => 0);
+    const session = { timer: { state: { phase: 'running', splits: [12.5] } }, checkpointSpeeds: [1500], map: {} };
+    const start = { available: true, speed: 349, speedDelta: -1, heightAboveFloor: 4, age: 100 };
+    const live = build({ snapshot: { strafeSync: { percentage: 91.3 } }, session, metrics: { ...ramp, start }, settings: settings() });
+    expect(live).toMatchObject({ layout: 'surf', clock: { hidden: true }, sync: { hidden: true }, start: { hidden: false },
+      startSync: { hidden: false, text: '91.3%' }, meter: { hidden: false }, feedback: { hidden: true } });
+    const replay = build({ snapshot: { playback: true, strafeSync: { percentage: 91.3 } }, session, metrics: { ...ramp, start }, settings: settings() });
+    expect(replay).toMatchObject({ layout: 'full', clock: { hidden: false }, sync: { hidden: false }, startSync: { hidden: true } });
+    const noSync = build({ snapshot: {}, session, metrics: { ...ramp, start }, settings: settings({ showSync: false }) });
+    expect(noSync.startSync.hidden).toBe(true);
+    // Live feedback keeps its own row instead of the meter.
+    expect(build({ snapshot: {}, session, metrics: ramp, settings: settings({ continuousFeedback: true }) }).meter.hidden).toBe(true);
+  });
+});
+
+describe('ramp meter geometry', () => {
+  test('the reference ramp spans the speed; air sits left of the bar; values centre under their parts', async () => {
+    const { meterLayout } = await import('../src/hud-view.js');
+    const item = (value, tone = 'good', stale = false) => ({ value, tone, stale });
+    const meter = { split: true, fresh: false, reference: 50, air: item(5), board: item(5), down: item(20), up: item(30, 'loss'), surf: item(50, 'loss') };
+    const { segments, tick, airCenter, rampCenter } = meterLayout(meter, false);
+    // 172 px for 50 u/s: the board is 17.2 px, down after it, then up to the tick.
+    expect(segments.board.left).toBeCloseTo(-86, 6);
+    expect(segments.down.left).toBeCloseTo(-86 + 17.2, 6);
+    expect(segments.up.left + segments.up.width).toBeCloseTo(86, 6);
+    expect(tick).toBeCloseTo(85, 6);
+    expect(segments.air.left + segments.air.width).toBeCloseTo(-95, 6);
+    expect(airCenter).toBeCloseTo(-95 - 8.6, 6);
+    expect(rampCenter).toBeCloseTo(0, 6);
+    // Right after boarding: the last ramp is a ghost and the new board starts the bar.
+    const fresh = meterLayout({ ...meter, fresh: true, down: item(20, 'good', true), up: item(30, 'loss', true), surf: item(50, 'loss', true) }, false);
+    expect(fresh.segments.down).toMatchObject({ left: -86, ghost: true });
+    expect(fresh.segments.board).toMatchObject({ left: -86, ghost: false });
+    // No reference: fixed scale, no tick; a huge loss stops at 1.6 widths.
+    const huge = meterLayout({ ...meter, reference: null, up: item(900, 'loss') }, false);
+    expect(huge.tick).toBeNull();
+    expect(huge.segments.up.left + huge.segments.up.width).toBeCloseTo(-86 + 172 * 1.6, 6);
+  });
 });

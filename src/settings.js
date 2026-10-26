@@ -3,6 +3,8 @@ export const defaults = {
   hud: true, scale: 1, y: 82, speedColor: '#ebbcba', opacity: 1,
   // Zen: only the speed, plus the start speed and height after leaving the start.
   zen: false,
+  // While surfing: the compact HUD, or the full one replays and spectating use.
+  surfHud: 'compact',
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,
@@ -31,6 +33,7 @@ const choices = {
   wrSource: ['ksf', 'leaderboard'],
   airMetric: ['missed', 'braking', 'combined'],
   rampResult: ['split', 'total'],
+  surfHud: ['compact', 'full'],
   boardColorReference: ['fixed', 'pb', 'wr'],
   startColorReference: ['fixed', 'pb', 'wr'],
   surfColorReference: ['fixed', 'pb', 'wr'],

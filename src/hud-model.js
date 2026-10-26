@@ -108,6 +108,44 @@ export function buildFeedback(metrics, runRefs, settings) {
   return { hidden: result.hidden && board.hidden && up.hidden, result, board, up };
 }
 
+// The ramp meter: the last flight and the latest ramp, in the order they
+// happened. Down runs from just before the board clip, so the bar draws the
+// board, the rest of the way down, then the way up, and Surf (Down + Up) is
+// the whole ramp, board included. Right after boarding a new ramp, the
+// finished one stays as a ghost behind the new board.
+export function buildMeter(metrics, runRefs, settings) {
+  const margin = settings.referenceLossTolerance;
+  const reference = field => runRefs?.[field]?.status === 'ready' && Number.isFinite(runRefs[field].loss) ? runRefs[field].loss : null;
+  const finite = value => Number.isFinite(value) ? value : null;
+  const board = metrics?.board, surf = metrics?.surf, air = metrics?.air;
+  const boardLoss = settings.showBoard !== false && board?.available ? finite(board.loss) : null;
+  const rampShown = settings.showSurf !== false && surf?.available === true;
+  const down = rampShown ? finite(surf.downLoss) : null, up = rampShown ? finite(surf.upLoss) : null, total = rampShown ? finite(surf.loss) : null;
+  const airValue = settings.showAir !== false && air?.available
+    ? finite(settings.airMetric === 'missed' ? air.missedGain : settings.airMetric === 'braking' ? air.brakingLoss : air.loss) : null;
+  // A board newer than the last finished ramp belongs to the ramp you're on.
+  const fresh = board?.available === true && Number.isFinite(board.tick) &&
+    (!surf?.available || !Number.isFinite(surf.tick) || board.tick > surf.tick);
+  const boardTone = relative(settings.boardColorReference) ? referenceTone(boardLoss, reference('board'), margin)
+    : startTone(boardLoss, settings.boardLossAmazing, settings.boardLossGood);
+  const rampTone = (field, value) => relative(settings.surfColorReference) ? referenceTone(value, reference(field), margin)
+    : startTone(value, settings.airLossAmazing, settings.airLossGood);
+  const item = (value, tone, stale = false) => value === null ? null : {value, text: formatDelta(-value, 1), tone, stale};
+  const boardItem = item(boardLoss, boardTone), surfItem = item(total, rampTone('surf', total), fresh);
+  return {
+    hidden: boardItem === null && surfItem === null && airValue === null,
+    fresh, split: settings.rampResult !== 'total',
+    air: item(airValue, startTone(airValue, settings.airLossAmazing, settings.airLossGood)),
+    board: boardItem,
+    down: item(down, rampTone('down', down), fresh), up: item(up, rampTone('up', up), fresh), surf: surfItem,
+    // The reference ramp's loss spans the speed's width; null grades on fixed cutoffs.
+    // A new ramp's board is drawn at the last ramp's scale, so the bar doesn't jump.
+    reference: relative(settings.surfColorReference) ? reference('surf') : null,
+    // What the ramp you're on has cost so far: its board, then the whole ramp.
+    ramp: fresh ? boardItem : surfItem ?? boardItem,
+  };
+}
+
 export function buildStart(start, startReference, settings, spectator) {
   const relativeStart = relative(settings.startColorReference);
   const ready = startReference?.status === 'ready';
@@ -143,6 +181,10 @@ export function createHudModel(clock = () => performance.now()) {
   return function buildHudModel({snapshot, session, view, metrics, refs, runRefs, settings, inSurf = true, bindingStatus = null}) {
     const spectator = view?.target != null;
     const zen = settings.zen === true;
+    // Replays and spectating show everything; a live run uses the compact
+    // surfing layout unless the full HUD is chosen for surfing too.
+    const layout = zen ? 'zen' : spectator || snapshot?.playback || settings.surfHud === 'full' ? 'full' : 'surf';
+    const continuous = settings.continuousFeedback === true;
     const pose = spectator ? view.view?.pose : null;
     const timer = spectator ? null : snapshot?.run ?? session?.timer?.state;
     const now = clock();
@@ -190,6 +232,8 @@ export function createHudModel(clock = () => performance.now()) {
       wr: comparison('wr', refs?.record, refs?.recordStatus, refs?.recordSplitsUs),
     };
 
+    const startModel = buildStart(metrics?.start, runRefs?.start, settings, spectator);
+    const checkpointModel = zen ? {...checkpoint, hidden: true} : checkpoint;
     const replayDuck = session?.state?.ducked;
     const bindingText = typeof bindingStatus === 'string' ? bindingStatus : bindingStatus?.message;
     // Per-tick reasons (air, no-wish, surf…) are not user-facing; only real problems are.
@@ -202,15 +246,20 @@ export function createHudModel(clock = () => performance.now()) {
       // Last completed tick touched a ramp ('surf') or not ('air', including
       // ground); null when unknown. Used to keep the speed tint off ramps.
       motion: spectator || metrics?.active === false ? null : metrics?.strafe?.mode ?? null,
-      zen,
-      // The timer row: sync, time and run label.
-      clock: { hidden: zen },
-      sync: { hidden: zen || settings.showSync === false || spectator, value: Number.isFinite(sync) ? sync : null,
+      zen, layout,
+      // The timer row: sync, time and run label. While surfing, the start and
+      // checkpoint deltas take its place, and sync shows only with the start.
+      clock: { hidden: zen || layout === 'surf' && (!startModel.hidden || !checkpointModel.hidden) },
+      sync: { hidden: zen || layout === 'surf' || settings.showSync === false || spectator, value: Number.isFinite(sync) ? sync : null,
         text: Number.isFinite(sync) ? `${sync.toFixed(1)}%` : '—', tone: syncTone(sync) },
       runState: { text: runState, title: spectator ? runState : timer?.invalidReason || '' },
-      feedback: spectator || zen ? buildFeedback(null, null, {...settings, showBoard: false, showAir: false, showSurf: false}) : buildFeedback(metrics, runRefs, settings),
-      start: buildStart(metrics?.start, runRefs?.start, settings, spectator),
-      checkpoint: zen ? {...checkpoint, hidden: true} : checkpoint,
+      // Live feedback keeps its own row; everything else is the ramp meter.
+      feedback: spectator || zen || !continuous ? buildFeedback(null, null, {...settings, showBoard: false, showAir: false, showSurf: false}) : buildFeedback(metrics, runRefs, settings),
+      meter: spectator || zen || continuous ? {hidden: true} : buildMeter(metrics, runRefs, settings),
+      start: startModel,
+      startSync: { hidden: layout !== 'surf' || startModel.hidden || settings.showSync === false || !Number.isFinite(sync),
+        text: Number.isFinite(sync) ? `${sync.toFixed(1)}%` : '', tone: syncTone(sync) },
+      checkpoint: checkpointModel,
       hull: { hidden: snapshot?.playback !== true || spectator || !inSurf || typeof replayDuck !== 'boolean', crouched: replayDuck === true },
       status: [feedbackStatus, bindingText].filter(Boolean).join(' · '),
     };

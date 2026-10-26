@@ -39,6 +39,7 @@ export const hudMarkup = `
     </div>
     <div class="start" data-part="start" hidden>
       <div class="cell"><b class="val" data-text="startSpeed"></b>${label('startSpeedLabel', 'start')}</div>
+      <b class="start-sync" data-text="startSync" hidden></b>
       <div class="cell">${num('startHeight', 'val')}${label('startHeightLabel', 'height')}</div>
     </div>
   </div>
@@ -52,7 +53,48 @@ export const hudMarkup = `
     <div class="slot" data-part="board">${num('board', 'val')}${label('boardLabel', 'board')}</div>
     <div class="slot" data-part="result">${num('result', 'val')}${label('resultLabel', 'air')}</div>
     <div class="slot" data-part="up">${num('up', 'val')}${label('upLabel', 'up')}</div>
+  </div>
+  <div class="meter" data-part="meter" hidden>
+    <i class="m-seg" data-part="segAir"></i><i class="m-seg" data-part="segBoard"></i><i class="m-seg" data-part="segDown"></i><i class="m-seg" data-part="segUp"></i><i class="m-tick" data-part="segTick"></i>
+    ${num('meterAir', 'm-value')}${num('meterRamp', 'm-value')}
+    <div class="m-row" data-part="rampRow">${['air', 'board', 'down', 'up', 'surf'].map(name =>
+      `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${name}</span></div>`).join('')}</div>
   </div>`;
+
+// Without a reference, this many u/s span the speed's width.
+const FIXED_SPAN = 50;
+// The meter bar in px from the speed's centre: the last flight left of the
+// bar, then the ramp. Pure, so it is tested without a DOM.
+export function meterLayout(meter, full) {
+  const width = full ? 260 : 172, x0 = -width / 2, gap = 2, cap = width * 1.6;
+  const scale = meter.reference > 0 ? width / meter.reference : width / FIXED_SPAN;
+  const at = value => x0 + Math.min(Math.max(0, value) * scale, cap);
+  const segments = {};
+  const piece = (part, from, to, item, last) => {
+    if (!(to > from)) return;
+    segments[part] = {left: at(from), width: Math.max(2, at(to) - at(from) - (last ? 0 : gap)), tone: item.tone, ghost: item.stale === true};
+  };
+  const {board, down, up, surf, air} = meter;
+  // A board on a finished ramp starts its bar; a new ramp's board is drawn over the last ramp's ghost.
+  const ownBoard = board && !meter.fresh ? board.value : 0;
+  if (meter.split && down && up) {
+    piece('board', 0, ownBoard, board, false);
+    piece('down', ownBoard, down.value, down, false);
+    piece('up', down.value, down.value + up.value, up, true);
+  } else if (surf) {
+    piece('board', 0, ownBoard, board, false);
+    piece('down', ownBoard, surf.value, surf, true);
+  } else if (ownBoard) piece('board', 0, ownBoard, board, true);
+  const end = Math.max(...Object.values(segments).map(segment => segment.left + segment.width), x0);
+  if (meter.fresh && board) segments.board = {left: x0, width: Math.max(2, at(board.value) - x0 - gap), tone: board.tone, ghost: false};
+  let airCenter = null;
+  if (air) {
+    const length = at(air.value) - x0;
+    segments.air = {left: x0 - 9 - length, width: Math.max(2, length), tone: air.tone, ghost: false};
+    airCenter = x0 - 9 - length / 2;
+  }
+  return {segments, tick: meter.reference > 0 ? x0 + width - 1 : null, airCenter, rampCenter: (x0 + Math.max(end, x0 + 40)) / 2};
+}
 
 const TONES = new Set(['good', 'warn', 'loss', 'muted']);
 const tone = value => TONES.has(value) ? value : 'muted';
@@ -71,6 +113,7 @@ export function createHudView(element) {
     write(fraction, cut > 0 ? value.slice(cut) : '');
   };
   const hide = (node, hidden) => { if (node.hidden !== hidden) node.hidden = hidden; };
+  const place = (node, style) => { if (node.getAttribute('style') !== style) node.setAttribute('style', style); };
   const cls = (node, value) => { if (node.className !== value) node.className = value; };
   const title = (node, value = '') => { if (node.title !== value) node.title = value; };
   let energy = 'neutral';
@@ -97,6 +140,41 @@ export function createHudView(element) {
     title(parts[key], model.speed.title);
   }
 
+  function meter(model, layout) {
+    hide(parts.meter, model.hidden !== false);
+    if (model.hidden !== false) return;
+    const full = layout === 'full', geometry = meterLayout(model, full);
+    for (const [part, name] of [['segAir', 'air'], ['segBoard', 'board'], ['segDown', 'down'], ['segUp', 'up']]) {
+      const segment = geometry.segments[name];
+      hide(parts[part], !segment);
+      if (!segment) continue;
+      place(parts[part], `left:${segment.left.toFixed(1)}px;width:${segment.width.toFixed(1)}px`);
+      cls(parts[part], `m-seg ${tone(segment.tone)}${segment.ghost ? ' ghost' : ''}`);
+    }
+    hide(parts.segTick, geometry.tick === null);
+    if (geometry.tick !== null) place(parts.segTick, `left:${geometry.tick.toFixed(1)}px`);
+    // Surfing: two values under the bar. Full: every value in a row.
+    const under = (key, center, item) => {
+      hide(nums[key], full || !item || center === null);
+      if (full || !item || center === null) return;
+      number(key, item.text);
+      cls(nums[key], `m-value ${tone(item.tone)}${item.stale ? ' stale' : ''}`);
+      place(nums[key], `left:${center.toFixed(1)}px`);
+    };
+    under('meterAir', geometry.airCenter, model.air);
+    under('meterRamp', geometry.rampCenter, model.ramp);
+    hide(parts.rampRow, !full);
+    if (!full) return;
+    const shown = {air: model.air, board: model.board, down: model.split ? model.down : null, up: model.split ? model.up : null, surf: model.surf};
+    for (const [name, item] of Object.entries(shown)) {
+      hide(parts[`${name}Slot`], !item);
+      if (!item) continue;
+      number(`${name}Value`, item.text);
+      cls(nums[`${name}Value`], `val ${tone(item.tone)}`);
+      cls(parts[`${name}Slot`], item.stale ? 'slot stale' : 'slot');
+    }
+  }
+
   return {
     setSpeed(value) { text('speed', value); },
     setTime(value) { number('time', value); },
@@ -106,7 +184,10 @@ export function createHudView(element) {
       cls(parts.speed, next === 'good' || next === 'loss' ? `speed e-${next}` : 'speed');
     },
     render(model) {
+      const layout = model.layout ?? 'full';
       element.classList.toggle('zen', model.zen === true);
+      element.classList.toggle('full', layout === 'full');
+      element.classList.toggle('surf', layout === 'surf');
       hide(parts.clock, model.clock?.hidden === true);
       text('sync', model.sync.hidden ? '' : model.sync.text);
       cls(texts.sync, `sync ${tone(model.sync.tone)}`);
@@ -129,7 +210,11 @@ export function createHudView(element) {
         cls(texts.startSpeed, `val ${tone(start.speed.tone)}`);
         cls(nums.startHeight, `val ${tone(start.height.tone)}`);
         title(parts.start, start.title);
+        const sync = model.startSync ?? {hidden: true};
+        hide(texts.startSync, sync.hidden !== false);
+        if (sync.hidden === false) { text('startSync', sync.text); cls(texts.startSync, `start-sync ${tone(sync.tone)}`); }
       }
+      meter(model.meter ?? {hidden: true}, layout);
 
       const checkpoint = model.checkpoint;
       hide(parts.checkpoint, checkpoint.hidden);

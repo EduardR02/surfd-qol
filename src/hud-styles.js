@@ -69,4 +69,30 @@ export const hudStyles = `
 .pair{display:flex;align-items:baseline;gap:9px}
 .dt{font-size:22px;line-height:1}
 .ds{font-size:16px;line-height:1}
+/* The deltas and the start sit in the same spots, read by position: no labels. */
+.ref .lab,.start .lab{display:none}
+.start{gap:26px;align-items:baseline}
+.start .cell{width:auto;min-width:60px}
+.start-sync{font-size:16px;line-height:1}
+
+/* Surfing: the checkpoint deltas or the start take the timer's place. */
+.surf .events{bottom:39px}.flip.surf .events{top:96px}
+.flip.full .events{top:124px}
+.surf .split-head{display:none}
+
+/* Ramp meter: the last flight, then the latest ramp, as one bar under the
+   speed. The reference ramp's loss spans the speed's width, marked by the tick. */
+.meter{position:absolute;left:0;top:47px;width:0;height:0}
+.full .meter{top:46px}
+.m-seg{position:absolute;top:0;height:7px;border-radius:2px;background:var(--muted);
+  box-shadow:0 0 0 1.5px var(--edge),0 1px 3px rgba(0,0,0,.45)}
+.m-seg.good{background:var(--good)}.m-seg.warn{background:var(--warn)}.m-seg.loss{background:var(--bad)}
+.m-seg.ghost{opacity:.32}
+.m-seg[data-part=segBoard]{z-index:1}
+.m-tick{position:absolute;top:-4px;width:2px;height:15px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
+.m-value{position:absolute;top:13px;transform:translateX(-50%);font-size:18px;line-height:1;font-weight:700}
+.m-value.stale{color:var(--muted);opacity:.6}
+.m-row{position:absolute;left:0;top:22px;transform:translateX(-50%);display:flex;justify-content:center}
+.m-row .slot{width:72px}
+.m-row .val{font-size:22px}
 `;
