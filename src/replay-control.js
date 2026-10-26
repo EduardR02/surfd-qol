@@ -184,18 +184,21 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     }
   }
   // File once into native Restart's authoritative practice bank, even if Exit
-  // retains a legacy replay Session. Rebase only the key, never the snapshot.
+  // retains a legacy replay Session. Rebase only the key and the start
+  // position: loading a saveloc restores its start position, and a replay's
+  // session has none of yours, so the loc carries the one Restart would use.
   function file() {
     if (!pending.length) return;
     const native = practice(), store = native?.store?.(), destination = native?.destination?.();
     if (!(store?.banks instanceof Map) || typeof destination?.key !== 'string') return;
     const {key, mapId, mapVersion} = destination;
+    const start = destination.startPosition !== undefined ? {startPosition: destination.startPosition} : {};
     pending = pending.filter(entry => {
       if (entry.mapId !== mapId || entry.mapVersion !== mapVersion) return true;
       const bank = store.banks.get(key) ?? {entries: [], selected: null};
       if (bank.entries.length >= BANK_SIZE) bank.entries.shift();
       const id = store.nextId++;
-      bank.entries.push({id, snapshot: {...entry.snapshot, key}});
+      bank.entries.push({id, snapshot: {...entry.snapshot, key, ...start}});
       bank.selected = id;
       store.banks.set(key, bank);
       store.revision++;

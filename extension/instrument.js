@@ -1,4 +1,6 @@
 const identifier = '[A-Za-z_$][\\w$]*';
+// A captured identifier, matched literally inside another pattern.
+const literal = name => name.replace(/\$/g, '\\$');
 
 function unique(source, pattern, label) {
   const matches = [...source.matchAll(pattern)];
@@ -40,6 +42,14 @@ function practiceHooks(source, sessionClass, state) {
     const fresh = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const ${identifier}=new ${sessionClass}\\(\\2,(${identifier})\\(\\2\\),(${identifier})\\),`, 'g'), 'live session factory');
     const maps = [...new Set([...source.matchAll(new RegExp(`${fresh[1]}\\((${identifier})\\?\\?${state}\\.map\\)`, 'g'))].map(match => match[1]))];
     if (maps.length !== 1) throw new Error('Unsupported Surfd build: practice destination map');
+    // The start position the factory applies: yours if you set one, else none.
+    let loadStart = null;
+    try {
+      const factory = new RegExp(`function ${literal(fresh[1])}\\((${identifier})\\)\\{const (${identifier})=new ${literal(sessionClass)}\\(\\1,${literal(fresh[3])}\\(\\1\\),${literal(fresh[4])}\\),(${identifier})=(${identifier})\\(\\1\\);return \\3&&\\2\\.setStartPosition\\(\\3\\)`, 'g');
+      loadStart = unique(source, factory, 'start position loader')[4];
+    } catch (error) {
+      console.warn('[Surfd QoL] Savelocs from replays keep the replay’s start position:', error.message);
+    }
     return `
     practice: {
       // The saveloc store: one bank of snapshots per practice key (map and movement rules).
@@ -49,7 +59,7 @@ function practiceHooks(source, sessionClass, state) {
         if (!map) return null;
         // practiceKey is native's pure metadata key, not a synthetic Session.
         const key = ${sessionClass}.prototype.practiceKey.call({map, config: ${fresh[3]}(map), replayFormat: ${fresh[4]}});
-        return {mapId: map.id, mapVersion: map.version, key};
+        return {mapId: map.id, mapVersion: map.version, key${loadStart ? `, startPosition: ${loadStart}(map) ?? null` : ''}};
       },
     },`;
   } catch (error) {

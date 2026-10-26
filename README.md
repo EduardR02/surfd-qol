@@ -102,7 +102,7 @@ The last 10 count measurements of each ramp, not your last 10 runs. Averages sta
 
 By default, the extension adds Saveloc, Runs and saved-location marks to the game’s replay bar. Your recorded runs also get ramp-board marks coloured like the HUD. Playback shortcuts stay the game’s own, so each press acts once.
 
-**Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself.
+**Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 
 Prefer the extension’s timeline? Enable **QoL → History → Custom replay bar**. It drives the same native player, and you can switch while watching. Recording is separate.
 

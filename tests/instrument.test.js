@@ -11,8 +11,9 @@ class Session{
   constructor(map={id:'map',version:1},config={rule:'legacy'},format=1) {
     sessions++; this.movement=new Movement(); this.timer={state:{}}; this.map=map; this.config=config; this.replayFormat=format;
   }
-  checkpointSpeeds=[];startJumps=0;
+  checkpointSpeeds=[];startJumps=0;startPosition=null;
   practiceKey() { return JSON.stringify([this.map.id,this.map.version,this.config.rule,this.replayFormat]); }
+  setStartPosition(start) { this.startPosition=start; return start; }
 }
 // Surfd's replay player: what plays and where.
 const player={replay:null,position:0,host:{position:()=>player.position},open(data){player.replay=data;player.position=0;},snapshot(){return {open:!!player.replay};}};
@@ -22,7 +23,9 @@ const input={setBindings(){}},settings={bindings:{}};
 input.setBindings(settings.bindings);
 const currentFormat=8,liveRules=map=>({rule:settings.rule??'current'});
 let replayMap=null;
-function fresh(map){const session=new Session(map,liveRules(map),currentFormat),saved=null;return session;}
+let starts={};
+function storedStart(map){return starts[map.id+':'+map.version]??null}
+function fresh(map){const session=new Session(map,liveRules(map),currentFormat),saved=storedStart(map);return saved&&session.setStartPosition(saved),session;}
 function restart(){nativeSession=fresh(replayMap??nativeSession.map);replayMap=null;return nativeSession;}
 const client={session:{user:{id:'account-a'}},config:{maps:[{id:'map',slug:'test-map'}]},
   board:()=>({boardId:'board'}),replay:async()=>null};
@@ -50,7 +53,7 @@ function fixture() {
   const runtime = new Function('globalThis', instrumentGame(nativeSource) + `
     return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},
       setOwner:id=>{client.session=id?{user:{id}}:null;},
-      sessions:()=>sessions,restart,
+      sessions:()=>sessions,restart,setStart:(key,start)=>{starts[key]=start;},
       setRules:rule=>{settings.rule=rule;},setReplayMap:map=>{replayMap=map;}};
   `)({__SURFD_QOL__: {attach: value => { adapter = value; }}});
   return {adapter, runtime};
@@ -102,7 +105,7 @@ describe('native practice destinations', () => {
     const {adapter, runtime} = fixture();
     const legacy = adapter.getSession(), legacyKey = legacy.practiceKey(), count = runtime.sessions();
     const destination = adapter.practice.destination();
-    expect(destination).toEqual({mapId: 'map', mapVersion: 1, key: JSON.stringify(['map', 1, 'current', 8])});
+    expect(destination).toEqual({mapId: 'map', mapVersion: 1, key: JSON.stringify(['map', 1, 'current', 8]), startPosition: null});
     expect(runtime.sessions()).toBe(count);
     expect(adapter.getSession()).toBe(legacy);
     expect(legacy.practiceKey()).toBe(legacyKey);
@@ -115,10 +118,29 @@ describe('native practice destinations', () => {
     runtime.setRules('unrestricted');
     const destination = adapter.practice.destination();
     expect(destination).toEqual({mapId: 'map', mapVersion: 2,
-      key: JSON.stringify(['map', 2, 'unrestricted', 8])});
+      key: JSON.stringify(['map', 2, 'unrestricted', 8]), startPosition: null});
     expect(adapter.getSession().map.version).toBe(1);
     expect(runtime.restart().practiceKey()).toBe(destination.key);
     runtime.setRules('ranked');
     expect(adapter.practice.destination().key).toBe(JSON.stringify(['map', 2, 'ranked', 8]));
+  });
+
+  test('the destination carries the start position Restart applies: the one you set on that map version', () => {
+    const {adapter, runtime} = fixture();
+    const yours = {position: {x: 1, y: 2, z: 3}, yaw: 90, pitch: 0};
+    runtime.setStart('map:1', yours);
+    expect(adapter.practice.destination().startPosition).toEqual(yours);
+    expect(runtime.restart().startPosition).toEqual(yours);
+    runtime.setReplayMap({id: 'map', version: 2});
+    expect(adapter.practice.destination().startPosition).toBeNull();
+  });
+
+  test('without a recognisable start loader, savelocs still file and keep the replay’s start position', () => {
+    let adapter;
+    const source = nativeSource.replace('return saved&&session.setStartPosition(saved),session;', 'return session;');
+    new Function('globalThis', instrumentGame(source))({__SURFD_QOL__: {attach: value => { adapter = value; }}});
+    const destination = adapter.practice.destination();
+    expect(destination.key).toBe(JSON.stringify(['map', 1, 'current', 8]));
+    expect('startPosition' in destination).toBe(false);
   });
 });

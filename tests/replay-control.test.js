@@ -1056,6 +1056,29 @@ describe('replay locs under current native practice rules', () => {
     } finally { control.destroy(); }
   });
 
+  test('a filed loc carries the start position Restart would use, not the replay’s, so loading it keeps yours', async () => {
+    const {world, run, control} = game();
+    const map = {id: 'utopia', version: 3};
+    const store = {banks: new Map(), nextId: 1, revision: 0};
+    const yours = {position: {x: 40, y: -12, z: 64}, yaw: 90, pitch: 0};
+    let startPosition = yours;
+    world.practice = {store: () => store, destination: () => ({mapId: map.id, mapVersion: map.version, key: 'live', startPosition})};
+    const replaySession = () => Object.assign(world.session, {map, practiceKey: () => 'replay',
+      capturePractice() { return {key: 'replay', state: {tick: this.state.tick}, startPosition: null, startJumps: 1}; }});
+    try {
+      await control.watch(run);
+      replaySession();
+      control.seek(180); control.saveSpot(); control.exit(); control.status();
+      expect(store.banks.get('live').entries[0].snapshot).toEqual({key: 'live', state: {tick: expect.any(Number)}, startPosition: yours, startJumps: 1});
+      // With no start of your own set, the loc restores the map's default, as Restart does.
+      startPosition = null;
+      await control.watch(run);
+      replaySession();
+      control.seek(200); control.saveSpot(); control.exit(); control.status();
+      expect(store.banks.get('live').entries[1].snapshot.startPosition).toBeNull();
+    } finally { control.destroy(); }
+  });
+
   test('unavailable or different-version native destinations defer filing instead of using the replay bank', async () => {
     const {world, run, control} = game();
     const store = {banks: new Map(), nextId: 1, revision: 0};
