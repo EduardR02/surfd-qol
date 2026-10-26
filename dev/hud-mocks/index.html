@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surfd QoL HUD concepts</title>
+<link rel="stylesheet" href="./fonts.css">
+<link rel="stylesheet" href="./mocks.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><h1>HUD concepts</h1><span>Surfd QoL, round 1 mock-ups</span></div>
+    <div id="controls" style="display:contents"></div>
+  </div>
+  <p class="moment-note" id="moment"></p>
+</header>
+
+<div class="intro">
+  <div>
+    <p>Ten ideas for the in-run HUD. Each one comes as a <b>full</b> version (replays, spectating, or anyone who wants every value) and a <b>surfing</b> version (readable in a glance of about 100 ms, mid-run). Both frames are true scale, cropped from a 1920×1080 screen with the speed at 82 % of the height. The crosshair is at the top centre of each frame.</p>
+    <p>Every concept shows the same data at the same moment, starting with today's HUD as concept 0. Two mixes close the page. Switch the moment with keys <b>1</b> to <b>4</b> and cycle the backdrop with <b>B</b>.</p>
+  </div>
+  <div>
+    <h2>Shared rules</h2>
+    <ul class="rules">
+      <li><b>Ink.</b> Instrument Sans 400/700 from the bundled subset, tabular figures, and today's dark glyph edge with no boxes. Bars and dots use the same edge as a box shadow.</li>
+      <li><b>Colour.</b> Rose speed, teal for good, gold for close and red for worse. The speed takes the energy tint. Nothing else is coloured unless it is graded.</li>
+      <li><b>Quiet digits.</b> Fractions of losses and of the timer are set smaller, so “−52” and “00:17” land first.</li>
+      <li><b>Surfing mode merges</b> down and up into surf, drops the checkpoint's own time and speed, and keeps sync only until the first ramp.</li>
+      <li><b>Grey means older.</b> Mid-ramp (moment 3), the down/up split and surf belong to the previous ramp, so they turn grey once the new ramp's board arrives.</li>
+    </ul>
+  </div>
+</div>
+<nav class="jump" id="jump" aria-label="Concepts"></nav>
+<main id="concepts"></main>
+<section class="mixes" id="mixes"></section>
+<div id="sheet"></div>
+<script src="./mocks.js"></script>
+</body>
+</html>

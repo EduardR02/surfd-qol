@@ -1,0 +1,395 @@
+/* Surfd QoL HUD concepts: gallery chrome, then the shared HUD ink, then one block per concept.
+   Every concept is a zero-size anchor at the speed's centre (as in src/hud-view.js); rows are
+   positioned from that point, so the speed sits on the screen's centre line whatever else shows. */
+
+:root{
+  --page:#1b1819;--page-2:#242021;--ink:#f6f0ec;--ink-2:#b4aca8;--ink-3:#7f7774;--rule:rgba(246,240,236,.12);
+  --rose:#ebbcba;--good:#9ccfd8;--warn:#f6c177;--bad:#eb6f92;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--page)}
+body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 "Surfd QoL Sans",ui-sans-serif,system-ui,sans-serif;
+  font-synthesis:none;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--rose);outline-offset:2px}
+
+/* ---------- gallery chrome ---------- */
+.top{position:sticky;top:0;z-index:20;background:rgba(27,24,25,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
+.top-in{max-width:1860px;margin:0 auto;padding:14px 24px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 28px}
+.brand{display:flex;align-items:baseline;gap:12px;margin-right:auto}
+.brand h1{margin:0;font-size:19px;line-height:1.2;font-weight:700;letter-spacing:-.005em}
+.brand span{color:var(--ink-2);font-size:14px}
+.ctl{display:flex;align-items:center;gap:8px}
+.ctl>span{color:var(--ink-2);font-size:13px}
+.seg{display:flex;border:1px solid rgba(246,240,236,.16);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:5px 11px;font-size:13px;line-height:1.3;cursor:pointer;color:var(--ink-2);
+  border-left:1px solid rgba(246,240,236,.1);font-variant-numeric:tabular-nums}
+.seg button:first-child{border-left:0}
+.seg button:hover{color:var(--ink);background:rgba(246,240,236,.05)}
+.seg button[aria-pressed="true"]{background:var(--rose);color:#2a1d1f;font-weight:700}
+.moment-note{max-width:1860px;margin:0 auto;padding:0 24px 12px;color:var(--ink-2);font-size:14px}
+.moment-note b{color:var(--ink);font-weight:700}
+
+.intro{max-width:1860px;margin:0 auto;padding:30px 24px 6px;display:grid;grid-template-columns:minmax(0,74ch) minmax(0,72ch);gap:20px 64px}
+.intro p{margin:0 0 10px;color:var(--ink-2)}
+.intro p b{color:var(--ink)}
+.intro h2{margin:0 0 10px;font-size:15px;font-weight:700}
+.rules{margin:0;padding:0;list-style:none;display:grid;gap:6px;color:var(--ink-2);font-size:14px}
+.rules li b{color:var(--ink)}
+.jump{max-width:1860px;margin:0 auto;padding:12px 24px 0;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:14px}
+.jump a{color:var(--ink-2);text-decoration:none}
+.jump a:hover{color:var(--ink)}
+.jump a b{color:var(--rose);font-variant-numeric:tabular-nums;margin-right:6px}
+
+.concept{max-width:1860px;margin:0 auto;padding:40px 24px 8px;scroll-margin-top:96px}
+.concept+.concept{border-top:1px solid var(--rule)}
+.c-head{display:grid;grid-template-columns:44px minmax(0,1fr);gap:0 14px;align-items:baseline;margin-bottom:16px}
+.c-no{font-size:34px;line-height:1;font-weight:700;color:var(--rose);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.c-head h2{margin:0;font-size:26px;line-height:1.15;font-weight:700;letter-spacing:-.01em}
+.c-idea{grid-column:2;margin:6px 0 0;max-width:78ch;color:var(--ink-2)}
+.pair{display:flex;gap:20px;width:max-content}
+.pair .frame{zoom:var(--fit,1)}
+.pair figure{margin:0}
+.pair figcaption{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:13px;color:var(--ink-2)}
+.pair figcaption b{color:var(--ink);font-weight:700}
+.notes{display:grid;grid-template-columns:repeat(2,minmax(0,62ch));gap:8px 48px;margin:16px 0 0 58px;font-size:14px;color:var(--ink-2)}
+.notes h3{margin:0 0 2px;font-size:13px;font-weight:700;color:var(--ink)}
+.notes p{margin:0}
+
+.mixes{max-width:1860px;margin:0 auto;padding:44px 24px 80px;border-top:1px solid var(--rule)}
+.mixes h2{margin:0 0 6px;font-size:26px;font-weight:700;letter-spacing:-.01em}
+.mixes>p{margin:0 0 18px;color:var(--ink-2);max-width:78ch}
+.mix{margin-top:34px}
+.mix h3{margin:0;font-size:20px;font-weight:700}
+.mix p{margin:4px 0 14px;color:var(--ink-2);max-width:78ch}
+
+/* Frames: a 1920×1080 stage cropped around the HUD at true scale. */
+.frame{position:relative;width:900px;height:630px;overflow:hidden;border-radius:6px;background:#000;isolation:isolate}
+.stage{position:absolute;left:-510px;top:-450px;width:1920px;height:1080px;background:#333 0 0/1920px 1080px no-repeat}
+
+/* Contact-sheet mode */
+body.sheet .top,body.sheet .intro,body.sheet .jump,body.sheet .concept,body.sheet .mixes,body.sheet .moment-note{display:none}
+#sheet{display:none}
+body.sheet #sheet{display:grid;grid-template-columns:repeat(2,auto);gap:26px 34px;padding:26px 28px 30px;width:max-content}
+.sh-title{grid-column:1/-1;display:flex;align-items:baseline;gap:14px}
+.sh-title h1{margin:0;font-size:22px;font-weight:700}
+.sh-title span{color:var(--ink-2);font-size:14px}
+.sh-cell h2{margin:0 0 8px;font-size:17px;font-weight:700;display:flex;gap:10px;align-items:baseline}
+.sh-cell h2 b{color:var(--rose);font-variant-numeric:tabular-nums}
+.sh-cell h2 span{font-weight:400;color:var(--ink-2);font-size:13px}
+.sh-cell .pair{gap:10px}
+.sh-cell figcaption{margin-top:4px}
+
+/* =====================================================================
+   Shared HUD ink: today's legibility recipe, a hairline dark edge under
+   each glyph plus a soft, tight shadow. No boxes.
+   ===================================================================== */
+.hud{position:absolute;left:960px;top:885.6px;width:0;height:0;
+  --rose:#ebbcba;--good:#9ccfd8;--warn:#f6c177;--bad:#eb6f92;--paper:#f6f0ec;--muted:#b4aca8;--edge:rgba(16,10,13,.74);
+  color:var(--paper);white-space:nowrap;line-height:1;
+  font-family:"Surfd QoL Sans",ui-sans-serif,system-ui,sans-serif;font-synthesis:none;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"case" 1;
+  -webkit-text-stroke:1.5px var(--edge);paint-order:stroke fill;
+  text-shadow:0 1px 2px rgba(0,0,0,.5),0 0 10px rgba(0,0,0,.28);-webkit-font-smoothing:antialiased}
+.hud b{font-weight:700}
+.hud .good{color:var(--good)}.hud .warn{color:var(--warn)}.hud .loss{color:var(--bad)}.hud .muted{color:var(--muted)}
+.hud .rose{color:var(--rose)}
+.hud .f{font-size:.72em}
+.hud .stale{color:var(--muted)!important;opacity:.82}
+.hud .lab{font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--paper);opacity:.8;-webkit-text-stroke-width:1.25px}
+.hud .tag{font-size:11px;font-weight:700;letter-spacing:.1em;color:var(--warn);-webkit-text-stroke-width:1.25px}
+.hud .row{position:absolute;left:0;transform:translateX(-50%);display:flex;align-items:baseline;justify-content:center}
+.hud .tm .f{font-size:.8em;opacity:.85}
+.spd{position:absolute;left:0;top:0;transform:translate(-50%,-52%);font-size:72px;line-height:1;font-weight:700;letter-spacing:-.02em;
+  color:var(--rose);-webkit-text-stroke-width:1.75px}
+.spd.e-good{color:var(--good)}.spd.e-loss{color:var(--bad)}
+/* A slot: value over a small label, fixed width so positions never shift. */
+.hud .slot{display:flex;flex-direction:column;align-items:center}
+.hud .slot .lab{margin-top:5px}
+.hud .pr{display:inline-flex;align-items:baseline;gap:7px}
+/* Glyph edges for bars and dots: the same dark hairline, as a box shadow. */
+.hud .ink-box{box-shadow:0 0 0 1.5px var(--edge),0 1px 3px rgba(0,0,0,.45)}
+
+/* ---------- 0 Today: src/hud-styles.js, transcribed ---------- */
+.td .spd{font-size:70px}
+.td .events{position:absolute;left:0;bottom:78px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:14px}
+.td .events.zen{bottom:39px}
+.td .start{display:flex;justify-content:center}
+.td .start .slot{width:92px}
+.td .start .val{font-size:24px}
+.td .split{display:flex;flex-direction:column;align-items:center;gap:7px}
+.td .split-head{display:flex;align-items:baseline;gap:10px}
+.td .cp{font-size:12px;font-weight:700;letter-spacing:.07em;opacity:.85}
+.td .split-time,.td .split-speed{font-size:22px}
+.td .split-speed{color:var(--rose)}
+.td .refs{display:flex;justify-content:center;gap:30px}
+.td .ref{display:flex;flex-direction:column;align-items:center}
+.td .pair{display:flex;align-items:baseline;gap:9px}
+.td .dt{font-size:22px}.td .ds{font-size:16px}
+.td .lab{display:block;margin-top:5px;font-size:11px;letter-spacing:.07em}
+.td .clock{position:absolute;left:0;bottom:39px;width:460px;transform:translateX(-50%);display:grid;grid-template-columns:1fr auto 1fr;align-items:baseline;column-gap:13px}
+.td .clock:has(>.state:empty){display:flex;justify-content:center}
+.td .clock .state:empty{display:none}
+.td .time{grid-column:2;font-size:20px;line-height:1.1;letter-spacing:.01em}
+.td .sy{grid-column:1;justify-self:end;font-size:14px}
+.td .state{grid-column:3;justify-self:start;font-size:11px;font-weight:700;letter-spacing:.09em;color:var(--warn)}
+.td .feedback{position:absolute;left:0;top:41px;transform:translateX(-50%);display:flex;justify-content:center}
+.td .feedback .slot{width:92px}
+.td .val{display:block;font-size:26px;line-height:1}
+.td .stale-slot .val{color:var(--muted)!important;font-weight:400;opacity:.5}
+.td .stale-slot .lab{opacity:.45}
+.concept.reference .c-no{color:var(--ink-3)}
+
+/* ---------- 1 Axis ---------- */
+.ax .events{position:absolute;left:0;bottom:44px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:9px}
+.ax.full .events{bottom:80px}
+.ax .cp-head{display:flex;align-items:baseline;gap:10px;font-size:16px}
+.ax .cp-head .lab{font-size:12px}
+.ax .refs{display:flex;gap:34px}
+.ax .refs .slot{min-width:110px}
+.ax .dt{font-size:24px}.ax .dv{font-size:17px}
+.ax .start{display:flex}
+.ax .start .slot{width:96px}
+.ax .start b{font-size:24px}
+.ax .clock{position:absolute;left:0;bottom:44px;width:460px;transform:translateX(-50%);display:grid;grid-template-columns:1fr auto 1fr;align-items:baseline;column-gap:14px}
+.ax .clock .tm{grid-column:2;font-size:20px}
+.ax .clock .sy{grid-column:1;justify-self:end;font-size:15px}
+.ax .clock .tag{grid-column:3;justify-self:start}
+.ax .lone-tag{position:absolute;left:0;transform:translateX(-50%);bottom:116px}
+.ax .ramp{top:44px;align-items:flex-start}
+.ax .ramp .slot{width:78px}
+.ax .ramp b{font-size:24px}
+.ax .ramp .gap{width:22px}
+.ax .ramp .net b{font-size:26px}
+.ax.surf .ramp .slot{width:84px}
+.ax.surf .ramp .side b{font-size:19px}
+.ax.surf .ramp .net b{font-size:27px}
+
+/* ---------- 2 Verdict ---------- */
+.vd .head{bottom:42px;gap:12px}
+.vd .head .dt{font-size:42px;letter-spacing:-.01em;-webkit-text-stroke-width:1.75px}
+.vd .head .dv{font-size:22px}
+.vd .sub{bottom:96px;gap:9px}
+.vd .sub .dt{font-size:21px}.vd .sub .dv{font-size:16px}
+.vd .startv{bottom:44px;gap:30px}
+.vd .startv .slot b{font-size:30px}
+.vd .ramp{top:42px;gap:16px}
+.vd .ramp .net{font-size:31px}
+.vd .ramp .air{font-size:19px}
+.vd .ramp .sy{font-size:22px}
+.vd .tagrow{bottom:132px}
+.vd.full .cpv{bottom:44px;gap:34px}
+.vd.full .cpv .dt{font-size:27px}.vd.full .cpv .dv{font-size:18px}
+.vd.full .cpe{bottom:86px;gap:10px;font-size:15px;color:var(--muted)}
+.vd.full .run{bottom:116px;gap:14px;font-size:15px}
+.vd.full .rampv{top:42px;gap:34px}
+.vd.full .rampv b{font-size:27px}
+.vd.full .rampe{top:84px;gap:18px;font-size:15px}
+.vd.full .rampe .lab,.vd.full .cpe .lab,.vd.full .run .lab{font-size:12px}
+.vd.full .rampe b{font-weight:700}
+.vd .il{margin-left:6px}
+.vd .ip{margin-right:6px}
+
+/* ---------- 3 Matrix ---------- */
+.mx .r{position:absolute;left:0;transform:translateX(-50%);display:grid;grid-template-columns:136px 212px 136px;align-items:baseline}
+.mx .r>*:nth-child(1){justify-self:end}
+.mx .r>*:nth-child(2){justify-self:center}
+.mx .r>*:nth-child(3){justify-self:start}
+.mx .r-time{bottom:44px}
+.mx .r-time .tm{font-size:19px}
+.mx .r-time .dt{font-size:23px}
+.mx .r-speed{top:-37.4px}
+.mx .r-speed .big{font-size:72px;font-weight:700;letter-spacing:-.02em;color:var(--rose);-webkit-text-stroke-width:1.75px}
+.mx .r-speed .big.e-good{color:var(--good)}.mx .r-speed .big.e-loss{color:var(--bad)}
+.mx .r-speed .dv{font-size:23px}
+.mx .r-head{bottom:76px}
+.mx .r-head .cph{display:flex;gap:9px;align-items:baseline;font-size:15px}
+.mx .r-top{bottom:104px}
+.mx .r-top{display:flex;gap:14px;justify-content:center}
+.mx .r-top .sy{font-size:15px}
+.mx .cell{position:relative;display:inline-flex;align-items:baseline;gap:6px}
+.mx .ramp{top:44px;align-items:flex-start}
+.mx .ramp .slot{width:80px}
+.mx .ramp b{font-size:20px}
+.mx .ramp .net b{font-size:25px}
+.mx.full .ramp b{font-size:22px}
+.mx.full .ramp .net b{font-size:25px}
+.mx .lab.u{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:5px}
+.mx b.startc{font-size:23px}
+
+/* ---------- 4 Strip ---------- */
+.st .axis{position:absolute;left:-.5px;top:43px;width:1.5px;height:24px;background:var(--paper);opacity:.55;box-shadow:0 0 0 1px var(--edge)}
+.st .half{position:absolute;top:44px;display:flex;align-items:baseline;gap:22px}
+.st .half.l{right:16px}
+.st .half.r{left:16px}
+.st .half b{font-size:24px}
+.st .half .dv{font-size:16px}
+.st .half>.outer b{font-size:18px}
+.st .half .clk{font-size:19px}
+.st .half>.outer .dv{font-size:14px}
+.st .clockrow{bottom:44px;gap:14px}
+.st .clockrow .tm{font-size:17px}
+.st .clockrow .sy{font-size:15px}
+.st .detail{position:absolute;top:80px;display:flex;align-items:baseline;gap:16px;font-size:15px}
+.st .detail.l{right:16px}
+.st .detail.r{left:16px}
+.st .detail .lab{font-size:12px}
+.st .il{margin-left:5px}
+
+/* ---------- 5 Halo ---------- */
+.ha .x{position:absolute;top:-345.6px;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px}
+.ha .x.l{right:34px;align-items:flex-end}
+.ha .x.r{left:34px;align-items:flex-start}
+.ha .x .dt{font-size:19px}
+.ha .x .dv{font-size:14px}
+.ha .x .lab{font-size:11px}
+.ha .x .sv{font-size:19px}
+.ha .clock{bottom:44px;gap:14px}
+.ha .clock .tm{font-size:17px}
+.ha.full .clock .tm{font-size:20px}
+.ha .clock .sy{font-size:15px}
+.ha .cph{bottom:78px;gap:10px;font-size:16px}
+.ha .ramp{top:44px;align-items:flex-start}
+.ha .ramp .slot{width:80px}
+.ha .ramp b{font-size:19px}
+.ha .ramp .net b{font-size:26px}
+.ha.full .ramp b{font-size:23px}
+
+/* ---------- 6 Meter ---------- */
+.me .bar{position:absolute;height:7px;border-radius:2px;box-shadow:0 0 0 1.5px var(--edge),0 1px 3px rgba(0,0,0,.45)}
+.me .bar.good{background:var(--good)}.me .bar.warn{background:var(--warn)}.me .bar.loss{background:var(--bad)}.me .bar.muted{background:var(--muted)}
+.me .bar.track{background:rgba(246,240,236,.28)}
+.me .bar.ghost{opacity:.32}
+.me .tick{position:absolute;width:2px;height:15px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
+.me .bv{position:absolute;transform:translateY(-50%);font-size:19px}
+.me .bl{position:absolute;font-size:14px}
+.me .bl .lab{font-size:11px;margin-left:4px}
+.me .cp{bottom:44px;gap:30px}
+.me .cp .dt{font-size:23px}.me .cp .dv{font-size:16px}
+.me .clock{bottom:44px;gap:14px}
+.me .clock .tm{font-size:17px}
+.me.full .clock{bottom:44px}
+.me.full .clock .tm{font-size:20px}
+.me.full .clock .sy{font-size:15px}
+.me.full .cpblock{position:absolute;left:0;bottom:78px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px}
+.me.full .cpblock .cph{display:flex;gap:10px;align-items:baseline;font-size:16px}
+.me.full .cpblock .refs{display:flex;gap:34px}
+.me.full .cpblock .dt{font-size:23px}.me.full .cpblock .dv{font-size:16px}
+.me .ramp{align-items:flex-start}
+.me .ramp .slot{width:70px}
+.me .ramp b{font-size:19px}
+.me .ramp .net b{font-size:22px}
+.me .ramp .gap{width:10px}
+.me .startrow{bottom:44px;gap:30px}
+.me .startrow b{font-size:23px}
+
+/* ---------- 7 Feed ---------- */
+.fd .clock{bottom:44px;gap:14px}
+.fd .clock .tm{font-size:17px}
+.fd.full .clock .tm{font-size:20px}
+.fd .clock .sy{font-size:15px}
+/* Lines start under the speed's first digit (x = −86); the event type hangs in the margin. */
+.fd .feed{position:absolute;left:-84px;top:44px;display:flex;flex-direction:column;align-items:flex-start;gap:10px}
+.fd .ln{position:relative;display:flex;align-items:baseline;gap:10px}
+.fd .ln .ev{font-size:12px;font-weight:700;letter-spacing:.04em;opacity:.8;-webkit-text-stroke-width:1.25px}
+.fd .ln .hang{position:absolute;right:calc(100% + 11px);bottom:.18em}
+.fd .ln b{font-size:23px}
+.fd .ln .dv{font-size:16px}
+.fd .ln.age1{opacity:.8}
+.fd .ln.age1 b{font-size:17px}
+.fd .ln.age1 .dv{font-size:13px}
+.fd .ln.age2{opacity:.66}
+.fd .ln.age2 b{font-size:15px}
+.fd .ln .grp{display:inline-flex;align-items:baseline;gap:6px}
+.fd .ln .grp+.grp{margin-left:8px}
+.fd .ln .sm b{font-size:15px}
+.fd .ln .sm{gap:7px}
+.fd.full .ln.age0 b{font-size:20px}
+.fd.full .ln.age0 .dv{font-size:14px}
+.fd.full .ln.age0 .sm b{font-size:14px}
+
+/* ---------- 8 Monolith ---------- */
+.mo .spd{font-size:80px}
+.mo .spd>*{-webkit-text-stroke-width:1.5px;letter-spacing:0}
+.mo .rule{position:absolute;left:4px;right:4px;top:calc(100% - 2px);height:3px;border-radius:1.5px;box-shadow:0 0 0 1.25px var(--edge),0 1px 3px rgba(0,0,0,.45)}
+.mo .rule.good{background:var(--good)}.mo .rule.warn{background:var(--warn)}.mo .rule.loss{background:var(--bad)}
+.mo .rule.dim{opacity:.45}
+.mo .side{position:absolute;left:calc(100% + 10px);line-height:1}
+.mo .sup{top:12px;font-size:21px}
+.mo .sub{top:53px;font-size:16px}
+/* The surf total sits under the rule, centred: the speed over its last loss. */
+.mo .rv{left:50%;top:calc(100% + 9px);transform:translateX(-50%);font-size:18px}
+.mo .tagrow{bottom:52px}
+.mo .plaque{position:absolute;right:calc(100% + 28px);top:50%;transform:translateY(-50%);display:grid;grid-template-columns:auto auto;column-gap:12px;row-gap:5px;align-items:baseline;font-size:15px;color:var(--paper)}
+.mo .plaque .k{justify-self:end;font-size:11px;font-weight:700;letter-spacing:.04em;opacity:.78;-webkit-text-stroke-width:1.25px}
+.mo .plaque .v{display:flex;gap:10px;align-items:baseline}
+.mo .plaque b{font-weight:700}
+.mo .plaque .gap{grid-column:1/-1;height:3px}
+
+/* ---------- 9 Race ---------- */
+.rc .lanes{position:absolute;left:0;bottom:46px;width:0}
+.rc .lane{position:absolute;left:-75px;width:150px;height:18px}
+.rc .lane .trk{position:absolute;left:0;right:0;top:8px;height:2px;background:rgba(246,240,236,.55);box-shadow:0 0 0 1px var(--edge)}
+.rc .lane .you{position:absolute;left:74px;top:1px;width:2px;height:16px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
+.rc .lane .gh{position:absolute;top:3px;width:12px;height:12px;margin-left:-6px;border-radius:50%;box-shadow:0 0 0 1.5px var(--edge),0 1px 3px rgba(0,0,0,.5)}
+.rc .lane .gh.good{background:var(--good)}.rc .lane .gh.loss{background:var(--bad)}.rc .lane .gh.warn{background:var(--warn)}
+.rc .lane .num{position:absolute;left:164px;top:50%;transform:translateY(-50%);display:flex;gap:7px;align-items:baseline}
+.rc .lane .num .dt{font-size:18px}.rc .lane .num .dv{font-size:14px}
+.rc .lane .nm{position:absolute;right:164px;top:50%;transform:translateY(-50%)}
+.rc .clock{bottom:44px;gap:14px}
+.rc .clock .tm{font-size:17px}
+.rc.full .clock .tm{font-size:20px}
+.rc .clock .sy{font-size:15px}
+.rc .cph{gap:10px;font-size:16px}
+.rc .ramp{top:44px;align-items:flex-start}
+.rc .ramp .slot{width:80px}
+.rc .ramp b{font-size:19px}
+.rc .ramp .net b{font-size:26px}
+.rc.full .ramp b{font-size:23px}
+.rc .startrow{bottom:44px;gap:30px}
+.rc .startrow b{font-size:23px}
+
+/* ---------- 10 Recency ---------- */
+.re .events{position:absolute;left:0;bottom:44px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:9px}
+.re.full .events{bottom:74px}
+.re .clock{bottom:44px;gap:14px}
+.re .clock .tm{font-size:15px;opacity:.85}
+.re .clock .sy{font-size:14px}
+.re .refs{display:flex;gap:30px;align-items:flex-end}
+.re .cph{display:flex;gap:9px;align-items:baseline;font-size:14px;opacity:.8}
+.re .fresh .dt,.re .fresh>b{font-size:30px}
+.re .fresh .dv{font-size:19px}
+.re .settled .dt,.re .settled>b{font-size:15px}
+.re .settled .dv{font-size:12px}
+.re .settled{opacity:.86}
+.re .ramp{top:44px;align-items:flex-start}
+.re .ramp .slot{width:82px}
+.re .ramp .slot b{font-size:16px}
+.re .ramp .slot.fresh b{font-size:30px}
+.re .ramp .slot.settled{opacity:.86}
+.re .start{display:flex;gap:6px}
+.re .start .slot{width:96px}
+
+/* ---------- Mix: Underline (Monolith with Meter's bar as its rule) ---------- */
+.ul .seg{position:absolute;top:calc(100% - 3px);height:6px;border-radius:2px;box-shadow:0 0 0 1.5px var(--edge),0 1px 3px rgba(0,0,0,.45)}
+.ul .seg.good{background:var(--good)}.ul .seg.warn{background:var(--warn)}.ul .seg.loss{background:var(--bad)}
+.ul .seg.track{background:rgba(246,240,236,.3)}
+.ul .seg.ghost{opacity:.32}
+.ul .seg.air{left:auto;right:calc(100% + 8px)}
+.ul .ref{position:absolute;left:calc(100% - 1px);top:calc(100% - 8px);width:2px;height:16px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
+.ul .rv{top:calc(100% + 13px)}
+
+/* Tight crop: still true scale, less scenery (x 620–1300, y 500–1060). */
+body.tight .frame{width:680px;height:560px}
+body.tight .stage{left:-620px;top:-500px}
+/* The contact sheet uses its own crop (x 640–1280, y 510–1010) at ×0.8. */
+body.sheet .frame{width:640px;height:500px}
+body.sheet .stage{left:-640px;top:-510px}
+
+/* Meter v2: values under the bar, the start in the checkpoint's spots. */
+.me .uv{position:absolute;transform:translateX(-50%);font-size:18px;white-space:nowrap}
+.me .startrow{gap:26px;align-items:baseline}
+.me .startrow .dt{font-size:23px}
+.me .startrow .sy.mid{font-size:16px}
+.me .clock.alone{justify-content:center}
