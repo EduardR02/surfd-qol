@@ -68,15 +68,26 @@ const MIN_SPAN = 50;
 // proportion, and the tick marks where the ramp would have ended had it cost
 // what the reference ramp did. When you beat the reference, a track fills
 // the rest up to the tick at the end. Pure, so it is tested without a DOM.
+//
+// Losses can be negative (a booster, a push, a gain in the air): a gain takes
+// no room, and the bar spans exactly what it draws, so nothing runs past it.
 export function meterLayout(meter, full) {
   const width = full ? 260 : 172, x0 = -width / 2, gap = 2;
   const {board, down, up, surf, air} = meter;
-  const flight = air?.value ?? 0;
+  const room = item => Number.isFinite(item?.value) && item.value > 0 ? item.value : 0;
+  const flight = room(air);
+  // Where each part of the ramp ends, from the flight's end. DOWN and SURF
+  // include the board, so they never end before it.
+  const boardEnd = room(board);
+  const ends = meter.fresh ? [['board', boardEnd, board]]
+    : meter.split && down && up ? [['board', boardEnd, board], ['down', Math.max(boardEnd, room(down)), down], ['up', Math.max(boardEnd, room(down)) + room(up), up]]
+    : surf ? [['board', boardEnd, board], ['down', Math.max(boardEnd, room(surf)), surf]]
+    : [['board', boardEnd, board]];
   // A new ramp has cost only its board so far; a finished one, its whole loss.
-  const ramp = meter.fresh ? board?.value ?? 0 : surf?.value ?? (meter.split && down && up ? down.value + up.value : board?.value ?? 0);
-  const reference = !meter.fresh && meter.reference > 0 ? meter.reference : null;
-  const span = Math.max(flight + ramp, reference !== null ? flight + reference : 0, meter.fresh ? MIN_SPAN : 0, 1e-9);
-  const at = value => x0 + Math.max(0, value) / span * width;
+  const ramp = ends.at(-1)[1];
+  const reference = !meter.fresh && Number.isFinite(meter.reference) && meter.reference > 0 ? meter.reference : null;
+  const span = Math.max(flight + ramp, reference !== null ? flight + reference : 0, meter.fresh ? MIN_SPAN : 0) || 1;
+  const at = value => x0 + Math.min(1, value / span) * width;
   const segments = {};
   const piece = (part, from, to, item, last) => {
     if (!item || !(to > from)) return;
@@ -85,17 +96,11 @@ export function meterLayout(meter, full) {
   // The flight, a wider gap, then the ramp in the order it happened.
   piece('air', 0, flight, air, false);
   if (segments.air) segments.air.width = Math.max(2, segments.air.width - gap);
-  if (meter.fresh) piece('board', flight, flight + ramp, board, true);
-  else if (meter.split && down && up) {
-    const own = board?.value ?? 0;
-    piece('board', flight, flight + own, board, false);
-    piece('down', flight + own, flight + down.value, down, false);
-    piece('up', flight + down.value, flight + down.value + up.value, up, true);
-  } else if (surf) {
-    const own = board?.value ?? 0;
-    piece('board', flight, flight + own, board, false);
-    piece('down', flight + own, flight + surf.value, surf, true);
-  } else piece('board', flight, flight + ramp, board, true);
+  let from = flight;
+  ends.forEach(([part, end, item], index) => {
+    piece(part, from, flight + end, item, index === ends.length - 1);
+    from = Math.max(from, flight + end);
+  });
   // The two values stay put: the flight's under the left half, the ramp's under the right.
   const both = !!air && !!(meter.ramp ?? board);
   return {segments, width, left: x0, tick: reference !== null ? Math.min(at(flight + reference), x0 + width) - 1 : null,
