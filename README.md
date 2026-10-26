@@ -1,8 +1,8 @@
 # Surfd QoL
 
-![Surfd QoL's HUD on Utopia: speed, timer and sync, and board, down and up values for the last ramp](docs/hud.jpg)
+![Surfd QoL's compact HUD on Utopia just after a checkpoint: PB and KSF time and speed deltas above the speed, and the ramp bar below it with the last flight's and ramp's loss underneath](docs/hud.jpg)
 
-*What it looks like most of the time. Each part can be shown or hidden on its own.*
+*The compact HUD you surf with, just after a checkpoint. Replays and spectating show everything, and each part can be shown or hidden on its own.*
 
 A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay controls, a crouch-jump bind and nullbinds.
 
@@ -31,11 +31,13 @@ You can close the bar with × or **Cancel**. Everything already loaded keeps wor
 
 ### The HUD
 
-Speed sits big on the centre line of the screen, with the timer and strafe sync just above it. Run labels only appear when they matter (PRACTICE, REPLAY, INVALID, SPECTATING); a normal ranked run shows none. Size, height, opacity and all colors are adjustable, and the HUD uses its own bundled font (Instrument Sans), so nothing is fetched from the web. The HUD hides in menus, loading screens and dialogs, and stays up for replays and spectating.
+Speed sits big on the centre line of the screen, with a bar for your last ramp under it. Size, height, opacity and all colors are adjustable, and the HUD uses its own bundled font (Instrument Sans), so nothing is fetched from the web. It hides in menus, loading screens and dialogs, and stays up for replays and spectating.
 
-**Zen** keeps just speed and the brief start stats. The replay’s crouched/standing indicator stays in the game’s key display.
+**Two layouts.** While you surf, the HUD stays compact: the speed, the ramp bar with two values under it, and for a few seconds your start stats or checkpoint deltas in the timer's place. Replays and spectating show the full HUD: the timer and strafe sync, each checkpoint's split, and every ramp value written out. Set **While surfing** to **Full** under **Display** to keep everything on while you run. **Zen** keeps just the speed and the start stats.
 
-Under the speed is a row of up to three feedback values, all in u/s. Each one stays until the next one replaces it, so you can glance at it in the air instead of mid-ramp.
+**The ramp bar** reads left to right in the order things happened: your last flight (AIR), a small gap, then the ramp you landed on: the board, the rest of the way down, and the way up. Each part takes the color of its grade. The bar is scaled to the reference: a ramp that costs exactly what the reference ramp cost ends at the tick under the speed's last digit, and anything past the tick is what you lost. With fixed grading there's no reference, so there's no tick. While surfing, the two values under the bar are the flight's loss and what the ramp has cost you so far: its board right after you land, then the whole ramp once you leave it. Right after landing, the previous ramp stays faintly behind the new board.
+
+The values, all in u/s. Each one stays until the next ramp or flight replaces it, so you can glance at it in the air instead of mid-ramp.
 
 | Value | What it measures |
 |---|---|
@@ -43,12 +45,13 @@ Under the speed is a row of up to three feedback values, all in u/s. Each one st
 | **DOWN** | What the ramp cost you on the way down, from the moment you boarded (so it includes the board) to the lowest point you touched. |
 | **UP** | What it cost you from the lowest point to where you left the ramp: the turn up and the exit. |
 | **AIR** | Your last flight between ramps: speed lost to air braking plus gain missed by imperfect strafes. You can show either part on its own. |
+| **SURF** | The whole ramp: DOWN + UP, board included. It's the value under the bar while you surf. |
 
-Down and Up are measured against perfect gravity-only conversion. If you board at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, board included.** Prefer one number per ramp? Set **Ramp result** to **Net** to show a single SURF value instead: the same whole-ramp loss, board included.
+Down and Up are measured against perfect gravity-only conversion. If you board at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, board included.** Prefer one number per ramp in the full HUD? Set **Ramp result** to **Net** to show SURF instead of DOWN and UP.
 
 Don't chase zero. Ramp surfing always bleeds some speed; on Cannonball's second ramp the KSF record still loses 34 u/s going down and 16 coming up. That's why the useful comparison is against a reference run, which is the default.
 
-The three sit in ramp order: board, down, up. AIR shares the middle slot with DOWN: when you land on the next ramp, the flight you just finished replaces the previous ramp's DOWN, and UP turns grey because it now belongs to the previous ramp. Turn any of them off and the rest re-centre.
+Turn any of them off and the bar and the values leave it out.
 
 ### Colors
 
@@ -65,15 +68,15 @@ A worse number is a measurement, not proof of a mistake. A different line or ent
 
 ### Start
 
-For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded) and your **height** above the start platform (lower is better; crouching doesn't fake it). Grade it against fixed targets, your PB or the WR.
+For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded) and your **height** above the start platform (lower is better; crouching doesn't fake it), where the checkpoint deltas go. While surfing, your strafe sync sits between them. Grade them against fixed targets, your PB or the WR.
 
 ### Checkpoints
 
-At each checkpoint you get your split time and speed, plus time and speed deltas against your PB, the WR, or both. The reference comes from the full replay, never per-checkpoint bests.
+At each checkpoint you get time and speed deltas against your PB, the WR, or both, for a few seconds; the full HUD also shows the split's own time and speed above them. The reference comes from the full replay, never per-checkpoint bests.
 
-![The full HUD on Boreas just after a checkpoint: split time and speed against the KSF record above the timer, and board, down and up values below](docs/hud-full.jpg)
+![The full HUD on Boreas just after a checkpoint, as replays show it: the split with its PB and KSF deltas, the timer and sync, the speed, and the ramp bar with air, board, down, up and surf written out under it](docs/hud-full.jpg)
 
-*The full HUD, just after a checkpoint.*
+*The full HUD, as replays and spectating show it, just after a checkpoint.*
 
 ### Binds
 
@@ -117,7 +120,7 @@ Replays get full feedback, plus a **Hull: crouched / standing** line in the game
 
 ### Optional extras
 
-- **Live feedback** (off by default): the values update continuously instead of holding. Meant for watching replays, not for runs.
+- **Live feedback** (off by default): a row of values that update continuously instead of the ramp bar. Meant for watching replays, not for runs.
 - **Tint speed by energy** (experimental, off by default): the speed number turns teal while you gain units and red while you lose them. It tracks speed and height together, so falling or climbing doesn't count, only strafe gains, braking, clips and friction do. Ramps are excluded unless you enable **Include ramps**, because surfing a ramp always bleeds some energy and would read red almost all the time.
 
 ## Is it safe for ranked runs?

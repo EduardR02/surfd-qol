@@ -132,8 +132,8 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
   </div>
 
   <figure class="shot wrap">
-    <img src="hud.jpg" width="1440" height="810" alt="Surfd QoL's HUD on Utopia: speed 2462 with the timer and sync above it, and board, down and up values for the last ramp below.">
-    <figcaption>What you see most of the time: speed, timer and sync, and board, down and up for the last ramp. Utopia, during the KSF record route.</figcaption>
+    <img src="hud.jpg" width="1440" height="810" alt="Surfd QoL's compact HUD on Utopia just after a checkpoint: PB and KSF deltas above the speed 2950, and the ramp bar below it with the last flight's and the ramp's loss underneath.">
+    <figcaption>The compact HUD you surf with, just after a checkpoint: your gap to the PB and the KSF record above the speed, and the last ramp as a bar below it. Utopia.</figcaption>
   </figure>
 
   <section id="install">
@@ -178,7 +178,7 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
   <section id="numbers">
     <div class="wrap">
       <h2>What the numbers mean</h2>
-      <p class="lede measure">Each value stays up until the next ramp or flight replaces it, so you can read it in the air instead of mid-ramp. All of them are in units per second.</p>
+      <p class="lede measure">Under the speed, a bar shows your last flight and the ramp you landed on, in the order they happened, each part in the color of its grade. It's scaled so a ramp that costs what the reference ramp cost ends at the tick under the speed's last digit; past the tick is what you lost. Each value stays up until the next ramp or flight replaces it, so you can read it in the air instead of mid-ramp. All of them are in units per second.</p>
       <div class="row" aria-hidden="true">
         <div class="value"><b class="good">−2<small>.6</small></b><span class="lab">board</span></div>
         <div class="value"><b class="warn">−34<small>.4</small></b><span class="lab">down</span></div>
@@ -188,7 +188,8 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
         <div><dt>Board</dt><dd>Speed clipped off as you land on a ramp. Height conversion doesn't count.</dd></div>
         <div><dt>Down</dt><dd>What the ramp cost from boarding to the lowest point you touched, the board included.</dd></div>
         <div><dt>Up</dt><dd>What it cost from the lowest point to where you left the ramp. Down and Up add up to the whole ramp, board included.</dd></div>
-        <div><dt>Air</dt><dd>Your last flight: speed lost to braking plus gain missed by imperfect strafes. Shows in Down's place when you land.</dd></div>
+        <div><dt>Air</dt><dd>Your last flight: speed lost to braking plus gain missed by imperfect strafes. It's the left part of the bar.</dd></div>
+        <div><dt>Surf</dt><dd>The whole ramp, board included. While you surf, the bar shows just Air and this, the ramp's loss so far.</dd></div>
       </dl>
       <ul class="legend">
         <li class="good"><i></i><span>As good as the reference or better</span></li>
@@ -198,8 +199,8 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
       </ul>
       <p class="note measure">You choose what to compare against: the KSF record route (the default), Surfd's leaderboard #1, or your own PB. Even the record loses real speed on most ramps, so the comparison tells you more than the raw number.</p>
       <figure class="shot full">
-        <img src="hud-full.jpg" width="1280" height="720" alt="The full HUD on Boreas just after a checkpoint: split time and speed against the KSF record above the timer, speed 3025, and board, down and up values below.">
-        <figcaption>The full HUD, just after a checkpoint: split time and speed against your PB and the KSF record show above the timer for a few seconds. Each part can be shown or hidden on its own. Boreas.</figcaption>
+        <img src="hud-full.jpg" width="1440" height="810" alt="The full HUD on Boreas just after a checkpoint: the split with its PB and KSF deltas above the timer and sync, speed 2950, and the ramp bar with air, board, down, up and surf written out below." loading="lazy">
+        <figcaption>The full HUD, as replays and spectating show it: the split with its PB and KSF deltas for a few seconds, the timer and sync, and every ramp value under the bar. Each part can be shown or hidden on its own. Boreas.</figcaption>
       </figure>
     </div>
   </section>
@@ -211,6 +212,7 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
         <h2>Settings</h2>
         <ul class="measure">
           <li>Turn any value on or off; the rest re-centre.</li>
+          <li>A compact HUD while you surf and the full one in replays, or the full one everywhere.</li>
           <li>Zen mode for just speed and brief start stats, without hiding the replay’s hull indicator.</li>
           <li>Move, resize and recolor the HUD with a live preview.</li>
           <li>Grade each value against fixed targets, your PB, the KSF record or Surfd's #1.</li>
@@ -220,7 +222,7 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
         </ul>
         <p class="note measure">The game's physics and timing stay unchanged. Settings and recorded runs stay in your browser. Hidden feedback skips its analysis.</p>
       </div>
-      <img src="settings.jpg" width="590" height="885" alt="The Surfd QoL settings panel open in the game menu, with a live HUD preview, layout sliders and color choices.">
+      <img src="settings.jpg" width="590" height="830" alt="The Surfd QoL settings panel open in the game menu: a live preview of the compact HUD, Zen mode, the While surfing choice and layout sliders.">
     </div>
   </section>
 </main>
