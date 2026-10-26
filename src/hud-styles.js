@@ -89,10 +89,9 @@ export const hudStyles = `
 .m-seg.good{background:var(--good)}.m-seg.warn{background:var(--warn)}.m-seg.loss{background:var(--bad)}
 .m-track{position:absolute;top:0;height:7px;border-radius:2px;background:rgba(246,240,236,.22);box-shadow:0 0 0 1.5px var(--edge)}
 .m-tick{position:absolute;top:-4px;width:2px;height:15px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
-.m-value{position:absolute;top:13px;transform:translateX(-50%);font-size:18px;line-height:1;font-weight:700}
+.m-value{position:absolute;top:13px;transform:translateX(-50%);font-size:26px;line-height:1;font-weight:700}
 .m-value.stale{color:var(--muted);opacity:.6}
-.m-value{min-width:0}
 .m-row{position:absolute;left:0;top:22px;transform:translateX(-50%);display:flex;justify-content:center}
-.m-row .slot{width:72px}
-.m-row .val{font-size:22px}
+.m-row .slot{width:88px}
+.m-row .val{font-size:26px}
 `;

@@ -179,7 +179,8 @@ describe('ramp meter geometry', () => {
     expect(segments.board.left).toBeCloseTo(-86 + 5 / 55 * 172, 6);
     expect(end(segments.up)).toBeCloseTo(86, 6);
     expect(tick).toBeCloseTo(-86 + 45 / 55 * 172 - 1, 6);
-    expect([airCenter, rampCenter]).toEqual([-43, 43]);
+    expect(airCenter).toBeCloseTo(-51.6, 6);
+    expect(rampCenter).toBeCloseTo(51.6, 6);
     // Beating the reference: your parts end early, and the tick sits at the bar's end.
     const better = meterLayout({ ...meter, reference: 80 }, false);
     expect(end(better.segments.up)).toBeCloseTo(-86 + 55 / 85 * 172, 6);

@@ -99,7 +99,7 @@ export function meterLayout(meter, full) {
   // The two values stay put: the flight's under the left half, the ramp's under the right.
   const both = !!air && !!(meter.ramp ?? board);
   return {segments, width, left: x0, tick: reference !== null ? Math.min(at(flight + reference), x0 + width) - 1 : null,
-    airCenter: air ? (both ? -width / 4 : 0) : null, rampCenter: both ? width / 4 : 0};
+    airCenter: air ? (both ? -width * 0.3 : 0) : null, rampCenter: both ? width * 0.3 : 0};
 }
 
 const TONES = new Set(['good', 'warn', 'loss', 'muted']);
