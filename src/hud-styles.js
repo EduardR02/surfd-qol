@@ -94,4 +94,6 @@ export const hudStyles = `
 .m-row{position:absolute;left:0;top:22px;transform:translateX(-50%);display:flex;justify-content:center}
 .m-row .slot{width:88px}
 .m-row .val{font-size:26px}
+/* Every value in the full layout is named, so it reads without knowing the layout. */
+.m-row .lab{margin-top:6px;font-size:13px;opacity:.95;letter-spacing:.06em}
 `;
