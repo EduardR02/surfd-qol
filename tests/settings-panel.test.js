@@ -24,7 +24,10 @@ describe('settings preview', () => {
     const zen = previewModel({ ...defaults, zen: true });
     expect(zen.zen).toBe(true);
     expect([zen.clock.hidden, zen.sync.hidden, zen.feedback.hidden]).toEqual([true, true, true]);
-    expect(previewModel(defaults).clock.hidden).toBe(false);
+    // Compact shows no timer unless asked; Full always does.
+    expect(previewModel(defaults).clock.hidden).toBe(true);
+    expect(previewModel({ ...defaults, compactTimer: true }).clock.hidden).toBe(false);
+    expect(previewModel({ ...defaults, surfHud: 'full' }).clock.hidden).toBe(false);
   });
 
   test('every setting the panel binds exists, and every default is reachable', () => {

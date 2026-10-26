@@ -4,7 +4,7 @@ export const defaults = {
   // Zen: only the speed, plus the start speed and height after leaving the start.
   zen: false,
   // While surfing: the compact HUD, or the full one replays and spectating use.
-  surfHud: 'compact',
+  surfHud: 'compact', compactTimer: false,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,

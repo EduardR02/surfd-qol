@@ -55,45 +55,51 @@ export const hudMarkup = `
     <div class="slot" data-part="up">${num('up', 'val')}${label('upLabel', 'up')}</div>
   </div>
   <div class="meter" data-part="meter" hidden>
-    <i class="m-seg" data-part="segAir"></i><i class="m-seg" data-part="segBoard"></i><i class="m-seg" data-part="segDown"></i><i class="m-seg" data-part="segUp"></i><i class="m-tick" data-part="segTick"></i>
+    <i class="m-track" data-part="segTrack"></i><i class="m-seg" data-part="segAir"></i><i class="m-seg" data-part="segBoard"></i><i class="m-seg" data-part="segDown"></i><i class="m-seg" data-part="segUp"></i><i class="m-tick" data-part="segTick"></i>
     ${num('meterAir', 'm-value')}${num('meterRamp', 'm-value')}
     <div class="m-row" data-part="rampRow">${['air', 'board', 'down', 'up', 'surf'].map(name =>
       `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${name}</span></div>`).join('')}</div>
   </div>`;
 
-// Without a reference, this many u/s span the speed's width.
-const FIXED_SPAN = 50;
-// The meter bar in px from the speed's centre: the last flight left of the
-// bar, then the ramp. Pure, so it is tested without a DOM.
+// A new ramp's board alone never fills less of the bar than this many u/s would.
+const MIN_SPAN = 50;
+// The meter bar in px from the speed's centre. It always has the same width,
+// centred under the speed: the last flight, then the ramp, share it in
+// proportion, and the tick marks where the ramp would have ended had it cost
+// what the reference ramp did. When you beat the reference, a track fills
+// the rest up to the tick at the end. Pure, so it is tested without a DOM.
 export function meterLayout(meter, full) {
-  const width = full ? 260 : 172, x0 = -width / 2, gap = 2, cap = width * 1.6;
-  const scale = meter.reference > 0 ? width / meter.reference : width / FIXED_SPAN;
-  const at = value => x0 + Math.min(Math.max(0, value) * scale, cap);
+  const width = full ? 260 : 172, x0 = -width / 2, gap = 2;
+  const {board, down, up, surf, air} = meter;
+  const flight = air?.value ?? 0;
+  // A new ramp has cost only its board so far; a finished one, its whole loss.
+  const ramp = meter.fresh ? board?.value ?? 0 : surf?.value ?? (meter.split && down && up ? down.value + up.value : board?.value ?? 0);
+  const reference = !meter.fresh && meter.reference > 0 ? meter.reference : null;
+  const span = Math.max(flight + ramp, reference !== null ? flight + reference : 0, meter.fresh ? MIN_SPAN : 0, 1e-9);
+  const at = value => x0 + Math.max(0, value) / span * width;
   const segments = {};
   const piece = (part, from, to, item, last) => {
-    if (!(to > from)) return;
-    segments[part] = {left: at(from), width: Math.max(2, at(to) - at(from) - (last ? 0 : gap)), tone: item.tone, ghost: item.stale === true};
+    if (!item || !(to > from)) return;
+    segments[part] = {left: at(from), width: Math.max(2, at(to) - at(from) - (last ? 0 : gap)), tone: item.tone};
   };
-  const {board, down, up, surf, air} = meter;
-  // A board on a finished ramp starts its bar; a new ramp's board is drawn over the last ramp's ghost.
-  const ownBoard = board && !meter.fresh ? board.value : 0;
-  if (meter.split && down && up) {
-    piece('board', 0, ownBoard, board, false);
-    piece('down', ownBoard, down.value, down, false);
-    piece('up', down.value, down.value + up.value, up, true);
+  // The flight, a wider gap, then the ramp in the order it happened.
+  piece('air', 0, flight, air, false);
+  if (segments.air) segments.air.width = Math.max(2, segments.air.width - gap);
+  if (meter.fresh) piece('board', flight, flight + ramp, board, true);
+  else if (meter.split && down && up) {
+    const own = board?.value ?? 0;
+    piece('board', flight, flight + own, board, false);
+    piece('down', flight + own, flight + down.value, down, false);
+    piece('up', flight + down.value, flight + down.value + up.value, up, true);
   } else if (surf) {
-    piece('board', 0, ownBoard, board, false);
-    piece('down', ownBoard, surf.value, surf, true);
-  } else if (ownBoard) piece('board', 0, ownBoard, board, true);
-  const end = Math.max(...Object.values(segments).map(segment => segment.left + segment.width), x0);
-  if (meter.fresh && board) segments.board = {left: x0, width: Math.max(2, at(board.value) - x0 - gap), tone: board.tone, ghost: false};
-  let airCenter = null;
-  if (air) {
-    const length = at(air.value) - x0;
-    segments.air = {left: x0 - 9 - length, width: Math.max(2, length), tone: air.tone, ghost: false};
-    airCenter = x0 - 9 - length / 2;
-  }
-  return {segments, tick: meter.reference > 0 ? x0 + width - 1 : null, airCenter, rampCenter: (x0 + Math.max(end, x0 + 40)) / 2};
+    const own = board?.value ?? 0;
+    piece('board', flight, flight + own, board, false);
+    piece('down', flight + own, flight + surf.value, surf, true);
+  } else piece('board', flight, flight + ramp, board, true);
+  // The two values stay put: the flight's under the left half, the ramp's under the right.
+  const both = !!air && !!(meter.ramp ?? board);
+  return {segments, width, left: x0, tick: reference !== null ? Math.min(at(flight + reference), x0 + width) - 1 : null,
+    airCenter: air ? (both ? -width / 4 : 0) : null, rampCenter: both ? width / 4 : 0};
 }
 
 const TONES = new Set(['good', 'warn', 'loss', 'muted']);
@@ -149,8 +155,9 @@ export function createHudView(element) {
       hide(parts[part], !segment);
       if (!segment) continue;
       place(parts[part], `left:${segment.left.toFixed(1)}px;width:${segment.width.toFixed(1)}px`);
-      cls(parts[part], `m-seg ${tone(segment.tone)}${segment.ghost ? ' ghost' : ''}`);
+      cls(parts[part], `m-seg ${tone(segment.tone)}`);
     }
+    place(parts.segTrack, `left:${geometry.left.toFixed(1)}px;width:${geometry.width}px`);
     hide(parts.segTick, geometry.tick === null);
     if (geometry.tick !== null) place(parts.segTick, `left:${geometry.tick.toFixed(1)}px`);
     // Surfing: two values under the bar. Full: every value in a row.
@@ -189,6 +196,7 @@ export function createHudView(element) {
       element.classList.toggle('full', layout === 'full');
       element.classList.toggle('surf', layout === 'surf');
       hide(parts.clock, model.clock?.hidden === true);
+      hide(nums.time, model.time?.hidden === true);
       text('sync', model.sync.hidden ? '' : model.sync.text);
       cls(texts.sync, `sync ${tone(model.sync.tone)}`);
       hide(texts.sync, model.sync.hidden);

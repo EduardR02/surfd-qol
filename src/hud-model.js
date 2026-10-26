@@ -111,8 +111,8 @@ export function buildFeedback(metrics, runRefs, settings) {
 // The ramp meter: the last flight and the latest ramp, in the order they
 // happened. Down runs from just before the board clip, so the bar draws the
 // board, the rest of the way down, then the way up, and Surf (Down + Up) is
-// the whole ramp, board included. Right after boarding a new ramp, the
-// finished one stays as a ghost behind the new board.
+// the whole ramp, board included. Right after boarding a new ramp, the bar
+// holds the flight and that board until the ramp is finished.
 export function buildMeter(metrics, runRefs, settings) {
   const margin = settings.referenceLossTolerance;
   const reference = field => runRefs?.[field]?.status === 'ready' && Number.isFinite(runRefs[field].loss) ? runRefs[field].loss : null;
@@ -139,7 +139,6 @@ export function buildMeter(metrics, runRefs, settings) {
     board: boardItem,
     down: item(down, rampTone('down', down), fresh), up: item(up, rampTone('up', up), fresh), surf: surfItem,
     // The reference ramp's loss spans the speed's width; null grades on fixed cutoffs.
-    // A new ramp's board is drawn at the last ramp's scale, so the bar doesn't jump.
     reference: relative(settings.surfColorReference) ? reference('surf') : null,
     // What the ramp you're on has cost so far: its board, then the whole ramp.
     ramp: fresh ? boardItem : surfItem ?? boardItem,
@@ -249,7 +248,9 @@ export function createHudModel(clock = () => performance.now()) {
       zen, layout,
       // The timer row: sync, time and run label. While surfing, the start and
       // checkpoint deltas take its place, and sync shows only with the start.
-      clock: { hidden: zen || layout === 'surf' && (!startModel.hidden || !checkpointModel.hidden) },
+      // Compact shows no timer unless asked; a run label (PRACTICE, INVALID) still shows on its own.
+      clock: { hidden: zen || layout === 'surf' && (!startModel.hidden || !checkpointModel.hidden || settings.compactTimer !== true && !runState) },
+      time: { hidden: layout === 'surf' && settings.compactTimer !== true },
       sync: { hidden: zen || layout === 'surf' || settings.showSync === false || spectator, value: Number.isFinite(sync) ? sync : null,
         text: Number.isFinite(sync) ? `${sync.toFixed(1)}%` : '—', tone: syncTone(sync) },
       runState: { text: runState, title: spectator ? runState : timer?.invalidReason || '' },

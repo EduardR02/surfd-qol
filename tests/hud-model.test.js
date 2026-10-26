@@ -151,6 +151,13 @@ describe('ramp meter and layouts', () => {
       startSync: { hidden: false, text: '91.3%' }, meter: { hidden: false }, feedback: { hidden: true } });
     const replay = build({ snapshot: { playback: true, strafeSync: { percentage: 91.3 } }, session, metrics: { ...ramp, start }, settings: settings() });
     expect(replay).toMatchObject({ layout: 'full', clock: { hidden: false }, sync: { hidden: false }, startSync: { hidden: true } });
+    // No timer in Compact unless asked; a run label still shows on its own.
+    const quiet = { snapshot: {}, session: { timer: { state: { phase: 'running', splits: [] } }, checkpointSpeeds: [], map: {} }, metrics: ramp };
+    expect(build({ ...quiet, settings: settings() })).toMatchObject({ clock: { hidden: true }, time: { hidden: true } });
+    expect(build({ ...quiet, settings: settings({ compactTimer: true }) })).toMatchObject({ clock: { hidden: false }, time: { hidden: false } });
+    expect(build({ ...quiet, session: { ...quiet.session, practice: true }, settings: settings() }))
+      .toMatchObject({ clock: { hidden: false }, time: { hidden: true }, runState: { text: 'PRACTICE' } });
+    expect(build({ ...quiet, settings: settings({ surfHud: 'full' }) }).time.hidden).toBe(false);
     const noSync = build({ snapshot: {}, session, metrics: { ...ramp, start }, settings: settings({ showSync: false }) });
     expect(noSync.startSync.hidden).toBe(true);
     // Live feedback keeps its own row instead of the meter.
@@ -159,26 +166,36 @@ describe('ramp meter and layouts', () => {
 });
 
 describe('ramp meter geometry', () => {
-  test('the reference ramp spans the speed; air sits left of the bar; values centre under their parts', async () => {
+  const item = (value, tone = 'good', stale = false) => ({ value, tone, stale });
+  const meter = { split: true, fresh: false, reference: 40, air: item(5), board: item(5), down: item(20), up: item(30, 'loss'), surf: item(50, 'loss') };
+  const end = segment => segment.left + segment.width;
+
+  test('one width, centred: the flight and the ramp share it; the tick marks the reference ramp', async () => {
     const { meterLayout } = await import('../src/hud-view.js');
-    const item = (value, tone = 'good', stale = false) => ({ value, tone, stale });
-    const meter = { split: true, fresh: false, reference: 50, air: item(5), board: item(5), down: item(20), up: item(30, 'loss'), surf: item(50, 'loss') };
-    const { segments, tick, airCenter, rampCenter } = meterLayout(meter, false);
-    // 172 px for 50 u/s: the board is 17.2 px, down after it, then up to the tick.
-    expect(segments.board.left).toBeCloseTo(-86, 6);
-    expect(segments.down.left).toBeCloseTo(-86 + 17.2, 6);
-    expect(segments.up.left + segments.up.width).toBeCloseTo(86, 6);
-    expect(tick).toBeCloseTo(85, 6);
-    expect(segments.air.left + segments.air.width).toBeCloseTo(-95, 6);
-    expect(airCenter).toBeCloseTo(-95 - 8.6, 6);
-    expect(rampCenter).toBeCloseTo(0, 6);
-    // Right after boarding: the last ramp is a ghost and the new board starts the bar.
-    const fresh = meterLayout({ ...meter, fresh: true, down: item(20, 'good', true), up: item(30, 'loss', true), surf: item(50, 'loss', true) }, false);
-    expect(fresh.segments.down).toMatchObject({ left: -86, ghost: true });
-    expect(fresh.segments.board).toMatchObject({ left: -86, ghost: false });
-    // No reference: fixed scale, no tick; a huge loss stops at 1.6 widths.
-    const huge = meterLayout({ ...meter, reference: null, up: item(900, 'loss') }, false);
-    expect(huge.tick).toBeNull();
-    expect(huge.segments.up.left + huge.segments.up.width).toBeCloseTo(-86 + 172 * 1.6, 6);
+    // 55 u/s lost in all fills the 172 px bar; the reference ramp (40) would have ended at 45.
+    const { segments, tick, left, width, airCenter, rampCenter } = meterLayout(meter, false);
+    expect([left, width]).toEqual([-86, 172]);
+    expect(segments.air.left).toBeCloseTo(-86, 6);
+    expect(segments.board.left).toBeCloseTo(-86 + 5 / 55 * 172, 6);
+    expect(end(segments.up)).toBeCloseTo(86, 6);
+    expect(tick).toBeCloseTo(-86 + 45 / 55 * 172 - 1, 6);
+    expect([airCenter, rampCenter]).toEqual([-43, 43]);
+    // Beating the reference: your parts end early, and the tick sits at the bar's end.
+    const better = meterLayout({ ...meter, reference: 80 }, false);
+    expect(end(better.segments.up)).toBeCloseTo(-86 + 55 / 85 * 172, 6);
+    expect(better.tick).toBeCloseTo(85, 6);
+  });
+
+  test('right after boarding: the flight and the board so far, no tick; without a reference, no tick', async () => {
+    const { meterLayout } = await import('../src/hud-view.js');
+    const fresh = meterLayout({ ...meter, fresh: true }, false);
+    expect(fresh.tick).toBeNull();
+    expect(fresh.segments.down).toBeUndefined();
+    expect(end(fresh.segments.board)).toBeCloseTo(-86 + 10 / 50 * 172, 6);
+    const fixed = meterLayout({ ...meter, reference: null }, false);
+    expect(fixed.tick).toBeNull();
+    expect(end(fixed.segments.up)).toBeCloseTo(86, 6);
+    // Only one value under the bar: it centres.
+    expect(meterLayout({ ...meter, air: null }, false).rampCenter).toBe(0);
   });
 });

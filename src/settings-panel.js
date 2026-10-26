@@ -63,6 +63,7 @@ export const panelMarkup = `
         ${toggle('hud', 'Custom HUD', 'Off brings back the game’s own speed and timer.')}
         ${toggle('zen', 'Zen mode', 'Only the speed, plus your start speed and height.')}
         ${choice('surfHud', 'While surfing', [['compact', 'Compact'], ['full', 'Full']], 'Compact keeps the speed, the ramp bar with air and ramp loss under it, and checkpoint deltas. Replays and spectating always show everything.')}
+        ${toggle('compactTimer', 'Timer', 'Show the timer above the speed in the compact HUD.', ' sub')}
       </div>
       <h3>Layout</h3>
       <div class="group">
@@ -203,8 +204,9 @@ export function previewModel(settings) {
   const up = value(live || !ramp || !split, 'UP', '−38.1', 'loss');
   const zen = settings.zen === true;
   const layout = zen ? 'zen' : settings.surfHud === 'full' ? 'full' : 'surf';
+  const timer = layout !== 'surf' || settings.compactTimer === true;
   return {
-    zen, layout, clock: {hidden: zen},
+    zen, layout, clock: {hidden: zen || !timer}, time: {hidden: !timer},
     sync: {hidden: zen || layout === 'surf' || settings.showSync === false, text: '96.4%', tone: 'good'},
     runState: {text: '', title: ''},
     feedback: {hidden: zen || !live || (result.hidden && board.hidden && up.hidden), result, board, up},
@@ -294,6 +296,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     const history = historyPreview(settings);
     if (history !== historyShown) { historyShown = history; node('history-preview').innerHTML = history; }
     setDisabled('zen', settings.hud === false);
+    setDisabled('compactTimer', settings.hud === false || settings.zen === true || settings.surfHud === 'full');
     zenButton.setAttribute('aria-pressed', String(settings.zen === true));
   }
   zenButton.addEventListener('click', () => patch({zen: settings.zen !== true}));
