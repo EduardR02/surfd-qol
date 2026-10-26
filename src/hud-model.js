@@ -87,7 +87,7 @@ export function buildFeedback(metrics, runRefs, settings) {
     const source = settings.surfColorReference;
     result = slot(false, split ? 'DOWN' : 'SURF', value,
       relative(source) ? reference(field, value) : startTone(value, settings.airLossAmazing, settings.airLossGood),
-      (split ? 'Last ramp, on the way down (includes the board).' : 'Last ramp, net against gravity-only conversion.') +
+      (split ? 'Last ramp, on the way down (includes the board).' : 'Last ramp, net against gravity-only conversion (includes the board).') +
         (relative(source) ? referenceNote(field, source) : ''));
   } else result = slot(true, 'AIR', null, 'muted', '');
 

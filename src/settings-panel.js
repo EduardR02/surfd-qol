@@ -91,7 +91,7 @@ export const panelMarkup = `
       <div class="group">
         ${toggle('showBoard', 'Board', 'Speed lost as you land on a ramp.')}
         ${toggle('showSurf', 'Ramp', 'Speed lost on the last ramp, after height is accounted for.')}
-        ${choice('rampResult', 'Show as', [['split', 'Down + Up'], ['total', 'Net Surf']], 'Split into the way down and the way up, or one net value.', ' sub')}
+        ${choice('rampResult', 'Show as', [['split', 'Down + Up'], ['total', 'Net Surf']], 'Split into the way down and the way up, or one net value. Both include the board.', ' sub')}
         ${toggle('showAir', 'Air', 'Speed lost over your last flight.')}
         ${choice('airMetric', 'Count', [['missed', 'Missed gain'], ['braking', 'Braking'], ['combined', 'Both']], '<span id="air-explain"></span>', ' sub')}
         ${toggle('showSync', 'Strafe sync')}

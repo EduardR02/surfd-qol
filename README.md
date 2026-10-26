@@ -39,12 +39,12 @@ Under the speed is a row of up to three feedback values, all in u/s. Each one st
 
 | Value | What it measures |
 |---|---|
-| **BOARD** | Speed clipped off when you land on a ramp. Pure collision loss: height conversion doesn't count. Quick re-touches during the landing count as part of the same board. |
+| **BOARD** | Speed clipped off when you land on a ramp. Pure collision loss: height conversion doesn't count. Quick re-touches during the landing count as part of the same board. It's also the first part of DOWN, so DOWN and SURF include it. |
 | **DOWN** | What the ramp cost you on the way down, from the moment you boarded (so it includes the board) to the lowest point you touched. |
 | **UP** | What it cost you from the lowest point to where you left the ramp: the turn up and the exit. |
 | **AIR** | Your last flight between ramps: speed lost to air braking plus gain missed by imperfect strafes. You can show either part on its own. |
 
-Down and Up are measured against perfect gravity-only conversion. If you board at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly.** Prefer one number per ramp? Set **Ramp result** to **Net** to show a single SURF value instead.
+Down and Up are measured against perfect gravity-only conversion. If you board at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, board included.** Prefer one number per ramp? Set **Ramp result** to **Net** to show a single SURF value instead: the same whole-ramp loss, board included.
 
 Don't chase zero. Ramp surfing always bleeds some speed; on Cannonball's second ramp the KSF record still loses 34 u/s going down and 16 coming up. That's why the useful comparison is against a reference run, which is the default.
 
