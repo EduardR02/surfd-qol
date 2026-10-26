@@ -53,7 +53,8 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
     boardSnapshot: () => ({ ...board }),
     surfSnapshot: sequence => surf.sequence !== sequence ? { ...surf } : null,
   };
-  const start = { snapshot: () => ({ available: true, speed: 348.4, heightAboveFloor: 4.25 }) };
+  const exit = { available: true, speed: 348.4, heightAboveFloor: 4.25 };
+  const start = { snapshot: () => ({ ...exit }) };
   const state = { playback };
   const snapshots = { count: 0 };
   const getState = () => { snapshots.count++; return state; };
@@ -69,7 +70,7 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
     history.observe(live, events);
   };
   return {
-    live, history, store, state, snapshots, tick,
+    live, history, store, state, snapshots, tick, exit,
     publishBoard(values) {
       Object.assign(board, {sequence: board.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true}, values);
       revision++;
@@ -437,6 +438,29 @@ describe('bests', () => {
     const view = r.history.view();
     expect(view.start).toEqual({ best: 348.4, average: 348.4, count: 3 });
     expect(view.pb).toMatchObject({ outcome: 'finished', time: expect.closeTo(101 * DT, 6) });
+  });
+
+  test('a clipped start (a failed prestrafe) is kept on the run but left out of the average', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.exit.speed = 340; r.run({ ticks: 20, finish: false });
+    Object.assign(r.exit, { speed: 281.7, clipped: true }); r.run({ ticks: 20, finish: false });
+    Object.assign(r.exit, { speed: 350, clipped: false }); r.run({ ticks: 20, finish: false });
+    expect(r.history.view().start).toEqual({ best: 350, average: 345, count: 2 });
+    expect(r.history.view().latest.start).toEqual({ speed: 350, height: 4.3 });
+    expect(r.history.view().recent[0].start).toEqual({ speed: 281.7, height: 4.3, clipped: true });
+    expect(r.history.view().totals.attempts).toBe(3);
+  });
+
+  test('an average saved before clipped starts were known starts over at the next clean start', async () => {
+    const r = rig({ store: memoryStore({ bests: [{ id: 'utopia:3', name: 'Utopia', kind: 'CP', at: 1, best: null, splits: [], ramps: {},
+      start: { best: 352, sum: 3100, count: 10 }, checkpointCount: null, attempts: 10, finishes: 0 }] }) });
+    await r.history.ready;
+    expect(r.history.view('utopia:3').start).toEqual({ best: 352, average: 310, count: 10 });
+    Object.assign(r.exit, { speed: 280, clipped: true }); r.run({ ticks: 20, finish: false });
+    expect(r.history.view().start).toEqual({ best: 352, average: 310, count: 10 });
+    Object.assign(r.exit, { speed: 344, clipped: false }); r.run({ ticks: 20, finish: false });
+    expect(r.history.view().start).toEqual({ best: 352, average: 344, count: 1 });
   });
 
   test('the best run stays, beyond the runs-per-map limit, until beaten', async () => {

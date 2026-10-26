@@ -73,35 +73,48 @@ function isExit(zone, segment, height, fraction) {
 // The exit's age is game time (ticks since it), not wall time: a replay's
 // speed, pauses and seeks then show it exactly when the run had it, and a
 // seek that re-simulates past the start doesn't make it look new.
+//
+// A start is `clipped` when the prestrafe failed by landing back in the start
+// zone: the game allows one jump per visit (session.startJumps), so after
+// that landing it blocks the next hop and you leave on the ground, slowed.
+// Standing still for a moment gives the jump back, and the attempt with it.
 export function createStartFeedback() {
   let latest = null;
   let sessionIdentity = null;
   let ground = null;
+  let clipped = false;
   return {
-    reset() { latest = ground = sessionIdentity = null; },
+    reset() { latest = ground = sessionIdentity = null; clipped = false; },
     // Zone and Session identities are static for a watched replay; retain them
     // without copying geometry or the native command log.
     saveState() {
       return {
         latest: latest ? { ...latest } : null,
         ground: ground ? { ...ground } : null,
-        sessionIdentity,
+        sessionIdentity, clipped,
       };
     },
     restoreState(saved) {
       latest = saved.latest ? { ...saved.latest } : null;
       ground = saved.ground ? { ...saved.ground } : null;
       sessionIdentity = saved.sessionIdentity;
+      clipped = saved.clipped === true;
     },
     observe(session, events) {
-      if (sessionIdentity !== session) { latest = ground = null; sessionIdentity = session; }
-      if (events.some(event => ['fall', 'start-return', 'stage-return'].includes(event))) latest = ground = null;
+      if (sessionIdentity !== session) { latest = ground = null; clipped = false; sessionIdentity = session; }
+      if (events.some(event => ['fall', 'start-return', 'stage-return'].includes(event))) { latest = ground = null; clipped = false; }
       const state = session.state;
       const config = session.config;
       const height = state.ducked ? config.duckHeight : config.standHeight;
+      // Unrestricted starts allow prehops, and the counter never resets there.
+      const jumpSpent = !config.unrestrictedStart && session.startJumps >= 1;
+      if (!jumpSpent) clipped = false;
       if (state.grounded) {
         const zone = session.map.zones.find(zone => zone.kind === 'start' && contains(zone, state.position, height));
-        if (zone) ground = { zone, z: state.position.z };
+        if (zone) {
+          ground = { zone, z: state.position.z };
+          if (jumpSpent) clipped = true;
+        }
       }
       if (!events.includes('start') || !session.lastResult) return;
       const tick = state.tick - 1;
@@ -129,7 +142,7 @@ export function createStartFeedback() {
         exitHeight: crossing?.z ?? null, floorHeight,
         heightAboveFloor: floorHeight === null ? null : crossing.z - floorHeight,
         label: config.unrestrictedStart ? 'Unrestricted start' : state.grounded ? 'Ground start' : 'Airborne start',
-        tick: state.tick, dt: config.dt ?? 0.015
+        clipped, tick: state.tick, dt: config.dt ?? 0.015
       };
     },
     // age: milliseconds of game time since the exit; none before it.

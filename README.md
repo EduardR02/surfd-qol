@@ -94,6 +94,8 @@ Both work inside the game's own input sampling, so the commands it records are e
 
 Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
 
+The average start leaves out clipped starts, where you landed back in the start zone after your jump, so the game blocked the next hop and you left on the ground. Averages from earlier versions included them, so each map’s average starts over at its next clean start.
+
 The last 10 count measurements of each ramp, not your last 10 runs. Averages start collecting when you update; old recordings aren’t re-analysed. Recent best uses your existing replay allowance, not extra storage.
 
 ### Watching replays

@@ -98,8 +98,13 @@ export function addToBests(record, run, ramps = []) {
   });
   if (Number.isFinite(run.start?.speed)) {
     record.start.best = Math.max(record.start.best ?? -Infinity, run.start.speed);
-    record.start.sum += run.start.speed;
-    record.start.count++;
+    // A clipped start (a failed prestrafe) stays out of the average. Averages
+    // from before clipped starts were known start over at the first clean one.
+    if (!run.start.clipped) {
+      if (!record.start.clean) Object.assign(record.start, {sum: 0, count: 0, clean: true});
+      record.start.sum += run.start.speed;
+      record.start.count++;
+    }
   }
   // The ramps listed are one route's: the PB's, or before a finish the run
   // that got furthest. Every run still improves the bests of the ramps it
@@ -123,7 +128,7 @@ const routeOf = record => !record ? [] : record.route
   ? record.route.flatMap(key => record.ramps[key] ? [[key, record.ramps[key]]] : [])
   : Object.entries(record.ramps).sort(([, a], [, b]) => a.checkpoint - b.checkpoint || a.order - b.order);
 const emptyBests = (key, run) => ({id: key, name: run.mapName, kind: run.kind, at: 0, best: null, splits: [], ramps: {},
-  start: {best: null, sum: 0, count: 0}, checkpointCount: null, attempts: 0, finishes: 0});
+  start: {best: null, sum: 0, count: 0, clean: true}, checkpointCount: null, attempts: 0, finishes: 0});
 
 function addRampAverages(record, run, ramps, epoch) {
   if (run.practice || run.invalid) return;
@@ -276,6 +281,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       start: {
         speed: round(startStats?.available ? startStats.speed : Math.hypot(state.velocity.x, state.velocity.y)),
         height: round(startStats?.available ? startStats.heightAboveFloor : null),
+        ...(startStats?.available && startStats.clipped ? {clipped: true} : {}),
       },
       checkpoints: [], ramps: [],
       rampEntries: new Map(),

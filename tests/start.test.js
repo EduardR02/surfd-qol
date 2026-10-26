@@ -115,6 +115,29 @@ describe('start platform height', () => {
     expect(feedback.snapshot()).toEqual({available: false});
   });
 
+  test('landing back in the zone after the one jump it allows marks the start clipped', () => {
+    const feedback = createStartFeedback();
+    const session = scene();
+    const at = (grounded, x, startJumps, events = []) => {
+      Object.assign(session.state, { grounded, position: { x, y: 0, z: 100 } });
+      session.startJumps = startJumps;
+      feedback.observe(session, events);
+    };
+    // Prestrafe, jump, land short of the edge, then leave on the ground.
+    at(true, 0, 0); at(false, 40, 1); at(true, 80, 1); at(true, 122, 1, ['start']);
+    expect(feedback.snapshot()).toMatchObject({ available: true, clipped: true });
+    // A restart gives the jump back: jumping clear of the zone is a clean start.
+    at(true, 0, 0, ['restart']); at(false, 60, 1); at(false, 122, 1, ['start']);
+    expect(feedback.snapshot().clipped).toBe(false);
+    // Standing still after landing back also gives it back, and a fresh attempt.
+    at(false, 40, 1); at(true, 50, 1); at(true, 50, 0); at(false, 90, 1); at(false, 122, 1, ['start']);
+    expect(feedback.snapshot().clipped).toBe(false);
+    // Unrestricted starts allow prehops: landing in the zone is part of them.
+    session.config.unrestrictedStart = true;
+    at(false, 40, 3); at(true, 80, 3); at(false, 122, 4, ['start']);
+    expect(feedback.snapshot().clipped).toBe(false);
+  });
+
   test('an empty start checkpoint clears later feedback', () => {
     const feedback = createStartFeedback();
     const empty = feedback.saveState();

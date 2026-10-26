@@ -226,7 +226,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       <dl class="rn-stats">
         ${stat(start ? `<b class="rn-spd">${fixed(start.best)}</b>` : '—', 'best start')}
         ${stat(totals.attempts ?? 0, totals.attempts === 1 ? 'attempt' : 'attempts')}
-        ${stat(start ? `<b class="rn-spd">${fixed(start.average)}</b>` : '—', 'average start')}
+        ${stat(start ? `<b class="rn-spd" title="Leaves out clipped starts: you landed back in the start zone, so the game blocked your hop.">${fixed(start.average)}</b>` : '—', 'average start')}
         ${stat(totals.finishes ?? 0, totals.finishes === 1 ? 'finish' : 'finishes')}
       </dl>
     </section>`;
