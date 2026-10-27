@@ -110,6 +110,7 @@ export const panelMarkup = `
       <div class="group">
         ${toggle('speedEnergyColor', 'Tint speed by energy', `${swatch('good')}while you gain units, ${swatch('loss')}while you lose them. Height changes don’t count.`)}
         ${toggle('speedEnergyRamps', 'Include ramps', `Ramp surfing always bleeds some energy, so this is mostly ${swatch('loss')}.`, ' sub')}
+        ${toggle('speedEnergyLive', 'Per tick', 'Colour each tick’s own gain or loss, with no averaging or fade, so every costly input shows. It flickers. Set the Speed refresh rate above 66 fps to see every tick.', ' sub')}
       </div>
     </section>
 
@@ -281,6 +282,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     const live = settings.continuousFeedback === true;
     setDisabled('strafeLookbackSeconds', !live);
     setDisabled('speedEnergyRamps', settings.speedEnergyColor !== true);
+    setDisabled('speedEnergyLive', settings.speedEnergyColor !== true);
     setDisabled('rampResult', live || settings.showSurf === false);
     setDisabled('airMetric', live || settings.showAir === false);
     const recording = settings.keepHistory !== false;

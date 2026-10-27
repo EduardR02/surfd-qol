@@ -66,6 +66,19 @@ describe('energy trend', () => {
     expect(trend.sample(energySample(s, dt, false), gravity).rate).toBe(0);
   });
 
+  test('live shows each tick on its own: a one-tick dip reads loss, then gain again at once', () => {
+    const trend = createEnergyTrend();
+    const s = state(0, { x: 0, y: 0, z: 0 }, { x: 260, y: 0, z: 0 });
+    const tick = dv => { s.tick++; s.position.x += 4; s.velocity.x += dv; return trend.sample(energySample(s, dt, false), gravity, false, true); };
+    trend.sample(energySample(s, dt, false), gravity, false, true);
+    for (let i = 0; i < 30; i++) expect(tick(30 * dt).tone).toBe('good');
+    // An A→D switch: one tick where friction outweighs acceleration.
+    expect(tick(-0.6).tone).toBe('loss');
+    expect(tick(30 * dt).tone).toBe('good');
+    // A coasting tick with no gain or loss is neutral, not the last tone held.
+    expect(tick(0).tone).toBe('neutral');
+  });
+
   test('hysteresis holds a tone through brief strafe transitions', () => {
     const trend = createEnergyTrend();
     const s = state(0, { x: 0, y: 0, z: 0 }, { x: 1000, y: 0, z: 0 });

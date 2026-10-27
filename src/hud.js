@@ -57,7 +57,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const runReferences = services.runReferences ?? createRunReferences({getSession, getReferences, getAdapter, settings, replayStore});
   const buildModel = (services.createModel ?? createHudModel)();
   const trend = createEnergyTrend();
-  let destroyed = false, lastMotion = null, energyOn = false;
+  let destroyed = false, lastMotion = null, energyOn = false, energyLive = false;
 
   function syncSettings() {
     for (const [key, variable] of PALETTE) host.style.setProperty(variable, hex(settings[key], defaults[key]));
@@ -75,10 +75,11 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const nextSpeedMs = 1000 / settings.speedFps, nextTimerMs = 1000 / settings.timerFps;
     if (nextSpeedMs !== speedUpdateMs) { speedUpdateMs = nextSpeedMs; speedSample = -1; }
     if (nextTimerMs !== timerUpdateMs) { timerUpdateMs = nextTimerMs; timerSample = -1; }
-    if (energyOn !== (settings.speedEnergyColor === true)) {
-      energyOn = !energyOn;
+    if (energyOn !== (settings.speedEnergyColor === true) || energyLive !== (settings.speedEnergyLive === true)) {
+      energyOn = settings.speedEnergyColor === true;
+      energyLive = settings.speedEnergyLive === true;
       trend.reset();
-      hud.setEnergy('neutral');
+      hud.setEnergy('neutral', energyLive);
     }
   }
   const panel = createSettingsPanel({
@@ -200,9 +201,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
         // Opt-in only: nothing here runs while the tint is off.
         const sample = energySample(state, session?.config?.dt ?? 0.015, spectator);
         const result = sample
-          ? trend.sample(sample, session?.config?.gravity ?? 800, settings.speedEnergyRamps !== true && lastMotion === 'surf')
+          ? trend.sample(sample, session?.config?.gravity ?? 800, settings.speedEnergyRamps !== true && lastMotion === 'surf', energyLive)
           : trend.reset();
-        hud.setEnergy(result.tone);
+        hud.setEnergy(result.tone, energyLive);
       }
     }
     const nextTimerSample = Math.floor(timestamp / timerUpdateMs);

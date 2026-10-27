@@ -30,7 +30,9 @@ export function createEnergyTrend() {
   // network pose carries no new information, so it keeps the previous trend.
   // Suppressed samples (e.g. while surfing a ramp) stay neutral but keep the
   // baseline, so the trend responds immediately once suppression ends.
-  function sample({ x, y, z, vx, vy, vz, time, exact }, gravity, suppressed = false) {
+  // live: the tone is the gain or loss since the last sample alone, with no
+  // averaging or hysteresis, so every costly input shows.
+  function sample({ x, y, z, vx, vy, vz, time, exact }, gravity, suppressed = false, live = false) {
     if (![x, y, z, vx, vy, vz, time, gravity].every(Number.isFinite)) return reset();
     const speedSquared = vx * vx + vy * vy + vz * vz;
     const energy = speedSquared + 2 * gravity * z;
@@ -50,9 +52,9 @@ export function createEnergyTrend() {
       return publish();
     }
     const instant = (energy - lastEnergy) / dt / (2 * Math.max(speed, MIN_SPEED));
-    rate += (instant - rate) * (1 - Math.exp(-dt / TIME_CONSTANT));
+    rate = live ? instant : rate + (instant - rate) * (1 - Math.exp(-dt / TIME_CONSTANT));
     lastTime = time; lastEnergy = energy; lastX = x; lastY = y; lastZ = z;
-    if (tone === 'good' ? rate < EXIT : tone === 'loss' ? rate > -EXIT : true) {
+    if (live || (tone === 'good' ? rate < EXIT : tone === 'loss' ? rate > -EXIT : true)) {
       tone = rate > ENTER ? 'good' : rate < -ENTER ? 'loss' : 'neutral';
     }
     return publish();

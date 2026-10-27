@@ -127,7 +127,7 @@ export function createHudView(element) {
   const place = (node, style) => { if (node.getAttribute('style') !== style) node.setAttribute('style', style); };
   const cls = (node, value) => { if (node.className !== value) node.className = value; };
   const title = (node, value = '') => { if (node.title !== value) node.title = value; };
-  let energy = 'neutral';
+  let energy = 'neutral:false';
 
   function slot(key, model) {
     hide(parts[key], model.hidden);
@@ -193,10 +193,12 @@ export function createHudView(element) {
   return {
     setSpeed(value) { text('speed', value); },
     setTime(value) { number('time', value); },
-    setEnergy(next) {
-      if (next === energy) return;
-      energy = next;
-      cls(parts.speed, next === 'good' || next === 'loss' ? `speed e-${next}` : 'speed');
+    // live: no fade, so a one-tick change shows as it is.
+    setEnergy(next, live = false) {
+      const key = `${next}:${live}`;
+      if (key === energy) return;
+      energy = key;
+      cls(parts.speed, `speed${next === 'good' || next === 'loss' ? ` e-${next}` : ''}${live ? ' e-live' : ''}`);
     },
     render(model) {
       const layout = model.layout ?? 'full';
