@@ -8,6 +8,8 @@ import {FONT_FAMILY} from './hud-view.js';
 export const hudStyles = `
 :host{all:initial;position:fixed;inset:0;z-index:1000;pointer-events:none;color-scheme:dark;
   --accent:#ebbcba;--good:#9ccfd8;--warn:#f6c177;--bad:#eb6f92;--muted:#b4aca8;--paper:#f6f0ec;
+  /* The speed tint's loss: a vivid red, since the usual red is too close to the rose speed for a tick-long flash. */
+  --energy-loss:#ff3b3b;
   --edge:rgba(16,10,13,.74);
   font-family:"${FONT_FAMILY}",ui-sans-serif,system-ui,sans-serif;font-synthesis:none;
   -webkit-font-smoothing:antialiased}
@@ -25,7 +27,7 @@ export const hudStyles = `
 /* Speed: centred on the anchor. Colour eases so an energy tint never flickers. */
 .speed{position:absolute;left:0;top:0;transform:translate(-50%,-52%);font-size:70px;line-height:1;font-weight:700;
   letter-spacing:-.02em;color:var(--accent);-webkit-text-stroke-width:1.75px;transition:color .18s ease-out}
-.speed.e-loss{color:var(--bad)}.speed.e-live{transition:none}
+.speed.e-loss{color:var(--energy-loss)}.speed.e-live{transition:none}
 
 /* Clock row: with sync and a run label, the timer is centred and they hang off
    either side. With only one of them, the pair centres as a group instead, so a
