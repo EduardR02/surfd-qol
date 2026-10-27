@@ -134,6 +134,7 @@ export function buildMeter(metrics, runRefs, settings) {
   const boardItem = item(boardLoss, boardTone), surfItem = item(total, rampTone('surf', total), fresh);
   return {
     hidden: boardItem === null && surfItem === null && airValue === null,
+    bar: settings.rampBar !== false,
     fresh, split: settings.rampResult !== 'total',
     air: item(airValue, startTone(airValue, settings.airLossAmazing, settings.airLossGood)),
     board: boardItem,

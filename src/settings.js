@@ -5,6 +5,8 @@ export const defaults = {
   zen: false,
   // While surfing: the compact HUD, or the full one replays and spectating use.
   surfHud: 'compact', compactTimer: false,
+  // The bar under the speed; off keeps just the values under it.
+  rampBar: true,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,

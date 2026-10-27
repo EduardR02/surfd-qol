@@ -62,8 +62,9 @@ export const panelMarkup = `
       <div class="group">
         ${toggle('hud', 'Custom HUD', 'Off brings back the game’s own speed and timer.')}
         ${toggle('zen', 'Zen mode', 'Only the speed, plus your start speed and height.')}
-        ${choice('surfHud', 'While surfing', [['compact', 'Compact'], ['full', 'Full']], 'Compact keeps the speed, the ramp bar with air and ramp loss under it, and checkpoint deltas. Replays and spectating always show everything.')}
+        ${choice('surfHud', 'While surfing', [['compact', 'Compact'], ['full', 'Full']], 'Compact keeps the speed, the air and ramp loss under it, and checkpoint deltas. Replays and spectating always show everything.')}
         ${toggle('compactTimer', 'Timer', 'Show the timer above the speed in the compact HUD.', ' sub')}
+        ${toggle('rampBar', 'Ramp bar', 'The bar under the speed: your last flight and ramp, in the order they happened. Off keeps just the values.')}
       </div>
       <h3>Layout</h3>
       <div class="group">
@@ -297,6 +298,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     if (history !== historyShown) { historyShown = history; node('history-preview').innerHTML = history; }
     setDisabled('zen', settings.hud === false);
     setDisabled('compactTimer', settings.hud === false || settings.zen === true || settings.surfHud === 'full');
+    setDisabled('rampBar', settings.hud === false || settings.zen === true || settings.continuousFeedback === true);
     zenButton.setAttribute('aria-pressed', String(settings.zen === true));
   }
   zenButton.addEventListener('click', () => patch({zen: settings.zen !== true}));

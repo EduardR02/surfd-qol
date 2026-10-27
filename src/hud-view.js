@@ -154,17 +154,20 @@ export function createHudView(element) {
   function meter(model, layout) {
     hide(parts.meter, model.hidden !== false);
     if (model.hidden !== false) return;
-    const full = layout === 'full', geometry = meterLayout(model, full);
+    const full = layout === 'full', geometry = meterLayout(model, full), bar = model.bar !== false;
+    // Without the bar, the values move up into its place.
+    cls(parts.meter, bar ? 'meter' : 'meter bare');
     for (const [part, name] of [['segAir', 'air'], ['segBoard', 'board'], ['segDown', 'down'], ['segUp', 'up']]) {
-      const segment = geometry.segments[name];
+      const segment = bar ? geometry.segments[name] : null;
       hide(parts[part], !segment);
       if (!segment) continue;
       place(parts[part], `left:${segment.left.toFixed(1)}px;width:${segment.width.toFixed(1)}px`);
       cls(parts[part], `m-seg ${tone(segment.tone)}`);
     }
+    hide(parts.segTrack, !bar);
     place(parts.segTrack, `left:${geometry.left.toFixed(1)}px;width:${geometry.width}px`);
-    hide(parts.segTick, geometry.tick === null);
-    if (geometry.tick !== null) place(parts.segTick, `left:${geometry.tick.toFixed(1)}px`);
+    hide(parts.segTick, !bar || geometry.tick === null);
+    if (bar && geometry.tick !== null) place(parts.segTick, `left:${geometry.tick.toFixed(1)}px`);
     // Surfing: two values under the bar. Full: every value in a row.
     const under = (key, center, item) => {
       hide(nums[key], full || !item || center === null);

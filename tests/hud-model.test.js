@@ -142,6 +142,12 @@ describe('ramp meter and layouts', () => {
     expect(buildMeter(ramp, runRefs, meterSettings({ showBoard: false, showSurf: false, showAir: false })).hidden).toBe(true);
   });
 
+  test('the bar is on by default; off keeps the meter and its values', () => {
+    expect(buildMeter(ramp, runRefs, meterSettings()).bar).toBe(true);
+    expect(buildMeter(ramp, runRefs, meterSettings({ rampBar: false }))).toMatchObject({ hidden: false, bar: false,
+      air: { text: '−9.0' }, ramp: { text: '−30.0' } });
+  });
+
   test('a live run is compact: the deltas or the start replace the clock, sync joins the start', () => {
     const build = createHudModel(() => 0);
     const session = { timer: { state: { phase: 'running', splits: [12.5] } }, checkpointSpeeds: [1500], map: {} };
