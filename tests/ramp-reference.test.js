@@ -25,7 +25,7 @@ function rig({settings = {}} = {}) {
   const route = {indices: new Map([['[7,0,1]', 0], ['[8,0,1]', 1]]), boards: [
     {valid: true, loss: 3, downLoss: 9, upLoss: 2, surfLoss: 11}, {valid: false, loss: 1}]};
   return {reference, consumer, acquired, refs, settings: options,
-    finish: (index = acquired.length - 1, result = {feedback: {route}}) => acquired[index].finish(result),
+    finish: (index = acquired.length - 1, result = {config: {dt: 0.015}, feedback: {route}}) => acquired[index].finish(result),
     get session() { return session; }, set session(value) { session = value; },
     get adapter() { return adapter; }, set adapter(value) { adapter = value; }};
 }
@@ -35,7 +35,7 @@ function navigationRig(settings) {
   const data = {mapId: 'utopia', mapVersion: 3, format: 8, config: {dt: .015}, commands: Array(400).fill({})};
   const route = {indices: new Map([['[7,0,1]', 0], ['[7,0,2]', 1]]), boards: [
     {valid: true, tick: 5, loss: 3}, {valid: true, tick: 300, loss: 4}]};
-  const summary = {feedback: {route, dt: .015}, fingerprint: routeFingerprint(data)};
+  const summary = {config: data.config, feedback: {route, dt: .015}, fingerprint: routeFingerprint(data)};
   let generation = 0, playing = null, index = 0, starts = 0, reads = [];
   f.seeks = 0;
   // Surfd's player: the game plays, pauses and seeks; it has indexed the whole replay.
@@ -133,7 +133,9 @@ describe('reference ramp navigation', () => {
       if (change === 'adapter') f.adapter = {...f.adapter};
       if (change === 'release') f.consumer.release();
       if (change === 'native') f.adapter.replay.reserve();
-      expect(f.acquired[0].isCurrent()).toBe(false);
+      // The analysis belongs to the replay, not the session's rules: it carries
+      // on, but no longer applies, so the navigation still stops.
+      expect(f.acquired[0].isCurrent()).toBe(change === 'config');
       f.finish(0, summary);
       expect(await request).toBe(false);
       expect(reads).toEqual([]);

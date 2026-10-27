@@ -1,4 +1,4 @@
-import { createReferenceReplayStore, reconstructReferenceReplay } from './replay-store.js';
+import { checkpointApplies, createReferenceReplayStore, reconstructReferenceReplay } from './replay-store.js';
 
 const CACHE_KEY = 'surfd.qol.checkpoints.v1';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -13,6 +13,11 @@ export function referenceIdentity(entry) {
 
 export function sessionKey(session, boardId) {
   return JSON.stringify([boardId ?? null, session.map.id, session.map.version, session.config, session.replayFormat]);
+}
+// Where a PB/WR replay's analysis is kept: its board and map, not the rules of
+// the session asking. A replay watched under other rules reuses it.
+export function analysisKey(session, boardId) {
+  return JSON.stringify([boardId ?? null, session.map.id, session.map.version]);
 }
 
 async function replayCheckpointData({Session, session, replay, entry, isCurrent, yieldTask}) {
@@ -53,7 +58,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       if (typeof key === 'string' && typeof value?.ownerKey === 'string' && Number.isSafeInteger(value.timeUs) && value.timeUs > 0 && validSpeeds(value.speeds) && value.speeds.length === value.splitsUs?.length) personal.set(key, value);
     }
   } catch { /* Private browsing or an incompatible cache must not affect play. */ }
-  let live = null, adapter = null, context = '', map = null, mapId = null, mapVersion = null, config = null, format = null, board = null;
+  let live = null, adapter = null, context = '', analysis = '', map = null, mapId = null, mapVersion = null, config = null, format = null, board = null;
   let ownerKey = null, personalContext = '', runOwned = false;
   let runArray = null, startTick = null, previousTick = -1, phase = null, finished = false;
   let baseline = null, baselineLocal = null, completed = null, destroyed = false, recordSource = null, visible = true;
@@ -92,7 +97,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
   }
   function request(slot, entry, exact, session, refs, ksf = false) {
     const identity = referenceIdentity(entry);
-    const key = ksf ? `${context}:ksf` : identity ? `${context}:official:${identity}` : exact ? `${personalContext}:local:${entry.timeUs}` : '';
+    const key = ksf ? `${analysis}:ksf` : identity ? `${analysis}:official:${identity}` : exact ? `${personalContext}:local:${entry.timeUs}` : '';
     if (slot.key === key) return;
     clear(slot);
     slot.key = key;
@@ -117,7 +122,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     slot.handle = handle;
     const publish = result => {
       if (slot.handle !== handle || !isCurrent()) return;
-      const route = result?.checkpoint;
+      const route = checkpointApplies(result, session, ksf ? null : entry) ? result.checkpoint : null;
       slot.speeds = route?.speeds ?? null;
       slot.status = route ? 'ready' : 'missing';
       slot.retryable = result?.status === 'missing';
@@ -144,7 +149,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       if (live) {
         clear(ownSlot); clear(recordSlot);
         live = null;
-        context = '';
+        context = analysis = '';
       }
       return {own: null, record: null, ownEntry: null, ownSplitsUs: null, recordSplitsUs: null, recordTimeUs: null, ownStatus: 'missing', recordStatus: 'missing', recordSource: source};
     }
@@ -157,6 +162,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       live = session; adapter = nextAdapter; map = session.map; config = session.config; format = session.replayFormat; board = boardId;
       mapId = map.id; mapVersion = map.version;
       context = sessionKey(session, boardId);
+      analysis = analysisKey(session, boardId);
       // Official summaries remain replay-keyed; only exact local PBs are owned.
       ownerKey = refs?.ownerKey ?? 'guest';
       personalContext = JSON.stringify([context, ownerKey]);

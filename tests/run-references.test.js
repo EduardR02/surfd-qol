@@ -3,11 +3,10 @@ import {createRunReferences} from '../src/run-references.js';
 import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
 import {createCheckpointReferences} from '../src/references.js';
-import {createReferenceReplayStore} from '../src/replay-store.js';
+import {createReferenceReplayStore, routeBoards} from '../src/replay-store.js';
 import {selectFeedbackType} from '../src/hud-model.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {visitKey} from '../src/replay-store.js';
-import {referenceIdentity, sessionKey} from '../src/references.js';
 
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
@@ -184,6 +183,37 @@ describe('Saved reference analysis', () => {
     expect(next.calls().replay).toEqual([]);
     expect(next.native().loads).toBe(0);
   });
+  test('a watched replay is analysed once: its boards are saved under its route key for the next visit', async () => {
+    const saved = savedAnalysis();
+    const watch = f => f.replayStore.acquire({key: 'map:route:fingerprint', session: f.session, load: async () => f.replay(),
+      feedback: true, isCurrent: () => true}).promise;
+    const first = fixture({saved});
+    const boards = routeBoards(await watch(first));
+    expect(boards).toEqual([{tick: expect.any(Number), board: 5, key: expect.any(String)}]);
+    expect([first.native().loads, saved.data.size]).toEqual([1, 1]);
+    first.replayStore.destroy();
+    const next = fixture({saved});
+    expect(routeBoards(await watch(next))).toEqual(boards);
+    expect(next.native().loads).toBe(0);
+  });
+
+  test('a replay watched under other labels or format reuses the PB summary; other movement rules get none and cost nothing', async () => {
+    const f = fixture({shared:true});
+    const board = f.step(contact());
+    f.update(board); await flush();
+    expect(f.update(board)).toEqual({loss:5,status:'ready',source:'pb'});
+    expect([f.calls().replay.length, f.native().loads]).toEqual([1, 1]);
+    // Native Watch adopts another run's format and non-movement labels.
+    f.session.config = {...f.session.config, version:'historical', unrestrictedStart:true};
+    f.session.replayFormat = 7;
+    expect(f.update(board)).toEqual({loss:5,status:'ready',source:'pb'});
+    // Other movement rules: the PB's feedback doesn't apply, and isn't recomputed for them.
+    f.session.config = {...f.session.config, dt:0.02};
+    f.update(board); await flush();
+    expect(f.update(board).status).not.toBe('ready');
+    expect([f.calls().replay.length, f.native().loads]).toEqual([1, 1]);
+  });
+
   test('the KSF route is fetched to check it is unchanged, and re-simulated only when it changed', async () => {
     const saved = savedAnalysis();
     const first = fixture({source:'wr',saved});
@@ -1129,11 +1159,10 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     const original = consumer.get(key, 'pb');
     await flush();
     expect([...original.ramps.values()][0].board).toBe(5);
-    const previous = {...f.session};
+    // Native Watch adopts the replay's format and labels: the summary is keyed
+    // by the replay, so the movement feedback carries over as it is.
     f.session.config = f.replay().config;
     f.session.replayFormat = f.replay().format;
-    const adoptedKey = `${sessionKey(f.session, f.getReferences().boardId)}:official:${referenceIdentity(entry)}`;
-    f.replayStore.adoptFeedback({from: original.key, to: adoptedKey, previous, session: f.session});
     consumer.release();
     const reopened = reference.createConsumer();
     expect([...reopened.get(key, 'pb').ramps.values()][0].board).toBe(5);

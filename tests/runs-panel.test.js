@@ -327,7 +327,7 @@ describe('runs panel', () => {
     acquired[0].finish(null);
     await Promise.resolve();
     expect(rig.body.innerHTML).toContain('Reading the PB run');
-    acquired[1].finish({feedback: {route: {indices: new Map([['ramp', 0]]), boards: [{valid: true, loss: 3}]}}});
+    acquired[1].finish({config: {dt: 0.015}, feedback: {route: {indices: new Map([['ramp', 0]]), boards: [{valid: true, loss: 3}]}}});
     await Promise.resolve();
     expect(rig.body.innerHTML).toContain('at or better than PB');
     rig.panel.destroy();

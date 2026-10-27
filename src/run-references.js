@@ -1,5 +1,5 @@
-import { createReferenceReplayStore, visitKey } from './replay-store.js';
-import { referenceIdentity, sessionKey } from './references.js';
+import { createReferenceReplayStore, feedbackApplies, visitKey } from './replay-store.js';
+import { analysisKey, referenceIdentity } from './references.js';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const copyEntry = entry => referenceIdentity(entry) ? {runId: entry.runId, timeUs: entry.timeUs, splitsUs: entry.splitsUs.slice()} : null;
 
@@ -34,7 +34,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const identity = referenceIdentity(entry);
     const ksf = source === 'wr' && wrSource === 'ksf';
     // The imported KSF route has no run ID: its identity is the versioned map
-    // route, scoped to the current config/format just like official replays.
+    // route. Either applies to this session only under its movement rules.
     const key = `${context}:${ksf ? 'ksf' : `official:${identity ?? 'missing'}`}`;
     let requested = slots.get(source);
     if (requested?.key === key) return requested;
@@ -63,7 +63,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     requested.handle = handle;
     const publish = result => {
       if (!isCurrent()) return;
-      requested.reference = result?.feedback ?? null;
+      requested.reference = feedbackApplies(result, session) ? result.feedback : null;
       requested.status = requested.reference ? 'ready' : result?.status ?? 'missing';
     };
     if (handle.result) publish(handle.result);
@@ -126,7 +126,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
       invalidate();
       live = session; adapter = nextAdapter; map = session.map; config = session.config; format = session.replayFormat;
       boardId = refs?.boardId; mapId = map.id; mapVersion = map.version;
-      context = sessionKey(session, boardId);
+      context = analysisKey(session, boardId);
       ownerKey = refs?.ownerKey ?? 'guest';
       resetRun(session, refs); phase = null;
     } else if (runArray !== session.checkpointSpeeds || session.state.tick < previousTick || timer.startTick !== startTick ||

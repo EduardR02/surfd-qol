@@ -4,8 +4,14 @@ import { createStartFeedback } from './start.js';
 
 const MAX_COMMANDS = 40000;
 const MAX_ROUTES = 12;
+// Analysis runs in the page's idle time, so it never holds up a frame of the
+// game: a slice lasts while the idle period does, and at least this many
+// commands. A page that is never idle still gets a slice every IDLE_WAIT_MS.
 const SLICE_COMMANDS = 32;
-const defer = () => new Promise(resolve => setTimeout(resolve, 0));
+const IDLE_WAIT_MS = 50;
+const defer = () => new Promise(resolve => typeof requestIdleCallback === 'function'
+  ? requestIdleCallback(resolve, {timeout: IDLE_WAIT_MS}) : setTimeout(resolve, 0));
+const idleLeft = deadline => !!deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
 const micros = seconds => Math.round(seconds * 1e6);
 const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && speeds.every(speed => Number.isFinite(speed) && speed >= 0 && speed <= 100000);
 // Saved analysis outlives the page. Its key carries a hash of the extension's
@@ -71,22 +77,58 @@ export function sameMovementConfig(left, right) {
   return keys.length === movementKeys(right).length &&
     keys.every(key => Object.hasOwn(right, key) && JSON.stringify(left[key]) === JSON.stringify(right[key]));
 }
+const sameConfig = (left, right) => !!left && !!right && JSON.stringify(left) === JSON.stringify(right);
+
+// A summary belongs to the replay alone, whatever session asked for it; what
+// it offers a session depends on that session's rules. Checkpoints compare
+// only under the exact config of an official run (any, for the KSF route),
+// movement feedback under the same movement rules.
+export const checkpointApplies = (result, session, entry) => !!result?.checkpoint && (!entry || sameConfig(result.config, session?.config));
+export const feedbackApplies = (result, session) => !!result?.feedback && sameMovementConfig(result.config, session?.config);
+// Ramp boards of an analysed replay, as timeline marks: [{tick, board, key}].
+export const routeBoards = result => (result?.feedback?.route?.boards ?? [])
+  .filter(visit => Number.isInteger(visit.tick) && typeof visit.key === 'string')
+  .map(visit => ({tick: visit.tick, board: Number.isFinite(visit.loss) ? visit.loss : null, key: visit.key}));
+
+// Whether a summary already holds everything a consumer could use from it.
+// A part never computed for a compatible session (*Tried) is still owed.
+function covers(result, session, entry, feedback) {
+  if (!result) return false;
+  // No config: the replay itself is unusable, so there is nothing to compute.
+  if (!result.config) return true;
+  if (feedback) return !sameMovementConfig(result.config, session.config) || result.feedbackTried === true;
+  return !(!entry || sameConfig(result.config, session.config)) || result.checkpointTried === true;
+}
+// One replay's summaries from passes that computed different parts.
+function merge(base, next) {
+  if (!base?.config || !next?.config) return next ?? base;
+  return {...base, ...next,
+    ...(!next.checkpointTried && base.checkpointTried ? {checkpoint: base.checkpoint, checkpointTried: true} : {}),
+    ...(!next.feedbackTried && base.feedbackTried ? {feedback: base.feedback, feedbackTried: true} : {})};
+}
 
 // Checkpoint and feedback validation are independent views of one native pass.
 // A valid imported checkpoint route need not have compatible movement physics.
-export async function reconstructReferenceReplay({adapter, session, replay, entry = null, isCurrent = () => true, yieldTask = defer, feedback = true}) {
+// wants(config) says which parts to compute (a shared store asks its
+// consumers); by default, what this session can use. The result records the
+// replay's config and which parts were tried, null only when the replay itself
+// is unusable (it falls, never finishes, or doesn't match its entry).
+export async function reconstructReferenceReplay({adapter, session, replay, entry = null, isCurrent = () => true, yieldTask = defer, feedback = true, wants = null}) {
   if (!isCurrent() || typeof adapter?.Session !== 'function' || !replay || !Array.isArray(replay.commands) ||
     replay.commands.length > MAX_COMMANDS || replay.mapId !== session.map.id || replay.mapVersion !== session.map.version ||
     !Number.isInteger(replay.format)) return null;
-  const checkpointCompatible = !entry || JSON.stringify(replay.config) === JSON.stringify(session.config);
-  await yieldTask();
+  let deadline = await yieldTask();
   if (!isCurrent()) return null;
   // Shared consumers can join during the initial yield, before any native
   // state or movement observers are constructed.
-  const wantsFeedback = typeof feedback === 'function' ? feedback() : feedback;
-  const feedbackCompatible = wantsFeedback && replay.commands.length > 0 &&
-    typeof adapter.Movement === 'function' && sameMovementConfig(replay.config, session.config);
-  if (!checkpointCompatible && !feedbackCompatible) return null;
+  const asked = () => wants ? wants(replay.config) : {
+    checkpoint: !entry || sameConfig(replay.config, session.config),
+    feedback: (typeof feedback === 'function' ? feedback() : feedback) && sameMovementConfig(replay.config, session.config)};
+  const first = asked();
+  const checkpointCompatible = first.checkpoint;
+  const feedbackCompatible = first.feedback && replay.commands.length > 0 && typeof adapter.Movement === 'function';
+  const tried = {config: replay.config, checkpointTried: checkpointCompatible, feedbackTried: feedbackCompatible};
+  if (!checkpointCompatible && !feedbackCompatible) return {...tried, checkpoint: null, feedback: null};
   const shadow = new adapter.Session(session.map, replay.config, replay.format);
   shadow.loadReplay(replay);
   const metrics = feedbackCompatible ? createMetrics({}, {referenceOnly: true}) : null;
@@ -94,16 +136,16 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   const startFeedback = metrics ? createStartFeedback() : null;
   // Restoring prototypes is not a run reset. No observer survives an await.
   const observed = metrics ? {...metrics, reset() {}} : null;
-  let active = null, failed = false, fell = false, surfSequence = 0, boardRevision = -1;
+  let active = null, failed = false, dropped = false, fell = false, surfSequence = 0, boardRevision = -1;
   const shadowAdapter = {Session: adapter.Session, Movement: adapter.Movement, getSession: () => active};
   for (let index = 0; index < replay.commands.length;) {
     if (!isCurrent()) return null;
     // Checkpoint consumers may keep the native pass alive after all feedback
     // consumers hide. Stop observing rather than compute an unused summary.
-    if (index && metrics && !failed && typeof feedback === 'function' && !feedback()) failed = true;
+    if (index && metrics && !failed && !dropped && !asked().feedback) dropped = true;
     let observer;
     try {
-      if (metrics && !failed) {
+      if (metrics && !failed && !dropped) {
         try {
           observer = observePhysics(shadowAdapter, observed, {
             onTick(_session, _command, events) {
@@ -123,7 +165,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
       }
       active = shadow;
       const end = Math.min(index + SLICE_COMMANDS, replay.commands.length);
-      while (index < end) {
+      while (index < replay.commands.length && (index < end || idleLeft(deadline))) {
         const events = shadow.step(replay.commands[index++]);
         if (events.includes('fall')) { fell = true; break; }
         if (events.some(event => resetEvents.has(event))) failed = true;
@@ -133,7 +175,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
       observer?.destroy();
     }
     if (fell) return null;
-    if (index < replay.commands.length) await yieldTask();
+    if (index < replay.commands.length) deadline = await yieldTask();
   }
   if (!isCurrent()) return null;
   const timer = shadow.timer?.state;
@@ -145,8 +187,9 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   if (entry && (timeUs !== entry.timeUs || splitsUs.length !== entry.splitsUs.length || !splitsUs.every((value, index) => value === entry.splitsUs[index]))) return null;
   const checkpoint = checkpointCompatible && validSpeeds(shadow.checkpointSpeeds) && shadow.checkpointSpeeds.length === splitsUs.length
     ? {speeds: shadow.checkpointSpeeds.slice(), timeUs, splitsUs} : null;
-  const start = metrics && !failed ? startFeedback.snapshot() : null;
-  return {checkpoint, feedback: metrics && !failed ? {
+  const start = metrics && !failed && !dropped ? startFeedback.snapshot() : null;
+  // Feedback dropped part-way was never computed: a later consumer may ask again.
+  return {...tried, feedbackTried: feedbackCompatible && !dropped, checkpoint, feedback: metrics && !failed && !dropped ? {
     dt: replay.config.dt,
     route: collect.finish(),
     start: start.available && Number.isFinite(start.speed) ? {
@@ -170,79 +213,101 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
     for (const job of pending.values()) job.consumers.clear();
     pending.clear();
   }
+  // key names the replay (see analysisKey in references.js), never the asking
+  // session's rules: a replay watched under other rules reuses the summary,
+  // and each consumer checks what applies to its session (checkpointApplies,
+  // feedbackApplies). Only parts a compatible consumer still lacks are computed.
   function acquire({key, session, entry = null, load, feedback = false, isCurrent = () => true}) {
     const nextAdapter = getAdapter();
     if (nextAdapter !== adapter) { clearPending(); cache.clear(); adapter = nextAdapter; }
     const cached = cache.get(key);
-    if (cached && (!feedback || cached.feedback) && (feedback || !cached.feedbackOnly)) {
+    if (cached && covers(cached.result, session, entry, feedback)) {
       cache.delete(key); cache.set(key, cached);
       return {result: cached.result, promise: Promise.resolve(cached.result), release() {}};
     }
-    const consumer = {isCurrent, feedback};
+    const consumer = {isCurrent, feedback, session, entry};
     let job = pending.get(key);
-    if (job && !job.current()) { pending.delete(key); job = null; }
+    // A job outlives its last consumer until its next slice, so a consumer
+    // handing over to another session's in the same tick keeps its progress.
+    if (job && !job.valid()) { pending.delete(key); job = null; }
     if (!job && !destroyed) {
-      const expectedAdapter = adapter, map = session.map, config = session.config, format = session.replayFormat;
-      const mapId = map.id, mapVersion = map.version;
-      job = {consumers: new Set(), promise: null, feedback: false, current() {
-        if (destroyed || getAdapter() !== expectedAdapter || session.map !== map || session.config !== config ||
-          session.replayFormat !== format || map.id !== mapId || map.version !== mapVersion) return false;
-        for (const member of this.consumers) if (!member.isCurrent()) this.consumers.delete(member);
-        return this.consumers.size > 0;
-      }, wantsFeedback() {
-        if (!this.current()) return false;
-        for (const member of this.consumers) if (member.feedback) return true;
-        return false;
-      }};
+      const expectedAdapter = adapter, map = session.map, mapId = map.id, mapVersion = map.version;
+      job = {consumers: new Set(), promise: null,
+        valid() { return !destroyed && getAdapter() === expectedAdapter && session.map === map && map.id === mapId && map.version === mapVersion; },
+        current() {
+          if (!this.valid()) return false;
+          for (const member of this.consumers) if (!member.isCurrent()) this.consumers.delete(member);
+          return this.consumers.size > 0;
+        },
+        // What the current consumers can use from a replay with this config.
+        // Checkpoints come free with any pass, so they ride along with feedback.
+        wants(config) {
+          let exact = false, checkpoint = false, movement = false;
+          if (this.current()) for (const member of this.consumers) {
+            const applies = !member.entry || sameConfig(config, member.session.config);
+            exact ||= applies;
+            if (!member.feedback && applies) checkpoint = true;
+            if (member.feedback && sameMovementConfig(config, member.session.config)) movement = true;
+          }
+          return {checkpoint: checkpoint || exact && movement, feedback: movement};
+        }};
       pending.set(key, job);
       const work = job;
-      const keep = summary => {
-        const previous = cache.get(key);
-        if (previous?.feedbackOnly && previous.result.feedback && !summary.result.feedback) {
-          summary = {...summary, feedback: true, result: {...summary.result, feedback: previous.result.feedback}};
-        }
-        cache.set(key, summary);
+      const keep = result => {
+        const merged = merge(cache.get(key)?.result, result);
+        cache.delete(key);
+        cache.set(key, {result: merged});
         while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
-        return summary.result;
+        return merged;
       };
-      // A saved summary that covers what the consumers need.
+      const owed = result => {
+        if (!result?.config) return false;
+        const asked = work.wants(result.config);
+        return asked.checkpoint && !result.checkpointTried || asked.feedback && !result.feedbackTried;
+      };
       const stored = async id => {
         if (!saved || !id) return null;
-        try {
-          const summary = await saved.get(id);
-          return summary?.result && (summary.feedback || !work.wantsFeedback()) ? summary : null;
-        } catch { return null; }
+        try { return (await saved.get(id))?.result ?? null; } catch { return null; }
       };
       work.promise = Promise.resolve().then(async () => {
         try {
-          let id = key.includes(':official:') ? `${ANALYSIS}|${key}` : null, fingerprint = null;
+          // Official runs and watched replays are named by their key; the KSF
+          // route only once its download is fingerprinted.
+          let id = key.includes(':official:') || key.includes(':route:') ? `${ANALYSIS}|${key}` : null, fingerprint = null;
           let found = work.current() ? await stored(id) : null;
-          if (found) return work.current() ? keep(found) : null;
+          if (found) {
+            if (!work.current()) return null;
+            found = keep(found);
+            if (!owed(found)) return found;
+          }
           const replay = work.current() ? await load?.() : null;
           if (!work.current()) return null;
           if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
           if (!Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
-            return keep({result: {checkpoint: null, feedback: null, status: 'unmatched'}, feedback: work.wantsFeedback()});
+            return keep({checkpoint: null, feedback: null, status: 'unmatched'});
           }
           if (key.endsWith(':ksf')) {
             fingerprint = routeFingerprint(replay);
             id = `${ANALYSIS}|${key}|${fingerprint}`;
             found = await stored(id);
-            if (found) return work.current() ? keep(found) : null;
+            if (found) {
+              if (!work.current()) return null;
+              found = keep(found);
+              if (!owed(found)) return found;
+            }
           }
           const reconstruct = () => reconstructReferenceReplay({
             adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask,
-            feedback: () => work.feedback = work.wantsFeedback()
+            wants: config => work.wants(config)
           });
-          let data = await reconstruct();
-          // A feedback consumer joining after native simulation began needs an
-          // upgrade, but shares this job's already-downloaded replay.
-          if (!work.feedback && work.wantsFeedback()) data = await reconstruct();
+          let data = merge(found, await reconstruct());
+          // A consumer joining after the pass began may want a part it skipped;
+          // the second pass shares the downloaded replay.
+          if (owed(data)) data = merge(data, await reconstruct());
           if (!work.current()) return null;
-          const result = {...data, status: 'unmatched', ...(fingerprint ? {fingerprint} : {})};
-          keep({result, feedback: work.feedback || (!data && work.wantsFeedback())});
+          const result = keep({...(data ?? {checkpoint: null, feedback: null}), status: 'unmatched', ...(fingerprint ? {fingerprint} : {})});
           if (id && (result.checkpoint || result.feedback)) {
-            Promise.resolve().then(() => saved?.put(id, {result, feedback: work.feedback})).catch(() => { /* kept for this page */ });
+            Promise.resolve().then(() => saved?.put(id, {result, feedback: result.feedbackTried === true})).catch(() => { /* kept for this page */ });
           }
           return result;
         } catch {
@@ -254,25 +319,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
     }
     if (!job) return {result: null, promise: Promise.resolve(null), release() {}};
     job.consumers.add(consumer);
-    return {result: null, promise: job.promise, release() {
-      job.consumers.delete(consumer);
-      if (!job.consumers.size && pending.get(key) === job) pending.delete(key);
-    }};
+    return {result: null, promise: job.promise, release() { job.consumers.delete(consumer); }};
   }
-  // Native Watch can change format and start-policy labels. Reuse the verified
-  // movement summary after that adoption, without treating it as proof that an
-  // official checkpoint summary passed the new exact-config requirement.
-  function adoptFeedback({from, to, previous, session}) {
-    if (destroyed || getAdapter() !== adapter || from === to || !previous?.map || !session?.map ||
-      previous.map.id !== session.map.id || previous.map.version !== session.map.version ||
-      !sameMovementConfig(previous.config, session.config)) return;
-    const summary = cache.get(from), target = cache.get(to);
-    if (!summary?.result.feedback || target?.result.feedback) return;
-    const fullTarget = target && !target.feedbackOnly;
-    const feedbackOnly = !fullTarget && (summary.feedbackOnly || JSON.stringify(previous.config) !== JSON.stringify(session.config));
-    cache.set(to, {...summary, feedbackOnly, result: {...summary.result,
-      checkpoint: fullTarget ? target.result.checkpoint : feedbackOnly ? null : summary.result.checkpoint}});
-    while (cache.size > MAX_ROUTES) cache.delete(cache.keys().next().value);
-  }
-  return {acquire, adoptFeedback, destroy() { destroyed = true; clearPending(); cache.clear(); }};
+  return {acquire, destroy() { destroyed = true; clearPending(); cache.clear(); }};
 }

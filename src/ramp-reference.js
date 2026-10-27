@@ -1,10 +1,10 @@
 // Per-ramp PB/WR summaries shared with the HUD's native analysis cache.
 // Availability never acquires a replay. Each visible surface owns a consumer
 // and releases it when its comparison is no longer needed.
-import {referenceIdentity, sessionKey} from './references.js';
+import {analysisKey, referenceIdentity} from './references.js';
 import {mapKey} from './run-history.js';
 import {referenceTone, startTone} from './hud-model.js';
-import {routeFingerprint, sameMovementConfig} from './replay-store.js';
+import {feedbackApplies, routeFingerprint, sameMovementConfig} from './replay-store.js';
 
 export function createRampReference({getSession, getReferences, getAdapter, replayStore, settings = {}}) {
   const consumers = new Set(), listeners = new Set();
@@ -24,7 +24,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
     const ksf = source === 'wr' && !leaderboard, identity = referenceIdentity(entry);
     if (ksf ? typeof refs?.loadRecordRoute !== 'function' : !identity || typeof refs?.loadReplay !== 'function') return null;
     return {session, refs, entry, identity, ksf, ownerKey: refs?.ownerKey, boardId: refs?.boardId,
-      key: `${sessionKey(session, refs?.boardId)}:${ksf ? 'ksf' : `official:${identity}`}`,
+      key: `${analysisKey(session, refs?.boardId)}:${ksf ? 'ksf' : `official:${identity}`}`,
       label: source === 'pb' ? 'PB' : leaderboard ? 'Site WR' : 'KSF WR'};
   }
 
@@ -39,8 +39,10 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
       const info = closed ? null : describe(key, source);
       if (!info) { release(); return null; }
       const adapter = getAdapter?.();
+      // A summary kept under one session's rules applies to another's only if it moves the same way.
       if (slot?.key === info.key && slot.source === source && slotAdapter === adapter && slotOwnerKey === info.ownerKey &&
-        (slot.status !== 'loading' || pending?.session === info.session && pending.owns())) return slot;
+        (slot.status !== 'loading' || pending?.session === info.session && pending.owns()) &&
+        (slot.status !== 'ready' || sameMovementConfig(slot.config, info.session.config))) return slot;
       release();
       slot = {key: info.key, source, status: 'loading', label: info.label, ramps: new Map()};
       slotAdapter = adapter; slotOwnerKey = info.ownerKey;
@@ -62,13 +64,14 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
           else work.handle.release();
           return;
         }
-        const route = result?.feedback?.route;
+        const route = feedbackApplies(result, session) ? result.feedback.route : null;
         for (const [rampKey, index] of route?.indices ?? []) {
           const visit = index == null ? null : route.boards[index];
           if (visit?.valid) current.ramps.set(rampKey, {board: visit.loss, down: visit.downLoss, up: visit.upLoss, surf: visit.surfLoss,
             ...(Number.isInteger(visit.tick) ? {tick: visit.tick} : {})});
         }
         current.dt = result?.feedback?.dt;
+        current.config = result?.config ?? null;
         current.fingerprint = result?.fingerprint;
         current.status = route ? 'ready' : 'missing';
         pending = null;
@@ -116,17 +119,11 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
             (info.ksf && (!reference.fingerprint || routeFingerprint(data) !== reference.fingerprint))) return null;
           return data;
         }, {title: `${info.label} on ${info.session.map.name ?? info.session.map.id}`,
-          navigation: () => destination, isCurrent: session => navigation === intent && context(session)});
-        // Keep this completed index through our own native session adoption;
-        // the route was reconstructed using the replay's format, not the old
-        // live session's format. No second analysis is needed on another click.
-        if (played && navigation === intent && slot === reference) {
-          const next = describe(key, source);
-          if (next) {
-            replayStore.adoptFeedback?.({from: reference.key, to: next.key, previous: info.session, session: next.session});
-            reference.key = next.key;
-          }
-        }
+          navigation: () => destination, isCurrent: session => navigation === intent && context(session),
+          // The same summary marks the replay's ramp boards on the timeline.
+          analysis: {key: info.key, entry}});
+        // The summary is keyed by the replay, not the session, so the replay's
+        // own session keeps it: no second analysis on another click.
         return played;
       },
       tone(rampKey, loss) {
