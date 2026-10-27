@@ -585,6 +585,29 @@ describe('replay control', () => {
     expect([ticks, resets]).toEqual([100, 2]);
     control.destroy();
   });
+  test('stepping forward across a keyframe catches the analysis up to it instead of resetting', async () => {
+    const {world, replay, run} = game(1400);
+    let ticks = 0, resets = 0;
+    const coaching = {save: () => ({ticks}), restore: state => { ticks = state.ticks; }, reset: () => { ticks = 0; resets++; }};
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {get: async () => replay}, coaching, settings: {showBoard: true}});
+    await control.watch(run);
+    resets = 0;
+    const prototype = world.adapter.Session.prototype, step = prototype.step;
+    prototype.step = function (...args) { const result = step.apply(this, args); ticks++; control.tick(this); return result; };
+    try {
+      world.frame(DT * 1020);
+      control.pause();
+      // The game restores keyframe 1024 rather than step onto it; paused play never kept it.
+      for (let i = 0; i < 6; i++) control.step(1);
+      expect([control.status().index, ticks, resets]).toEqual([1026, 1026, 0]);
+      // The frame is kept now: playing on and rewinding past it lands on real analysis.
+      control.play();
+      world.frame(DT * 274);
+      control.seek(1100);
+      expect([ticks, resets]).toEqual([1100, 0]);
+    } finally { prototype.step = step; control.destroy(); }
+  });
   test('at the end the game holds the last frame: ended, not playing', async () => {
     const { world, run, control } = game();
     await control.watch(run);
@@ -613,14 +636,18 @@ describe('replay control', () => {
       return {result: null, promise: new Promise(resolve => { finish = resolve; }), release() { request.released = true; }};
     };
     const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session, boardsFor});
+    // It starts in idle time (here, the next task).
+    const idle = () => new Promise(resolve => setTimeout(resolve, 0));
     try {
       await world.hooks.watch(replay);
       // The game is still indexing: the analysis waits rather than compete with it.
       world.player.index.complete = false;
-      control.status();
+      control.status(); await idle();
       expect(requests).toHaveLength(0);
       world.player.index.complete = true;
       control.status(); control.status();
+      expect(requests).toHaveLength(0);
+      await idle();
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({replay, session: world.session, analysis: null});
       expect(requests[0].isCurrent()).toBe(true);
@@ -631,11 +658,11 @@ describe('replay control', () => {
       expect(control.status().ramps).toEqual([{tick: 30, label: 'Ramp', board: 3, tone: 'muted'}, {tick: 380, label: 'Ramp', board: null, tone: 'muted'}]);
       // A PB opened from the Runs view names its analysis; leaving releases an unfinished one.
       await control.watchLoaded(async () => ({...replay}), {title: 'Your PB', analysis: {key: 'pb-key', entry: {runId: 'pb'}}});
-      control.status();
+      control.status(); await idle();
       expect(requests[1].analysis).toEqual({key: 'pb-key', entry: {runId: 'pb'}});
       expect(requests[1].isCurrent()).toBe(true);
       await world.hooks.watch({...replay});
-      control.status();
+      control.status(); await idle();
       expect(requests[1]).toMatchObject({released: true});
       expect(requests[1].isCurrent()).toBe(false);
       finish({config: {dt: 0.02}, feedback: {route: {boards: [{key: 'a', tick: 30, loss: 3}]}}});
@@ -988,12 +1015,15 @@ describe('native replay boundaries', () => {
       control.seek(200);
       expect(metrics.saveState().elapsed).toBeCloseTo(200 * DT, 8);
       expect(metrics.saveState().unknownRamp).toBe(false);
-      control.seek(384); // Worker keyframe: HUD never played here.
+      control.seek(384); // A nearby worker keyframe: the analysis steps up to it.
+      expect(metrics.saveState().elapsed).toBeCloseTo(384 * DT, 8);
+      control.seek(200);
+      control.seek(640); // Too far to step: the HUD never played here.
       expect(metrics.saveState()).toMatchObject({elapsed: 0, unknownAir: true, unknownRamp: true});
-      world.frame(DT * 128); // A partial continuation must not cache tick 512.
+      world.frame(DT * 128); // A partial continuation must not cache tick 768.
       control.seek(128);
       expect(metrics.saveState().elapsed).toBeCloseTo(128 * DT, 8);
-      control.seek(512);
+      control.seek(768);
       expect(metrics.saveState()).toMatchObject({elapsed: 0, unknownAir: true, unknownRamp: true});
       control.seek(0);
       expect(metrics.saveState()).toMatchObject({elapsed: 0, unknownAir: false, unknownRamp: false});
@@ -1116,6 +1146,34 @@ describe('replay locs under current native practice rules', () => {
       replaySession();
       control.seek(200); control.saveSpot(); control.exit(); control.status();
       expect(store.banks.get('live').entries[1].snapshot.startPosition).toBeNull();
+    } finally { control.destroy(); }
+  });
+
+  test('a removed loc is never filed, the same moment saved twice files once, and an older map version says so', async () => {
+    const {world, run, control} = game();
+    const map = {id: 'utopia', version: 3};
+    const store = {banks: new Map(), nextId: 1, revision: 0};
+    let version = 3;
+    world.practice = {store: () => store, destination: () => ({mapId: map.id, mapVersion: version, key: 'live'})};
+    const replaySession = () => Object.assign(world.session, {map, practiceKey: () => 'replay',
+      capturePractice() { return {key: 'replay', state: {tick: this.state.tick}}; }});
+    try {
+      await control.watch(run);
+      replaySession();
+      control.seek(120); control.saveSpot();
+      control.seek(180); control.saveSpot(); control.saveSpot();
+      control.removeSpot(120);
+      control.exit(); control.status();
+      expect(store.banks.get('live').entries.map(entry => entry.snapshot.state.tick)).toEqual([180]);
+      // The map has been updated since this replay: its locs would never load.
+      version = 4;
+      world.notices.length = 0;
+      await control.watch(run);
+      replaySession();
+      control.seek(200); control.saveSpot();
+      expect(world.notices.at(-1)).toContain('older version of the map');
+      control.exit(); control.status();
+      expect(store.banks.get('live').entries).toHaveLength(1);
     } finally { control.destroy(); }
   });
 

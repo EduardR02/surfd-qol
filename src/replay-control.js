@@ -17,7 +17,10 @@ export const MAX_SPOTS = 20;
 const NOTICE_MS = 4000;
 // The game keeps this many savelocs per bank, dropping the oldest.
 const BANK_SIZE = 20;
+// The furthest a seek may skip ahead to a keyframe the analysis then steps to.
+const CATCH_UP_TICKS = 256;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const idle = work => typeof requestIdleCallback === 'function' ? requestIdleCallback(work, {timeout: 1000}) : setTimeout(work, 0);
 // Only settings that change collected analysis, not its presentation or colours.
 const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'showStart', 'continuousFeedback', 'strafeLookbackSeconds'];
 
@@ -33,7 +36,7 @@ const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'sh
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
   grade = null, teach = null, rampNumber = null, coaching = null, boardsFor = null, settings = {}, clock = () => performance.now()}) {
   let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null;
-  let detached = null;
+  let detached = null, watches = 0;
   const analysisSettings = ANALYSIS_SETTINGS.map(key => settings[key]);
   // Replay moments waiting to become practice savelocs: they are filed into
   // the bank of the game you return to, so they always load there.
@@ -76,7 +79,19 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     if (destroyed || !coaching || typeof prototype?.restorePractice !== 'function' || wrapped?.prototype === prototype) return;
     uninstall();
     const original = prototype.restorePractice;
-    const wrapper = function () {
+    const wrapper = function (snapshot) {
+      // A forward step or slow drag across a keyframe restores it rather than
+      // stepping there, and paused playback never kept it. Step the few ticks
+      // up to it first: the analysis runs through them and keeps that frame,
+      // instead of resetting for the rest of the replay.
+      const ahead = watching;
+      if (ahead && this === ahead.session && ahead.coherent) {
+        const from = (this.state?.tick ?? 0) - ahead.base, to = (snapshot?.state?.tick ?? NaN) - ahead.base;
+        if (Number.isInteger(from) && Number.isInteger(to) && to > from && to - from <= CATCH_UP_TICKS && !ahead.frames.has(to)) {
+          try { for (let index = from; index < to; index++) this.step(ahead.replay.commands[index]); }
+          catch { /* the restore below still applies */ }
+        }
+      }
       const restored = original.apply(this, arguments);
       const watched = watching;
       if (restored && watched && this === watched.session) {
@@ -98,7 +113,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     install();
     // Spots are bookmarks in this replay (a saveloc for watching): saved for
     // your own runs through onSpots, kept until you leave for anyone else's.
-    const watched = watching = {replay, session, transport, revision: transport?.revision, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
+    const watched = watching = {id: ++watches, replay, session, transport, revision: transport?.revision, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
       start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null,
       ramps: [], rampsKey: '', nativeMarkers: null, base: replay.initialState?.tick ?? 0, coherent: true,
       frames: createCoachingFrames(coaching ?? {save() {}, restore() {}}), ...details};
@@ -156,6 +171,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   function analyse(watched) {
     if (watched.run || watched.analysing || watched.boards.length || !boardsFor || !playing(watched)?.index?.complete) return;
     watched.analysing = true;
+    // Naming an unknown replay reads all of it: that waits for idle time too.
+    idle(() => { if (!destroyed && watching === watched) acquire(watched); });
+  }
+  function acquire(watched) {
     let handle = null;
     try {
       handle = boardsFor({replay: watched.replay, session: watched.session, analysis: watched.analysis ?? null,
@@ -243,14 +262,22 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     });
   }
   // Captures this moment of the replay for practice; null once the run has finished.
-  function capture(watched) {
+  // The entry, or why there is none: 'finished' or 'outdated'.
+  function capture(watched, tick) {
     // While the game plays this replay its session sits exactly on the cursor.
-    if (!(practice()?.store?.() instanceof Object) || !playing(watched)) return null;
+    if (!(practice()?.store?.() instanceof Object) || !playing(watched)) return 'finished';
+    const mapId = watched.session.map?.id, mapVersion = watched.session.map?.version;
+    // A replay of an older version of the map plays on that version, but you
+    // practise on the current one: its locations would never load.
+    let destination = null;
+    try { destination = practice().destination?.() ?? null; } catch { /* checked again when filing */ }
+    if (destination && destination.mapId === mapId && destination.mapVersion !== mapVersion) return 'outdated';
     let snapshot = null;
     try { snapshot = watched.session.capturePractice?.() ?? null; } catch { /* unsupported */ }
-    if (!snapshot) return null;
-    const entry = {mapId: watched.session.map?.id, mapVersion: watched.session.map?.version, snapshot};
-    pending = [...pending, entry].slice(-BANK_SIZE);
+    if (!snapshot) return 'finished';
+    // One loc per moment: saving the same tick again replaces it.
+    const entry = {mapId, mapVersion, snapshot, watch: watched.id, tick};
+    pending = [...pending.filter(other => other.watch !== watched.id || other.tick !== tick), entry].slice(-BANK_SIZE);
     return entry;
   }
   function persist(watched) {
@@ -437,8 +464,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         persist(watched);
       }
       const saved = `Saved location #${watched.spots.indexOf(tick) + 1} · ${formatTime(watched.session.timer?.state?.elapsed ?? 0)}.`;
-      if (!practice()?.store) say(saved);
-      else if (!capture(watched)) say(`${saved} The run has finished here, so it can’t be practiced.`);
+      const captured = practice()?.store ? capture(watched, tick) : null;
+      if (!captured) say(saved);
+      else if (captured === 'finished') say(`${saved} The run has finished here, so it can’t be practiced.`);
+      else if (captured === 'outdated') say(`${saved} This replay is from an older version of the map, so it can’t be practiced.`);
       else if (due()) {
         const keys = bindLabel(binds().load);
         say(`${saved} It’s added to your practice locations when you leave the replay${keys ? `; ${keys} loads it` : ''}.`);
@@ -469,6 +498,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (!watched?.spots.includes(tick)) return;
       watched.spots = watched.spots.filter(spot => spot !== tick);
       if (watched.lastSpot === tick) watched.lastSpot = null;
+      // Nor does it become a practice location.
+      pending = pending.filter(entry => entry.watch !== watched.id || entry.tick !== tick);
       persist(watched);
     },
   };

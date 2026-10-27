@@ -4,7 +4,7 @@ import { createRunHistory } from './run-history.js';
 import { createReplayArchive, createHistoryStore, createAnalysisStore, openSiteDatabase } from './replay-archive.js';
 import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
-import { createReferenceReplayStore, routeFingerprint } from './replay-store.js';
+import { createReferenceReplayStore, MAX_COMMANDS, routeFingerprint } from './replay-store.js';
 import { analysisKey } from './references.js';
 import { createRampReference } from './ramp-reference.js';
 import { observePhysics } from './observer.js';
@@ -65,7 +65,7 @@ const replayControl = createReplayControl({
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
   // A PB/WR you open from the Runs view reuses its comparison analysis; any
   // other replay is named by its contents, so the same run is analysed once.
-  boardsFor: ({ replay, session, analysis, isCurrent }) => replayStore.acquire({
+  boardsFor: ({ replay, session, analysis, isCurrent }) => replay.commands.length > MAX_COMMANDS ? null : replayStore.acquire({
     key: analysis?.key ?? `${analysisKey(session, null)}:route:${routeFingerprint(replay)}`,
     session, entry: analysis?.entry ?? null, load: async () => replay, feedback: true, isCurrent
   }),

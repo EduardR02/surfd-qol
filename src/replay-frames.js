@@ -13,6 +13,7 @@ export function createCoachingFrames(coaching) {
   let broken = false;
   return {
     get size() { return frames.size; },
+    has: tick => frames.has(tick),
     clear() { frames.clear(); broken = false; },
     keep(tick) {
       if (broken || !(tick > 0) || tick % FRAME_TICKS || frames.has(tick)) return;
