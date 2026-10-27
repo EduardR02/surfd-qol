@@ -1027,7 +1027,7 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     }
   });
 
-  test('hiding every consumer cancels before native construction and visibility starts a fresh job', async () => {
+  test('hiding every consumer pauses before native construction; showing again resumes without downloading again', async () => {
     const f = fixture({shared:true}), checkpoints = checkpointsFor(f);
     let release, loads = 0;
     f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
@@ -1040,8 +1040,7 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     f.controller.update(board,null,false); await flush();
     expect(loads).toBe(1);
     checkpoints.update(); f.update(board); await flush();
-    release(f.replay()); await flush();
-    expect(loads).toBe(2);
+    expect(loads).toBe(1);
     expect(checkpoints.update().ownStatus).toBe('ready');
     expect(f.update(board)).toMatchObject({status:'ready',loss:5});
     expect(f.native().loads).toBe(1);
@@ -1259,11 +1258,11 @@ describe('Independent movement feedback visibility', () => {
       board:{source:'fixed'},surf:{source:'wr',status:'ready',loss:5},
       start:{source:'wr',status:'ready',speed:350}
     });
+    // Shown again within the grace period: the PB already downloaded is analysed, not fetched again.
     f.settings.showBoard = true;
     expect(f.references().board.status).toBe('loading'); await flush();
-    releaseBoard(f.replay()); await flush();
     expect(f.references().board).toMatchObject({source:'pb',status:'ready',loss:5});
-    expect(boardLoads).toBe(2); expect(routeLoads).toBe(1);
+    expect(boardLoads).toBe(1); expect(routeLoads).toBe(1);
     expect(f.native().loads).toBe(2);
   });
 
@@ -1343,7 +1342,7 @@ describe('Independent movement feedback visibility', () => {
     expect(f.update(board)).toMatchObject({source:'pb',status:'ready',loss:5});
   });
 
-  test('hiding Board alone cancels a yielded pass while core held measurements keep advancing', async () => {
+  test('hiding Board alone pauses a yielded pass while core held measurements keep advancing', async () => {
     let yields = 0, resume;
     const f = fixture({commands:[contact(),...Array(40).fill({}),finish],yieldTask:async () => {
       if (++yields === 2) await new Promise(resolve => { resume = resolve; });
@@ -1357,10 +1356,11 @@ describe('Independent movement feedback visibility', () => {
     expect(f.native().steps).toBe(32);
     expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
     expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
+    // Shown again, the pass resumes where it stopped rather than starting over.
     f.settings.showBoard = true;
     f.update(newest); await flush();
     expect(f.metrics.snapshot().board.loss).toBe(17);
-    expect(f.native().loads).toBe(2);
+    expect(f.native().loads).toBe(1);
   });
 });
 

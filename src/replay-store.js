@@ -2,8 +2,12 @@ import { createMetrics } from './metrics.js';
 import { observePhysics } from './observer.js';
 import { createStartFeedback } from './start.js';
 
-const MAX_COMMANDS = 40000;
+// Longer replays (about ten minutes) aren't analysed.
+export const MAX_COMMANDS = 40000;
 const MAX_ROUTES = 12;
+// A job whose consumers all left (the HUD hid behind the menu) waits this
+// long for one to return, keeping its download and progress.
+const GRACE_MS = 30000;
 // Analysis runs in the page's idle time, so it never holds up a frame of the
 // game: a slice lasts while the idle period does, and at least this many
 // commands. A page that is never idle still gets a slice every IDLE_WAIT_MS.
@@ -113,7 +117,8 @@ function merge(base, next) {
 // consumers); by default, what this session can use. The result records the
 // replay's config and which parts were tried, null only when the replay itself
 // is unusable (it falls, never finishes, or doesn't match its entry).
-export async function reconstructReferenceReplay({adapter, session, replay, entry = null, isCurrent = () => true, yieldTask = defer, feedback = true, wants = null}) {
+// paused() is asked between slices once isCurrent() fails: true resumes, false stops.
+export async function reconstructReferenceReplay({adapter, session, replay, entry = null, isCurrent = () => true, yieldTask = defer, feedback = true, wants = null, paused = null}) {
   if (!isCurrent() || typeof adapter?.Session !== 'function' || !replay || !Array.isArray(replay.commands) ||
     replay.commands.length > MAX_COMMANDS || replay.mapId !== session.map.id || replay.mapVersion !== session.map.version ||
     !Number.isInteger(replay.format)) return null;
@@ -139,7 +144,8 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   let active = null, failed = false, dropped = false, fell = false, surfSequence = 0, boardRevision = -1;
   const shadowAdapter = {Session: adapter.Session, Movement: adapter.Movement, getSession: () => active};
   for (let index = 0; index < replay.commands.length;) {
-    if (!isCurrent()) return null;
+    // No observer is installed between slices, so waiting here holds nothing.
+    while (!isCurrent()) if (!paused || !await paused()) return null;
     // Checkpoint consumers may keep the native pass alive after all feedback
     // consumers hide. Stop observing rather than compute an unused summary.
     if (index && metrics && !failed && !dropped && !asked().feedback) dropped = true;
@@ -210,7 +216,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
   const pending = new Map(), cache = new Map();
   let adapter = null, destroyed = false;
   function clearPending() {
-    for (const job of pending.values()) job.consumers.clear();
+    for (const job of pending.values()) { job.consumers.clear(); job.wake?.(false); }
     pending.clear();
   }
   // key names the replay (see analysisKey in references.js), never the asking
@@ -238,6 +244,15 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           if (!this.valid()) return false;
           for (const member of this.consumers) if (!member.isCurrent()) this.consumers.delete(member);
           return this.consumers.size > 0;
+        },
+        // Waits for a consumer to come back (true), or gives up (false).
+        pause() {
+          if (!this.valid()) return Promise.resolve(false);
+          return new Promise(resolve => {
+            const timer = setTimeout(() => wake(false), GRACE_MS);
+            const wake = resumed => { clearTimeout(timer); if (this.wake === wake) this.wake = null; resolve(resumed); };
+            this.wake = wake;
+          });
         },
         // What the current consumers can use from a replay with this config.
         // Checkpoints come free with any pass, so they ride along with feedback.
@@ -281,7 +296,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
             if (!owed(found)) return found;
           }
           const replay = work.current() ? await load?.() : null;
-          if (!work.current()) return null;
+          while (!work.current()) if (!await work.pause()) return null;
           if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
           if (!Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
             return keep({checkpoint: null, feedback: null, status: 'unmatched'});
@@ -298,7 +313,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           }
           const reconstruct = () => reconstructReferenceReplay({
             adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask,
-            wants: config => work.wants(config)
+            wants: config => work.wants(config), paused: () => work.pause()
           });
           let data = merge(found, await reconstruct());
           // A consumer joining after the pass began may want a part it skipped;
@@ -319,6 +334,7 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
     }
     if (!job) return {result: null, promise: Promise.resolve(null), release() {}};
     job.consumers.add(consumer);
+    job.wake?.(true);
     return {result: null, promise: job.promise, release() { job.consumers.delete(consumer); }};
   }
   return {acquire, destroy() { destroyed = true; clearPending(); cache.clear(); }};

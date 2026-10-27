@@ -183,7 +183,7 @@ describe('personal checkpoint references', () => {
     expect(routeCalls).toBe(0);
     refs.destroy();
   });
-  test('source changes cancel stale reference work without cancelling or corrupting the PB reference', async () => {
+  test('source changes set reference work aside and resume it on return, never corrupting the PB reference', async () => {
     const session = makeSession(), settings = {wrSource:'ksf'};
     const rankOne = {...entry,runId:'rank-one'};
     const route = replayFor(session,[500,600],{elapsed:11,splits:[5.5,8.8]});
@@ -209,14 +209,16 @@ describe('personal checkpoint references', () => {
     resolveKsf(staleKsfRoute);
     await microtasks();
     expect(refs.update()).toMatchObject({record:null,recordTimeUs:10000000,recordSplitsUs:[5000000,8000000],recordStatus:'loading',recordSource:'leaderboard'});
+    // Back on KSF within the grace period: the route already fetched is used, not fetched again.
     settings.wrSource = 'ksf';
     holdLeaderboard = false;
     refs.update(); await microtasks();
-    expect(refs.update()).toMatchObject({record:[500,600],recordTimeUs:11000000,recordSplitsUs:[5500000,8800000],recordSource:'ksf'});
+    expect(refs.update()).toMatchObject({record:[100,200],recordTimeUs:12000000,recordSplitsUs:[6000000,9600000],recordSource:'ksf'});
+    expect(ksfRequests).toBe(1);
     releaseLeaderboard();
     resolveOwn(replayFor(session,[700,800]));
     await microtasks();
-    expect(refs.update()).toMatchObject({own:[700,800],ownEntry:entry,ownStatus:'ready',record:[500,600],recordTimeUs:11000000,recordSplitsUs:[5500000,8800000],recordSource:'ksf'});
+    expect(refs.update()).toMatchObject({own:[700,800],ownEntry:entry,ownStatus:'ready',record:[100,200],recordTimeUs:12000000,recordSplitsUs:[6000000,9600000],recordSource:'ksf'});
     refs.destroy();
   });
   test('a changed rank-one identity refreshes its replay and ignores the old response', async () => {
