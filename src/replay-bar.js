@@ -109,8 +109,10 @@ export const replayBarMarkup = `
 </section>`;
 
 export const replayBarStyles = `
+/* Controls on one row, the timeline under them at most of the screen's width
+   (like the game's own bar, short of its edges). */
 .rb{--rose:var(--accent);--loc:#f2f2f2;--rb-edge:rgba(8,8,8,.78);--ink:rgba(18,18,18,.9);position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
-  width:min(1320px,calc(100vw - 32px));display:grid;grid-template-columns:minmax(330px,1fr) minmax(0,3fr) minmax(330px,1fr);align-items:center;column-gap:16px;
+  width:min(calc(100vw - 32px),max(1248px,86vw),2400px);display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;row-gap:2px;column-gap:12px;
   pointer-events:auto;color:var(--paper);font-size:13px;line-height:1.2;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"case" 1;
   -webkit-text-stroke:1.25px var(--rb-edge);paint-order:stroke fill;text-shadow:0 1px 2px rgba(0,0,0,.5);isolation:isolate}
 /* No box: a pool of shade under the bar keeps it legible on snow and neon alike. */
@@ -121,14 +123,14 @@ export const replayBarStyles = `
 .rb svg{display:block;width:20px;height:20px;fill:currentColor;filter:drop-shadow(0 0 1px rgba(8,8,8,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.45))}
 .rb-btn{height:34px;min-width:34px;display:grid;place-items:center;padding:0 9px;border:0;border-radius:10px;background:transparent;font-weight:700}
 .rb-btn:hover,.rb-btn[aria-expanded=true]{background:rgba(255,255,255,.14)}
-.rb-play{justify-self:end;width:42px;height:42px;padding:0;border-radius:50%;background:var(--rose);color:#141414;box-shadow:0 0 0 1.5px var(--rb-edge),0 3px 10px rgba(0,0,0,.35)}
+.rb-play{justify-self:start;width:42px;height:42px;padding:0;border-radius:50%;background:var(--rose);color:#141414;box-shadow:0 0 0 1.5px var(--rb-edge),0 3px 10px rgba(0,0,0,.35)}
 .rb-play:hover{background:var(--rose);filter:brightness(1.08)}
 .rb-play svg{width:22px;height:22px;filter:none;color:#141414}
 
 /* The timeline: one slanted segment per section of the run (lead-in, then
    start to CP1, and so on), ramp boards as graded slanted marks across it,
    locs above, checkpoint names below. */
-.rb-line{position:relative;height:46px}
+.rb-line{position:relative;height:46px;grid-column:1/-1;grid-row:2}
 .rb-rail{position:absolute;inset:0;cursor:pointer;touch-action:none;outline:none}
 .rb-rail:focus-visible .rb-track{outline:2px solid var(--rose);outline-offset:5px;border-radius:4px}
 .rb-track{position:absolute;left:0;right:0;top:20px;height:7px}
@@ -158,17 +160,17 @@ export const replayBarStyles = `
 .t-title{font-size:12px;color:#c4c4c4}.t-title:empty{display:none}
 .t-val{font-size:14px}.t-lab{font-size:11px;font-weight:700;color:#949494}.t-lab:empty{display:none}
 .t-val.good{color:var(--good)}.t-val.warn{color:var(--warn)}.t-val.loss{color:var(--bad)}.t-val.muted{color:var(--muted)}.t-val.loc{color:var(--loc)}
-.rb-total{font-size:13px;font-weight:700;opacity:.8}
+.rb-total{grid-column:2;grid-row:1;font-size:13px;font-weight:700;opacity:.8}
 
 /* Notices never resize or shift the timeline. Save binds live in the shortcut sheet. */
-.rb-side{display:flex;align-items:center;gap:16px}
+.rb-side{display:contents}
 .rb-notice{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);max-width:min(320px,100%);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-size:12.5px;font-weight:700;color:var(--loc)}
 .rb-notice:empty{display:none}
 
-.rb-tools{display:flex;align-items:center;gap:4px}
+.rb-tools{grid-column:4;grid-row:1;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px;max-width:calc(100vw - 150px)}
 .rb-speed,.rb-save{min-width:44px;font-size:13.5px}
-.rb-leave{white-space:nowrap;font-size:12px;padding-inline:7px}
+.rb-leave{height:28px;min-height:28px;white-space:nowrap;font-size:12px;padding-inline:7px}
 .rb-speed.off{color:var(--warn)}
 .rb-runs{height:34px;display:flex;align-items:center;gap:7px;margin-left:6px;padding:0 14px 0 11px;border:0;border-radius:999px;font-size:13px;font-weight:700;
   background:var(--ink);-webkit-text-stroke:0!important;text-shadow:none!important;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 4px 14px rgba(0,0,0,.4)}
@@ -190,24 +192,13 @@ export const replayBarStyles = `
 .rb-sheet .rb-diamond{display:inline-block;width:7px;height:7px;margin:0 3px;border-radius:1px;background:var(--loc);transform:rotate(45deg);vertical-align:1px}
 
 /* At rest (playing, untouched): only the timeline stays. */
-.rb>.rb-play,.rb>.rb-side{transition:opacity .35s}
-.rb.rest>.rb-play,.rb.rest>.rb-side{opacity:0}
+.rb>.rb-play,.rb-total,.rb-tools{transition:opacity .35s}
+.rb.rest>.rb-play,.rb.rest .rb-total,.rb.rest .rb-tools{opacity:0}
 .rb.rest::before{opacity:.45}
 .rb.rest .rb-marks span{opacity:0}
 .rb.rest .rb-pins button{pointer-events:none}
 
-@media (max-width:1750px){
-  .rb{grid-template-columns:auto auto minmax(0,1fr) auto;row-gap:2px;column-gap:12px}
-  .rb-play{justify-self:start}
-  .rb-side{display:contents}
-  .rb-line{grid-column:1/-1;grid-row:2}
-  .rb-total{grid-column:2;grid-row:1}
-  .rb-tools{grid-column:4;grid-row:1;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 150px)}
-  .rb-leave{height:28px;min-height:28px}
-  .rb-total,.rb-tools{transition:opacity .35s}
-  .rb.rest .rb-total,.rb.rest .rb-tools{opacity:0}
-  .rb-runs span{display:none}.rb-runs{padding:0 9px}
-}
+@media (max-width:1750px){.rb-runs span{display:none}.rb-runs{padding:0 9px}}
 @media (prefers-reduced-motion:reduce){.rb *,.rb::before{transition:none!important}}
 `;
 

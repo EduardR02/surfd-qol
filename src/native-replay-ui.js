@@ -61,8 +61,12 @@ export function createReplayUi(options) {
   const tools = extras.querySelector('.nr-tools');
   const runs = extras.querySelector('[data-extra="runs"]'), keys = extras.querySelector('[data-extra="keys"]');
   const sheet = extras.querySelector('.nr-keys'), tip = extras.querySelector('.nr-tip');
+  // The custom bar replaces the game's. The game lifts its chat, toasts and
+  // key display just clear of its own one-row bar; ours has two rows.
   const suppress = document.createElement('style');
-  suppress.textContent = '#replay-transport{display:none!important}';
+  suppress.textContent = '#replay-transport{display:none!important}' +
+    '.replay-watching #community-chat,.replay-watching #toast{bottom:124px!important}' +
+    '.replay-watching #telemetry{bottom:max(12%,124px)!important}';
   suppress.disabled = true;
   document.head.append(suppress);
   let transport = null, status = null, customMode = false, available = false, reserve = 0;
