@@ -289,7 +289,11 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     clearSurfEpisode();
   }
 
-  function reset({replayGap = false} = {}) {
+  // replayGap: what came before is unknown, so the flight or ramp in progress
+  // isn't measured and nothing may claim a PB/WR visit match until a run start.
+  // partial: only the flight or ramp in progress is unknown (a saveloc loaded
+  // mid-air or mid-ramp); later ramps are measured and graded as usual.
+  function reset({replayGap = false, partial = false} = {}) {
     boardVersion++;
     accelerationCount = 0;
     head = count = 0;
@@ -329,7 +333,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     surf.reason = '';
     surf.sequence = surf.unsupportedTicks = 0;
     surf.tick = surf.surfaceId = surf.visit = surf.checkpoint = surf.routePrefix = null;
-    unknownAir = unknownRamp = replayGap;
+    unknownAir = unknownRamp = replayGap || partial;
     unknownRampGap = 0;
     episodeUnknown = false;
     if (replayGap) routePrefix = null;

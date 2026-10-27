@@ -89,10 +89,13 @@ export function observePhysics(adapter, metrics, { onBeforeTick = noop, onTick =
       return returned;
     });
     for (const name of ['restart', 'restorePractice', 'loadReplay', 'visitStation']) {
+      // A saveloc or station can put you mid-air or mid-ramp: that flight or
+      // ramp is only partly seen, so it must not read as a fresh board.
+      const midway = name === 'restorePractice' || name === 'visitStation';
       wrap(sessionPrototype, name, original => function () {
         const result = original.apply(this, arguments);
         if (healthy && this === adapter.getSession() && result !== false) {
-          try { metrics.reset(); onReset(); } catch (error) { fail(error); }
+          try { metrics.reset({partial: midway && this.state?.grounded !== true}); onReset(); } catch (error) { fail(error); }
         }
         return result;
       });

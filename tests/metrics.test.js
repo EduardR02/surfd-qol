@@ -2167,6 +2167,30 @@ test('cold replay keyframes suppress an interrupted ramp, then measure complete 
   assert.notEqual(restarted.board.routePrefix, '');
 });
 
+test('a saveloc loaded mid-ramp suppresses that ramp, then grades the next one as usual', () => {
+  const metrics = createMetrics();
+  const game = mappedSession();
+  game.state.tick = 1024;
+  metrics.reset({partial: true});
+  for (let i = 0; i < 4; i++) {
+    const result = coastContact(metrics, game);
+    assert.equal(result.board.available, false);
+  }
+  const partial = leaveRamp(metrics, game).surf;
+  assert.equal(partial.available, false);
+  assert.equal(partial.loss, null);
+  for (let i = 0; i < 4; i++) tick(metrics, game, sample());
+  // Unlike a cold replay seek, later ramps keep their route: practice is graded against PB/WR.
+  const entry = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(entry.board.available, true);
+  assert.equal(typeof entry.board.routePrefix, 'string');
+  assert.notEqual(entry.board.routePrefix, '');
+  for (let i = 0; i < 3; i++) coastContact(metrics, game, {contacts: [separateContact]});
+  const complete = leaveRamp(metrics, game).surf;
+  assert.equal(complete.available, true);
+  assert.equal(typeof complete.routePrefix, 'string');
+});
+
 test('cold replay keyframes discard only the first incomplete flight and preserve gap guards through analysis checkpoints', () => {
   const metrics = createMetrics();
   const game = mappedSession();
