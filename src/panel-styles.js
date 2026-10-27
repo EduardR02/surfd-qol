@@ -41,7 +41,7 @@ button{cursor:pointer}
 .preview .hud{--y:56%;--scale:.74}
 .preview .clock{width:360px}
 .preview .energy .speed{animation:energy 4.5s linear infinite}
-@keyframes energy{0%,28%{color:var(--good)}36%,61%{color:var(--accent)}69%,94%{color:var(--bad)}100%{color:var(--good)}}
+@keyframes energy{0%,55%{color:var(--accent)}63%,92%{color:var(--bad)}100%{color:var(--accent)}}
 
 .tabs{flex:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:10px 12px 0;border-bottom:1px solid var(--line)}
 [role=tab]{position:relative;padding:11px 4px 12px;border:0;background:none;color:var(--text-2);font-size:13.5px;font-weight:700;border-radius:8px 8px 0 0}
@@ -146,7 +146,7 @@ details[open] summary::after{transform:translateY(3px) rotate(-135deg)}
 }
 @media (prefers-reduced-motion:reduce){
   #panel{animation:none}
-  .preview .energy .speed{animation:none;color:var(--good)}
+  .preview .energy .speed{animation:none;color:var(--bad)}
   .switch,.switch::before,.seg span{transition:none}
 }
 `;

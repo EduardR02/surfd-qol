@@ -127,7 +127,7 @@ export function createHudView(element) {
   const place = (node, style) => { if (node.getAttribute('style') !== style) node.setAttribute('style', style); };
   const cls = (node, value) => { if (node.className !== value) node.className = value; };
   const title = (node, value = '') => { if (node.title !== value) node.title = value; };
-  let energy = 'neutral:false';
+  let energy = 'false:false';
 
   function slot(key, model) {
     hide(parts[key], model.hidden);
@@ -193,12 +193,14 @@ export function createHudView(element) {
   return {
     setSpeed(value) { text('speed', value); },
     setTime(value) { number('time', value); },
-    // live: no fade, so a one-tick change shows as it is.
+    // Surfing gains a little almost all the time, so only a loss tints the
+    // speed; gaining or holding keeps its own colour. live: no fade, so a
+    // one-tick change shows as it is.
     setEnergy(next, live = false) {
-      const key = `${next}:${live}`;
+      const key = `${next === 'loss'}:${live}`;
       if (key === energy) return;
       energy = key;
-      cls(parts.speed, `speed${next === 'good' || next === 'loss' ? ` e-${next}` : ''}${live ? ' e-live' : ''}`);
+      cls(parts.speed, `speed${next === 'loss' ? ' e-loss' : ''}${live ? ' e-live' : ''}`);
     },
     render(model) {
       const layout = model.layout ?? 'full';

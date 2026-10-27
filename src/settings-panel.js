@@ -108,9 +108,9 @@ export const panelMarkup = `
       </div>
       <h3>Speed tint <span class="tag">Experimental</span></h3>
       <div class="group">
-        ${toggle('speedEnergyColor', 'Tint speed by energy', `${swatch('good')}while you gain units, ${swatch('loss')}while you lose them. Height changes don’t count.`)}
+        ${toggle('speedEnergyColor', 'Tint speed by energy', `${swatch('loss')}while you lose units; gaining or holding keeps the speed’s colour. Height changes don’t count.`)}
         ${toggle('speedEnergyRamps', 'Include ramps', `Ramp surfing always bleeds some energy, so this is mostly ${swatch('loss')}.`, ' sub')}
-        ${toggle('speedEnergyLive', 'Per tick', 'Colour each tick’s own gain or loss, with no averaging or fade, so every costly input shows. It flickers. Set the Speed refresh rate above 66 fps to see every tick.', ' sub')}
+        ${toggle('speedEnergyLive', 'Per tick', 'Each tick’s own loss, with no averaging or fade, so every costly input shows. It flickers. Set the Speed refresh rate above 66 fps to see every tick.', ' sub')}
       </div>
     </section>
 

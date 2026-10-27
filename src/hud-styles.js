@@ -25,7 +25,7 @@ export const hudStyles = `
 /* Speed: centred on the anchor. Colour eases so an energy tint never flickers. */
 .speed{position:absolute;left:0;top:0;transform:translate(-50%,-52%);font-size:70px;line-height:1;font-weight:700;
   letter-spacing:-.02em;color:var(--accent);-webkit-text-stroke-width:1.75px;transition:color .18s ease-out}
-.speed.e-good{color:var(--good)}.speed.e-loss{color:var(--bad)}.speed.e-live{transition:none}
+.speed.e-loss{color:var(--bad)}.speed.e-live{transition:none}
 
 /* Clock row: with sync and a run label, the timer is centred and they hang off
    either side. With only one of them, the pair centres as a group instead, so a
