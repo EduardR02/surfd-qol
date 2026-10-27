@@ -106,15 +106,21 @@ export function createHistoryStore(database) {
   };
 }
 
-// PB/WR replay analysis (replay-store.js), so a reference already analysed
-// needs no download or re-simulation on the next visit. A few KB each; the
-// least recently saved go beyond MAX_ANALYSES.
-const MAX_ANALYSES = 40;
+// PB/WR and watched replays' analysis (replay-store.js), so a replay already
+// analysed needs no download or re-simulation on the next visit. A few KB
+// each; the least recently used go beyond MAX_ANALYSES, so watching many
+// leaderboard replays doesn't push out the PB and WR you compare against.
+const MAX_ANALYSES = 100;
 export function createAnalysisStore(database) {
   return {
     async get(id) {
       const db = await database;
-      return db ? (await done(db.transaction('analysis').objectStore('analysis').get(id))) ?? null : null;
+      if (!db) return null;
+      const transaction = db.transaction('analysis', 'readwrite'), store = transaction.objectStore('analysis');
+      const entry = await done(store.get(id));
+      if (entry) store.put({...entry, at: Date.now()});
+      await committed(transaction);
+      return entry ?? null;
     },
     async put(id, {result, feedback}) {
       const db = await database;

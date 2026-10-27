@@ -102,7 +102,7 @@ The last 10 count measurements of each ramp, not your last 10 runs. Averages sta
 
 ▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd’s own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
 
-By default, the extension adds Saveloc, Runs and saved-location marks to the game’s replay bar. Your recorded runs also get ramp-board marks coloured like the HUD. Playback shortcuts stay the game’s own, so each press acts once.
+By default, the extension adds Saveloc, Runs and saved-location marks to the game’s replay bar. Ramp boards are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game’s own, so each press acts once.
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 

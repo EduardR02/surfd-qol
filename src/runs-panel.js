@@ -5,7 +5,7 @@
 // each one compared against the PB or WR run with the HUD's colours.
 import {formatTime, formatDelta, formatSplitDelta, referenceTone} from './hud-model.js';
 import {mapKey} from './run-history.js';
-import {referenceIdentity, sessionKey} from './references.js';
+import {analysisKey, referenceIdentity, sessionKey} from './references.js';
 
 const ERROR_MS = 6000;
 const MAX_METER = 12;
@@ -492,7 +492,10 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
           if (!isCurrent()) throw new Error('The personal best changed. Choose the run again.');
           return replay;
         }, {title: `Your PB on ${data?.name ?? history.currentMapName ?? 'this map'} · ${formatTime(run.time)}`,
-          isCurrent: adopted => ownsRequest() && (adopted || isCurrent())});
+          isCurrent: adopted => ownsRequest() && (adopted || isCurrent()),
+          // The PB's analysis (shared with the ramp comparisons) marks its ramp boards.
+          analysis: referenceIdentity(refs?.own) ? {key: `${analysisKey(session, refs?.boardId)}:official:${referenceIdentity(refs.own)}`,
+            entry: {runId: refs.own.runId, timeUs: refs.own.timeUs, splitsUs: refs.own.splitsUs.slice()}} : null});
       } else {
         await replayControl.watch(run, {isCurrent: ownsRequest});
       }

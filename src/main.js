@@ -4,7 +4,8 @@ import { createRunHistory } from './run-history.js';
 import { createReplayArchive, createHistoryStore, createAnalysisStore, openSiteDatabase } from './replay-archive.js';
 import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
-import { createReferenceReplayStore } from './replay-store.js';
+import { createReferenceReplayStore, routeFingerprint } from './replay-store.js';
+import { analysisKey } from './references.js';
 import { createRampReference } from './ramp-reference.js';
 import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
@@ -62,6 +63,12 @@ const replayControl = createReplayControl({
     reset: tick => { metrics.reset({replayGap: tick > 0}); start.reset(); }
   },
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
+  // A PB/WR you open from the Runs view reuses its comparison analysis; any
+  // other replay is named by its contents, so the same run is analysed once.
+  boardsFor: ({ replay, session, analysis, isCurrent }) => replayStore.acquire({
+    key: analysis?.key ?? `${analysisKey(session, null)}:route:${routeFingerprint(replay)}`,
+    session, entry: analysis?.entry ?? null, load: async () => replay, feedback: true, isCurrent
+  }),
   // Explains that replay locs become practice savelocs until you've saved one.
   teach: {
     due: () => { try { return localStorage.getItem(`${storageKey}-replay-locs`) !== '1'; } catch { return true; } },

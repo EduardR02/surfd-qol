@@ -604,6 +604,46 @@ describe('replay control', () => {
     control.play();
     expect(control.status()).toMatchObject({index: 0, playing: true});
   });
+  test('someone else\'s replay gets ramp boards from its analysis, started once the game has indexed it', async () => {
+    const {world, replay} = game();
+    const requests = [];
+    let finish;
+    const boardsFor = request => {
+      requests.push(request);
+      return {result: null, promise: new Promise(resolve => { finish = resolve; }), release() { request.released = true; }};
+    };
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session, boardsFor});
+    try {
+      await world.hooks.watch(replay);
+      // The game is still indexing: the analysis waits rather than compete with it.
+      world.player.index.complete = false;
+      control.status();
+      expect(requests).toHaveLength(0);
+      world.player.index.complete = true;
+      control.status(); control.status();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({replay, session: world.session, analysis: null});
+      expect(requests[0].isCurrent()).toBe(true);
+      // Boards past the replay's end are dropped; a summary for other movement rules marks nothing.
+      finish({config: {dt: DT}, feedback: {route: {boards: [{key: 'a', tick: 30, loss: 3}, {key: 'b', tick: 380, loss: null}, {key: 'c', tick: 900, loss: 1}]}}});
+      await Promise.resolve();
+      expect(requests[0].released).toBe(true);
+      expect(control.status().ramps).toEqual([{tick: 30, label: 'Ramp', board: 3, tone: 'muted'}, {tick: 380, label: 'Ramp', board: null, tone: 'muted'}]);
+      // A PB opened from the Runs view names its analysis; leaving releases an unfinished one.
+      await control.watchLoaded(async () => ({...replay}), {title: 'Your PB', analysis: {key: 'pb-key', entry: {runId: 'pb'}}});
+      control.status();
+      expect(requests[1].analysis).toEqual({key: 'pb-key', entry: {runId: 'pb'}});
+      expect(requests[1].isCurrent()).toBe(true);
+      await world.hooks.watch({...replay});
+      control.status();
+      expect(requests[1]).toMatchObject({released: true});
+      expect(requests[1].isCurrent()).toBe(false);
+      finish({config: {dt: 0.02}, feedback: {route: {boards: [{key: 'a', tick: 30, loss: 3}]}}});
+      await Promise.resolve();
+      expect(control.status().ramps).toEqual([]);
+    } finally { control.destroy(); }
+  });
+
   test('a replay the game started itself is taken over, with its start and checkpoints from the game\'s index', async () => {
     const { world, replay, control } = game();
     expect(control.status()).toBeNull();

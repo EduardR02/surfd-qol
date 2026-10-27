@@ -8,6 +8,8 @@
 import {formatTime} from './hud-model.js';
 import {bindLabel, savelocBinds} from './key-names.js';
 import {createCoachingFrames} from './replay-frames.js';
+import {feedbackApplies, routeBoards} from './replay-store.js';
+import {mapKey} from './run-history.js';
 
 // The game's playback speeds.
 export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
@@ -25,8 +27,11 @@ const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'sh
 // rampNumber(mapKey, rampKey) numbers ramp boards the way the Runs view does.
 // coaching: {save(), restore(state), reset(commandIndex)} is the HUD's analysis.
 // Missing native keyframes reset with a replay gap; only coherent playback is cached.
+// boardsFor({replay, session, analysis, isCurrent}) acquires the analysis of a
+// replay you didn't record (a store handle: {result, promise, release}), whose
+// ramp boards then mark the timeline; analysis {key, entry} names a PB/WR.
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
-  grade = null, teach = null, rampNumber = null, coaching = null, settings = {}, clock = () => performance.now()}) {
+  grade = null, teach = null, rampNumber = null, coaching = null, boardsFor = null, settings = {}, clock = () => performance.now()}) {
   let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null;
   let detached = null;
   const analysisSettings = ANALYSIS_SETTINGS.map(key => settings[key]);
@@ -119,6 +124,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       // Do not attach an old player to a new live session.
       if (session !== watching.session && samePlayer(watching, t))
         detached = {replay, transport: t, revision: t?.revision};
+      leave(watching);
       watching = null;
       grade?.release?.();
     }
@@ -143,7 +149,38 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     watched.start = native.find(marker => marker.kind === 'start')?.index ?? null;
     watched.markers = native.filter(marker => marker.kind === 'checkpoint').map(marker => marker.index).filter(Number.isInteger);
   }
-  // Ramp boards on the timeline, recorded during your own runs.
+  // Anyone else's run (or your PB) gets its ramp boards from the analysis the
+  // PB/WR comparisons use. It starts once the game has indexed the replay, so
+  // it never competes with that, runs in idle time and is saved, so watching
+  // the replay again shows them at once.
+  function analyse(watched) {
+    if (watched.run || watched.analysing || watched.boards.length || !boardsFor || !playing(watched)?.index?.complete) return;
+    watched.analysing = true;
+    let handle = null;
+    try {
+      handle = boardsFor({replay: watched.replay, session: watched.session, analysis: watched.analysis ?? null,
+        isCurrent: () => !destroyed && watching === watched});
+    } catch { return; }
+    if (!handle) return;
+    watched.handle = handle;
+    const publish = result => {
+      if (watched.handle !== handle) return;
+      leave(watched);
+      if (watching !== watched || !feedbackApplies(result, watched.session)) return;
+      const length = end(watched);
+      watched.boards = routeBoards(result).filter(ramp => ramp.tick <= length);
+      watched.rampsKey = '';
+    };
+    if (handle.result) publish(handle.result);
+    else handle.promise.then(publish, () => leave(watched));
+  }
+  function leave(watched) {
+    const handle = watched?.handle;
+    if (!handle) return;
+    watched.handle = null;
+    try { handle.release(); } catch { /* released with the store */ }
+  }
+  // Ramp boards on the timeline: recorded during your own runs, analysed for others.
   function ramps(watched) {
     const list = watched.boards;
     if (!visible || !list.length) grade?.release?.();
@@ -154,7 +191,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     watched.rampsKey = key;
     const tone = ramp => { try { return visible ? grade?.tone?.(ramp.key, ramp.board) ?? 'muted' : 'muted'; } catch { return 'muted'; } };
     // A board off the map's route (a repeat visit or another line) has no number.
-    const number = ramp => { try { return rampNumber?.(watched.run?.mapKey, ramp.key) ?? null; } catch { return null; } };
+    const number = ramp => { try { return rampNumber?.(watched.run?.mapKey ?? mapKey(watched.session.map), ramp.key) ?? null; } catch { return null; } };
     return watched.ramps = list.map(ramp => ({tick: ramp.tick, label: number(ramp) ? `Ramp ${number(ramp)}` : 'Ramp', board: ramp.board, tone: tone(ramp)}));
   }
   const end = watched => Math.max(0, Math.min(watched.length, playing(watched)?.index?.end ?? watched.length));
@@ -293,8 +330,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         run: {id: run.id, mapKey: run.map},
       }), 'saved run', {navigation, isCurrent});
     },
-    watchLoaded(load, {title, navigation = null, isCurrent} = {}) {
-      return startPlayback(load, {title}, 'leaderboard replay', {navigation, isCurrent});
+    watchLoaded(load, {title, navigation = null, isCurrent, analysis = null} = {}) {
+      return startPlayback(load, {title, analysis}, 'leaderboard replay', {navigation, isCurrent});
     },
     setVisible(next) {
       const shown = !destroyed && !!next;
@@ -308,6 +345,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       requestVersion++;
       if (starting?.replay.isCurrent(starting.token)) starting.replay.reserve();
       starting = null;
+      leave(watching);
       watching = null;
       detached = null;
       pending = [];
@@ -348,6 +386,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       const watched = current();
       if (!watched) return null;
       marks(watched);
+      analyse(watched);
       const t = playing(watched);
       const length = end(watched);
       if (length < watched.length && watched.boundedEnd !== length) {
