@@ -1,8 +1,8 @@
 // End-to-end check of the deployed signalling Worker, run after each deploy
 // with `bun signal/check-live.mjs`: refusals, a host and a guest swapping
-// messages both ways, and the room closing when the host leaves. Give it
-// another address, such as `http://127.0.0.1:8787` for `wrangler dev`, to
-// check that instead.
+// messages both ways, TURN credentials, the directory, and the room closing
+// when the host leaves. Give it another address, such as
+// `http://127.0.0.1:8787` for `wrangler dev`, to check that instead.
 const BASE = process.argv[2] ?? 'https://surfd-signal.lightconelabs.workers.dev';
 const ORIGIN = 'https://surfd.net';
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -78,6 +78,11 @@ try {
 
   guest.socket.send('ping');
   check('heartbeat answered', await guest.next(m => m === 'pong') === 'pong');
+
+  guest.socket.send(JSON.stringify({type: 'ice-servers'}));
+  const relay = await guest.next(m => m?.type === 'ice-servers' || m?.data?.code === 'no-relay');
+  check('a guest gets TURN credentials, TURN servers only', relay.type === 'ice-servers' && relay.data.iceServers.length > 0 &&
+    relay.data.iceServers.every(server => server.urls.every(url => /^turns?:/.test(url))), `ttl ${relay.data?.ttl}`);
 
   // The directory is cached for about 10 s, so allow it a while to catch up.
   const listed = async present => {

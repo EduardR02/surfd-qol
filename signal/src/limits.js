@@ -7,6 +7,10 @@
 // joining and reconnecting, stay well inside both.
 export const CONNECTIONS = {burst: 60, every: 30000};
 export const MESSAGES = {burst: 2000, every: 1000};
+// TURN credentials, one per host and per joining guest: that home network
+// rejoining a few times stays inside, while one client can't collect more
+// than about 1,500 a day to pass around.
+export const RELAYS = {burst: 40, every: 60000};
 
 // The client a request comes from: its IPv4 address, or its IPv6 /64, since
 // one home network gets a whole /64.

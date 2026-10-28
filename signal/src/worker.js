@@ -1,15 +1,17 @@
 // The signalling Worker for Surfd QoL rooms: one Durable Object per room,
 // holding its sockets through the hibernation API so a quiet room costs
 // nothing, and one Lobby object for the directory of public rooms. The relay
-// is room.js and the directory lobby.js; this file only wires them up.
-import {CONNECTIONS, MESSAGES, clientOf, createLimiter} from './limits.js';
+// is room.js, the directory lobby.js and the TURN credentials relay.js; this
+// file only wires them up.
+import {CONNECTIONS, MESSAGES, RELAYS, clientOf, createLimiter} from './limits.js';
 import {createLobby} from './lobby.js';
+import {createRelay} from './relay.js';
 import {ORIGIN, createRoom, parseRequest} from './room.js';
 
 const OPEN = 1;
 const refusal = ({status, error}) => new Response(error, {status});
 // Shared by every room this isolate runs.
-const connections = createLimiter(CONNECTIONS), messages = createLimiter(MESSAGES);
+const connections = createLimiter(CONNECTIONS), messages = createLimiter(MESSAGES), relays = createLimiter(RELAYS);
 // Each isolate keeps the directory this long, so an open server browser
 // rarely wakes the Lobby.
 const DIRECTORY_MS = 10000;
@@ -66,6 +68,7 @@ export class Room {
         // A refused socket still opens, so the browser gets the close code and reason.
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
         allowClient: messages,
+        relay: createRelay({env, allow: relays}),
         // Keep only the latest queued state; a slow PUT must finish before DELETE.
         publish(roomId, listing, client) {
           pendingPublication = {roomId, listing, client};

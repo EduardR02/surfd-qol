@@ -4,6 +4,12 @@ name = "surfd-signal"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
+# Every room connects through Cloudflare's TURN relay, with credentials from
+# the TURN key in the secrets TURN_KEY_ID and TURN_KEY_API_TOKEN. Anything but
+# "on" stops issuing them, which stops new rooms and joins.
+[vars]
+RELAY = "on"
+
 # One Durable Object per room.
 [[durable_objects.bindings]]
 name = "ROOMS"

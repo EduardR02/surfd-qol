@@ -5,8 +5,9 @@
 // A host claims a room with a secret key; guests then join, and the relay
 // passes JSON envelopes between the host and each guest, {to, type, data} in
 // and {from, type, data} out. Guests only ever talk to the host. The relay
-// never reads what a message carries, and nothing here logs it; the one
-// exception is a host's listing, which is for the public directory.
+// never reads what a message carries, and nothing here logs it; the
+// exceptions are a host's listing, which is for the public directory, and
+// requests for TURN relay credentials, which the relay answers itself.
 import {listingFrom} from './lobby.js';
 
 // The extension's page script runs on surfd.net, so its sockets carry this
@@ -47,6 +48,9 @@ export const CLOSE = {
 };
 // Envelope types only the relay sends, so no peer can pass one off as the relay's.
 const NOTICES = new Set(['welcome', 'peer-joined', 'peer-left', 'error']);
+// A peer asks for TURN relay credentials with this type, and gets its answer
+// in the same type, or an error 'no-relay'. It never reaches another peer.
+export const RELAY = 'ice-servers';
 const encoder = new TextEncoder();
 
 export function randomId(length = 8) {
@@ -101,15 +105,17 @@ const tooLarge = raw => typeof raw === 'string'
 //   refuse(socket, code, reason);
 // - allowClient(client): whether a client (limits.js) may send one more message;
 // - publish(roomId, listing, client): list the room in the public directory
-//   for the host's client, or unlist it (null).
+//   for the host's client, or unlist it (null);
+// - relay(client): a promise of TURN credentials for a client, {iceServers,
+//   ttl}, or of null when it may not have them (relay.js).
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, publish = () => {}, hash = hashKey, now = Date.now}) {
+export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, publish = () => {}, relay = async () => null, hash = hashKey, now = Date.now}) {
   let record = null, tomb = null;
   if (stored?.endedAt != null) tomb = stored;
   else record = stored;
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
-  const rates = new Map(), departed = new Set(), hashing = new Set();
+  const rates = new Map(), departed = new Set(), hashing = new Set(), issuing = new Set();
   const post = (socket, message) => { try { socket.send(JSON.stringify(message)); } catch { /* closing */ } };
   const shut = (socket, reason) => { try { socket.close(CLOSE[reason], reason); } catch { /* closed */ } };
   const fail = (socket, code, to) => post(socket, {type: 'error', data: to === undefined ? {code} : {code, to}});
@@ -214,6 +220,18 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     post(socket, {type: 'welcome', data: {id, peers: guests().map(guest => guest.peer.id)}});
   }
 
+  // Only a host that proved its key and the guests of a live room get this
+  // far; a socket gets its answer before it may ask again.
+  function issue(socket, peer) {
+    if (issuing.has(peer.conn)) return;
+    issuing.add(peer.conn);
+    return relay(peer.client).catch(() => null).then(servers => {
+      issuing.delete(peer.conn);
+      if (departed.has(peer.conn)) return;
+      post(socket, servers ? {type: RELAY, data: servers} : {type: 'error', data: {code: 'no-relay'}});
+    });
+  }
+
   // Directed host replies spend the recipient's share, not the host's.
   function allow(peer, directed = false) {
     const time = now(), key = `${directed ? 'reply' : 'send'}:${peer.conn}`;
@@ -239,6 +257,10 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
         const listing = listingFrom(value.data);
         return listing && record.roomId ? void publish(record.roomId, listing, peer.client) : fail(socket, 'bad-message');
       }
+      if (value?.type === RELAY) {
+        if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
+        return allow(peer) ? issue(socket, peer) : undefined;
+      }
       const target = value && guests().find(guest => guest.peer.id === value.to);
       if (target) {
         if (!allow(target.peer, true) || !allowClient(target.peer.client)) return kick(target.socket, 'rate-limited');
@@ -255,6 +277,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (!allow(peer) || !allowClient(peer.client)) return kick(socket, 'rate-limited');
     if (raw === 'ping') return void socket.send('pong');
     if (!value) return fail(socket, 'bad-message');
+    if (value.type === RELAY) return issue(socket, peer);
     const {to, type, data} = value;
     if (to != null && to !== record.host) return fail(socket, 'forbidden', to);
     const current = host();
@@ -268,6 +291,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     const peer = peerOf(socket);
     if (!peer || departed.has(peer.conn)) return;
     departed.add(peer.conn);
+    issuing.delete(peer.conn);
     rates.delete(`send:${peer.conn}`);
     rates.delete(`reply:${peer.conn}`);
     if (peer.role === 'guest') {

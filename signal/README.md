@@ -1,6 +1,6 @@
 # Private rooms signalling
 
-Before two browsers in a private room can talk directly over WebRTC, they swap connection details (offers, answers and ICE candidates). This Cloudflare Worker is where they meet to do that; gameplay never passes through it. Each room is one Durable Object that holds its sockets through the WebSocket hibernation API, so a quiet room costs nothing and Cloudflare's free plan is plenty. It is deployed on its own and is not part of the extension build.
+Before two browsers in a room can talk over WebRTC, they swap connection details (offers, answers and ICE candidates) and get credentials for Cloudflare's TURN relay, which carries all room traffic so that no player ever sees another's IP address. This Cloudflare Worker is where they meet to do that; gameplay never passes through it. Each room is one Durable Object that holds its sockets through the WebSocket hibernation API, so a quiet room costs nothing and Cloudflare's free plan is plenty. It is deployed on its own and is not part of the extension build.
 
 ## Deploy
 
@@ -10,6 +10,8 @@ You need a free [Cloudflare account](https://dash.cloudflare.com/sign-up) and No
 2. `npx wrangler deploy` uploads the Worker. The first time, it asks you to pick a `workers.dev` subdomain. It ends by printing the Worker's URL, such as `https://surfd-signal.<subdomain>.workers.dev`.
 3. Put that URL in `SIGNAL_URL` at the top of `src/private-rooms/signal-client.js`, then `bun run build` and reload the extension.
 
+The Worker issues TURN credentials from a Cloudflare Realtime TURN key, kept in two secrets, `TURN_KEY_ID` and `TURN_KEY_API_TOKEN` (`npx wrangler secret put <name>`). TURN is free up to 1,000 GB a month, then billed. `RELAY` in `wrangler.toml` switches it: anything but `on` stops issuing credentials, so no room can start or be joined, while credentials already issued last until they expire. Changed in the dashboard, it takes effect at once, and the next deploy puts back the value in `wrangler.toml`.
+
 Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` streams the Worker's errors live; it never logs what rooms send.
 
 ## Protocol
@@ -17,16 +19,17 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role), 429 (too many connections from one client).
 
 - The host connects with `?role=host` and, within 5 seconds, sends its key as its first message: `{"type":"auth","key"}`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters. That claims the room, and only that key can reconnect to it. The key never goes in the URL, which could end up in logs.
-- Guests connect with `?role=guest`, and leave once their direct connection to the host is up, so a room's size isn't limited here.
+- Guests connect with `?role=guest`, and leave once their connection to the host is up, so a room's size isn't limited here.
 - On joining, the relay sends `{"type":"welcome","data":{"id","peers":[guest ids]}}` to the host and `{"type":"welcome","data":{"id","host"}}` to a guest.
 - The host sends `{"to","type","data"}` to a guest and a guest `{"type","data"}` (or with `"to"` set to the host's id) to the host; each arrives as `{"from","type","data"}`. Guests never reach each other. `type` is up to 32 letters, digits, `_` or `-`; the relay never reads `data`.
 - The host hears `{"type":"peer-joined","from"}` and `{"type":"peer-left","from"}` as guests come and go.
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
+- `{"type":"ice-servers"}`, from a host that has sent its key or a guest of a live room, asks for TURN credentials. The answer is `{"type":"ice-servers","data":{"iceServers":[{"urls","username","credential"}],"ttl"}}`, TURN servers only, valid for `ttl` seconds (4 hours), or an `error` with code `no-relay`. A socket gets one answer before it may ask again, and neither the request nor the answer reaches another peer.
 
 A public room is listed by its host: `{"type":"listing","data":{"name","mapId","players"}}` (no `"to"`) lists or updates it, `{"type":"listing","data":null}` unlists it, and a room that ends is unlisted. Listings pass the extension's own checks or get `bad-message`: `name` is `<username>'s room` with a username of 3 to 24 letters, digits, `_` or `-`, and without "surfd" or "official" in any case; `mapId` is 1 to 64 of `a-z`, `0-9` and `_`; `players` is 0 to 256. A client lists at most 3 rooms at once. A listing nobody refreshes for 90 seconds disappears. `GET /rooms` (from `https://surfd.net`) returns `{"rooms":[{"id","name","mapId","players","updatedAt"}]}`, the 200 busiest, cached for about 10 seconds.
 
-Limits are per client, an IPv4 address or an IPv6 /64, counted in memory by each Worker isolate: 60 new connections at once, then one more every 30 seconds; 2,000 messages at once, then one more a second. A host's message to a guest counts against that guest and its client, so a guest that asks for too much is the one disconnected. The host's other messages past 50 in 10 seconds, such as replies to guests that already left, are dropped without an error.
+Limits are per client, an IPv4 address or an IPv6 /64, counted in memory by each Worker isolate: 60 new connections at once, then one more every 30 seconds; 2,000 messages at once, then one more a second; 40 TURN credentials at once, then one more a minute. A host's message to a guest counts against that guest and its client, so a guest that asks for too much is the one disconnected. The host's other messages past 50 in 10 seconds, such as replies to guests that already left, are dropped without an error.
 
 A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once. An ended room's id stays reserved for 6 hours, so stale invite links never lead into someone else's room: guests get `no-room`, other keys `room-taken`, and only the old key can claim it again, as a new room.
 
@@ -45,4 +48,4 @@ The relay closes sockets with these codes (the reason is the name):
 
 ## Tests
 
-The relay (`src/room.js`) and the limits (`src/limits.js`) have no Workers dependencies; `bun test` at the repository root covers them (`tests/signal-*.test.js`) without Wrangler. After a deploy, `bun signal/check-live.mjs` checks the deployed Worker end to end; pass it another base URL to check that one instead.
+The relay (`src/room.js`), the directory (`src/lobby.js`), the TURN credentials (`src/relay.js`) and the limits (`src/limits.js`) have no Workers dependencies; `bun test` at the repository root covers them (`tests/signal-*.test.js`) without Wrangler or Cloudflare's API. After a deploy, `bun signal/check-live.mjs` checks the deployed Worker end to end; pass it another base URL to check that one instead.
