@@ -12,7 +12,7 @@ The game trusts its server and puts some fields (a map's tier, for one) into mar
 
 Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Official server ids (`eu`, `na`, `eut3`, …) never match.
 
-The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They have no player cap and never take part in the game's Play now recommendation.
+The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId, browserId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`; `browserId` is a random UUID kept in localStorage, for bans. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
 
@@ -20,7 +20,7 @@ A room holds at most 256 players, with one place kept for the host's own connect
 
 Hosting needs a surfd.net account, as the game's moderators always have one: a guest's Host a room opens the game's sign-in, and signing out while hosting ends the room for everyone with "The host closed the private room." The host's own player is a signed-in moderator.
 
-The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
+The host connects to the meeting point with `role=host` and sends `{type: "auth", key}`, with a key from `newHostKey()`, as its first message; the key never goes in the URL. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
 Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups wait for the server browser and stop when it closes. Upload stats are sampled only while the host's own room is shown.
@@ -31,7 +31,7 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 
 **Appearance:** `{title, titleColor, nameColor, revision}`. `title` is at most 24 characters of letters, digits, space and `_.'!?-`; the colours are `null` or `#RRGGBB`; `revision` is a non-negative integer. The default is `{title: "", titleColor: null, nameColor: null, revision: 0}`.
 
-**Player:** `{id, connectionId, slot, name, rank, points, guest, moderator, appearance, spectating}`.
+**Player:** `{id, connectionId, slot, name, rank, points, guest, userId?, moderator, appearance, spectating}`.
 - `id` drives mutes, own-player checks and chat senders; `connectionId` tells live connections apart and picks spectator targets; `slot` (a unique uint16) picks the interpolation buffer for binary poses.
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
 - In private rooms: `connectionId` is a UUID, `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true` (guests accept at most one moderator, never themselves), and `guest` is the player's real status, as on official servers. Signed-in players may carry `userId`; guests never do.
@@ -121,4 +121,4 @@ The host's own game reads its room through the same rebuilding and checks as a g
 
 ## Testing safely
 
-Test as a guest, without finishing runs. The game prepares `guest-attempt` tickets on its own, even before a finish, so block the attempt, upload and claim endpoints before the first page load when testing in a browser.
+Test as a guest, without finishing runs. Hosting needs a signed-in account; finish no runs with it either. The game prepares `guest-attempt` tickets on its own, even before a finish, so block the attempt, upload and claim endpoints before the first page load when testing in a browser.
