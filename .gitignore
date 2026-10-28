@@ -3,6 +3,10 @@
 /node_modules/
 /coverage/
 
+# Wrangler's local state for the signalling Worker, deployed apart from dist/
+/signal/.wrangler/
+/signal/node_modules/
+
 # Harness backdrops: local screenshots of the game, never committed
 /dev/backdrops/
 
