@@ -15,6 +15,7 @@ const status = async (path, headers = {}) => (await fetch(`https://${BASE}${path
 check('bad room id is 404', await status('/rooms/nope', {Origin: ORIGIN}) === 404);
 check('other origin is 403', await status(`/rooms/${room}?role=guest`, {Origin: 'https://evil.example'}) === 403);
 check('plain GET from surfd.net is 426', await status(`/rooms/${room}?role=guest`, {Origin: ORIGIN}) === 426);
+check('there is no room directory (404)', await status('/rooms', {Origin: ORIGIN}) === 404);
 
 function open(query) {
   const socket = new WebSocket(`wss://${BASE}/rooms/${room}?${query}`, {headers: {Origin: ORIGIN}});
@@ -71,21 +72,6 @@ try {
 
   guest.socket.send('ping');
   check('heartbeat answered', await guest.next(m => m === 'pong') === 'pong');
-
-  // The directory is cached for about 10 s, so allow it a while to catch up.
-  const listed = async present => {
-    for (let tries = 0; tries < 15; tries++) {
-      const {rooms} = await (await fetch(`https://${BASE}/rooms`, {headers: {Origin: ORIGIN}})).json();
-      if (rooms.some(entry => entry.id === room) === present) return true;
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    return false;
-  };
-  check('the directory refuses other origins (403)', await status('/rooms', {Origin: 'https://evil.example'}) === 403);
-  host.socket.send(JSON.stringify({type: 'listing', data: {name: 'check-live', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 1}}));
-  check('a listed room shows in the directory', await listed(true));
-  host.socket.send(JSON.stringify({type: 'listing', data: null}));
-  check('an unlisted room leaves the directory', await listed(false));
 
   host.socket.close(1000, 'done');
   check('host leaving closes the room for guests (4410)', (await guest.closed).code === 4410);

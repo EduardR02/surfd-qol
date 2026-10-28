@@ -5,9 +5,7 @@
 // A host claims a room with a secret key; guests then join, and the relay
 // passes JSON envelopes between the host and each guest, {to, type, data} in
 // and {from, type, data} out. Guests only ever talk to the host. The relay
-// never reads what a message carries, and nothing here logs it; the one
-// exception is a host's listing, which is for the public directory.
-import {listingFrom} from './lobby.js';
+// never reads what a message carries, and nothing here logs it.
 
 // The extension's page script runs on surfd.net, so its sockets carry this
 // Origin. Browsers set it themselves, which keeps other sites' pages out;
@@ -86,15 +84,13 @@ const tooLarge = raw => typeof raw === 'string'
   ? raw.length > MAX_MESSAGE || encoder.encode(raw).length > MAX_MESSAGE : raw.byteLength > MAX_MESSAGE;
 
 // One room's relay. The caller provides:
-// - record, save(record): the room's stored record, {host, conn, key, goneAt,
-//   roomId} once claimed (key hashed, goneAt set while the host is away), else null;
+// - record, save(record): the room's stored record, {host, conn, key, goneAt}
+//   once claimed (key hashed, goneAt set while the host is away), else null;
 // - wake(at): run alarm() at that time, or never (null);
 // - sockets(): the open sockets it accepted, and peerOf(socket): the peer
-//   accept(socket, peer) attached to one; refuse(socket, code, reason);
-// - publish(roomId, listing): list the room in the public directory, or
-//   unlist it (null).
+//   accept(socket, peer) attached to one; refuse(socket, code, reason).
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record = null, save, wake, sockets, peerOf, accept, refuse, publish = () => {}, now = Date.now}) {
+export function createRoom({record = null, save, wake, sockets, peerOf, accept, refuse, now = Date.now}) {
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
   const rates = new Map(), departed = new Set();
@@ -122,7 +118,6 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
   }
   function end() {
     for (const {socket} of members()) shut(socket, 'room-closed');
-    if (record?.roomId) publish(record.roomId, null);
     store(null);
   }
   // A room whose host has been away longer than the grace period is over.
@@ -130,14 +125,14 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
     if (record?.goneAt != null && now() >= record.goneAt + GRACE_MS) end();
   }
 
-  function connect(socket, {role, key, roomId = null}) {
+  function connect(socket, {role, key}) {
     expire();
     if (role === 'host') {
       if (record && record.key !== key) return refuse(socket, CLOSE['room-taken'], 'room-taken');
       // The key's holder takes over: a reconnecting host may arrive before
       // the relay notices its old socket is gone. Its peer id stays the same.
       const previous = host();
-      store({host: record?.host ?? randomId(), conn: randomId(), key, goneAt: null, roomId: record?.roomId ?? roomId});
+      store({host: record?.host ?? randomId(), conn: randomId(), key, goneAt: null});
       if (previous) shut(previous.socket, 'replaced');
       accept(socket, {id: record.host, role, conn: record.conn});
       return post(socket, {type: 'welcome', data: {id: record.host, peers: guests().map(guest => guest.peer.id)}});
@@ -177,13 +172,6 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
     if (!value) return fail(socket, 'bad-message');
     const {to, type, data} = value;
     if (peer.role === 'host') {
-      // A listing addressed to no one is for the public directory.
-      if (type === 'listing' && to == null) {
-        if (!allow(peer)) return kick(socket, 'rate-limited');
-        if (data === null) return void publish(record.roomId, null);
-        const listing = listingFrom(data);
-        return listing && record.roomId ? void publish(record.roomId, listing) : fail(socket, 'bad-message');
-      }
       const target = guests().find(guest => guest.peer.id === to);
       if (target) {
         if (!allow(target.peer, true)) return kick(target.socket, 'rate-limited');

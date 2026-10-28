@@ -14,7 +14,7 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 
 ## Protocol
 
-`GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
+Rooms are reachable only through their invite link; there is no directory of rooms. `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
 
 - The host connects with `?role=host&key=<key>`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters, and claims the room. Only that key can reconnect to it.
 - Guests connect with `?role=guest`, and leave once their direct connection to the host is up, so a room's size isn't limited here.
@@ -23,8 +23,6 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 - The host hears `{"type":"peer-joined","from"}` and `{"type":"peer-left","from"}` as guests come and go.
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
-
-A public room is listed by its host: `{"type":"listing","data":{"name","mapId","mapTitle","players"}}` (no `"to"`) lists or updates it, `{"type":"listing","data":null}` unlists it, and a room that ends is unlisted. A listing nobody refreshes for 90 seconds disappears. `GET /rooms` (from `https://surfd.net`) returns `{"rooms":[{"id","name","mapId","mapTitle","players","updatedAt"}]}`, the 200 busiest, cached for about 10 seconds.
 
 A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once.
 
