@@ -113,6 +113,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data and 4004 when the room is gone. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
+Leave, teardown and a newer join cancel pending discovery before the native join callback can run. A native join failure closes its discovery socket.
 
 Public hosting renews its listing every 30 seconds. Upload stats are sampled every 5 seconds only while the host selects its own room in the visible browser; hiding the browser or selecting another room stops sampling. Private hosting without that detail panel, idle attachment and connected guests have no runtime interval. Leave, replacement and startup failure clear host timers.
 

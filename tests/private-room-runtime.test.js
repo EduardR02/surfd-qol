@@ -211,6 +211,57 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('leave cancels a discovered join before native entry', async () => {
+    const f = fixture();
+    try {
+      const pending = f.runtime.join(ROOM);
+      f.signals[0].ready(); f.signals[0].message('room-info', row());
+      f.runtime.leave(ROOM);
+      await expect(pending).rejects.toThrow(CLOSED);
+      expect(f.joined).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('a newer join cancels older discovery', async () => {
+    const f = fixture();
+    try {
+      const first = f.runtime.join(ROOM);
+      const firstResult = first.catch(error => error);
+      const second = f.runtime.join(OTHER);
+      f.signals[1].ready(); f.signals[1].message('room-info', row(OTHER));
+      await second;
+      expect((await firstResult).message).toBe(CLOSED);
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.joined.map(entry => entry.id)).toEqual([OTHER]);
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('native join failure closes discovery', async () => {
+    const f = fixture();
+    try {
+      f.adapter.rooms.join = () => { throw new Error('Map unavailable'); };
+      const pending = f.runtime.join(ROOM);
+      f.signals[0].ready(); f.signals[0].message('room-info', row());
+      await expect(pending).rejects.toThrow('Map unavailable');
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('pagehide cancels guest discovery', async () => {
+    const f = fixture();
+    try {
+      const pending = f.runtime.join(ROOM);
+      f.events.dispatchEvent(new Event('pagehide'));
+      await expect(pending).rejects.toThrow(CLOSED);
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.timers.pending()).toBe(0);
+      expect(f.joined).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('connected room visibility overrides a cached public listing', async () => {
     const f = fixture();
     try {

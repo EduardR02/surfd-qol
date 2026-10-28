@@ -21,6 +21,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
   let browserVisible = null, pendingInvite = null, directoryAbort = null;
+  let pendingJoin = null;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
   let visibility = stored(VISIBILITY_KEY) === 'public' ? 'public' : 'private';
@@ -243,6 +244,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   function closeHost() {
     const closing = hosted;
     if (!closing) return;
+    cancelJoin(closing.id);
     hosted = null;
     timers.clearInterval(heartbeat);
     heartbeat = null;
@@ -304,18 +306,37 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     }
   }
   function pagehide() { api.destroy(); }
+  function cancelJoin(id) {
+    if (!pendingJoin || (id != null && pendingJoin.id !== id)) return;
+    const joining = pendingJoin;
+    pendingJoin = null;
+    const session = guests.get(joining.id);
+    if (session && !session.socket) closeGuest(session);
+  }
   async function join(id) {
     const adapter = rooms();
     if (!isPrivateRoomId(id)) throw new Error('Invalid private room identifier.');
     setup();
-    const discovery = discover(id);
-    const session = guests.get(id);
-    if (session) session.preview = false;
-    await discovery;
-    rooms();
-    updateLobby(true);
-    await adapter.join(id);
-    return id;
+    cancelJoin();
+    const attempt = pendingJoin = {id};
+    let session;
+    try {
+      const discovery = discover(id);
+      session = guests.get(id);
+      if (session) session.preview = false;
+      await discovery;
+      rooms();
+      if (pendingJoin !== attempt) throw new Error(CLOSED);
+      updateLobby(true);
+      await adapter.join(id);
+      if (pendingJoin !== attempt) throw new Error(CLOSED);
+      return id;
+    } catch (error) {
+      if (session && guests.get(id) === session && !session.socket) closeGuest(session);
+      throw error;
+    } finally {
+      if (pendingJoin === attempt) pendingJoin = null;
+    }
   }
   async function refreshDirectory({open = false} = {}) {
     if (destroyed || !(open || getAdapter()?.rooms?.browserOpen?.())) return;
@@ -485,6 +506,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       return track(socket, id);
     },
     leave(id) {
+      cancelJoin(id);
       if (hosted && (id == null || id === hosted.id)) closeHost();
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
       for (const [socket, roomId] of sockets) if (id == null || id === roomId) socket.close(1000, '');
@@ -502,6 +524,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     },
     destroy() {
       if (destroyed) return;
+      cancelJoin();
       closeHost();
       destroyed = true;
       directoryAbort?.abort();
