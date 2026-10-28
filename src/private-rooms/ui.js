@@ -51,7 +51,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       const option = button(label, '');
       option.dataset.visibility = value; option.title = explanation;
       option.onclick = () => {
-        Promise.resolve(rooms.setVisibility(value)).then(refresh, fail);
+        Promise.resolve().then(() => rooms.setVisibility(value)).then(refresh, fail);
       };
       group.append(option);
     }

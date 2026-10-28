@@ -237,4 +237,15 @@ describe('native room UI', () => {
     f.ui.destroy();
   });
 
+  test('a refused visibility shows in native status', async () => {
+    const f=fixture();
+    f.rooms.setVisibility=()=>{throw new Error("Rooms with Surfd or official in the name can't be public.");};
+    await f.host().click();
+    await f.detail.querySelector('[data-visibility="public"]').click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(f.status.textContent).toBe("Rooms with Surfd or official in the name can't be public.");
+    expect(f.rooms.visibility()).toBe('private');
+    f.ui.destroy();
+  });
+
 });
