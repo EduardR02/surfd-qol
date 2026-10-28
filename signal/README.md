@@ -24,6 +24,8 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
 
+A public room is listed by its host: `{"type":"listing","data":{"name","mapId","mapTitle","players"}}` (no `"to"`) lists or updates it, `{"type":"listing","data":null}` unlists it, and a room that ends is unlisted. A listing nobody refreshes for 90 seconds disappears. `GET /rooms` (from `https://surfd.net`) returns `{"rooms":[{"id","name","mapId","mapTitle","players","updatedAt"}]}`, the 200 busiest, cached for about 10 seconds.
+
 A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once.
 
 The relay closes sockets with these codes (the reason is the name):
