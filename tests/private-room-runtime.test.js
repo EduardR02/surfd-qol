@@ -75,7 +75,7 @@ function clock() {
   };
 }
 function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
-  const signals = [], peers = [], listeners = [], notices = [], requests = [];
+  const signals = [], peers = [], listeners = [], notices = [], requests = [], requestOptions = [];
   const events = new EventTarget(), timers = clock();
   let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false;
   let response = {ok: true, json: async () => ({rooms: []})};
@@ -101,9 +101,9 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     },
     listen: options => { listeners.push(options); return () => {}; },
     uiFactory: () => ui,
-    fetch: async url => { requests.push(url); return response; }
+    fetch: async (url, options) => { requests.push(url); requestOptions.push(options); return response; }
   });
-  return {runtime, signals, peers, listeners, notices, requests, events, timers, adapter, joined, ui,
+  return {runtime, signals, peers, listeners, notices, requests, requestOptions, events, timers, adapter, joined, ui,
     rows: () => rows, open: value => { open = value; }, response: value => { response = value; },
     async host(options) { const promise = runtime.host(options); signals.at(-1).ready(); return promise; },
     async join(id = ROOM) {
@@ -136,6 +136,46 @@ describe('private room runtime', () => {
       f.runtime.leave();
       expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
+  });
+
+  test('invite discovery waits for the browser and closes after preview', async () => {
+    const previous = globalThis.location;
+    const f = fixture();
+    try {
+      globalThis.location = {search: `?join=${ROOM}`};
+      f.runtime.attach();
+      expect(f.signals).toHaveLength(0);
+      expect(f.timers.pending()).toBe(0);
+      f.open(true);
+      f.runtime.browserVisibility(true);
+      const signal = f.signals[0];
+      signal.ready(); signal.message('room-info', row());
+      await flush();
+      expect(signal.state).toBe('closed');
+      expect(f.timers.pending()).toBe(0);
+      f.runtime.browserVisibility(false);
+      expect(f.signals).toHaveLength(1);
+    } finally { globalThis.location = previous; f.runtime.destroy(); }
+  });
+
+  test('closing the browser cancels discovery and directory work', async () => {
+    const previous = globalThis.location;
+    const f = fixture();
+    let resolve;
+    try {
+      globalThis.location = {search: `?join=${ROOM}`};
+      f.runtime.attach(); f.open(true); f.runtime.browserVisibility(true);
+      f.response(new Promise(yes => { resolve = yes; }));
+      const pending = f.runtime.refreshDirectory();
+      f.open(false); f.runtime.browserVisibility(false);
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.requestOptions[0].signal.aborted).toBe(true);
+      expect(f.timers.pending()).toBe(0);
+      resolve({ok: true, json: async () => ({rooms: [row()]})});
+      await pending; await flush();
+      expect(f.runtime.mergeRooms([])).toEqual([]);
+      expect(f.notices).toEqual([]);
+    } finally { globalThis.location = previous; f.runtime.destroy(); }
   });
 
   test('leaving or failing hosting releases its heartbeat', async () => {

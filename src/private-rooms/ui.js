@@ -119,6 +119,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const community = isPrivateRoomId(rooms.currentRoom?.());
     const open = adapter?.browserOpen?.() ?? (!!root && !root.hidden);
     observe(open, community);
+    rooms.browserVisibility?.(open);
     const hosting = rooms.hosting();
     rooms.showHostDetails?.(open && hosting?.id === adapter?.selected?.());
     if (!open && !community && !votes.size) return;
