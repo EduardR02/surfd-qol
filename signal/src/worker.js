@@ -10,14 +10,22 @@ const refusal = ({status, error}) => new Response(error, {status});
 // Each isolate keeps the directory this long, so an open server browser
 // rarely wakes the Lobby.
 const DIRECTORY_MS = 10000;
-let directory = null;
+let directory = null, directoryRequest = null;
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
 async function listRooms(request, env) {
   if (request.headers.get('Origin') !== ORIGIN) return refusal({status: 403, error: 'Origin not allowed'});
   if (request.method !== 'GET') return refusal({status: 405, error: 'Expected GET'});
-  if (!directory || Date.now() - directory.at > DIRECTORY_MS) {
-    directory = {at: Date.now(), body: await (await lobbyOf(env).fetch('https://lobby/rooms')).text()};
+  if (!directory || Date.now() - directory.at >= DIRECTORY_MS) {
+    if (!directoryRequest) {
+      directoryRequest = (async () => {
+        const response = await lobbyOf(env).fetch('https://lobby/rooms');
+        if (!response.ok) throw new Error('Directory unavailable');
+        directory = {at: Date.now(), body: await response.text()};
+      })().finally(() => { directoryRequest = null; });
+    }
+    try { await directoryRequest; }
+    catch { return new Response('Directory unavailable', {status: 503, headers: {'Access-Control-Allow-Origin': ORIGIN}}); }
   }
   return new Response(directory.body, {headers: {
     'Content-Type': 'application/json', 'Access-Control-Allow-Origin': ORIGIN,
