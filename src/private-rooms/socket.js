@@ -1,3 +1,5 @@
+import {CLOSE, MAX_CONTROL_BYTES, createRoomControlReader, encodeControlFrames, validateRoomMessage, validateRoomBinary} from './protocol.js';
+
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 const PROTOCOL = 'surfd-v1';
 const RTC_CONFIG = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
@@ -199,6 +201,12 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   const socket = new RoomSocket();
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
+  let mapIds = null;
+  const incoming = createRoomControlReader(message => {
+    validateRoomMessage(message, roomId);
+    if (message.type === 'welcome') mapIds = new Set(message.maps.map(map => map.id));
+    else if (message.type === 'state' && !mapIds?.has(message.state.mapId)) throw new Error('Unknown room map');
+  });
   let negotiation = Promise.resolve();
   const candidates = [];
   const signal = (type, payload) => signalling.send({
@@ -208,6 +216,8 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     if (disposed) return;
     disposed = true;
     clearTimeout(closeTimer);
+    incoming.clear();
+    mapIds = null;
     pc?.close();
     onDispose?.();
   };
@@ -229,6 +239,12 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
         socket._finish(info?.code ?? 1006, info?.reason ?? DIRECT_FAILURE, false);
       }, () => socket._finish(1006, DIRECT_FAILURE, false));
     } else socket._finish(1006, DIRECT_FAILURE, false);
+  };
+  const invalid = error => {
+    if (disposed) return;
+    socket._state = CLOSING;
+    socket._emit('error', {error});
+    finish(CLOSE.invalid, 'Invalid private room data', false);
   };
   const sendControl = message => control.send(JSON.stringify(message));
   const drainClose = () => {
@@ -254,9 +270,10 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   };
   const handleControl = event => {
     try {
-      if (typeof event.data !== 'string') throw new Error('Expected room control text');
+      if (typeof event.data !== 'string' || event.data.length > MAX_CONTROL_BYTES ||
+          encoder.encode(event.data).byteLength > MAX_CONTROL_BYTES) throw new Error('Invalid room control size');
       const message = JSON.parse(event.data);
-      if (!message || typeof message !== 'object') throw new Error('Invalid room control message');
+      if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid room control message');
       switch (message.type) {
         case 'hello':
           if (!host || helloReceived || !message.hello || typeof message.hello !== 'object') throw new Error('Invalid room hello');
@@ -271,7 +288,16 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
           break;
         case 'data':
           if (typeof message.data !== 'string' || socket.readyState === CONNECTING) throw new Error('Unexpected room data');
-          if (socket.readyState === OPEN) socket._emit('message', {data: message.data});
+          if (socket.readyState === OPEN) {
+            const data = host ? message.data : incoming.read(message.data);
+            if (data !== null) {
+              const frames = host ? [data] : encodeControlFrames(data);
+              for (const frame of frames) {
+                if (socket.readyState !== OPEN) break;
+                socket._emit('message', {data: frame});
+              }
+            }
+          }
           break;
         case 'close':
           if ((message.code !== 1000 && (!Number.isInteger(message.code) || message.code < 3000 || message.code > 4999)) ||
@@ -288,7 +314,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
         default:
           throw new Error('Unknown room control message');
       }
-    } catch (error) { fail(error); }
+    } catch (error) { invalid(error); }
   };
   const attach = channel => {
     if (channel.label === 'control' && !control) {
@@ -297,13 +323,19 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     } else if (channel.label === 'binary' && !poses) {
       poses = channel;
       channel.binaryType = 'arraybuffer';
-      channel.onmessage = event => {
-        if (!binary(event.data)) return fail(new Error('Expected room binary frame'));
-        if (socket.readyState === OPEN) receive(socket, event.data).catch(fail);
+      channel.onmessage = async event => {
+        if (socket.readyState !== OPEN) return;
+        try {
+          if (!binary(event.data) || dataSize(event.data) > MAX_CONTROL_BYTES) throw new Error('Invalid room binary frame');
+          const data = event.data instanceof Blob ? await event.data.arrayBuffer() :
+            ArrayBuffer.isView(event.data) ? copyData(event.data) : event.data;
+          if (!host) validateRoomBinary(data);
+          if (socket.readyState === OPEN) await receive(socket, data);
+        } catch (error) { invalid(error); }
       };
     } else {
       channel.close();
-      fail(new Error('Unexpected room data channel'));
+      invalid(new Error('Unexpected room data channel'));
       return;
     }
     channel.onopen = () => { try { ready(); } catch (error) { fail(error); } };

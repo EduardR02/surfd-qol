@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
 import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
-import {decodePoseBatch, decodeSnapshot, decodeSpectator, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {CLOSE, DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, {once: true}));
@@ -15,6 +15,16 @@ const spectator = (sequence, slot) => ({
   sequence, slot, epoch: 1,
   pose: {...pose, eyeHeight: 1, phase: 'ready', untimed: false, checkpoints: 0, stage: 0},
 });
+const roomPlayer = (slot = 0) => ({
+  id: 'private-' + slot, connectionId: 'connection-' + slot, slot, name: 'Guest',
+  rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+});
+const roomState = {roomId: 'room-a', name: 'Room', visibility: 'private', mapId: 'one', mapTitle: 'One',
+  epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
+const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
+  maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
+  playtime: false, activityTracking: false, recentResults: [], chatMute: null});
+const notice = text => JSON.stringify({type: 'notice', text});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   await nextTask();
@@ -144,7 +154,7 @@ function rtcPair(options = {}) {
   const stop = listenRoom({roomId: 'room-a', signalling, onSocket(socket, hello) {
     accepted.push({socket, hello});
     events.push('accept');
-    socket.send(JSON.stringify({type: 'welcome'}));
+    socket.send(JSON.stringify(welcome()));
   }});
   cleanups.push(stop);
   const client = createPeerSocket({roomId: 'room-a', peerId: 'peer-a', signalling, onFailure: options.onFailure,
@@ -368,7 +378,7 @@ describe('private room WebRTC socket', () => {
     expect(accepted).toHaveLength(1);
     expect(accepted[0].hello).toEqual({name: 'Guest', appearance: {color: 'blue'}, guest: true});
     expect(accepted[0].socket.readyState).toBe(client.OPEN);
-    expect(events).toEqual(['accept', 'open', JSON.stringify({type: 'welcome'})]);
+    expect(events).toEqual(['accept', 'open', JSON.stringify(welcome())]);
     expect(connections[0].config).toEqual({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
     expect(connections[0].channels[0]).toMatchObject({ordered: true, protocol: 'surfd-v1'});
     expect(connections[0].channels[1]).toMatchObject({ordered: false, maxRetransmits: 0, protocol: 'surfd-v1'});
@@ -385,14 +395,14 @@ describe('private room WebRTC socket', () => {
     client.onmessage = event => clientMessages.push(event.data);
     client.send('{"type":"map"}');
     client.send(new Uint8Array([1, 2]).buffer);
-    host.send(new Uint8Array([3, 4]));
-    host.send('chat');
+    host.send(new Uint8Array(encodeSnapshot([batch(1, 1)])));
+    host.send(notice('chat'));
     expect(client.bufferedAmount).toBeGreaterThan(0);
     await nextTask();
     expect(hostMessages[0]).toBe('{"type":"map"}');
     expect([...new Uint8Array(hostMessages[1])]).toEqual([1, 2]);
-    expect([...new Uint8Array(clientMessages[0])]).toEqual([3, 4]);
-    expect(clientMessages[1]).toBe('chat');
+    expect(decodeSnapshot(clientMessages[0])).toEqual([batch(1, 1)]);
+    expect(clientMessages[1]).toBe(notice('chat'));
     expect(connections[0].channels[0].sent.map(JSON.parse).map(message => message.type)).toEqual(['hello', 'data']);
     expect(connections[0].channels[1].sent).toHaveLength(1);
     expect(client.bufferedAmount).toBe(0);
@@ -459,7 +469,7 @@ describe('private room WebRTC socket', () => {
     client.onmessage = event => messages.push(event.data);
     const closed = once(client, 'close');
     connections[0].channels[0].onmessage({data: 'not-json'});
-    expect(await closed).toMatchObject({code: 1006, wasClean: false});
+    expect(await closed).toMatchObject({code: CLOSE.invalid, wasClean: false});
     expect(errors).toHaveLength(1);
     expect(messages).toEqual([]);
   });
@@ -483,9 +493,9 @@ describe('private room WebRTC socket', () => {
     expect(accepted.size).toBe(2);
     const messages = [];
     clients.forEach((client, index) => { client.onmessage = event => messages.push([index, event.data]); });
-    accepted.get('second').send('private to second');
+    accepted.get('second').send(notice('private to second'));
     await nextTask();
-    expect(messages).toEqual([[1, 'private to second']]);
+    expect(messages).toEqual([[1, notice('private to second')]]);
   });
 
   test('reports peer connection failures as errors and abnormal closes', async () => {
@@ -634,8 +644,8 @@ describe('private room WebRTC socket', () => {
     expect(client.readyState).toBe(client.OPEN);
     expect(accepted[0].socket.readyState).toBe(client.OPEN);
     const incoming = once(client, 'message');
-    accepted[0].socket.send('still connected');
-    expect((await incoming).data).toBe('still connected');
+    accepted[0].socket.send(notice('still connected'));
+    expect((await incoming).data).toBe(notice('still connected'));
   });
 
   test('resolves a deferred signalling peer identity', async () => {
@@ -652,6 +662,122 @@ describe('private room WebRTC socket', () => {
     expect(await closed).toMatchObject({code: 1006, wasClean: false});
     expect(signalling.subscribers).toBe(0);
   });
+  test('delivers valid state, text, demand, context and split native binary flows', async () => {
+    const {client, accepted} = rtcPair();
+    await nextTask();
+    client.binaryType = 'arraybuffer';
+    const messages = [], host = accepted[0].socket;
+    client.onmessage = event => messages.push(event.data);
+    const controls = [
+      {type: 'state', state: {...roomState, visibility: 'public', epoch: 2}, serverTime: 2},
+      {type: 'chat', playerId: 'private-0', name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
+      {type: 'notice', text: '<plain text>'},
+      {type: 'error', text: 'Unavailable', spectatorRequest: 12},
+      {type: 'spectator-demand', active: true, count: 65535},
+      {type: 'spectator-demand', active: false, count: 0},
+      {type: 'context', epoch: 2, token: null},
+    ];
+    for (const control of controls) host.send(JSON.stringify(control));
+    const blocks = Array.from({length: 102}, (_, slot) => batch(1, slot));
+    host.send(encodeSnapshot(blocks.slice(0, 100)));
+    host.send(encodeSnapshot(blocks.slice(100)));
+    host.send(encodeSpectator(spectator(1, 1), true));
+    await nextTask();
+    expect(messages.slice(0, controls.length).map(JSON.parse)).toEqual(controls);
+    expect(messages.slice(controls.length, -1).map(decodeSnapshot).flat()).toEqual(blocks);
+    expect(decodeSpectator(messages.at(-1), true)).toEqual(spectator(1, 1));
+    expect(client.readyState).toBe(client.OPEN);
+  });
+
+  test('rejects hostile host JSON before consumers see it and never probes reconnect liveness', async () => {
+    const invalidMessages = [
+      {...welcome(), maps: [{id: 'one', title: 'One', tier: '"><img src=x onerror=alert(1)>'}]},
+      {...welcome(), players: null},
+      {...welcome(), player: {...roomPlayer(), slot: 65536}},
+      {...welcome(), player: {...roomPlayer(), appearance: {...DEFAULT_APPEARANCE, nameColor: 'red;position:fixed'}}},
+      {type: 'roster', players: [roomPlayer(), roomPlayer()]},
+      {type: 'roster', players: [{...roomPlayer(), points: '<img src=x>'}]},
+      {type: 'state', state: {...roomState, nominations: null}, serverTime: 1},
+      {type: 'state', state: {...roomState, mapId: 'not-in-welcome'}, serverTime: 1},
+      {type: 'state', state: {...roomState, epoch: 0x100000000}, serverTime: 1},
+      {type: 'chat', playerId: 'p', name: 'Guest', text: 'x'.repeat(241)},
+      {type: 'chat', playerId: 'p', name: {}, text: 'hi'},
+      {type: 'notice', text: {}}, {type: 'error', text: 'bad', spectatorRequest: -1},
+      {type: 'spectator-demand', active: true, count: 0},
+      {type: 'context', epoch: 1, token: 'host-supplied-ranked-token'},
+      {type: 'result', result: {}},
+    ];
+    for (const message of invalidMessages) {
+      let probes = 0;
+      const {client, connections} = rtcPair({onFailure: () => { probes++; }});
+      await nextTask();
+      const messages = [], closed = once(client, 'close');
+      client.onmessage = event => messages.push(event.data);
+      connections[0].channels[0].onmessage({data: JSON.stringify({type: 'data', data: JSON.stringify(message)})});
+      expect(await closed).toMatchObject({code: CLOSE.invalid});
+      expect(messages).toEqual([]);
+      expect(probes).toBe(0);
+      expect(connections[0].connectionState).toBe('closed');
+    }
+  });
+
+  test('rejects invalid snapshots and spectator values before the game receives binary', async () => {
+    const snapshot = encodeSnapshot([batch(1, 1)]);
+    new DataView(snapshot).setFloat32(22, NaN, true);
+    const detailed = encodeSpectator(spectator(1, 1), true);
+    new DataView(detailed).setUint8(55, 64);
+    for (const data of [snapshot, detailed, encodePoseBatch(batch(1)), new ArrayBuffer(65537), 'binary text']) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const messages = [], closed = once(client, 'close');
+      client.onmessage = event => messages.push(event.data);
+      await connections[0].channels[1].onmessage({data});
+      expect(await closed).toMatchObject({code: CLOSE.invalid});
+      expect(messages).toEqual([]);
+    }
+  });
+
+  test('buffers and validates complete large rosters before emitting bounded game frames', async () => {
+    const {client, accepted, connections} = rtcPair();
+    await nextTask();
+    const players = Array.from({length: 1100}, (_, slot) => roomPlayer(slot));
+    const frames = encodeControlFrames({type: 'roster', players}), messages = [];
+    client.onmessage = event => messages.push(event.data);
+    for (const frame of frames.slice(0, -1)) accepted[0].socket.send(frame);
+    await nextTask();
+    expect(messages).toEqual([]);
+    accepted[0].socket.send(frames.at(-1));
+    await nextTask();
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every(frame => frame.length <= MAX_CONTROL_BYTES)).toBe(true);
+    expect(JSON.parse(messages.map(frame => JSON.parse(frame).data).join(''))).toEqual({type: 'roster', players});
+    expect(connections[1].channels[0].sent.every(frame => new TextEncoder().encode(frame).length <= MAX_CONTROL_BYTES)).toBe(true);
+    const bad = encodeControlFrames({type: 'roster', players: [...players, players[0]]});
+    messages.length = 0;
+    const closed = once(client, 'close');
+    for (const frame of bad) accepted[0].socket.send(frame);
+    expect(await closed).toMatchObject({code: CLOSE.invalid});
+    expect(messages).toEqual([]);
+  });
+
+  test('rejects oversized raw envelopes and interrupted chunks without game delivery', async () => {
+    for (const frames of [
+      [JSON.stringify({type: 'data', data: notice('名'.repeat(22000))})],
+      [JSON.stringify({type: 'data', data: JSON.stringify({type: 'room-chunk', data: '{', final: false})}),
+        JSON.stringify({type: 'data', data: 'pong'})],
+      [JSON.stringify({type: 'data', data: JSON.stringify({type: 'room-chunk', data: '', final: false})})],
+    ]) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const messages = [], closed = once(client, 'close');
+      client.onmessage = event => messages.push(event.data);
+      for (const data of frames) connections[0].channels[0].onmessage({data});
+      expect(await closed).toMatchObject({code: CLOSE.invalid});
+      expect(messages).toEqual([]);
+    }
+  });
+
+
 });
 
 describe('terminal private room socket', () => {

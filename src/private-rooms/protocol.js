@@ -1,6 +1,8 @@
 export const VERSION = 1;
 export const CLOSE = Object.freeze({invalid: 4002, gone: 4004});
 export const MAX_CONTROL_BYTES = 65536;
+// Large enough for every uint16 slot, including escaped names and appearances.
+export const MAX_ROOM_MESSAGE_CHARS = 64 * 1024 * 1024;
 export const MAX_SNAPSHOT_BLOCKS = 100;
 export const POSE_HEADER_BYTES = 12;
 export const POSE_SAMPLE_BYTES = 32;
@@ -19,12 +21,16 @@ function requireValid(valid, message) {
   if (!valid) throw new Error(message);
 }
 
-export function normalizeAppearance(value) {
-  const valid = value && typeof value === 'object' && !Array.isArray(value)
+function validAppearance(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
     && typeof value.title === 'string' && value.title.length <= 24 && value.title === value.title.trim()
     && /^[\p{L}\p{N} _.'!?-]*$/u.test(value.title)
     && [value.titleColor, value.nameColor].every(color => color === null || typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))
     && Number.isSafeInteger(value.revision) && value.revision >= 0;
+}
+
+export function normalizeAppearance(value) {
+  const valid = validAppearance(value);
   const appearance = valid ? value : DEFAULT_APPEARANCE;
   return {title: appearance.title, titleColor: appearance.titleColor, nameColor: appearance.nameColor, revision: appearance.revision};
 }
@@ -253,4 +259,129 @@ export function decodeControl(text) {
 
 export function controlWireSize(text) {
   return encoder.encode(JSON.stringify({type: 'data', data: text})).byteLength;
+}
+
+const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const textValue = (value, max, empty = false) => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0);
+const identifier = value => textValue(value, 256);
+const timestamp = value => Number.isSafeInteger(value) && value >= 0;
+
+function validatePlayer(player) {
+  requireValid(record(player) && identifier(player.id) && identifier(player.connectionId)
+    && uint(player.slot, 65535) && textValue(player.name, 24)
+    && player.rank === 'Guest' && player.points === 0 && player.guest === false
+    && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
+    && validAppearance(player.appearance), 'Invalid room player');
+}
+
+function validatePlayers(players) {
+  requireValid(Array.isArray(players) && players.length <= 65536, 'Invalid room roster');
+  const slots = new Set(), connections = new Set(), ids = new Set();
+  for (const player of players) {
+    validatePlayer(player);
+    requireValid(!slots.has(player.slot) && !connections.has(player.connectionId) && !ids.has(player.id), 'Duplicate room player');
+    slots.add(player.slot);
+    connections.add(player.connectionId);
+    ids.add(player.id);
+  }
+}
+
+function validateState(state, roomId) {
+  requireValid(record(state) && state.roomId === roomId && textValue(state.name, 256)
+    && ['private', 'public'].includes(state.visibility) && identifier(state.mapId) && textValue(state.mapTitle, 1024)
+    && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
+    && state.endsAt === 0 && state.untimed === true
+    && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
+    && record(state.nominations) && Object.keys(state.nominations).length === 0
+    && Array.isArray(state.rtv) && state.rtv.length === 0
+    && state.vote === null && state.nextMap === null, 'Invalid room state');
+}
+
+// Private peers cannot enable public-server services or supply ranked tokens.
+export function validateRoomMessage(message, roomId) {
+  requireValid(record(message), 'Invalid room message');
+  switch (message.type) {
+    case 'welcome': {
+      validateState(message.state, roomId);
+      validatePlayer(message.player);
+      validatePlayers(message.players);
+      const own = message.players.find(player => player.connectionId === message.player.connectionId);
+      requireValid(own && Object.keys(message.player).every(key => JSON.stringify(message.player[key]) === JSON.stringify(own[key])),
+        'Invalid own room player');
+      requireValid(Array.isArray(message.maps) && message.maps.length <= 65536, 'Invalid room maps');
+      const maps = new Set();
+      for (const map of message.maps) {
+        requireValid(record(map) && identifier(map.id) && textValue(map.title, 1024)
+          && (map.tier === undefined || uint(map.tier, 8) && map.tier > 0) && !maps.has(map.id), 'Invalid room map');
+        maps.add(map.id);
+      }
+      requireValid(maps.has(message.state.mapId) && timestamp(message.serverTime)
+        && message.spectatorStream === true && message.playtime === false && message.activityTracking === false
+        && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
+      'Invalid room welcome');
+      break;
+    }
+    case 'state':
+      validateState(message.state, roomId);
+      requireValid(timestamp(message.serverTime), 'Invalid room time');
+      break;
+    case 'roster':
+      validatePlayers(message.players);
+      break;
+    case 'chat':
+      requireValid(identifier(message.playerId) && textValue(message.name, 24) && textValue(message.text, 240)
+        && (message.rank === undefined || message.rank === 'Guest')
+        && (message.appearance === undefined || validAppearance(message.appearance)), 'Invalid room chat');
+      break;
+    case 'notice':
+    case 'error':
+      requireValid(textValue(message.text, 4096) && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
+      break;
+    case 'spectator-demand':
+      requireValid(typeof message.active === 'boolean' && uint(message.count, 65535)
+        && (message.count > 0) === message.active, 'Invalid spectator demand');
+      break;
+    case 'context':
+      requireValid(uint(message.epoch) && message.token === null, 'Invalid room context');
+      break;
+    default:
+      throw new Error('Invalid room message type');
+  }
+}
+
+export function createRoomControlReader(validate = null) {
+  let chunks = [], length = 0;
+  const clear = () => { chunks = []; length = 0; };
+  return {
+    clear,
+    read(text) {
+      requireValid(typeof text === 'string' && text.length <= MAX_CONTROL_BYTES
+        && encoder.encode(text).byteLength <= MAX_CONTROL_BYTES, 'Invalid room frame');
+      let message;
+      try { message = JSON.parse(text); } catch {
+        requireValid(!chunks.length && (validate === null || text === 'pong'), 'Invalid room JSON');
+        return text;
+      }
+      if (message?.type === 'room-chunk') {
+        requireValid(typeof message.data === 'string' && message.data.length > 0
+          && typeof message.final === 'boolean' && chunks.length < 32768
+          && length + message.data.length <= MAX_ROOM_MESSAGE_CHARS, 'Invalid room chunk');
+        chunks.push(message.data);
+        length += message.data.length;
+        if (!message.final) return null;
+        text = chunks.join('');
+        clear();
+        message = JSON.parse(text);
+        requireValid(message?.type !== 'room-chunk', 'Nested room chunk');
+      } else requireValid(!chunks.length, 'Interrupted room chunks');
+      validate?.(message);
+      return text;
+    },
+  };
+}
+
+export function validateRoomBinary(buffer) {
+  const view = dataView(buffer, 4, 7804);
+  if (view.getUint8(1) === 4) decodeSpectator(buffer, true);
+  else decodeSnapshot(buffer);
 }

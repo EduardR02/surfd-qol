@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {MAX_CONTROL_BYTES, controlWireSize, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_MESSAGE_CHARS, controlWireSize, createRoomControlReader, validateRoomMessage, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -151,6 +151,49 @@ describe('private room control boundaries', () => {
     const appearance = {title: 'Élite 2!?', titleColor: '#ABC123', nameColor: '#000000', revision: 0};
     expect(normalizeAppearance(appearance)).toEqual(appearance);
     for (const invalid of [{title: 'x'.repeat(25)}, {title: '<b>'}, {title: ' padded'}, {titleColor: 'red'}, {nameColor: undefined}, {revision: -1}, {revision: 0.5}]) expect(normalizeAppearance({...appearance, ...invalid}).title).toBe('');
+  });
+  test('validates all 65536 roster slots through bounded chunk frames', () => {
+    const players = Array.from({length: 65536}, (_, slot) => ({
+      id: 'private-' + slot, connectionId: 'connection-' + slot, slot,
+      name: '名\"\\'.repeat(8), rank: 'Guest', points: 0, guest: false,
+      moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+    }));
+    const message = {type: 'roster', players};
+    const reader = createRoomControlReader(value => validateRoomMessage(value, 'room'));
+    let received = null;
+    for (const frame of encodeControlFrames(message)) {
+      expect(controlWireSize(frame)).toBeLessThanOrEqual(MAX_CONTROL_BYTES);
+      const value = reader.read(frame);
+      if (value !== null) {
+        expect(received).toBeNull();
+        received = JSON.parse(value);
+      }
+    }
+    expect(received).toEqual(message);
+  }, 15000);
+
+  test('bounds unfinished chunk memory and clears it on disposal', () => {
+    const reader = createRoomControlReader();
+    const frame = JSON.stringify({type: 'room-chunk', data: 'x'.repeat(65000), final: false});
+    const count = Math.floor(MAX_ROOM_MESSAGE_CHARS / 65000);
+    for (let index = 0; index < count; index++) expect(reader.read(frame)).toBeNull();
+    expect(() => reader.read(frame)).toThrow();
+    reader.clear();
+    expect(reader.read('pong')).toBe('pong');
+    const tiny = JSON.stringify({type: 'room-chunk', data: 'x', final: false});
+    for (let index = 0; index < 32768; index++) reader.read(tiny);
+    expect(() => reader.read(tiny)).toThrow();
+    reader.clear();
+    expect(reader.read(JSON.stringify({type: 'room-chunk', data: '{"type":"notice","text":"ok"}', final: true})))
+      .toBe('{"type":"notice","text":"ok"}');
+  });
+
+  test('rejects nested chunks and raw over-limit messages', () => {
+    const reader = createRoomControlReader(value => validateRoomMessage(value, 'room'));
+    const nested = {type: 'room-chunk', data: '{"type":"notice","text":"ok"}', final: true};
+    expect(() => reader.read(JSON.stringify({type: 'room-chunk', data: JSON.stringify(nested), final: true}))).toThrow();
+    expect(() => reader.read(' '.repeat(65537))).toThrow();
+    expect(() => reader.read(JSON.stringify({type: 'notice', text: '名'.repeat(22000)}))).toThrow();
   });
 });
 

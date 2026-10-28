@@ -6,6 +6,8 @@ Code: `src/private-rooms/` (`host.js` the room, `protocol.js` the codecs, `socke
 
 The game's client validates binary frames strictly but consumes most JSON fields directly; what follows is what it reads. When the game updates, find the code again by these literals: `"surfd-v1"`, `"/servers/"`, `"Invalid spectator header"`, `"Changing map…"`, `"You were invited to"`.
 
+Guest transport validates complete host messages before delivery: state, catalog tiers, unique player identities/slots, appearance, chat, notices, demand, context and binary frames. Invalid data closes with 4002 without a room-service probe. Chunked messages are validated before any fragment reaches the game, then sent as bounded frames; public-server services and ranked tokens are not accepted from a private host.
+
 ## Ids and joining
 
 Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Public room ids (`eu`, `na`, `eut3`, …) never match.
