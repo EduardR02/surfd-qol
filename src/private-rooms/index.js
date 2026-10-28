@@ -326,7 +326,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const adapter = rooms();
       if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
       const mapId = adapter.currentMap()?.id, maps = adapter.maps();
-      if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a private room.');
+      if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
       setup();
       closeHost();
       visibility = choice;

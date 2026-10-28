@@ -418,7 +418,7 @@ describe('private room WebRTC socket', () => {
     await nextTask();
     const closed = once(client, 'close');
     stop();
-    expect(await closed).toMatchObject({code: 4004, reason: 'Room closed', wasClean: true});
+    expect(await closed).toMatchObject({code: 4004, reason: 'The host closed the private room.', wasClean: true});
     expect(signalling.subscribers).toBe(0);
   });
 

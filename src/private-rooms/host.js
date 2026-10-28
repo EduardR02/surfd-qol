@@ -211,7 +211,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   function addClient(socket, hello, {host = false} = {}) {
     socket.binaryType = 'arraybuffer';
     if (closed) {
-      socket.close(CLOSE.gone, 'Private room closed');
+      socket.close(CLOSE.gone, 'This private room has closed.');
       return;
     }
     if (!hello || typeof hello.name !== 'string' || !hello.name.trim() || typeof hello.guest !== 'boolean') {

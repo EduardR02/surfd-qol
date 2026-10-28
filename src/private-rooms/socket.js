@@ -422,7 +422,7 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig}) {
   });
   return () => {
     unsubscribe();
-    for (const {socket} of peers.values()) socket.close(4004, 'Room closed');
+    for (const {socket} of peers.values()) socket.close(4004, 'The host closed the private room.');
     peers.clear();
   };
 }
