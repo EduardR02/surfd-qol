@@ -364,6 +364,104 @@ describe('optional native private room instrumentation', () => {
     expect(room.__qolChunks).toBeNull();
   });
 
+  test('endless non-final chunks are bounded and a rejected stream releases its fragments', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const room = runtime.room;
+    room.roomId = 'p-aaaaaaaaaaaa';
+    const fragment = JSON.stringify({type: 'room-chunk', data: '', final: false});
+    for (let index = 0; index < 32768; index++) room.receive(fragment);
+    expect(() => room.receive(fragment)).toThrow('Invalid room chunk');
+    expect(room.message).toBeUndefined();
+    room.receive(JSON.stringify({type: 'room-chunk', data: '{"type":"roster","players":[]}', final: true}));
+    expect(room.message).toEqual({type: 'roster', players: []});
+  });
+
+  test('chunk bytes are bounded independently of frame count', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const room = runtime.room;
+    room.roomId = 'p-aaaaaaaaaaaa';
+    const fragment = JSON.stringify({type: 'room-chunk', data: 'x'.repeat(65000), final: false});
+    expect(fragment.length).toBeLessThan(65536);
+    for (let index = 0; index < Math.floor(64 * 1024 * 1024 / 65000); index++) room.receive(fragment);
+    expect(() => room.receive(fragment)).toThrow('Invalid room chunk');
+    room.receive(JSON.stringify({type: 'roster', players: []}));
+    expect(room.message).toEqual({type: 'roster', players: []});
+  });
+
+  test('invalid, nested and interrupted chunks cannot contaminate a later message', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const room = runtime.room;
+    room.roomId = 'p-aaaaaaaaaaaa';
+    const unfinished = JSON.stringify({type: 'room-chunk', data: '{"type":', final: false});
+    const complete = JSON.stringify({type: 'roster', players: []});
+    for (const invalid of [
+      {type: 'room-chunk', data: 1, final: false},
+      {type: 'room-chunk', data: '', final: null},
+      {type: 'roster', players: []},
+    ]) {
+      room.receive(unfinished);
+      expect(() => room.receive(JSON.stringify(invalid))).toThrow('Invalid room chunk');
+      room.receive(complete);
+      expect(room.message).toEqual({type: 'roster', players: []});
+    }
+    expect(() => room.receive(JSON.stringify({type: 'room-chunk', data: unfinished, final: true}))).toThrow('Invalid room chunk');
+    room.receive(complete);
+    expect(room.message).toEqual({type: 'roster', players: []});
+  });
+
+  test('late optional mismatches roll back every room hook without disabling other QoL', async () => {
+    for (const [before, after] of [
+      ['disconnect(){this.watchTarget=null', 'disconnect(){this.other=null;this.watchTarget=null'],
+      ['if(data==="pong")', 'if("pong"===data)'],
+      ['data.length>65536', 'data.length>65535'],
+    ]) {
+      const left = [];
+      const fixture = roomFixture({...privateFixtureHooks(), leave: id => left.push(id)}, roomSource.replace(before, after));
+      expect(fixture.adapter.rooms).toBeUndefined();
+      expect(fixture.warnings).toHaveLength(1);
+      expect(fixture.adapter.getSession()).toBeInstanceOf(fixture.adapter.Session);
+      expect(fixture.adapter.practice.destination().mapId).toBe('map');
+      const token = fixture.adapter.replay.reserve();
+      expect(fixture.adapter.replay.isCurrent(token)).toBe(true);
+      await fixture.runtime.room.open('public');
+      await fixture.runtime.room.measure('public');
+      expect(fixture.requests.some(request => request.url === '/room-ticket')).toBe(true);
+      expect(fixture.requests.some(request => request.url.endsWith('/servers/public/ping'))).toBe(true);
+      fixture.runtime.leave(fixture.runtime.room);
+      expect(left).toEqual([]);
+    }
+  });
+
+  test('community measurements never refresh the directory or call native endpoints', async () => {
+    const refreshes = [], hooks = privateFixtureHooks();
+    hooks.row.id = 'p-aaaaaaaaaaaa';
+    hooks.refreshDirectory = options => refreshes.push(options);
+    const fixture = roomFixture(hooks);
+    expect(await fixture.runtime.room.measure(hooks.row.id)).toBe(0);
+    expect(refreshes).toEqual([]);
+    expect(fixture.requests).toEqual([]);
+    fixture.adapter.rooms.refresh();
+    expect(refreshes).toEqual([{open: false}]);
+    fixture.runtime.browser.view.el.hidden = false;
+    fixture.runtime.browser.view.open(hooks.row.id);
+    expect(refreshes).toEqual([{open: false}, {open: true}]);
+  });
+
+  test('an unknown community ping remains unknown without a native fallback request', async () => {
+    const hooks = privateFixtureHooks();
+    hooks.measure = () => Promise.resolve(null);
+    const fixture = roomFixture(hooks);
+    expect(await fixture.runtime.room.measure('p-aaaaaaaaaaaa')).toBeNull();
+    expect(fixture.requests).toEqual([]);
+  });
+
+  test('an official socket retains the native raw message limit', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    runtime.room.roomId = 'eu';
+    const message = JSON.stringify({type: 'roster', players: [], padding: ' '.repeat(65536)});
+    expect(() => runtime.room.receive(message)).toThrow('Invalid room data');
+  });
+
   test('explicit leave notifies runtime', () => {
     const left=[],hooks={...privateFixtureHooks(),leave:id=>left.push(id)};
     const {runtime}=roomFixture(hooks);
