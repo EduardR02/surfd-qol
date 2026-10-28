@@ -79,9 +79,10 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
   const events = new EventTarget(), timers = clock();
   let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false;
   let response = {ok: true, json: async () => ({rooms: []})};
+  let updates = 0;
   const joined = [], ui = {refreshes: 0, destroyed: false, refresh() { this.refreshes++; }, destroy() { this.destroyed = true; }};
   const adapter = {rooms: {notice: value => notices.push(value),
-    rows: () => rows, update: value => { rows = value; },
+    rows: () => rows, update: value => { updates++; rows = value; },
     maps: () => [{id: 'map', title: 'Map'}, {id: 'other', title: 'Other'}],
     currentMap: () => ({id: 'map'}), displayName: () => displayName,
     appearance: () => ({}), guest: () => !displayName,
@@ -104,6 +105,7 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     fetch: async (url, options) => { requests.push(url); requestOptions.push(options); return response; }
   });
   return {runtime, signals, peers, listeners, notices, requests, requestOptions, events, timers, adapter, joined, ui,
+    updates: () => updates,
     rows: () => rows, open: value => { open = value; }, response: value => { response = value; },
     async host(options) { const promise = runtime.host(options); signals.at(-1).ready(); return promise; },
     async join(id = ROOM) {
@@ -135,6 +137,23 @@ describe('private room runtime', () => {
       expect(f.timers.pending()).toBe(0);
       f.runtime.leave();
       expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('room traffic leaves the hidden browser untouched', async () => {
+    const f = fixture();
+    try {
+      f.runtime.attach();
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM); socket.open();
+      const updates = f.updates(), refreshes = f.ui.refreshes;
+      socket.send('ping'); f.timers.advance(24); socket.message('pong');
+      socket.message(JSON.stringify({type: 'state', state: {mapId: 'other', mapTitle: 'Other', epoch: 2}}));
+      socket.message(JSON.stringify({type: 'roster', players: [{name: 'Visitor', points: 0}]}));
+      expect(f.updates()).toBe(updates);
+      expect(f.ui.refreshes).toBe(refreshes);
+      f.open(true); f.runtime.browserVisibility(true);
+      expect(f.rows().find(value => value.id === ROOM)).toMatchObject({mapId: 'other', players: 1, ping: 24});
     } finally { f.runtime.destroy(); }
   });
 
@@ -375,6 +394,7 @@ describe('private room runtime', () => {
   test('directory preserves known private rooms and rejects unsolicited rows', async () => {
     const f = fixture();
     try {
+      f.open(true);
       const signal = await f.join();
       signal.message('room-info', row(OTHER));
       expect(f.runtime.mergeRooms([]).map(value => value.id)).toEqual([ROOM]);
@@ -451,7 +471,7 @@ describe('private room runtime', () => {
       probe.ready();
       probe.end('no-room');
       expect(await pending).toEqual({code: 4004, reason: 'The host closed the private room.'});
-      expect(f.rows().some(value => value.id === ROOM)).toBe(false);
+      expect(f.runtime.mergeRooms([]).some(value => value.id === ROOM)).toBe(false);
     } finally { f.runtime.destroy(); }
   });
 

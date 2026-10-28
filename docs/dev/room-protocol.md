@@ -21,6 +21,7 @@ Invite discovery waits until the server browser opens and closes its meeting poi
 Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
 
 The room UI observes only the server browser and, in a community room, its room-menu controls. A hidden browser observes only its own visibility attributes; HUD mutations do not refresh room UI.
+Room metadata and pong measurements update the cache during play, not the hidden browser DOM. Opening the browser renders that cache; an explicit join also updates rows before invoking the native join callback.
 
 Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
 

@@ -51,9 +51,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     for (const id of gone) community.delete(id);
     return [...rows.filter(row => !isPrivateRoomId(row.id)), ...community.values()];
   }
-  function updateLobby() {
+  function updateLobby(force = false) {
     const adapter = getAdapter()?.rooms;
-    if (destroyed) return;
+    if (destroyed || (!force && !adapter?.browserOpen?.())) return;
     if (adapter) adapter.update(mergeRooms(adapter.rows()));
     ui?.refresh();
   }
@@ -232,11 +232,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         markGone(id);
         if (!ownHost && !destroyed) getAdapter()?.rooms?.notice?.(event.reason === HOST_LEFT ? HOST_LEFT : CLOSED);
       } else {
-        ui?.refresh();
         if (!ownHost && !destroyed && event.reason && (event.code === 1006 || event.reason === SERVICE)) {
           getAdapter()?.rooms?.notice?.(event.reason);
         }
       }
+      ui?.refresh();
     }, {once: true});
     return socket;
   }
@@ -313,7 +313,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     if (session) session.preview = false;
     await discovery;
     rooms();
-    updateLobby();
+    updateLobby(true);
     await adapter.join(id);
     return id;
   }
@@ -354,6 +354,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       for (const session of guests.values()) if (session.preview && !session.socket) closeGuest(session);
       return;
     }
+    updateLobby();
     if (!pendingInvite) return;
     const invite = pendingInvite;
     pendingInvite = null;
@@ -488,6 +489,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
       for (const [socket, roomId] of sockets) if (id == null || id === roomId) socket.close(1000, '');
       updateLobby();
+      ui?.refresh();
     },
     attach() {
       if (!getAdapter()?.rooms || destroyed || attached) return;
