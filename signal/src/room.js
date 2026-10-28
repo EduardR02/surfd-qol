@@ -22,6 +22,8 @@ export const AUTH_MS = 5000;
 // Guests connected at once. They leave once their direct connection to the
 // host is up, so this bounds joins in flight (and abuse), not a room's size.
 export const MAX_GUESTS = 100;
+// So that one client can't take a room's guest places by itself.
+export const MAX_GUESTS_PER_CLIENT = 20;
 export const MAX_MESSAGE = 16 * 1024;
 export const RATE_MESSAGES = 50;
 export const RATE_WINDOW_MS = 10000;
@@ -94,9 +96,10 @@ const tooLarge = raw => typeof raw === 'string'
 // - wake(at): run alarm() at that time, or never (null);
 // - sockets(): the open sockets it accepted, and peerOf(socket): the peer
 //   accept(socket, peer) attached to one, or attach(socket, peer) since;
-//   refuse(socket, code, reason).
+//   refuse(socket, code, reason);
+// - allowClient(client): whether a client (limits.js) may send one more message.
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, hash = hashKey, now = Date.now}) {
+export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, hash = hashKey, now = Date.now}) {
   let record = null, tomb = null;
   if (stored?.endedAt != null) tomb = stored;
   else record = stored;
@@ -152,21 +155,24 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (tomb && now() >= tomb.endedAt + TOMBSTONE_MS) store(null);
   }
 
-  function connect(socket, {role}) {
+  // client: who the socket's messages count against (limits.js).
+  function connect(socket, {role, client = null}) {
     expire();
     if (role === 'host') {
       // The key comes in the first message, which keeps it out of URLs and
       // so out of logs.
-      accept(socket, {role, conn: randomId(), authBy: now() + AUTH_MS});
+      accept(socket, {role, conn: randomId(), client, authBy: now() + AUTH_MS});
       return wake(due());
     }
     if (!record) return refuse(socket, CLOSE['no-room'], 'no-room');
     const present = guests();
-    if (present.length >= MAX_GUESTS) return refuse(socket, CLOSE['room-full'], 'room-full');
+    if (present.length >= MAX_GUESTS || present.filter(guest => guest.peer.client === client).length >= MAX_GUESTS_PER_CLIENT) {
+      return refuse(socket, CLOSE['room-full'], 'room-full');
+    }
     const taken = new Set([record.host, ...present.map(guest => guest.peer.id)]);
     let id;
     do id = randomId(); while (taken.has(id));
-    accept(socket, {id, role, conn: randomId()});
+    accept(socket, {id, role, conn: randomId(), client});
     post(socket, {type: 'welcome', data: {id, host: record.host}});
     // A host that is away learns of this guest from its welcome on return.
     const current = host();
@@ -196,18 +202,19 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     // The key's holder takes over: a reconnecting host may arrive before
     // the relay notices its old socket is gone. Its peer id stays the same.
     const previous = host(), id = record?.host ?? randomId();
-    attach(socket, {id, role: 'host', conn: peer.conn});
+    attach(socket, {id, role: 'host', conn: peer.conn, client: peer.client});
     store({host: id, conn: peer.conn, key, goneAt: null});
     if (previous) shut(previous.socket, 'replaced');
     post(socket, {type: 'welcome', data: {id, peers: guests().map(guest => guest.peer.id)}});
   }
 
-  // Directed host replies spend the recipient's share, not the host's.
+  // Directed host replies spend the recipient's share, connection and
+  // client both, not the host's.
   function allow(peer, directed = false) {
     const time = now(), key = `${directed ? 'reply' : 'send'}:${peer.conn}`;
     let rate = rates.get(key);
     if (!rate || time - rate.start >= RATE_WINDOW_MS) rates.set(key, rate = {start: time, count: 0});
-    return ++rate.count <= RATE_MESSAGES;
+    return ++rate.count <= RATE_MESSAGES && allowClient(peer.client);
   }
 
   function message(socket, raw) {
@@ -216,24 +223,22 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (peer.authBy != null) return authenticate(socket, peer, raw);
     if (!record || peer.role === 'host' && peer.conn !== record.conn) return;
     if (tooLarge(raw)) return kick(socket, 'too-large');
-    if (peer.role !== 'host' && !allow(peer)) return kick(socket, 'rate-limited');
-    // Heartbeats; the runtime usually answers them without waking the room.
-    if (raw === 'ping') {
-      if (peer.role === 'host' && !allow(peer)) return kick(socket, 'rate-limited');
-      return void socket.send('pong');
-    }
-    const value = envelope(raw);
-    if (!value) return fail(socket, 'bad-message');
-    const {to, type, data} = value;
+    // A ping is a heartbeat, which the runtime usually answers without waking the room.
+    const value = raw === 'ping' ? null : envelope(raw);
     if (peer.role === 'host') {
-      const target = guests().find(guest => guest.peer.id === to);
+      const target = value && guests().find(guest => guest.peer.id === value.to);
       if (target) {
         if (!allow(target.peer, true)) return kick(target.socket, 'rate-limited');
-        return post(target.socket, {from: peer.id, type, data});
+        return post(target.socket, {from: peer.id, type: value.type, data: value.data});
       }
       if (!allow(peer)) return kick(socket, 'rate-limited');
-      return fail(socket, 'no-peer', to ?? null);
+      if (raw === 'ping') return void socket.send('pong');
+      return value ? fail(socket, 'no-peer', value.to ?? null) : fail(socket, 'bad-message');
     }
+    if (!allow(peer)) return kick(socket, 'rate-limited');
+    if (raw === 'ping') return void socket.send('pong');
+    if (!value) return fail(socket, 'bad-message');
+    const {to, type, data} = value;
     if (to != null && to !== record.host) return fail(socket, 'forbidden', to);
     const current = host();
     if (!current) return fail(socket, 'host-away');

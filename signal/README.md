@@ -14,7 +14,7 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 
 ## Protocol
 
-Rooms are reachable only through their invite link; there is no directory of rooms. `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role).
+Rooms are reachable only through their invite link; there is no directory of rooms. `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role), 429 (too many connections from one client).
 
 - The host connects with `?role=host` and, within 5 seconds, sends its key as its first message: `{"type":"auth","key"}`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters. That claims the room, and only that key can reconnect to it. The key never goes in the URL, which could end up in logs.
 - Guests connect with `?role=guest`, and leave once their direct connection to the host is up, so a room's size isn't limited here.
@@ -23,6 +23,8 @@ Rooms are reachable only through their invite link; there is no directory of roo
 - The host hears `{"type":"peer-joined","from"}` and `{"type":"peer-left","from"}` as guests come and go.
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
+
+Limits are per client, an IPv4 address or an IPv6 /64, counted in memory by each Worker isolate: 60 new connections at once, then one more every 30 seconds; 2,000 messages at once, then one more a second. A host's message to a guest counts against that guest and its client, so a guest that asks for too much is the one disconnected.
 
 A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once. An ended room's id stays reserved for 6 hours, so stale invite links never lead into someone else's room: guests get `no-room`, other keys `room-taken`, and only the old key can claim it again, as a new room.
 
@@ -36,9 +38,9 @@ The relay closes sockets with these codes (the reason is the name):
 | 4409 | `replaced` | the host reconnected on another socket |
 | 4410 | `room-closed` | the host left for good; the room is gone |
 | 4413 | `too-large` | a message over 16 KB |
-| 4429 | `rate-limited` | over 50 messages in 10 seconds (the host: 50 per guest present) |
-| 4503 | `room-full` | 100 guests connected at once |
+| 4429 | `rate-limited` | over 50 messages in 10 seconds on one socket (the host: 50 per guest present), or its client over its limit |
+| 4503 | `room-full` | 100 guests connected at once, or 20 from one client |
 
 ## Tests
 
-The relay (`src/room.js`) has no Workers dependencies; `bun test` at the repository root covers it (`tests/signal-room.test.js`) without Wrangler.
+The relay (`src/room.js`) and the limits (`src/limits.js`) have no Workers dependencies; `bun test` at the repository root covers them (`tests/signal-*.test.js`) without Wrangler. After a deploy, `bun signal/check-live.mjs` checks the deployed Worker end to end; pass it another base URL to check that one instead.

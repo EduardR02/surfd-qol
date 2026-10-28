@@ -1,16 +1,21 @@
 // The signalling Worker for Surfd QoL rooms: one Durable Object per room,
 // holding its sockets through the hibernation API so a quiet room costs
 // nothing. The relay is room.js; this file only wires it up.
+import {CONNECTIONS, MESSAGES, clientOf, createLimiter} from './limits.js';
 import {createRoom, parseRequest} from './room.js';
 
 const OPEN = 1;
 const refusal = ({status, error}) => new Response(error, {status});
+// Shared by every room this isolate runs.
+const connections = createLimiter(CONNECTIONS), messages = createLimiter(MESSAGES);
 
 export default {
   fetch(request, env) {
     const asked = parseRequest(request);
     // Bad requests never wake a room.
-    return asked.error ? refusal(asked) : env.ROOMS.get(env.ROOMS.idFromName(asked.roomId)).fetch(request);
+    if (asked.error) return refusal(asked);
+    if (!connections(clientOf(request))) return refusal({status: 429, error: 'Too many connections'});
+    return env.ROOMS.get(env.ROOMS.idFromName(asked.roomId)).fetch(request);
   },
 };
 
@@ -31,6 +36,7 @@ export class Room {
         attach: (socket, peer) => socket.serializeAttachment(peer),
         // A refused socket still opens, so the browser gets the close code and reason.
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
+        allowClient: messages,
       });
     });
   }
@@ -38,7 +44,7 @@ export class Room {
     const asked = parseRequest(request);
     if (asked.error) return refusal(asked);
     const [client, server] = Object.values(new WebSocketPair());
-    this.room.connect(server, {role: asked.role});
+    this.room.connect(server, {role: asked.role, client: clientOf(request)});
     return new Response(null, {status: 101, webSocket: client});
   }
   webSocketMessage(socket, message) { return this.room.message(socket, message); }

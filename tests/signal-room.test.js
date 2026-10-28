@@ -1,6 +1,7 @@
 import {expect, test} from 'bun:test';
-import {AUTH_MS, CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, TOMBSTONE_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
+import {AUTH_MS, CLOSE, GRACE_MS, MAX_GUESTS, MAX_GUESTS_PER_CLIENT, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, TOMBSTONE_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
 import worker from '../signal/src/worker.js';
+import {CONNECTIONS, MESSAGES, createLimiter} from '../signal/src/limits.js';
 
 const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjkmn';
 const HASH = await hashKey(KEY), OTHER_HASH = await hashKey(OTHER);
@@ -9,9 +10,10 @@ const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', met
 
 // A Durable Object's worth of runtime: stored record, alarm, open sockets
 // with their attachments, and a clock. restart() is a wake from hibernation.
-function harness() {
+// Each socket is its own client unless told otherwise.
+function harness({allowClient} = {}) {
   const world = {time: 1000, record: null, alarm: null, open: new Set()};
-  let room;
+  let room, clients = 0;
   const restart = () => room = createRoom({
     record: structuredClone(world.record),
     save: record => { world.record = structuredClone(record); },
@@ -21,6 +23,7 @@ function harness() {
     accept(socket, peer) { socket.peer = structuredClone(peer); world.open.add(socket); },
     attach(socket, peer) { socket.peer = structuredClone(peer); },
     refuse(socket, code, reason) { socket.closed = {code, reason}; },
+    allowClient,
     now: () => world.time,
   });
   restart();
@@ -28,10 +31,10 @@ function harness() {
     send(text) { this.sent.push(text); },
     close(code, reason) { this.closed = {code, reason}; world.open.delete(this); }});
   const harnessed = {world, restart,
-    connect(role) { const s = socket(); room.connect(s, {role}); return s; },
+    connect(role, client = `client-${++clients}`) { const s = socket(); room.connect(s, {role, client}); return s; },
     // A host connects and sends its key first.
-    async claim(key = KEY) {
-      const s = harnessed.connect('host');
+    async claim(key = KEY, client) {
+      const s = harnessed.connect('host', client);
       await harnessed.say(s, {type: 'auth', key});
       return s;
     },
@@ -47,8 +50,8 @@ function harness() {
   return harnessed;
 }
 // A claimed room with n guests, their welcomes and the host's notices read.
-async function claimed(guests = 0) {
-  const room = harness();
+async function claimed(guests = 0, options) {
+  const room = harness(options);
   const host = await room.claim(KEY);
   const hostId = room.heard(host)[0].data.id;
   const list = Array.from({length: guests}, () => room.connect('guest'));
@@ -393,4 +396,73 @@ test('a listing is an ordinary message: the host must name a guest, a guest send
   expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'no-peer', to: null}}]);
   room.say(room.guests[0], {type: 'listing', data});
   expect(room.heard(room.host)).toEqual([{from: room.ids[0], type: 'listing', data}]);
+});
+
+test('one client takes at most MAX_GUESTS_PER_CLIENT guest places in a room', async () => {
+  const room = await claimed();
+  const home = Array.from({length: MAX_GUESTS_PER_CLIENT}, () => room.connect('guest', 'home'));
+  for (const guest of home) expect(guest.closed).toBeNull();
+  expect(room.connect('guest', 'home').closed).toEqual({code: CLOSE['room-full'], reason: 'room-full'});
+  expect(room.connect('guest', 'elsewhere').closed).toBeNull();
+  room.leave(home[0]);
+  expect(room.connect('guest', 'home').closed).toBeNull();
+});
+
+test('messages from one client share a budget across its sockets, and host replies count against their guest', async () => {
+  const time = {now: 0};
+  const allowClient = createLimiter({burst: 10, every: 1000, now: () => time.now});
+  const room = await claimed(0, {allowClient});
+  const [first, second, other] = [room.connect('guest', 'flood'), room.connect('guest', 'flood'), room.connect('guest', 'calm')];
+  const ids = [first, second, other].map(guest => room.heard(guest)[0].data.id);
+  room.heard(room.host);
+  for (let i = 0; i < 5; i++) room.say(first, {type: 'candidate'});
+  for (let i = 0; i < 4; i++) room.say(room.host, {to: ids[1], type: 'candidate'});
+  room.say(second, {type: 'candidate'});
+  expect([first.closed, second.closed]).toEqual([null, null]);
+  room.say(room.host, {to: ids[1], type: 'candidate'});
+  expect(second.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
+  room.say(first, {type: 'candidate'});
+  expect(first.closed.reason).toBe('rate-limited');
+  room.say(other, {type: 'candidate'});
+  room.say(room.host, {to: ids[2], type: 'candidate'});
+  expect(other.closed).toBeNull();
+  expect(room.host.closed).toBeNull();
+  time.now += 1000;
+  expect(room.connect('guest', 'flood').closed).toBeNull();
+});
+
+test('a host and a dozen guests on one home network, joining and reconnecting, stay inside the limits', async () => {
+  const time = {now: 0};
+  const connections = createLimiter({...CONNECTIONS, now: () => time.now});
+  const allowClient = createLimiter({...MESSAGES, now: () => time.now});
+  const room = harness({allowClient});
+  room.world.time = time.now;
+  const join = () => {
+    expect(connections('home')).toBe(true);
+    const guest = room.connect('guest', 'home');
+    const id = room.heard(guest)[0].data.id;
+    // A generous WebRTC exchange: twenty messages each way.
+    for (let i = 0; i < 20; i++) {
+      room.say(guest, {type: 'candidate', data: {i}});
+      room.say(host, {to: id, type: 'candidate', data: {i}});
+    }
+    expect(guest.closed).toBeNull();
+    return guest;
+  };
+  expect(connections('home')).toBe(true);
+  let host = await room.claim(KEY, 'home');
+  for (let round = 0; round < 3; round++) {
+    const guests = Array.from({length: 12}, join);
+    for (const guest of guests) room.leave(guest, 1000);
+    // The host's network blips and it reconnects a few times.
+    for (let i = 0; i < 4; i++) {
+      room.leave(host);
+      expect(connections('home')).toBe(true);
+      host = await room.claim(KEY, 'home');
+      expect(host.closed).toBeNull();
+    }
+    time.now += 60000;
+    room.world.time = time.now;
+  }
+  expect(room.world.record.goneAt).toBeNull();
 });
