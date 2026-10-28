@@ -114,6 +114,7 @@ The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without 
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 Leave, teardown and a newer join cancel pending discovery before the native join callback can run. A native join failure closes its discovery socket.
+Deferred peer-failure callbacks probe the meeting point only while their socket is still the room's active connection. Leave and teardown cannot reopen a relay through an old failure callback.
 
 Public hosting renews its listing every 30 seconds. Upload stats are sampled every 5 seconds only while the host selects its own room in the visible browser; hiding the browser or selecting another room stops sampling. Private hosting without that detail panel, idle attachment and connected guests have no runtime interval. Leave, replacement and startup failure clear host timers.
 

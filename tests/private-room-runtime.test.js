@@ -511,6 +511,22 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('late peer failure cannot reconnect after leave or teardown', async () => {
+    for (const action of ['leave', 'destroy']) {
+      const f = fixture();
+      try {
+        await f.join();
+        const socket = f.runtime.roomSocket(ROOM); socket.open();
+        f.runtime[action]();
+        const pending = socket.options.onFailure();
+        f.timers.advance(15000);
+        await pending;
+        expect(f.signals).toHaveLength(1);
+        expect(f.timers.pending()).toBe(0);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+
   test('a lost peer checks whether the host ended the room', async () => {
     const f = fixture();
     try {

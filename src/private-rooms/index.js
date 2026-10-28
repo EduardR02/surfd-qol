@@ -176,7 +176,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     return session;
   }
   function discover(id) {
-    if (gone.has(id)) return Promise.reject(new Error(CLOSED));
+    if (destroyed || gone.has(id)) return Promise.reject(new Error(CLOSED));
     if (id === hosted?.id) return Promise.resolve(known.get(id));
     const session = guestSession(id);
     if (session.waiting) return session.waiting.promise;
@@ -491,9 +491,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const socket = session.socket = socketFactory({roomId: id,
         peerId: () => session.signal.id, signalling: session.signalling, hello: hello(),
         async onFailure() {
+          if (destroyed || latestSockets.get(id) !== socket) return null;
           // A closing tab can destroy SCTP before its final control frame arrives.
           try {
             await discover(id);
+            if (destroyed || latestSockets.get(id) !== socket) return null;
             const retry = guests.get(id);
             if (retry && !retry.socket) retry.idleTimer = timers.setTimeout(() => closeGuest(retry), 30000);
           } catch {
@@ -509,7 +511,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       cancelJoin(id);
       if (hosted && (id == null || id === hosted.id)) closeHost();
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
-      for (const [socket, roomId] of sockets) if (id == null || id === roomId) socket.close(1000, '');
+      for (const [socket, roomId] of sockets) if (id == null || id === roomId) {
+        sockets.delete(socket);
+        if (latestSockets.get(roomId) === socket) latestSockets.delete(roomId);
+        socket.close(1000, '');
+      }
       updateLobby();
       ui?.refresh();
     },
