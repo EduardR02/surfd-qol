@@ -97,7 +97,10 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const subscribers = new Set(), peers = new Set(), queued = [];
     if (host) {
       signal.on('peer-joined', peer => peers.add(peer));
-      signal.on('peer-left', peer => peers.delete(peer));
+      signal.on('peer-left', peer => {
+        peers.delete(peer);
+        for (const callback of subscribers) callback({roomId: id, peerId: peer, type: 'peer-left'});
+      });
     }
     signal.on('message', message => {
       if (typeof message.from !== 'string' || (!host && message.from !== signal.host)) return;

@@ -201,6 +201,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   const socket = new RoomSocket();
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
+  let negotiationTimer, queuedNegotiations = 0, remoteReceived = false;
   let mapIds = null;
   const incoming = createRoomControlReader(message => {
     validateRoomMessage(message, roomId);
@@ -216,6 +217,8 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     if (disposed) return;
     disposed = true;
     clearTimeout(closeTimer);
+    clearTimeout(negotiationTimer);
+    candidates.length = 0;
     incoming.clear();
     mapIds = null;
     pc?.close();
@@ -262,6 +265,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
       if (!helloReceived) return;
       sendControl({type: 'ready'});
       socket._open();
+      clearTimeout(negotiationTimer);
       onSocket(socket, remoteHello);
     } else if (!helloSent) {
       helloSent = true;
@@ -284,6 +288,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
         case 'ready':
           if (host || !helloSent || socket.readyState !== CONNECTING ||
               control.readyState !== 'open' || poses?.readyState !== 'open') throw new Error('Unexpected room ready');
+          clearTimeout(negotiationTimer);
           socket._open();
           break;
         case 'data':
@@ -378,7 +383,10 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     try { sendControl({type: 'close', code, reason}); } catch (error) { fail(error); }
   };
   const enqueue = callback => {
-    negotiation = negotiation.then(() => { if (!disposed) return callback(); }).catch(fail);
+    if (disposed) return;
+    if (++queuedNegotiations > 256) { invalid(new Error('Too much room negotiation')); return; }
+    negotiation = negotiation.then(() => { if (!disposed) return callback(); }).catch(fail)
+      .finally(() => { queuedNegotiations--; });
   };
   const setRemote = async description => {
     await pc.setRemoteDescription(description);
@@ -386,12 +394,18 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     for (const candidate of candidates.splice(0)) await pc.addIceCandidate(candidate);
   };
   const accept = message => {
+    if (disposed) return;
     if (message.type === 'ice' && message.payload?.from === (host ? 'client' : 'host')) {
       enqueue(async () => {
         if (pc.remoteDescription) await pc.addIceCandidate(message.payload.candidate);
-        else candidates.push(message.payload.candidate);
+        else {
+          if (candidates.length >= 256) { invalid(new Error('Too many ICE candidates')); return; }
+          candidates.push(message.payload.candidate);
+        }
       });
     } else if (host && message.type === 'offer') {
+      if (remoteReceived) { invalid(new Error('Repeated room offer')); return; }
+      remoteReceived = true;
       enqueue(async () => {
         await setRemote(message.payload);
         if (disposed) return;
@@ -399,10 +413,13 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
         if (!disposed) signal('answer', pc.localDescription.toJSON ? pc.localDescription.toJSON() : pc.localDescription);
       });
     } else if (!host && message.type === 'answer') {
+      if (remoteReceived) { invalid(new Error('Repeated room answer')); return; }
+      remoteReceived = true;
       enqueue(() => setRemote(message.payload));
     }
   };
   try {
+    negotiationTimer = setTimeout(() => fail(new Error('Room negotiation timed out')), 15000);
     pc = new RTCPeerConnection(rtcConfig ?? RTC_CONFIG);
     pc.onicecandidate = event => {
       if (disposed || !event.candidate) return;
@@ -443,9 +460,15 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig}) {
   const peers = new Map();
   const unsubscribe = signalling.subscribe(message => {
     if (message.roomId !== roomId || typeof message.peerId !== 'string') return;
+    if (message.type === 'peer-left') {
+      const connection = peers.get(message.peerId);
+      if (connection?.socket.readyState === CONNECTING) connection.socket.close(CLOSE.gone, 'Room connection cancelled');
+      return;
+    }
     if (message.type !== 'offer' && !(message.type === 'ice' && message.payload?.from === 'client')) return;
     let connection = peers.get(message.peerId);
     if (!connection) {
+      if (peers.size >= 65536) return;
       connection = createConnection({roomId, peerId: message.peerId, signalling, rtcConfig, host: true, onSocket,
         onDispose: () => peers.delete(message.peerId)});
       peers.set(message.peerId, connection);

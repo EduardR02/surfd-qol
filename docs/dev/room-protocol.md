@@ -17,6 +17,7 @@ The game joins rooms from its server list. Public rooms come from the meeting po
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
 
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
+Negotiation expires after 15 seconds. A guest leaving the meeting point cancels only its unfinished host-side peer; established RTC connections remain open. Queued negotiation work and pending ICE candidates are limited to 256 each.
 
 Invite discovery waits until the server browser opens and closes its meeting point socket after receiving the preview. Closing the browser cancels unfinished previews and directory fetches; teardown also aborts directory fetches.
 

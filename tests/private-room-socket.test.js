@@ -777,7 +777,53 @@ describe('private room WebRTC socket', () => {
     }
   });
 
+  test('releases ICE-only negotiations on departure and bounds queued candidates', async () => {
+    const connections = fakeRTC(), signalling = signalBus();
+    const stop = listenRoom({roomId: 'a', signalling, onSocket() {}});
+    cleanups.push(stop);
+    signalling.send({roomId: 'a', peerId: 'left', type: 'ice', payload: {from: 'client', candidate: {}}});
+    await nextTask();
+    expect(connections).toHaveLength(1);
+    signalling.send({roomId: 'a', peerId: 'left', type: 'peer-left'});
+    await nextTask();
+    expect(connections[0].connectionState).toBe('closed');
+    for (let index = 0; index < 258; index++) {
+      signalling.send({roomId: 'a', peerId: 'flood', type: 'ice', payload: {from: 'client', candidate: {}}});
+    }
+    await nextTask();
+    expect(connections[1].connectionState).toBe('closed');
+  });
 
+  test('expires unfinished negotiations but clears the deadline once connected', async () => {
+    const originalTimeout = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+    const deadlines = new Set();
+    globalThis.setTimeout = (callback, delay, ...args) => {
+      if (delay === 15000) { deadlines.add(callback); return callback; }
+      return originalTimeout(callback, delay, ...args);
+    };
+    globalThis.clearTimeout = timer => {
+      if (typeof timer === 'function') deadlines.delete(timer);
+      else originalClear(timer);
+    };
+    try {
+      const {client} = rtcPair();
+      await nextTask();
+      expect(deadlines.size).toBe(0);
+      expect(client.readyState).toBe(client.OPEN);
+      const signalling = signalBus(), connections = fakeRTC();
+      const stop = listenRoom({roomId: 'a', signalling, onSocket() {}});
+      cleanups.push(stop);
+      signalling.send({roomId: 'a', peerId: 'waiting', type: 'ice', payload: {from: 'client', candidate: {}}});
+      await nextTask();
+      expect(deadlines.size).toBe(1);
+      for (const expire of [...deadlines]) expire();
+      expect(connections[0].connectionState).toBe('closed');
+      expect(deadlines.size).toBe(0);
+    } finally {
+      globalThis.setTimeout = originalTimeout;
+      globalThis.clearTimeout = originalClear;
+    }
+  });
 });
 
 describe('terminal private room socket', () => {
