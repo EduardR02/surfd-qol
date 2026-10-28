@@ -1,7 +1,9 @@
 // End-to-end check of the deployed signalling Worker, run after each deploy
 // with `bun signal/check-live.mjs`: refusals, a host and a guest swapping
-// messages both ways, and the room closing when the host leaves.
-const BASE = 'surfd-signal.lightconelabs.workers.dev';
+// messages both ways, and the room closing when the host leaves. Give it
+// another address, such as `http://127.0.0.1:8787` for `wrangler dev`, to
+// check that instead.
+const BASE = process.argv[2] ?? 'https://surfd-signal.lightconelabs.workers.dev';
 const ORIGIN = 'https://surfd.net';
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 const pick = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => ALPHABET[b % ALPHABET.length]).join('');
@@ -11,14 +13,16 @@ const results = [];
 const check = (name, ok, detail = '') => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`); };
 
 // HTTP refusals, before any room wakes.
-const status = async (path, headers = {}) => (await fetch(`https://${BASE}${path}`, {headers})).status;
+const status = async (path, headers = {}) => (await fetch(new URL(path, BASE), {headers})).status;
 check('bad room id is 404', await status('/rooms/nope', {Origin: ORIGIN}) === 404);
 check('other origin is 403', await status(`/rooms/${room}?role=guest`, {Origin: 'https://evil.example'}) === 403);
 check('plain GET from surfd.net is 426', await status(`/rooms/${room}?role=guest`, {Origin: ORIGIN}) === 426);
 check('there is no room directory (404)', await status('/rooms', {Origin: ORIGIN}) === 404);
 
-function open(query) {
-  const socket = new WebSocket(`wss://${BASE}/rooms/${room}?${query}`, {headers: {Origin: ORIGIN}});
+// A host passes its key, which it sends as its first message.
+function open(query, hostKey = null) {
+  const socket = new WebSocket(new URL(`/rooms/${room}?${query}`, BASE.replace(/^http/, 'ws')), {headers: {Origin: ORIGIN}});
+  if (hostKey) socket.addEventListener('open', () => socket.send(JSON.stringify({type: 'auth', key: hostKey})));
   const inbox = [], waiters = [];
   socket.addEventListener('message', event => {
     const message = event.data === 'pong' ? 'pong' : JSON.parse(event.data);
@@ -43,12 +47,15 @@ try {
   const early = open('role=guest');
   check('guest before host is refused (4404)', (await early.closed).code === 4404);
 
-  const host = open(`role=host&key=${key}`);
+  const silent = open('role=host');
+  check('a host that never sends its key is closed (4401)', (await silent.closed).code === 4401);
+
+  const host = open('role=host', key);
   await host.opened;
   const hostWelcome = await host.next(type('welcome'));
   check('host gets welcome with its id', typeof hostWelcome.data?.id === 'string', hostWelcome.data?.id);
 
-  const thief = open(`role=host&key=${'f'.repeat(32)}`);
+  const thief = open('role=host', 'f'.repeat(32));
   check('another key cannot take the room (4403)', (await thief.closed).code === 4403);
 
   const guest = open('role=guest');
@@ -78,7 +85,7 @@ try {
 
   const late = open('role=guest');
   check('the room is gone afterwards (4404)', (await late.closed).code === 4404);
-  const squatter = open(`role=host&key=${'f'.repeat(32)}`);
+  const squatter = open('role=host', 'f'.repeat(32));
   check('another key cannot claim the ended room (4403)', (await squatter.closed).code === 4403);
 } catch (error) {
   check('no step timed out', false, error.message);

@@ -1,8 +1,9 @@
 import {expect, test} from 'bun:test';
-import {CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, TOMBSTONE_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
+import {AUTH_MS, CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, TOMBSTONE_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
 import worker from '../signal/src/worker.js';
 
 const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjkmn';
+const HASH = await hashKey(KEY), OTHER_HASH = await hashKey(OTHER);
 const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', method = 'GET'} = {}) =>
   new Request(`https://signal.example${path}`, {method, headers: {...origin ? {Origin: origin} : {}, ...upgrade ? {Upgrade: upgrade} : {}}});
 
@@ -18,6 +19,7 @@ function harness() {
     sockets: () => world.open,
     peerOf: socket => structuredClone(socket.peer),
     accept(socket, peer) { socket.peer = structuredClone(peer); world.open.add(socket); },
+    attach(socket, peer) { socket.peer = structuredClone(peer); },
     refuse(socket, code, reason) { socket.closed = {code, reason}; },
     now: () => world.time,
   });
@@ -25,22 +27,29 @@ function harness() {
   const socket = () => ({sent: [], closed: null,
     send(text) { this.sent.push(text); },
     close(code, reason) { this.closed = {code, reason}; world.open.delete(this); }});
-  return {world, restart,
-    connect(role, key = null) { const s = socket(); room.connect(s, {role, key}); return s; },
+  const harnessed = {world, restart,
+    connect(role) { const s = socket(); room.connect(s, {role}); return s; },
+    // A host connects and sends its key first.
+    async claim(key = KEY) {
+      const s = harnessed.connect('host');
+      await harnessed.say(s, {type: 'auth', key});
+      return s;
+    },
     // The peer's side closed; the runtime reports it.
     leave(s, code = 1006) { world.open.delete(s); room.disconnect(s, code); },
-    say(s, value) { room.message(s, typeof value === 'string' ? value : JSON.stringify(value)); },
-    raw(s, value) { room.message(s, value); },
+    say(s, value) { return room.message(s, typeof value === 'string' ? value : JSON.stringify(value)); },
+    raw(s, value) { return room.message(s, value); },
     // The alarm fires at its time, or now when early.
     alarm(early = false) { if (!early) world.time = Math.max(world.time, world.alarm); room.alarm(); },
     // Everything a socket was sent since last asked.
     heard(s) { const messages = s.sent.map(text => text === 'pong' ? text : JSON.parse(text)); s.sent = []; return messages; },
   };
+  return harnessed;
 }
 // A claimed room with n guests, their welcomes and the host's notices read.
-function claimed(guests = 0) {
+async function claimed(guests = 0) {
   const room = harness();
-  const host = room.connect('host', KEY);
+  const host = await room.claim(KEY);
   const hostId = room.heard(host)[0].data.id;
   const list = Array.from({length: guests}, () => room.connect('guest'));
   const ids = list.map(guest => room.heard(guest)[0].data.id);
@@ -48,21 +57,19 @@ function claimed(guests = 0) {
   return {...room, host, hostId, guests: list, ids};
 }
 
-test('requests: only surfd.net WebSocket upgrades to well-formed rooms, with a role and a host key', () => {
-  expect(parseRequest(request(`/rooms/${ROOM}?role=host&key=${KEY}`))).toEqual({roomId: ROOM, role: 'host', key: KEY});
-  expect(parseRequest(request(`/rooms/${ROOM}?role=guest&key=x`))).toEqual({roomId: ROOM, role: 'guest', key: null});
+test('requests: only surfd.net WebSocket upgrades to well-formed rooms, as a guest or a host', () => {
+  expect(parseRequest(request(`/rooms/${ROOM}?role=host`))).toEqual({roomId: ROOM, role: 'host'});
+  expect(parseRequest(request(`/rooms/${ROOM}?role=guest&key=x`))).toEqual({roomId: ROOM, role: 'guest'});
   for (const id of ['p-abcdefghjkm', 'p-abcdefghjkmnp', 'q-abcdefghjkmn', 'p-ABCDEFGHJKMN', 'p-abcdefghjkm0', 'p-abcdefghjkmo', 'p-abcdefghjkm1', 'p-abcdefghjkml', 'p-abcdefghjkmi', 'p-abcdefghjk%20']) {
     expect(parseRequest(request(`/rooms/${id}?role=guest`)).status).toBe(404);
   }
-  for (const path of ['/', '/rooms/', `/rooms/${ROOM}/x?role=guest`, `/room/${ROOM}?role=guest`]) expect(parseRequest(request(path)).status).toBe(404);
+  for (const path of ['/', '/rooms', '/rooms/', `/rooms/${ROOM}/x?role=guest`, `/room/${ROOM}?role=guest`]) expect(parseRequest(request(path)).status).toBe(404);
   for (const origin of [null, 'https://evil.example', 'http://surfd.net', 'https://www.surfd.net', 'https://surfd.net.evil.example', 'chrome-extension://abc']) {
     expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {origin}))).toEqual({status: 403, error: 'Origin not allowed'});
   }
   expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {upgrade: null})).status).toBe(426);
   expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {method: 'POST'})).status).toBe(426);
-  for (const query of ['', '?role=host', `?role=host&key=${'a'.repeat(31)}`, `?role=host&key=${'A'.repeat(32)}`, `?role=admin&key=${KEY}`]) {
-    expect(parseRequest(request(`/rooms/${ROOM}${query}`)).status).toBe(400);
-  }
+  for (const query of ['', '?role=', `?role=admin&key=${KEY}`]) expect(parseRequest(request(`/rooms/${ROOM}${query}`)).status).toBe(400);
 });
 
 test('the Worker answers bad requests itself and sends good ones to the room named by the id', async () => {
@@ -80,24 +87,68 @@ test('ids and key hashes: unambiguous random ids, hashes that never echo the key
   expect(ids.size).toBe(200);
   for (const id of ids) expect(ROOM_ID.test(`p-${id}`)).toBe(true);
   expect(randomId()).toHaveLength(8);
-  expect(await hashKey(KEY)).toMatch(/^[0-9a-f]{64}$/);
-  expect(await hashKey(KEY)).toBe(await hashKey(KEY));
-  expect(await hashKey(KEY)).not.toBe(await hashKey(OTHER));
+  expect(HASH).toMatch(/^[0-9a-f]{64}$/);
+  expect(await hashKey(KEY)).toBe(HASH);
+  expect(HASH).not.toBe(OTHER_HASH);
 });
 
-test('a host claims an empty room; a second claimant is refused and changes nothing', () => {
+test('a host claims an empty room; a second claimant is refused and changes nothing', async () => {
   const room = harness();
-  const host = room.connect('host', KEY);
+  const host = await room.claim(KEY);
   const [welcome] = room.heard(host);
   expect(welcome).toEqual({type: 'welcome', data: {id: expect.any(String), peers: []}});
-  expect(room.world.record).toEqual({host: welcome.data.id, conn: expect.any(String), key: KEY, goneAt: null});
+  expect(room.world.record).toEqual({host: welcome.data.id, conn: expect.any(String), key: HASH, goneAt: null});
   expect(room.world.alarm).toBeNull();
-  const intruder = room.connect('host', OTHER);
+  const intruder = await room.claim(OTHER);
   expect(intruder.closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
   expect(intruder.sent).toEqual([]);
   expect(host.closed).toBeNull();
   const guest = room.connect('guest');
   expect(room.heard(host)).toEqual([{type: 'peer-joined', from: room.heard(guest)[0].data.id}]);
+});
+
+test('a host must send its key first: anything else is refused and claims nothing', async () => {
+  for (const first of ['ping', 'nope', {type: 'offer', key: KEY}, {type: 'auth'}, {type: 'auth', key: 'a'.repeat(31)},
+    {type: 'auth', key: 'A'.repeat(32)}, {type: 'auth', key: ['a'.repeat(32)]}, {type: 'auth', key: KEY, pad: 'x'.repeat(MAX_MESSAGE)}]) {
+    const room = harness();
+    const host = room.connect('host');
+    expect(host.closed).toBeNull();
+    await room.say(host, first);
+    expect(host.closed).toEqual({code: CLOSE.unauthorized, reason: 'unauthorized'});
+    expect(host.sent).toEqual([]);
+    expect(room.world.record).toBeNull();
+    expect(room.connect('guest').closed.reason).toBe('no-room');
+  }
+  const room = harness();
+  const host = room.connect('host');
+  await room.raw(host, new Uint8Array(32).buffer);
+  expect(host.closed.reason).toBe('unauthorized');
+});
+
+test('a host has AUTH_MS to send its key, and what it sends while the key is checked is dropped', async () => {
+  const room = harness();
+  const silent = room.connect('host');
+  expect(room.world.alarm).toBe(1000 + AUTH_MS);
+  room.world.time += 1000;
+  const late = room.connect('host');
+  expect(room.world.alarm).toBe(1000 + AUTH_MS);
+  room.alarm();
+  expect(silent.closed).toEqual({code: CLOSE.unauthorized, reason: 'unauthorized'});
+  expect(late.closed).toBeNull();
+  expect(room.world.alarm).toBe(2000 + AUTH_MS);
+  room.world.time = 2000 + AUTH_MS;
+  await room.say(late, {type: 'auth', key: KEY});
+  expect(late.closed.reason).toBe('unauthorized');
+  expect(room.world.record).toBeNull();
+
+  const host = room.connect('host');
+  const claiming = room.say(host, {type: 'auth', key: KEY});
+  room.say(host, {type: 'auth', key: OTHER});
+  room.say(host, {to: 'x', type: 'offer'});
+  await claiming;
+  expect(room.heard(host)).toEqual([{type: 'welcome', data: {id: expect.any(String), peers: []}}]);
+  expect(room.world.record.key).toBe(HASH);
+  expect(room.world.alarm).toBeNull();
 });
 
 test('a guest before any host is told there is no room and closed', () => {
@@ -106,10 +157,13 @@ test('a guest before any host is told there is no room and closed', () => {
   expect(guest.closed).toEqual({code: CLOSE['no-room'], reason: 'no-room'});
   expect(room.world.open.size).toBe(0);
   expect(room.world.record).toBeNull();
+  // A host still sending its key has no room yet either.
+  room.connect('host');
+  expect(room.connect('guest').closed.reason).toBe('no-room');
 });
 
-test('the relay passes envelopes both ways and tells the host who joins and leaves', () => {
-  const room = claimed(2);
+test('the relay passes envelopes both ways and tells the host who joins and leaves', async () => {
+  const room = await claimed(2);
   const [first, second] = room.guests;
   expect(room.ids[0]).not.toBe(room.ids[1]);
   room.say(first, {type: 'answer', data: {sdp: 'v=0'}});
@@ -129,8 +183,8 @@ test('the relay passes envelopes both ways and tells the host who joins and leav
   expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'no-peer', to: room.ids[0]}}]);
 });
 
-test('guests never reach each other, and nobody can send what only the relay sends', () => {
-  const room = claimed(2);
+test('guests never reach each other, and nobody can send what only the relay sends', async () => {
+  const room = await claimed(2);
   const [first, second] = room.guests;
   room.say(first, {to: room.ids[1], type: 'offer', data: 'x'});
   expect(room.heard(first)).toEqual([{type: 'error', data: {code: 'forbidden', to: room.ids[1]}}]);
@@ -150,8 +204,8 @@ test('guests never reach each other, and nobody can send what only the relay sen
   expect(room.heard(first)).toEqual(['pong']);
 });
 
-test('a dropped host keeps the room for its key: guests stay, an impostor is refused, the host returns', () => {
-  const room = claimed(1);
+test('a dropped host keeps the room for its key: guests stay, an impostor is refused, the host returns', async () => {
+  const room = await claimed(1);
   const [guest] = room.guests;
   room.leave(room.host, 1006);
   expect(room.world.record.goneAt).toBe(1000);
@@ -163,8 +217,8 @@ test('a dropped host keeps the room for its key: guests stay, an impostor is ref
   const late = room.connect('guest');
   const lateId = room.heard(late)[0].data.id;
   room.world.time += GRACE_MS - 1;
-  expect(room.connect('host', OTHER).closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
-  const back = room.connect('host', KEY);
+  expect((await room.claim(OTHER)).closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
+  const back = await room.claim(KEY);
   expect(room.heard(back)).toEqual([{type: 'welcome', data: {id: room.hostId, peers: [room.ids[0], lateId]}}]);
   expect(room.world.record.goneAt).toBeNull();
   expect(room.world.alarm).toBeNull();
@@ -174,10 +228,14 @@ test('a dropped host keeps the room for its key: guests stay, an impostor is ref
   expect(room.heard(late)).toEqual([{from: room.hostId, type: 'offer'}]);
 });
 
-test('a host reconnecting before its old socket is noticed replaces it', () => {
-  const room = claimed(1);
+test('a host reconnecting before its old socket is noticed replaces it', async () => {
+  const room = await claimed(1);
   const [guest] = room.guests;
-  const back = room.connect('host', KEY);
+  // Until the new socket proves its key, the old one is still the host.
+  const back = room.connect('host');
+  room.say(guest, {type: 'answer'});
+  expect(room.heard(room.host)).toEqual([{from: room.ids[0], type: 'answer'}]);
+  await room.say(back, {type: 'auth', key: KEY});
   expect(room.host.closed).toEqual({code: CLOSE.replaced, reason: 'replaced'});
   expect(room.heard(back)[0].data).toEqual({id: room.hostId, peers: [room.ids[0]]});
   // The old socket's close arrives later and must not mark the host away.
@@ -189,47 +247,47 @@ test('a host reconnecting before its old socket is noticed replaces it', () => {
   expect(room.heard(back)).toEqual([{from: room.ids[0], type: 'answer'}]);
 });
 
-test('a host that says goodbye ends the room at once', () => {
-  const room = claimed(2);
+test('a host that says goodbye ends the room at once', async () => {
+  const room = await claimed(2);
   room.leave(room.host, 1000);
   for (const guest of room.guests) expect(guest.closed).toEqual({code: CLOSE['room-closed'], reason: 'room-closed'});
-  expect(room.world.record).toEqual({key: KEY, endedAt: 1000});
+  expect(room.world.record).toEqual({key: HASH, endedAt: 1000});
   expect(room.connect('guest').closed.reason).toBe('no-room');
 });
 
-test('the id of an ended room stays unclaimable by other keys for six hours, then nothing of it is stored', () => {
-  const room = claimed(1);
+test('the id of an ended room stays unclaimable by other keys for six hours, then nothing of it is stored', async () => {
+  const room = await claimed(1);
   room.leave(room.host, 1000);
   expect(room.world.alarm).toBe(1000 + TOMBSTONE_MS);
   room.world.time += TOMBSTONE_MS - 1;
   room.restart();
-  expect(room.connect('host', OTHER).closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
+  expect((await room.claim(OTHER)).closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
   expect(room.connect('guest').closed.reason).toBe('no-room');
   room.alarm();
   expect(room.world.record).toBeNull();
   expect(room.world.alarm).toBeNull();
-  const next = room.connect('host', OTHER);
+  const next = await room.claim(OTHER);
   expect(room.heard(next)[0].data).toEqual({id: expect.any(String), peers: []});
-  expect(room.world.record.key).toBe(OTHER);
+  expect(room.world.record.key).toBe(OTHER_HASH);
 });
 
-test('a room evaporates once its host has been gone past the grace period', () => {
-  const room = claimed(2);
+test('a room evaporates once its host has been gone past the grace period', async () => {
+  const room = await claimed(2);
   room.leave(room.host);
   room.alarm();
   for (const guest of room.guests) expect(guest.closed).toEqual({code: CLOSE['room-closed'], reason: 'room-closed'});
-  expect(room.world.record).toEqual({key: KEY, endedAt: 1000 + GRACE_MS});
+  expect(room.world.record).toEqual({key: HASH, endedAt: 1000 + GRACE_MS});
   expect(room.connect('guest').closed.reason).toBe('no-room');
-  expect(room.connect('host', OTHER).closed.reason).toBe('room-taken');
+  expect((await room.claim(OTHER)).closed.reason).toBe('room-taken');
   // Its host, returning late, gets a new, empty room under the same id.
-  const back = room.connect('host', KEY);
+  const back = await room.claim(KEY);
   expect(room.heard(back)[0].data).toEqual({id: expect.any(String), peers: []});
-  expect(room.world.record).toEqual({host: expect.any(String), conn: expect.any(String), key: KEY, goneAt: null});
+  expect(room.world.record).toEqual({host: expect.any(String), conn: expect.any(String), key: HASH, goneAt: null});
   expect(room.world.alarm).toBeNull();
 });
 
-test('expiry does not wait for a late alarm, and an early alarm is set again', () => {
-  const room = claimed(1);
+test('expiry does not wait for a late alarm, and an early alarm is set again', async () => {
+  const room = await claimed(1);
   room.leave(room.host);
   room.world.time += GRACE_MS - 5;
   room.world.alarm = null;
@@ -238,13 +296,13 @@ test('expiry does not wait for a late alarm, and an early alarm is set again', (
   expect(room.world.alarm).toBe(1000 + GRACE_MS);
   room.world.time = 1000 + GRACE_MS;
   // No alarm ran, but the room is over when the old host comes back.
-  const back = room.connect('host', KEY);
+  const back = await room.claim(KEY);
   expect(room.guests[0].closed.reason).toBe('room-closed');
   expect(room.heard(back)[0].data.id).not.toBe(room.hostId);
 });
 
-test('a room holds MAX_GUESTS guests on the meeting point at once and refuses more until one leaves', () => {
-  const room = claimed(MAX_GUESTS);
+test('a room holds MAX_GUESTS guests on the meeting point at once and refuses more until one leaves', async () => {
+  const room = await claimed(MAX_GUESTS);
   const extra = room.connect('guest');
   expect(extra.closed).toEqual({code: CLOSE['room-full'], reason: 'room-full'});
   expect(room.heard(room.host)).toEqual([]);
@@ -257,8 +315,8 @@ test('a room holds MAX_GUESTS guests on the meeting point at once and refuses mo
   expect(room.connect('guest').closed.reason).toBe('room-full');
 });
 
-test('messages over 16 KB close the sender, counting UTF-8 bytes', () => {
-  const room = claimed(1);
+test('messages over 16 KB close the sender, counting UTF-8 bytes', async () => {
+  const room = await claimed(1);
   const [guest] = room.guests;
   const largest = JSON.stringify({type: 'offer', data: 'x'.repeat(MAX_MESSAGE - 26)});
   expect(largest).toHaveLength(MAX_MESSAGE);
@@ -273,8 +331,8 @@ test('messages over 16 KB close the sender, counting UTF-8 bytes', () => {
   expect(room.world.record.goneAt).toBe(room.world.time);
 });
 
-test('relay reply floods disconnect only the targeted guest', () => {
-  const room = claimed(2);
+test('relay reply floods disconnect only the targeted guest', async () => {
+  const room = await claimed(2);
   const [attacker, other] = room.guests;
   const send = room.host.send.bind(room.host);
   room.host.send = text => {
@@ -293,8 +351,8 @@ test('relay reply floods disconnect only the targeted guest', () => {
   expect(room.world.record.goneAt).toBeNull();
 });
 
-test('guest message budgets reset after ten seconds', () => {
-  const room = claimed(2);
+test('guest message budgets reset after ten seconds', async () => {
+  const room = await claimed(2);
   const [guest, other] = room.guests;
   for (let i = 0; i < RATE_MESSAGES; i++) room.say(guest, {type: 'candidate'});
   room.say(guest, {type: 'candidate'});
@@ -306,8 +364,8 @@ test('guest message budgets reset after ten seconds', () => {
   expect(room.host.closed).toBeNull();
 });
 
-test('a room woken from hibernation carries on from its record and sockets', () => {
-  const room = claimed(1);
+test('a room woken from hibernation carries on from its record and sockets', async () => {
+  const room = await claimed(1);
   const [guest] = room.guests;
   room.restart();
   room.say(guest, {type: 'answer'});
@@ -316,18 +374,20 @@ test('a room woken from hibernation carries on from its record and sockets', () 
   expect(room.heard(guest)).toEqual([{from: room.hostId, type: 'offer'}]);
   room.leave(room.host);
   room.restart();
-  expect(room.connect('host', OTHER).closed.reason).toBe('room-taken');
-  const back = room.connect('host', KEY);
+  expect((await room.claim(OTHER)).closed.reason).toBe('room-taken');
+  const back = room.connect('host');
+  room.restart();
+  await room.say(back, {type: 'auth', key: KEY});
   expect(room.heard(back)[0].data).toEqual({id: room.hostId, peers: [room.ids[0]]});
   room.leave(back);
   room.restart();
   room.alarm();
   expect(guest.closed.reason).toBe('room-closed');
-  expect(room.world.record).toEqual({key: KEY, endedAt: room.world.time});
+  expect(room.world.record).toEqual({key: HASH, endedAt: room.world.time});
 });
 
-test('a listing is an ordinary message: the host must name a guest, a guest sends it to the host', () => {
-  const room = claimed(1);
+test('a listing is an ordinary message: the host must name a guest, a guest sends it to the host', async () => {
+  const room = await claimed(1);
   const data = {name: 'Room', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3};
   room.say(room.host, {type: 'listing', data});
   expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'no-peer', to: null}}]);

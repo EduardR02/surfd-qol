@@ -18,7 +18,7 @@ export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 const HOST_KEY = /^[0-9a-f]{32,128}$/;
 export const GRACE_MS = 30000;
 const MAX_MESSAGE = 16 * 1024;
-export const REASONS = {4403: 'room-taken', 4404: 'no-room', 4409: 'replaced', 4410: 'room-closed', 4413: 'too-large', 4429: 'rate-limited', 4503: 'room-full'};
+export const REASONS = {4401: 'unauthorized', 4403: 'room-taken', 4404: 'no-room', 4409: 'replaced', 4410: 'room-closed', 4413: 'too-large', 4429: 'rate-limited', 4503: 'room-full'};
 // A heartbeat every PING_MS. A socket that hears nothing for a whole
 // interval is dead, which also bounds how long a connection attempt takes.
 const PING_MS = 10000;
@@ -53,7 +53,6 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
   const address = new URL(`/rooms/${roomId}`, url);
   address.protocol = address.protocol.replace(/^http/, 'ws');
   address.searchParams.set('role', role);
-  if (role === 'host') address.searchParams.set('key', key);
   const handlers = new Map();
   // pending cancels the live socket's heartbeat or the next reconnect.
   let socket = null, pending = null, state = 'connecting', id = null, host = null, peers = new Set(), attempt = 0;
@@ -70,6 +69,8 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
       pending = timer(beat, PING_MS);
     };
     pending = timer(beat, PING_MS);
+    // A host's key goes in its first message, never the URL, which could end up in logs.
+    if (role === 'host') ws.onopen = () => { if (ws === socket) ws.send(JSON.stringify({type: 'auth', key})); };
     ws.onmessage = event => { if (ws === socket) { heard = true; receive(event.data); } };
     ws.onclose = event => { if (ws === socket) drop(event.code); };
   }
@@ -81,7 +82,7 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
     const ws = socket;
     socket = null;
     if (ws) {
-      ws.onmessage = ws.onclose = null;
+      ws.onopen = ws.onmessage = ws.onclose = null;
       try { ws.close(code); } catch { /* already closed */ }
     }
   }

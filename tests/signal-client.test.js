@@ -1,8 +1,8 @@
 import {expect, test} from 'bun:test';
 import {GRACE_MS, REASONS, ROOM_ID, connectSignal, newHostKey, newRoomId} from '../src/private-rooms/signal-client.js';
-import {createRoom, hashKey, parseRequest} from '../signal/src/room.js';
+import {createRoom, parseRequest} from '../signal/src/room.js';
 
-const ROOM = 'p-abcdefghjkmn', KEY = 'a'.repeat(32);
+const ROOM = 'p-abcdefghjkmn', KEY = 'a'.repeat(32), AUTH = JSON.stringify({type: 'auth', key: KEY});
 const EVENTS = ['ready', 'message', 'peer-joined', 'peer-left', 'reconnecting', 'error', 'closed'];
 
 // A socket the test plays the relay for.
@@ -19,6 +19,7 @@ class FakeSocket {
   close(code) { this.closedWith = code; this.readyState = 3; }
   accept(welcome) {
     this.readyState = 1;
+    this.onopen?.();
     if (welcome) this.deliver({type: 'welcome', data: welcome});
   }
   deliver(value) { this.onmessage?.({data: typeof value === 'string' ? value : JSON.stringify(value)}); }
@@ -84,9 +85,12 @@ test('bad arguments throw before anything connects', () => {
 test('a host claims with its key, hears guests come and go, and sends to one', () => {
   const room = rig();
   const client = room.connect({role: 'host', key: KEY});
-  expect(room.socket.url).toBe(`wss://signal.example/rooms/${ROOM}?role=host&key=${KEY}`);
+  expect(room.socket.url).toBe(`wss://signal.example/rooms/${ROOM}?role=host`);
   expect(client.send('g1', 'offer', {})).toBe(false);
-  room.socket.accept({id: 'h1', peers: []});
+  // The key is the first message, never part of the URL.
+  room.socket.accept();
+  expect(room.socket.sent).toEqual([AUTH]);
+  room.socket.deliver({type: 'welcome', data: {id: 'h1', peers: []}});
   expect(client.state).toBe('open');
   room.socket.deliver({type: 'peer-joined', from: 'g1'});
   room.socket.deliver({from: 'g1', type: 'answer', data: {sdp: 'a'}});
@@ -104,7 +108,7 @@ test('a host claims with its key, hears guests come and go, and sends to one', (
   expect(room.socket.last).toEqual({to: 'g1', type: 'offer', data: {sdp: 'o'}});
   // The relay would close the socket for this, so it never leaves.
   expect(() => client.send('g1', 'offer', 'x'.repeat(16 * 1024))).toThrow(RangeError);
-  expect(room.socket.sent).toHaveLength(1);
+  expect(room.socket.sent).toHaveLength(2);
 });
 
 test('a guest talks only to the host, which is implied', () => {
@@ -112,6 +116,7 @@ test('a guest talks only to the host, which is implied', () => {
   const client = room.connect({role: 'guest', url: 'wss://signal.example/'});
   expect(room.socket.url).toBe(`wss://signal.example/rooms/${ROOM}?role=guest`);
   room.socket.accept({id: 'g1', host: 'h1'});
+  expect(room.socket.sent).toEqual([]);
   room.socket.deliver({type: 'peer-joined', from: 'g2'});
   room.socket.deliver({from: 'h1', type: 'offer', data: {sdp: 'o'}});
   expect(room.heard()).toEqual([['ready', {id: 'g1', host: 'h1'}], ['message', {from: 'h1', type: 'offer', data: {sdp: 'o'}}]]);
@@ -189,7 +194,8 @@ test('a host that drops reconnects with its key and catches up on its guests', (
   expect(room.heard()).toEqual([['ready', {id: 'h1', host: 'h1'}], ['peer-left', 'g1'], ['peer-joined', 'g3']]);
   expect(client.send('g3', 'offer')).toBe(true);
   expect(back.last).toEqual({to: 'g3', type: 'offer', data: null});
-  expect(first.sent).toEqual([]);
+  expect(back.sent[0]).toBe(AUTH);
+  expect(first.sent).toEqual([AUTH]);
   // A later drop starts again from the shortest wait.
   back.drop(1006);
   room.advance(250);
@@ -215,10 +221,10 @@ test('heartbeats keep the socket honest: one gone quiet is replaced without endi
   const first = room.socket;
   first.accept({id: 'h1', peers: []});
   room.advance(10000);
-  expect(first.sent).toEqual(['ping']);
+  expect(first.sent).toEqual([AUTH, 'ping']);
   first.deliver('pong');
   room.advance(10000);
-  expect(first.sent).toEqual(['ping', 'ping']);
+  expect(first.sent).toEqual([AUTH, 'ping', 'ping']);
   room.advance(10000);
   // 4000, not 1000: the relay keeps the room for the reconnect.
   expect(first.closedWith).toBe(4000);
@@ -261,6 +267,7 @@ function relay() {
   const open = new Set();
   const room = createRoom({save() {}, wake() {}, sockets: () => open, peerOf: server => server.peer,
     accept(server, peer) { server.peer = peer; open.add(server); },
+    attach(server, peer) { server.peer = peer; },
     refuse(server, code, reason) { server.close(code, reason); }});
   class BridgeSocket {
     readyState = 0;
@@ -273,9 +280,11 @@ function relay() {
         close: (code, reason) => { open.delete(this.server); this.readyState = 3; queueMicrotask(() => this.onclose?.({code, reason})); },
       };
       FakeSocket.made.push(this);
-      queueMicrotask(async () => {
+      queueMicrotask(() => {
+        room.connect(this.server, {role: asked.role});
+        if (this.readyState !== 0) return;
         this.readyState = 1;
-        room.connect(this.server, {role: asked.role, key: asked.key && await hashKey(asked.key)});
+        this.onopen?.();
       });
     }
     send(text) { room.message(this.server, text); }

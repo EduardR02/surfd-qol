@@ -1,7 +1,7 @@
 // The signalling Worker for Surfd QoL rooms: one Durable Object per room,
 // holding its sockets through the hibernation API so a quiet room costs
 // nothing. The relay is room.js; this file only wires it up.
-import {createRoom, hashKey, parseRequest} from './room.js';
+import {createRoom, parseRequest} from './room.js';
 
 const OPEN = 1;
 const refusal = ({status, error}) => new Response(error, {status});
@@ -28,21 +28,20 @@ export class Room {
         sockets: () => ctx.getWebSockets().filter(socket => socket.readyState === OPEN),
         peerOf: socket => socket.deserializeAttachment(),
         accept(socket, peer) { ctx.acceptWebSocket(socket); socket.serializeAttachment(peer); },
+        attach: (socket, peer) => socket.serializeAttachment(peer),
         // A refused socket still opens, so the browser gets the close code and reason.
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
       });
     });
   }
-  async fetch(request) {
+  fetch(request) {
     const asked = parseRequest(request);
     if (asked.error) return refusal(asked);
-    // Hashed before the room is touched, so nothing runs between its checks and a claim.
-    const key = asked.key && await hashKey(asked.key);
     const [client, server] = Object.values(new WebSocketPair());
-    this.room.connect(server, {role: asked.role, key});
+    this.room.connect(server, {role: asked.role});
     return new Response(null, {status: 101, webSocket: client});
   }
-  webSocketMessage(socket, message) { this.room.message(socket, message); }
+  webSocketMessage(socket, message) { return this.room.message(socket, message); }
   webSocketClose(socket, code) {
     this.room.disconnect(socket, code);
     try { socket.close(1000); } catch { /* already closed */ }

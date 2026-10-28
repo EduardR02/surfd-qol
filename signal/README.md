@@ -14,9 +14,9 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 
 ## Protocol
 
-Rooms are reachable only through their invite link; there is no directory of rooms. `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
+Rooms are reachable only through their invite link; there is no directory of rooms. `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role).
 
-- The host connects with `?role=host&key=<key>`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters, and claims the room. Only that key can reconnect to it.
+- The host connects with `?role=host` and, within 5 seconds, sends its key as its first message: `{"type":"auth","key"}`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters. That claims the room, and only that key can reconnect to it. The key never goes in the URL, which could end up in logs.
 - Guests connect with `?role=guest`, and leave once their direct connection to the host is up, so a room's size isn't limited here.
 - On joining, the relay sends `{"type":"welcome","data":{"id","peers":[guest ids]}}` to the host and `{"type":"welcome","data":{"id","host"}}` to a guest.
 - The host sends `{"to","type","data"}` to a guest and a guest `{"type","data"}` (or with `"to"` set to the host's id) to the host; each arrives as `{"from","type","data"}`. Guests never reach each other. `type` is up to 32 letters, digits, `_` or `-`; the relay never reads `data`.
@@ -30,6 +30,7 @@ The relay closes sockets with these codes (the reason is the name):
 
 | Code | Reason | When |
 | --- | --- | --- |
+| 4401 | `unauthorized` | a host whose first message isn't its key, or that sent none within 5 seconds |
 | 4403 | `room-taken` | a host without the room's key |
 | 4404 | `no-room` | a guest before any host, or after the room ended |
 | 4409 | `replaced` | the host reconnected on another socket |

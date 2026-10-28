@@ -17,6 +17,8 @@ export const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 // At least 128 bits, as lowercase hex.
 export const HOST_KEY = /^[0-9a-f]{32,128}$/;
+// How long a host has to send its key, its first message, after connecting.
+export const AUTH_MS = 5000;
 // Guests connected at once. They leave once their direct connection to the
 // host is up, so this bounds joins in flight (and abuse), not a room's size.
 export const MAX_GUESTS = 100;
@@ -30,6 +32,7 @@ export const GRACE_MS = 30000;
 export const TOMBSTONE_MS = 6 * 60 * 60 * 1000;
 // The close codes (and reasons) the relay ends a socket with.
 export const CLOSE = {
+  unauthorized: 4401, // a host whose first message wasn't its key, in time
   'room-taken': 4403, // a host without the room's key
   'no-room': 4404, // a guest before any host, or after the room ended
   replaced: 4409, // the host reconnected on another socket
@@ -60,7 +63,7 @@ export async function hashKey(key) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// What a request asks for, {roomId, role, key}, or why it is refused,
+// What a request asks for, {roomId, role}, or why it is refused,
 // {status, error}. The Worker checks before any room wakes, the room again.
 export function parseRequest(request) {
   const url = new URL(request.url);
@@ -68,10 +71,8 @@ export function parseRequest(request) {
   if (!roomId || !ROOM_ID.test(roomId)) return {status: 404, error: 'No such room'};
   if (request.headers.get('Origin') !== ORIGIN) return {status: 403, error: 'Origin not allowed'};
   if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return {status: 426, error: 'Expected a WebSocket'};
-  const role = url.searchParams.get('role'), key = url.searchParams.get('key');
-  if (role === 'guest') return {roomId, role, key: null};
-  if (role === 'host' && HOST_KEY.test(key ?? '')) return {roomId, role, key};
-  return {status: 400, error: 'Expected role=guest, or role=host with a key'};
+  const role = url.searchParams.get('role');
+  return role === 'guest' || role === 'host' ? {roomId, role} : {status: 400, error: 'Expected role=guest or role=host'};
 }
 
 // An envelope worth relaying, or null.
@@ -92,15 +93,16 @@ const tooLarge = raw => typeof raw === 'string'
 //   {key, endedAt} for TOMBSTONE_MS once it ends, else null;
 // - wake(at): run alarm() at that time, or never (null);
 // - sockets(): the open sockets it accepted, and peerOf(socket): the peer
-//   accept(socket, peer) attached to one; refuse(socket, code, reason).
+//   accept(socket, peer) attached to one, or attach(socket, peer) since;
+//   refuse(socket, code, reason).
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, refuse, now = Date.now}) {
+export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, hash = hashKey, now = Date.now}) {
   let record = null, tomb = null;
   if (stored?.endedAt != null) tomb = stored;
   else record = stored;
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
-  const rates = new Map(), departed = new Set();
+  const rates = new Map(), departed = new Set(), hashing = new Set();
   const post = (socket, message) => { try { socket.send(JSON.stringify(message)); } catch { /* closing */ } };
   const shut = (socket, reason) => { try { socket.close(CLOSE[reason], reason); } catch { /* closed */ } };
   const fail = (socket, code, to) => post(socket, {type: 'error', data: to === undefined ? {code} : {code, to}});
@@ -118,10 +120,21 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   }
   const guests = () => members().filter(member => member.peer.role === 'guest');
   const host = () => members().find(member => member.peer.role === 'host');
-  // When alarm() has work: a host's grace period or a tombstone running out.
+  // Host sockets that have yet to send their key.
+  function unproven() {
+    const list = [];
+    for (const socket of sockets()) {
+      const peer = peerOf(socket);
+      if (peer?.authBy != null && !departed.has(peer.conn)) list.push({socket, peer});
+    }
+    return list;
+  }
+  // When alarm() has work: a host's grace period or a tombstone running out,
+  // or a new host's time to send its key.
   function due() {
-    if (record) return record.goneAt == null ? null : record.goneAt + GRACE_MS;
-    return tomb && tomb.endedAt + TOMBSTONE_MS;
+    let at = record ? record.goneAt == null ? null : record.goneAt + GRACE_MS : tomb && tomb.endedAt + TOMBSTONE_MS;
+    for (const {peer} of unproven()) at = Math.min(at ?? Infinity, peer.authBy);
+    return at;
   }
   function store(next, ended = null) {
     record = next;
@@ -139,20 +152,13 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (tomb && now() >= tomb.endedAt + TOMBSTONE_MS) store(null);
   }
 
-  function connect(socket, {role, key}) {
+  function connect(socket, {role}) {
     expire();
     if (role === 'host') {
-      // An ended room's key may claim its id again, as a new room: that is
-      // its host coming back after the grace period.
-      const holder = record ?? tomb;
-      if (holder && holder.key !== key) return refuse(socket, CLOSE['room-taken'], 'room-taken');
-      // The key's holder takes over: a reconnecting host may arrive before
-      // the relay notices its old socket is gone. Its peer id stays the same.
-      const previous = host();
-      store({host: record?.host ?? randomId(), conn: randomId(), key, goneAt: null});
-      if (previous) shut(previous.socket, 'replaced');
-      accept(socket, {id: record.host, role, conn: record.conn});
-      return post(socket, {type: 'welcome', data: {id: record.host, peers: guests().map(guest => guest.peer.id)}});
+      // The key comes in the first message, which keeps it out of URLs and
+      // so out of logs.
+      accept(socket, {role, conn: randomId(), authBy: now() + AUTH_MS});
+      return wake(due());
     }
     if (!record) return refuse(socket, CLOSE['no-room'], 'no-room');
     const present = guests();
@@ -167,6 +173,35 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (current) post(current.socket, {type: 'peer-joined', from: id});
   }
 
+  // A new host's first message, {"type":"auth","key"}. Whatever else the
+  // socket sends while its key is hashed is dropped.
+  function authenticate(socket, peer, raw) {
+    let value = null;
+    if (!tooLarge(raw)) try { value = JSON.parse(raw); } catch { /* refused below */ }
+    if (now() >= peer.authBy || value?.type !== 'auth' || typeof value.key !== 'string' || !HOST_KEY.test(value.key)) {
+      return kick(socket, 'unauthorized');
+    }
+    hashing.add(peer.conn);
+    return hash(value.key).then(key => {
+      hashing.delete(peer.conn);
+      if (!departed.has(peer.conn)) claim(socket, peer, key);
+    });
+  }
+  function claim(socket, peer, key) {
+    expire();
+    // An ended room's key may claim its id again, as a new room: that is
+    // its host coming back after the grace period.
+    const holder = record ?? tomb;
+    if (holder && holder.key !== key) return kick(socket, 'room-taken');
+    // The key's holder takes over: a reconnecting host may arrive before
+    // the relay notices its old socket is gone. Its peer id stays the same.
+    const previous = host(), id = record?.host ?? randomId();
+    attach(socket, {id, role: 'host', conn: peer.conn});
+    store({host: id, conn: peer.conn, key, goneAt: null});
+    if (previous) shut(previous.socket, 'replaced');
+    post(socket, {type: 'welcome', data: {id, peers: guests().map(guest => guest.peer.id)}});
+  }
+
   // Directed host replies spend the recipient's share, not the host's.
   function allow(peer, directed = false) {
     const time = now(), key = `${directed ? 'reply' : 'send'}:${peer.conn}`;
@@ -177,7 +212,9 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
 
   function message(socket, raw) {
     const peer = peerOf(socket);
-    if (!record || !peer || departed.has(peer.conn) || peer.role === 'host' && peer.conn !== record.conn) return;
+    if (!peer || departed.has(peer.conn) || hashing.has(peer.conn)) return;
+    if (peer.authBy != null) return authenticate(socket, peer, raw);
+    if (!record || peer.role === 'host' && peer.conn !== record.conn) return;
     if (tooLarge(raw)) return kick(socket, 'too-large');
     if (peer.role !== 'host' && !allow(peer)) return kick(socket, 'rate-limited');
     // Heartbeats; the runtime usually answers them without waking the room.
@@ -231,6 +268,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
 
   function alarm() {
     expire();
+    for (const {socket, peer} of unproven()) if (now() >= peer.authBy) kick(socket, 'unauthorized');
     wake(due());
   }
 
