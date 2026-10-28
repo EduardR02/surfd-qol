@@ -1,12 +1,14 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  catalogEntry, decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
+  catalogEntry, decodeControl, encodeControlFrames, isPlayerName, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', onChange = () => {}, now = Date.now}) {
+const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
+
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
@@ -253,7 +255,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       socket.close(CLOSE.gone, 'This private room has closed.');
       return;
     }
-    if (!hello || typeof hello.name !== 'string' || !hello.name.trim() || typeof hello.guest !== 'boolean') {
+    if (!hello || typeof hello !== 'object' || typeof hello.guest !== 'boolean') {
       socket.close(CLOSE.invalid, 'Invalid private room hello');
       return;
     }
@@ -274,7 +276,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
       backlogSince: null, player: {
-      id: 'private-' + connectionId, connectionId, slot, name: hello.name.trim().slice(0, 24),
+      id: 'private-' + connectionId, connectionId, slot, name: isPlayerName(hello.name) ? hello.name : guestName(),
       appearance: normalizeAppearance(hello.appearance), guest: false, rank: 'Guest', points: 0,
       moderator: host, spectating: false,
     }};

@@ -104,8 +104,18 @@ describe('private room host', () => {
     const appearance = {title: 'Surfer', titleColor: '#ab12EF', nameColor: null, revision: 5};
     expect(connect(false, {...hello, appearance}).messages('welcome')[0].player.appearance).toEqual(appearance);
     expect(connect(false, {...hello, appearance: {...appearance, title: ' bad '}}).messages('welcome')[0].player.appearance).toEqual(DEFAULT_APPEARANCE);
-    expect(connect(false, {...hello, name: ''}).closed.code).toBe(CLOSE.invalid);
     expect(connect(false, {...hello, guest: undefined}).closed.code).toBe(CLOSE.invalid);
+    expect(connect(false, null).closed.code).toBe(CLOSE.invalid);
+  });
+
+  test('names follow the site rules and anything else becomes a guest name', () => {
+    const {room, connect} = fixture();
+    for (const name of ['<svg onload=alert(1)>', 'ab', 'a'.repeat(25), 'Surfd EU 2 · Frankfurt', '名前', '', undefined]) connect(false, {...hello, name});
+    connect(false, {...hello, name: 'Lightcone_2-x'});
+    const names = room.players.map(player => player.name);
+    expect(names.slice(0, -1).every(name => /^Guest_[0-9a-f]{5}$/.test(name))).toBe(true);
+    expect(names.at(-1)).toBe('Lightcone_2-x');
+    room.close();
   });
 
   test('relays native chat sender fields and answers ping without public authority', () => {
@@ -224,7 +234,7 @@ describe('private room host', () => {
 
   test('replaces live and connecting host registrations', () => {
     const {room, connect} = fixture(), host = connect(true), guest = connect();
-    const invalid = connect(true, {...hello, name: ''});
+    const invalid = connect(true, {...hello, guest: 'no'});
     expect(invalid.closed.code).toBe(CLOSE.invalid);
     expect(host.closed).toBeNull();
     const waiting = connect(true, hello, false);

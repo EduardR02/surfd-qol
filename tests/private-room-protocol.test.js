@@ -158,7 +158,7 @@ describe('private room control boundaries', () => {
   test('validates a full 256-player roster through bounded chunk frames', () => {
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
       id: 'private-' + uuid(slot), connectionId: uuid(slot), slot,
-      name: '名\"\\'.repeat(8), rank: 'Guest', points: 0, guest: false,
+      name: 'Player_' + slot, rank: 'Guest', points: 0, guest: false,
       moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
     }));
     const message = {type: 'roster', players};

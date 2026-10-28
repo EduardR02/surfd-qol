@@ -270,6 +270,9 @@ const textValue = (value, max, empty = false) => typeof value === 'string' && va
 const identifier = value => textValue(value, 256);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The site's username rules, which Guest_ names also meet.
+export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
+export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
 export function catalogEntry(map) {
@@ -278,7 +281,7 @@ export function catalogEntry(map) {
 
 function readPlayer(player) {
   requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
-    && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && textValue(player.name, 24)
+    && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && isPlayerName(player.name)
     && player.rank === 'Guest' && player.points === 0 && player.guest === false
     && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
     && validAppearance(player.appearance), 'Invalid room player');
@@ -309,7 +312,7 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
     return result;
   }
   function readState(state) {
-    requireValid(record(state) && state.roomId === roomId && textValue(state.name, 40) && catalog.has(state.mapId)
+    requireValid(record(state) && state.roomId === roomId && isRoomName(state.name) && catalog.has(state.mapId)
       && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
       && state.endsAt === 0 && state.untimed === true
       && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
@@ -344,7 +347,7 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
       case 'roster':
         return {type: 'roster', players: readPlayers(message.players)};
       case 'chat':
-        requireValid(playerId(message.playerId) && textValue(message.name, 24) && textValue(message.text, 240)
+        requireValid(playerId(message.playerId) && isPlayerName(message.name) && textValue(message.text, 240)
           && (message.rank === undefined || message.rank === 'Guest')
           && (message.appearance === undefined || validAppearance(message.appearance)), 'Invalid room chat');
         return {type: 'chat', playerId: message.playerId, name: message.name, text: message.text,

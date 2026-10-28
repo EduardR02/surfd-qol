@@ -14,7 +14,7 @@ Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 
 
 The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available. They have no player cap and never take part in the game's Play now recommendation.
 
-Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
+Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host replaces a name that breaks the name rules below with a new `Guest_` name, and falls back to the default appearance when it's invalid.
 
 A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
 
@@ -23,7 +23,7 @@ The host reconnects with its key after any unexpected meeting point close. Exist
 
 Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups wait for the server browser and stop when it closes. Upload stats are sampled only while the host's own room is shown.
 
-Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
+Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`. Guests refuse other player, chat and room names.
 
 ## Shared structures
 

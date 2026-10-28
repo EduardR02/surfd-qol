@@ -368,7 +368,7 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('guest names persist and host room names fit 40 characters', async () => {
+  test('guest names persist and name rooms whose host has no valid name', async () => {
     const storage = new Map(), f = fixture({storage, displayName: ''});
     try {
       const name = f.runtime.guestName();
@@ -380,7 +380,7 @@ describe('private room runtime', () => {
       next.runtime.destroy();
     } finally { f.runtime.destroy(); }
     const long = fixture({displayName: 'a'.repeat(60)});
-    try { await long.host(); expect(long.joined[0].row.name).toHaveLength(40); }
+    try { await long.host(); expect(long.joined[0].row.name).toMatch(/^Guest_[0-9a-f]{5}'s room$/); }
     finally { long.runtime.destroy(); }
   });
 

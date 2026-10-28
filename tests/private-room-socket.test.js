@@ -21,7 +21,7 @@ const roomPlayer = (slot = 0) => ({
   rank: 'Guest', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
 });
 const maps = [{id: 'one', title: 'One', tier: 1}];
-const roomState = {roomId: 'room-a', name: 'Room', mapId: 'one', mapTitle: 'One',
+const roomState = {roomId: 'room-a', name: "Host's room", mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
   maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
@@ -672,7 +672,7 @@ describe('private room WebRTC socket', () => {
     client.onmessage = event => messages.push(event.data);
     const controls = [
       {type: 'state', state: {...roomState, epoch: 2}, serverTime: 2},
-      {type: 'chat', playerId: roomPlayer().id, name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
+      {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: '<plain text>'},
       {type: 'error', text: 'Unavailable', spectatorRequest: 12},
       {type: 'spectator-demand', active: true, count: 255},
@@ -707,6 +707,9 @@ describe('private room WebRTC socket', () => {
       {type: 'state', state: {...roomState, epoch: 0x100000000}, serverTime: 1},
       {type: 'chat', playerId: 'p', name: 'Guest', text: 'x'.repeat(241)},
       {type: 'chat', playerId: 'p', name: {}, text: 'hi'},
+      {type: 'chat', playerId: roomPlayer().id, name: '<Guest>', text: 'hi'},
+      {type: 'roster', players: [{...roomPlayer(), name: 'Surfd EU 2 · Frankfurt'}]},
+      {type: 'state', state: {...roomState, name: 'Official Surfd server'}, serverTime: 1},
       {type: 'notice', text: {}}, {type: 'error', text: 'bad', spectatorRequest: -1},
       {type: 'spectator-demand', active: true, count: 0},
       {type: 'context', epoch: 1, token: 'host-supplied-ranked-token'},

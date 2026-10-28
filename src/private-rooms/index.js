@@ -1,6 +1,6 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, isPlayerName } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -173,7 +173,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
   }
   function hello() {
     const adapter = rooms();
-    return {name: adapter.displayName() || guestName(), appearance: adapter.appearance(), guest: adapter.guest()};
+    const name = adapter.displayName();
+    return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest: adapter.guest()};
   }
   function track(socket, id) {
     const ownHost = id === hosted?.id;
@@ -341,7 +342,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       const id = createRoomId();
       const current = {id, sockets: new Set(), uploadMbps: null};
       current.room = createRoomHost({roomId: id, mapId, maps,
-        name: `${adapter.displayName() || guestName()}'s room`.slice(0, 40),
+        name: `${hello().name}'s room`,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
       try {
