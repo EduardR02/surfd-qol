@@ -132,8 +132,14 @@ function roomHooks(source, client, state) {
     const clockCount = [...source.matchAll(clocks)].length;
     if (clockCount !== 4) throw new Error(`Unsupported Surfd build: room countdown views (${clockCount} matches)`);
     const hook = 'globalThis.__SURFD_QOL__?.privateRooms';
+    // In private rooms View profile needs the account id the player sent, and Block stays hidden:
+    // the room can't confirm who a player is, so a block could land on someone else's account.
+    const profile = unique(source, new RegExp(`(${identifier})==="profile"&&(${identifier})\\.profile\\((${identifier})\\.id,\\3\\.name\\)`, 'g'), 'player profile');
+    const block = unique(source, new RegExp(`\\$\\{!(${identifier})\\.guest&&(${identifier})\\.available&&\\2\\.block\\?`, 'g'), 'player block');
     const toast = unique(source, new RegExp(`(${identifier})\\("toast"\\)\\.textContent=(${identifier}),\\1\\("toast"\\)\\.classList\\.add\\("show"\\),(${identifier})=performance\\.now\\(\\)\\+5e3`, 'g'), 'room notice');
     source = roomBrowserHooks(source);
+    source = source.replace(profile[0], () => `${profile[1]}==="profile"&&${profile[2]}.profile(${profile[3]}.userId??${profile[3]}.id,${profile[3]}.name)`);
+    source = source.replace(block[0], () => '${!' + block[1] + '.guest&&!/^private-/.test(' + block[1] + '.id)&&' + block[2] + '.available&&' + block[2] + '.block?');
     const leave = unique(source, new RegExp(`function (${identifier})\\(\\)\\{(${identifier})\\?\\.disconnect\\(\\),(${identifier})=null,`, 'g'), 'explicit room leave');
     const receive = unique(source, new RegExp(`receive\\((${identifier})\\)\\{if\\(\\1==="pong"\\)`, 'g'), 'room receiver');
     const decode = unique(source, new RegExp(`if\\(typeof (${identifier})!="string"\\|\\|\\1\\.length>65536\\)throw Error\\("Invalid room data"\\);const (${identifier})=JSON\\.parse\\(\\1\\);`, 'g'), 'room JSON decoder');
@@ -164,6 +170,7 @@ function roomHooks(source, client, state) {
       displayName: () => ${client}.session ? ${client}.profile?.username ?? ${hook}?.guestName?.() ?? "Guest" : ${hook}?.guestName?.() ?? "Guest",
       appearance: () => ${client}.profile?.appearance ?? null,
       guest: () => !${client}.session,
+      userId: () => ${client}.session?.user?.id ?? null,
       maps: () => ${maps},
       currentMap: () => ${state}?.map ?? ${lobby}.selected(),
     },`};

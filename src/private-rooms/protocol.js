@@ -15,6 +15,7 @@ export const ROOM_TEXTS = Object.freeze({
   hostChangesMaps: 'Only the private room host can change maps.',
   unknownMap: 'Map is not in the catalog.',
   tooFast: "You're sending messages too fast.",
+  signInToChat: 'Sign in to send chat messages. You can still read chat.',
 });
 const roomTexts = new Set(Object.values(ROOM_TEXTS));
 export function roomCloseReason(code, reason) {
@@ -293,6 +294,8 @@ const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The site's username rules, which Guest_ names also meet.
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
+export const isGuestName = value => typeof value === 'string' && /^Guest_[0-9a-f]{5}$/.test(value);
+export const isUserId = value => typeof value === 'string' && UUID.test(value);
 export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
@@ -303,12 +306,14 @@ export function catalogEntry(map) {
 function readPlayer(player) {
   requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
     && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && isPlayerName(player.name)
-    && player.rank === 'Guest' && player.points === 0 && player.guest === false
+    && player.rank === 'Guest' && player.points === 0
+    && (player.guest === true ? isGuestName(player.name) && player.userId === undefined
+      : player.guest === false && (player.userId === undefined || isUserId(player.userId)))
     && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
     && validAppearance(player.appearance), 'Invalid room player');
   return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
-    rank: 'Guest', points: 0, guest: player.guest, moderator: player.moderator,
-    appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
+    rank: 'Guest', points: 0, guest: player.guest, ...(player.userId === undefined ? {} : {userId: player.userId}),
+    moderator: player.moderator, appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
 }
 
 // Each host message is rebuilt from the fields the game reads, so nothing else a host sends reaches it.

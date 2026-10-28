@@ -172,8 +172,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
   }
   function hello() {
     const adapter = rooms();
-    const name = adapter.displayName();
-    return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest: adapter.guest()};
+    const name = adapter.displayName(), guest = adapter.guest();
+    return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest,
+      userId: guest ? null : adapter.userId?.() ?? null};
   }
   function track(socket, id) {
     const ownHost = id === hosted?.id;

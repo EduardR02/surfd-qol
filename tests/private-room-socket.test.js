@@ -709,6 +709,9 @@ describe('private room WebRTC socket', () => {
       {type: 'chat', playerId: 'p', name: {}, text: 'hi'},
       {type: 'chat', playerId: roomPlayer().id, name: '<Guest>', text: 'hi'},
       {type: 'roster', players: [{...roomPlayer(), name: 'Surfd EU 2 · Frankfurt'}]},
+      {type: 'roster', players: [{...roomPlayer(), guest: true}]},
+      {type: 'roster', players: [{...roomPlayer(), name: 'Guest_0a1b2', guest: true, userId: uuid(9)}]},
+      {type: 'roster', players: [{...roomPlayer(), userId: 'account-1'}]},
       {type: 'state', state: {...roomState, name: 'Official Surfd server'}, serverTime: 1},
       {type: 'notice', text: {}}, {type: 'error', text: 'bad', spectatorRequest: -1},
       {type: 'spectator-demand', active: true, count: 0},
@@ -738,10 +741,12 @@ describe('private room WebRTC socket', () => {
       maps: [{id: 'one', title: '<b>Spoof</b>', tier: '"><img src=x>'}, {id: 'unknown', title: 'Unknown'}],
       state: {...roomState, mapTitle: '<b>Spoof</b>', extra: 1}, player: {...roomPlayer(), extra: 1}, players: [{...roomPlayer(), extra: 1}]}));
     accepted[0].socket.send(JSON.stringify({type: 'state', state: {...roomState, recent: ['one', 'unknown']}, serverTime: 2, extra: 1}));
-    accepted[0].socket.send(JSON.stringify({type: 'roster', players: [{...roomPlayer(), memory: 'x'.repeat(1000)}, {...roomPlayer(1), moderator: true}]}));
+    const visitor = {...roomPlayer(2), name: 'Guest_0a1b2', guest: true};
+    accepted[0].socket.send(JSON.stringify({type: 'roster', players: [{...roomPlayer(), memory: 'x'.repeat(1000)},
+      {...roomPlayer(1), moderator: true, userId: uuid(7)}, visitor]}));
     await nextTask();
     expect(messages).toEqual([welcome(), {type: 'state', state: {...roomState, recent: ['one']}, serverTime: 2},
-      {type: 'roster', players: [roomPlayer(), {...roomPlayer(1), moderator: true}]}]);
+      {type: 'roster', players: [roomPlayer(), {...roomPlayer(1), moderator: true, userId: uuid(7)}, visitor]}]);
   });
 
   test('guests see only the extension\'s own notice, error and close texts', async () => {

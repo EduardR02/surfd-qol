@@ -192,6 +192,9 @@ class NativeRoom {
   disconnect(){this.watchTarget=null;this.roomId=null}
 }
 let connection=null,active=null;
+const social={available:true,block(){},isBlocked:()=>false},menuActions={opened:null,profile(id,name){menuActions.opened={id,name}}};
+function playerMenu(_){return \`\${!_.guest&&social.available&&social.block?\`<button data-act="block">Block</button>\`:""}\`}
+function playerAction(H,_){H==="profile"&&menuActions.profile(_.id,_.name)}
 function leaveRoom(){connection?.disconnect(),active=null,connection=null}
 `;
 
@@ -216,7 +219,8 @@ function roomFixture(privateRooms, source = roomSource) {
   } finally { console.warn = warn; }
   const runtime = new Function('globalThis', 'fetch', 'WebSocket', instrumented + `
     return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},
-      guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()}};
+      guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()},
+      playerMenu,playerAction,menuActions};
   `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
   return {adapter, runtime, requests, sockets, warnings, instrumented, failList: () => { failList = true; }};
 }
@@ -243,6 +247,16 @@ describe('optional native private room instrumentation', () => {
     expect(fixture.requests.some(request => request.url.endsWith('/servers/public/ping'))).toBe(true);
     expect(fixture.sockets).toEqual([{url: 'https://public.example/servers/public/ws', protocols: ['surfd-v1', 'native-ticket']}]);
     expect(fixture.warnings).toEqual([]);
+  });
+
+  test('private room players get View profile by account id and no Block', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    expect(runtime.playerMenu({id: 'private-1', guest: false})).toBe('');
+    expect(runtime.playerMenu({id: 'account-1', guest: false})).toContain('Block');
+    runtime.playerAction('profile', {id: 'private-1', userId: 'account-1', name: 'Surfer'});
+    expect(runtime.menuActions.opened).toEqual({id: 'account-1', name: 'Surfer'});
+    runtime.playerAction('profile', {id: 'account-2', name: 'Official'});
+    expect(runtime.menuActions.opened).toEqual({id: 'account-2', name: 'Official'});
   });
 
   test('the room hook never receives the site ticket', async () => {
@@ -283,8 +297,10 @@ describe('optional native private room instrumentation', () => {
     expect(adapter.rooms.displayName()).toBe('Fixture player');
     expect(adapter.rooms.appearance()).toBe(appearance);
     expect(adapter.rooms.guest()).toBe(false);
+    expect(adapter.rooms.userId()).toBe('account-a');
     runtime.guest();
     expect(adapter.rooms.guest()).toBe(true);
+    expect(adapter.rooms.userId()).toBeNull();
     expect(adapter.rooms.maps()).toEqual([{id: 'map', title: 'Fixture map'}]);
     expect(adapter.rooms.currentMap()).toBe(adapter.getSession().map);
   });

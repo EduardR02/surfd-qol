@@ -17,7 +17,8 @@ class Socket extends EventTarget {
   close(code, reason) { this.closed = {code, reason}; this.readyState = 3; this.dispatchEvent(new Event('close')); }
   messages(type) { return this.sent.filter(message => message?.type === type); }
 }
-const hello = {name: 'Guest', appearance: null, guest: true};
+const hello = {name: 'Surfer', appearance: null, guest: false};
+const guestHello = {name: 'Guest_0a1b2', appearance: null, guest: true};
 const pose = {time: 100, x: 1, y: 2, z: 3, vx: 4, vy: 5, vz: 6, yaw: 90, pitch: -30, flags: 1, seconds: 2};
 const detailed = {...pose, eyeHeight: 64, phase: 'running', untimed: true, checkpoints: 1, stage: 2, inputs: 1, inputPresses: 16};
 function fixture(options = {}) {
@@ -66,7 +67,7 @@ describe('private room host', () => {
     host.open();
     const welcome = host.messages('welcome')[0];
     expect(welcome).toMatchObject({type: 'welcome', spectatorStream: true, playtime: false, activityTracking: false, recentResults: [], chatMute: null});
-    expect(welcome.player).toMatchObject({name: 'Guest', guest: false, moderator: true, points: 0, rank: 'Guest', spectating: false, slot: 0, appearance: DEFAULT_APPEARANCE});
+    expect(welcome.player).toMatchObject({name: 'Surfer', guest: false, moderator: true, points: 0, rank: 'Guest', spectating: false, slot: 0, appearance: DEFAULT_APPEARANCE});
     expect(welcome.state).toMatchObject({epoch: 1, mapId: 'one', endsAt: 0, untimed: true, vote: null, nextMap: null, nominations: {}, recent: []});
     expect(welcome.state.capacity).toBeUndefined();
     const peer = connect();
@@ -106,6 +107,29 @@ describe('private room host', () => {
     expect(connect(false, {...hello, appearance: {...appearance, title: ' bad '}}).messages('welcome')[0].player.appearance).toEqual(DEFAULT_APPEARANCE);
     expect(connect(false, {...hello, guest: undefined}).closed.code).toBe(CLOSE.invalid);
     expect(connect(false, null).closed.code).toBe(CLOSE.invalid);
+  });
+
+  test('players carry their real guest status and guests cannot chat', () => {
+    const {room, connect} = fixture();
+    const userId = crypto.randomUUID();
+    const member = connect(false, {...hello, userId}), guest = connect(false, guestHello);
+    connect(false, {...guestHello, name: 'Lightcone', userId});
+    connect(false, {...hello, name: '<b>x</b>', userId});
+    const [own, visitor, claimed, invalid] = room.players;
+    expect(own).toMatchObject({name: 'Surfer', guest: false, userId});
+    expect(visitor).toMatchObject({name: 'Guest_0a1b2', guest: true});
+    expect(controls(guest).find(message => message.type === 'welcome').player.guest).toBe(true);
+    for (const player of [claimed, invalid]) {
+      expect(player.guest).toBe(true);
+      expect(player.name).toMatch(/^Guest_[0-9a-f]{5}$/);
+    }
+    for (const player of [visitor, claimed, invalid]) expect(player.userId).toBeUndefined();
+    guest.receive({type: 'chat', text: 'hello'});
+    expect(guest.messages('error').at(-1).text).toBe('Sign in to send chat messages. You can still read chat.');
+    expect(member.messages('chat')).toEqual([]);
+    member.receive({type: 'chat', text: 'hello'});
+    expect(guest.messages('chat').at(-1)).toMatchObject({name: 'Surfer', text: 'hello'});
+    room.close();
   });
 
   test('names follow the site rules and anything else becomes a guest name', () => {

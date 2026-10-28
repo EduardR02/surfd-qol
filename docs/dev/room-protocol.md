@@ -14,7 +14,7 @@ Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 
 
 The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They have no player cap and never take part in the game's Play now recommendation.
 
-Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host replaces a name that breaks the name rules below with a new `Guest_` name, and falls back to the default appearance when it's invalid.
+Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
 
 A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
 
@@ -32,7 +32,8 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 **Player:** `{id, connectionId, slot, name, rank, points, guest, moderator, appearance, spectating}`.
 - `id` drives mutes, own-player checks and chat senders; `connectionId` tells live connections apart and picks spectator targets; `slot` (a unique uint16) picks the interpolation buffer for binary poses.
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
-- In private rooms: `connectionId` is a UUID, `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true` (guests accept at most one moderator, never themselves), and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
+- In private rooms: `connectionId` is a UUID, `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true` (guests accept at most one moderator, never themselves), and `guest` is the player's real status, as on official servers. Signed-in players may carry `userId`; guests never do.
+- The game refuses to send chat for its own guest player, shows map controls only to moderators who aren't guests, and hides View profile, Add friend and Block for guests. Add friend sends a request by name. In private rooms View profile opens `userId` instead of `id`, and Block is hidden, as the room can't confirm who a player is.
 
 **State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 
@@ -41,7 +42,7 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 | Message | Fields | Private host |
 | --- | --- | --- |
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
-| `chat` | `text`, trimmed and limited to 240 characters by the host | broadcasts to everyone, sender included, with the sender's fields; 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
+| `chat` | `text`, trimmed and limited to 240 characters by the host | refuses guests with an `error` "Sign in to send chat messages. You can still read chat."; otherwise broadcasts to everyone, sender included, with the sender's fields; 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
 | `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; 2 per second with bursts of 4, beyond which requests are dropped |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |

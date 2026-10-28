@@ -1,6 +1,6 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  catalogEntry, decodeControl, encodeControlFrames, isPlayerName, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
+  catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUserId, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
@@ -210,6 +210,10 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           send(client, 'pong');
           break;
         case 'chat':
+          if (client.player.guest) {
+            send(client, {type: 'error', text: ROOM_TEXTS.signInToChat});
+            break;
+          }
           if (!take(client.chat, CHAT_LIMIT)) {
             if (!client.chat.limited) send(client, {type: 'error', text: ROOM_TEXTS.tooFast});
             client.chat.limited = true;
@@ -273,11 +277,15 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const slot = nextSlot++;
     slots.add(slot);
     const connectionId = crypto.randomUUID();
+    // Signed-in players are taken at their word; a hello that can't be one becomes a guest.
+    const guest = hello.guest || !isPlayerName(hello.name);
+    const userId = !guest && isUserId(hello.userId) ? hello.userId : undefined;
     const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
       backlogSince: null, player: {
-      id: 'private-' + connectionId, connectionId, slot, name: isPlayerName(hello.name) ? hello.name : guestName(),
-      appearance: normalizeAppearance(hello.appearance), guest: false, rank: 'Guest', points: 0,
+      id: 'private-' + connectionId, connectionId, slot,
+      name: guest ? (isGuestName(hello.name) ? hello.name : guestName()) : hello.name,
+      appearance: normalizeAppearance(hello.appearance), guest, ...(userId ? {userId} : {}), rank: 'Guest', points: 0,
       moderator: host, spectating: false,
     }};
     client.onOpen = () => {

@@ -4,6 +4,7 @@ import {createPrivateRooms} from '../src/private-rooms/index.js';
 const ROOM = 'p-abcdefghjkmn';
 const OTHER = 'p-nmkjhgfedcba';
 const CLOSED = 'This private room has closed.';
+const ACCOUNT = '00000000-0000-4000-8000-000000000001';
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const row = (id = ROOM) => ({id, name: "Guest's room", mapId: 'map', mapTitle: 'Map', players: 2, epoch: 1, updatedAt: 100});
 
@@ -84,7 +85,7 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     rows: () => rows, update: value => { updates++; rows = value; },
     maps: () => [{id: 'map', title: 'Map'}, {id: 'other', title: 'Other'}],
     currentMap: () => ({id: 'map'}), displayName: () => displayName,
-    appearance: () => ({}), guest: () => !displayName,
+    appearance: () => ({}), guest: () => !displayName, userId: () => displayName ? ACCOUNT : null,
     browserOpen: () => open, join: id => joined.push({id, row: rows.find(value => value.id === id)})
   }};
   const runtime = createPrivateRooms({getAdapter: () => adapter, events, timers, now: timers.now,
@@ -289,6 +290,17 @@ describe('private room runtime', () => {
       signal.message('room-info', null, 'visitor');
       expect(signal.sent).toHaveLength(count + 2);
     } finally { f.runtime.destroy(); }
+  });
+
+  test('the hello carries the real guest status and a signed-in account id', async () => {
+    for (const [displayName, expected] of [['Surfer', {name: 'Surfer', guest: false, userId: ACCOUNT}],
+      ['', {name: expect.stringMatching(/^Guest_[0-9a-f]{5}$/), guest: true, userId: null}]]) {
+      const f = fixture({displayName});
+      try {
+        await f.join();
+        expect(f.runtime.roomSocket(ROOM).options.hello).toMatchObject(expected);
+      } finally { f.runtime.destroy(); }
+    }
   });
 
   test('discovery and negotiation share one guest relay', async () => {
