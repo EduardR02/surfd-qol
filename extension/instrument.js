@@ -1,4 +1,4 @@
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v7:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v10:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -96,7 +96,7 @@ function roomBrowserHooks(source, hook) {
   replace(new RegExp(`${literal(start[3])}\\.filter\\(${literal(joins[1])}\\)`, 'g'),
     `${start[3]}.filter(row=>!__qolCommunity(row)&&${joins[1]}(row))`, 'official recommendation');
   replace(new RegExp(`\\(!(${identifier})\\|\\|(${identifier})\\.players<\\2\\.capacity\\)&&\\(!(${identifier})\\|\\|\\2\\.players>0\\)`, 'g'),
-    m => `(__qolCommunity(${m[2]})||(!${m[1]}||${m[2]}.players<${m[2]}.capacity)&&(!${m[3]}||${m[2]}.players>0))`, 'community filters');
+    m => `(__qolCommunity(${m[2]})||!${m[1]}||${m[2]}.players<${m[2]}.capacity)&&(!${m[3]}||${m[2]}.players>0)`, 'community filters');
   body = body.replace(new RegExp(`(?<![\\w$.])(${identifier})\\.region`, 'g'), '__qolRegion($1)');
   replace(new RegExp(`Number\\((${identifier})\\.online\\)-Number\\((${identifier})\\.online\\)\\|\\|`, 'g'),
     m => `Number(__qolCommunity(${m[2]}))-Number(__qolCommunity(${m[1]}))||Number(${m[1]}.online)-Number(${m[2]}.online)||`, 'official row order');
@@ -131,6 +131,7 @@ function roomHooks(source, client, state) {
     const clockCount = [...source.matchAll(clocks)].length;
     if (clockCount !== 4) throw new Error(`Unsupported Surfd build: room countdown views (${clockCount} matches)`);
     const hook = 'globalThis.__SURFD_QOL__?.privateRooms';
+    const toast = unique(source, new RegExp(`(${identifier})\\("toast"\\)\\.textContent=(${identifier}),\\1\\("toast"\\)\\.classList\\.add\\("show"\\),(${identifier})=performance\\.now\\(\\)\\+5e3`, 'g'), 'room notice');
     source = roomBrowserHooks(source, hook);
     const leave = unique(source, new RegExp(`function (${identifier})\\(\\)\\{(${identifier})\\?\\.disconnect\\(\\),(${identifier})=null,`, 'g'), 'explicit room leave');
     const receive = unique(source, new RegExp(`receive\\((${identifier})\\)\\{if\\(\\1==="pong"\\)`, 'g'), 'room receiver');
@@ -149,6 +150,8 @@ function roomHooks(source, client, state) {
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
     return {source, adapter: `
     rooms: {
+      // The HUD is hidden while the menu is open.
+      notice: text => {${toast[1]}("menu-status").textContent=text;${toast[1]}("toast").textContent=text;${toast[1]}("toast").classList.add("show");${toast[3]}=performance.now()+5e3},
       join: id => ${lobby}.joinServer(id),
       rows: () => ${lobby}.servers.rows(),
       update: rows => ${lobby}.updateServers(rows.map(({serverTime,...row})=>row), ${lobby}.servers.status()),
@@ -194,8 +197,7 @@ export function instrumentGame(source) {
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
-  return source + `
-/* surfd-qol-adapter-v7: native community rooms and optional room transport */
+  return source + `${ADAPTER_MARKER} native community rooms and optional room transport */
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;
   if (!qol) return;

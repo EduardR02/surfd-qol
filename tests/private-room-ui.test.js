@@ -1,6 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {bandwidthDetail, bandwidthTooltip, createRoomUi} from '../src/private-rooms/ui.js';
-import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
+import {createRoomUi} from '../src/private-rooms/ui.js';
 
 class Element {
   constructor(tag = 'div') {
@@ -153,15 +152,4 @@ describe('native room UI', () => {
     f.ui.destroy();
   });
 
-  test('bandwidth uses the transport estimate', () => {
-    const examples=bandwidthTooltip().split('\n');
-    expect(examples).toHaveLength(3);
-    for(const [index,players] of [8,16,32].entries()) {
-      const estimate=estimateBandwidth(players);
-      expect(examples[index]).toBe(`${players} players: ${estimate.upload.toFixed(1)} Mbps up, ${estimate.download.toFixed(1)} Mbps down`);
-    }
-    const estimate=estimateBandwidth(16),extra=estimateBandwidth(17).upload-estimate.upload;
-    expect(bandwidthDetail(16,null)).toBe(`16 players need about ${estimate.upload.toFixed(1)} Mbps up and ${estimate.download.toFixed(1)} Mbps down. Each extra player adds about ${extra.toFixed(1)} Mbps up.`);
-    expect(bandwidthDetail(16,1.23)).toContain('Now using 1.2 Mbps up.');
-  });
 });

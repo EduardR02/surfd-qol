@@ -6,7 +6,7 @@ export function estimateBandwidth(players) {
   const guests = Math.max(0, players - 1);
   if (!guests) return {upload: 0, download: 0};
   // Two samples every 98ms, 50ms snapshots, 93B IP/UDP/DTLS/SCTP overhead per 1100B fragment,
-  // and one 20Hz spectator stream per guest in each direction; host loopback uses no network.
+  // and one 30Hz spectator stream per guest in each direction; host loopback uses no network.
   const batchSeconds = 2 * 49 / 1000, tickSeconds = SNAPSHOT_INTERVAL_MS / 1000;
   const overhead = 28 + 37 + 28, fragmentBytes = 1100;
   const poseBytes = POSE_HEADER_BYTES + 2 * POSE_SAMPLE_BYTES;
@@ -17,7 +17,7 @@ export function estimateBandwidth(players) {
     const payload = SNAPSHOT_HEADER_BYTES + Math.min(remaining, MAX_SNAPSHOT_BLOCKS) * blockBytes;
     snapshotBytes += payload + Math.ceil(payload / fragmentBytes) * overhead;
   }
-  const spectatorBytes = (SPECTATOR_BYTES + overhead) / tickSeconds;
+  const spectatorBytes = (SPECTATOR_BYTES + overhead) * 30;
   return {
     upload: guests * (snapshotBytes / tickSeconds + spectatorBytes) * 8 / 1e6,
     download: guests * ((poseBytes + overhead) / batchSeconds + spectatorBytes) * 8 / 1e6,

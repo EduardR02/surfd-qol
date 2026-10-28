@@ -10,13 +10,13 @@ const decimal = value => value.toFixed(1);
 export function bandwidthTooltip() {
   return [8, 16, 32].map(players => {
     const {upload, download} = estimateBandwidth(players);
-    return `${players} players: ${decimal(upload)} Mbps up, ${decimal(download)} Mbps down`;
+    return `${players} players: about ${decimal(upload)} Mbps up · ${decimal(download)} Mbps down`;
   }).join('\n');
 }
 
 export function bandwidthDetail(players, uploadMbps) {
   const {upload, download} = estimateBandwidth(players);
-  const extra = estimateBandwidth(players + 1).upload - upload;
+  const extra = players < 65536 ? estimateBandwidth(players + 1).upload - upload : upload - estimateBandwidth(players - 1).upload;
   return `${players} players need about ${decimal(upload)} Mbps up and ${decimal(download)} Mbps down. Each extra player adds about ${decimal(extra)} Mbps up.`
     + (Number.isFinite(uploadMbps) ? ` Now using ${decimal(uploadMbps)} Mbps up.` : '');
 }

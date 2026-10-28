@@ -150,6 +150,9 @@ describe('native practice destinations', () => {
 const roomSource = nativeSource + `
 const catalog=[{id:'map',title:'Fixture map'}],ranking={refresh(){}},options={currentMap:()=> 'map'};
 let joined=null,listed=[{id:'public',mapId:'map',online:true}],joinCallback,refreshCallback;
+const nativeToast={textContent:'',classList:{add(){}}};let toastExpiry=0;
+const toastNode=id=>nativeToast;
+function toast(text){toastNode("toast").textContent=text,toastNode("toast").classList.add("show"),toastExpiry=performance.now()+5e3}
 const secondsLeft=(end,now)=>Math.max(0,Math.ceil((end-now)/1000));
 function countdown(end,now){const seconds=secondsLeft(end,now);return seconds===0?"Changing map…":seconds+"s left"}
 function clocks(row){const connection={state:row},offset=0;return [
@@ -310,7 +313,6 @@ describe('optional native private room instrumentation', () => {
 
   test('old adapters require fresh source', () => {
     expect(isCurrentInstrumented(instrumentGame(nativeSource))).toBe(true);
-    expect(ADAPTER_MARKER).toContain('v7:');
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
   });
 
@@ -323,9 +325,11 @@ describe('optional native private room instrumentation', () => {
     ]);
     expect(runtime.browser.best().id).toBe('eu');
     runtime.browser.filters(true,true);
-    expect(runtime.browser.visible().map(row=>row.id)).toEqual(['eu','p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
+    expect(runtime.browser.visible().map(row=>row.id)).toEqual(['eu','p-aaaaaaaaaaaa']);
     expect(runtime.browser.groups().map(([region])=>region)).toEqual(['Europe','Community']);
     runtime.browser.region('Community');
+    expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa']);
+    runtime.browser.filters(true,false);
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
   });
 
