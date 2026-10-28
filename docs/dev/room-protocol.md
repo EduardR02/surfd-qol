@@ -111,6 +111,8 @@ The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without 
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 
+The runtime heartbeat exists only while hosting and is cleared on leave, host replacement and startup failure. Attaching room hooks or joining as a guest does not create a runtime interval.
+
 ## Testing safely
 
 Test as a guest, without finishing runs. The game prepares `guest-attempt` tickets on its own, even before a finish, so block the attempt, upload and claim endpoints before the first page load when testing in a browser.

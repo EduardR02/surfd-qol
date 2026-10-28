@@ -17,7 +17,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
   const known = new Map(), directory = new Map(), guests = new Map(), gone = new Set();
   const sockets = new Map(), latestSockets = new Map(), uploadSamples = new WeakMap();
-  let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false;
+  let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
@@ -241,6 +241,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const closing = hosted;
     if (!closing) return;
     hosted = null;
+    timers.clearInterval(heartbeat);
+    heartbeat = null;
     markGone(closing.id);
     closing.signal?.send(null, 'listing', null);
     closing.room.close();
@@ -274,13 +276,16 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     finally { sampling = false; }
   }
   function setup() {
-    if (heartbeat !== null) return;
+    if (listening) return;
+    listening = true;
+    events.addEventListener?.('pagehide', pagehide);
+  }
+  function startHeartbeat() {
     let beats = 0;
     heartbeat = timers.setInterval(() => {
       if (++beats % 5 === 0) publish(true);
       void sampleUpload();
     }, 5000);
-    events.addEventListener?.('pagehide', pagehide);
   }
   function pagehide() { api.destroy(); }
   async function join(id) {
@@ -337,6 +342,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         name: `${adapter.displayName() || guestName()}'s room`.slice(0, 40),
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
+      startHeartbeat();
       try {
         const signal = current.signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'host', key: newHostKey()});
         const signalling = relay(signal, id, true);

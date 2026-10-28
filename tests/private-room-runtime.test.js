@@ -55,6 +55,7 @@ function clock() {
   const jobs = new Map();
   const add = (callback, delay, repeat) => { const id = ++next; jobs.set(id, {callback, at: time + delay, repeat}); return id; };
   return {now: () => time,
+    pending: () => jobs.size,
     setTimeout: (callback, delay) => add(callback, delay, 0), clearTimeout: id => jobs.delete(id),
     setInterval: (callback, delay) => add(callback, delay, delay), clearInterval: id => jobs.delete(id),
     advance(ms) {
@@ -117,6 +118,39 @@ const closed = socket => new Promise(resolve => socket.addEventListener('close',
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
 describe('private room runtime', () => {
+  test('closed browser holds no room requests or timers', async () => {
+    const f = fixture();
+    try {
+      f.runtime.attach();
+      f.timers.advance(60000);
+      await f.runtime.refreshDirectory();
+      await f.runtime.measure(ROOM);
+      expect(f.requests).toEqual([]);
+      expect(f.signals).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM); socket.open();
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.timers.pending()).toBe(0);
+      f.runtime.leave();
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('leaving or failing hosting releases its heartbeat', async () => {
+    const f = fixture();
+    try {
+      await f.host({visibility: 'public'});
+      expect(f.timers.pending()).toBe(1);
+      f.runtime.leave();
+      expect(f.timers.pending()).toBe(0);
+      const pending = f.runtime.host();
+      f.signals.at(-1).end('unreachable');
+      await expect(pending).rejects.toThrow(SERVICE);
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('connected room visibility overrides a cached public listing', async () => {
     const f = fixture();
     try {
