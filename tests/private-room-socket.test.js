@@ -15,10 +15,12 @@ const spectator = (sequence, slot) => ({
   sequence, slot, epoch: 1,
   pose: {...pose, eyeHeight: 1, phase: 'ready', untimed: false, checkpoints: 0, stage: 0},
 });
+const uuid = slot => '00000000-0000-4000-8000-' + String(slot).padStart(12, '0');
 const roomPlayer = (slot = 0) => ({
-  id: 'private-' + slot, connectionId: 'connection-' + slot, slot, name: 'Guest',
-  rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+  id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest',
+  rank: 'Guest', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
 });
+const maps = [{id: 'one', title: 'One', tier: 1}];
 const roomState = {roomId: 'room-a', name: 'Room', mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
@@ -157,7 +159,7 @@ function rtcPair(options = {}) {
     socket.send(JSON.stringify(welcome()));
   }});
   cleanups.push(stop);
-  const client = createPeerSocket({roomId: 'room-a', peerId: 'peer-a', signalling, onFailure: options.onFailure,
+  const client = createPeerSocket({roomId: 'room-a', peerId: 'peer-a', signalling, maps, onFailure: options.onFailure,
     hello: {name: 'Guest', appearance: {color: 'blue'}, guest: true}});
   client.onopen = () => events.push('open');
   client.onmessage = event => events.push(event.data);
@@ -670,7 +672,7 @@ describe('private room WebRTC socket', () => {
     client.onmessage = event => messages.push(event.data);
     const controls = [
       {type: 'state', state: {...roomState, epoch: 2}, serverTime: 2},
-      {type: 'chat', playerId: 'private-0', name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
+      {type: 'chat', playerId: roomPlayer().id, name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: '<plain text>'},
       {type: 'error', text: 'Unavailable', spectatorRequest: 12},
       {type: 'spectator-demand', active: true, count: 255},
@@ -691,8 +693,11 @@ describe('private room WebRTC socket', () => {
 
   test('rejects hostile host JSON before consumers see it and never probes reconnect liveness', async () => {
     const invalidMessages = [
-      {...welcome(), maps: [{id: 'one', title: 'One', tier: '"><img src=x onerror=alert(1)>'}]},
       {...welcome(), players: null},
+      {...welcome(), player: {...roomPlayer(), id: 'account-1'}, players: [{...roomPlayer(), id: 'account-1'}]},
+      {...welcome(), player: {...roomPlayer(), moderator: true}, players: [{...roomPlayer(), moderator: true}]},
+      {type: 'roster', players: [{...roomPlayer(1), moderator: true}, {...roomPlayer(2), moderator: true}]},
+      {type: 'roster', players: [{...roomPlayer(), moderator: true}]},
       {...welcome(), player: {...roomPlayer(), slot: 65536}},
       {...welcome(), player: {...roomPlayer(), appearance: {...DEFAULT_APPEARANCE, nameColor: 'red;position:fixed'}}},
       {type: 'roster', players: [roomPlayer(), roomPlayer()]},
@@ -719,6 +724,21 @@ describe('private room WebRTC socket', () => {
       expect(probes).toBe(0);
       expect(connections[0].connectionState).toBe('closed');
     }
+  });
+
+  test('rebuilds host messages from known fields and the local catalog', async () => {
+    const {client, accepted} = rtcPair();
+    await nextTask();
+    const messages = [];
+    client.onmessage = event => messages.push(JSON.parse(event.data));
+    accepted[0].socket.send(JSON.stringify({...welcome(), extra: '<img>',
+      maps: [{id: 'one', title: '<b>Spoof</b>', tier: '"><img src=x>'}, {id: 'unknown', title: 'Unknown'}],
+      state: {...roomState, mapTitle: '<b>Spoof</b>', extra: 1}, player: {...roomPlayer(), extra: 1}, players: [{...roomPlayer(), extra: 1}]}));
+    accepted[0].socket.send(JSON.stringify({type: 'state', state: {...roomState, recent: ['one', 'unknown']}, serverTime: 2, extra: 1}));
+    accepted[0].socket.send(JSON.stringify({type: 'roster', players: [{...roomPlayer(), memory: 'x'.repeat(1000)}, {...roomPlayer(1), moderator: true}]}));
+    await nextTask();
+    expect(messages).toEqual([welcome(), {type: 'state', state: {...roomState, recent: ['one']}, serverTime: 2},
+      {type: 'roster', players: [roomPlayer(), {...roomPlayer(1), moderator: true}]}]);
   });
 
   test('rejects invalid snapshots and spectator values before the game receives binary', async () => {

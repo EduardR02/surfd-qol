@@ -6,7 +6,7 @@ Code: `src/private-rooms/` (`host.js` the room, `protocol.js` the codecs, `socke
 
 The game's client validates binary frames strictly but consumes most JSON fields directly; what follows is what it reads. When the game updates, find the code again by these literals: `"surfd-v1"`, `"/servers/"`, `"Invalid spectator header"`, `"Changing map…"`, `"You were invited to"`.
 
-The game trusts its server and puts some fields (a map's tier, for one) into markup unescaped, so guests validate every message from the host before the game sees it. Invalid data closes with 4002.
+The game trusts its server and puts some fields (a map's tier, for one) into markup unescaped, so guests rebuild every message from the host out of the fields listed here before the game sees it, dropping anything else. Map ids must be in the guest's own catalog, and titles and tiers come from that catalog, not the host. Invalid data closes with 4002.
 
 ## Ids and joining
 
@@ -32,7 +32,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 **Player:** `{id, connectionId, slot, name, rank, points, guest, moderator, appearance, spectating}`.
 - `id` drives mutes, own-player checks and chat senders; `connectionId` tells live connections apart and picks spectator targets; `slot` (a unique uint16) picks the interpolation buffer for binary poses.
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
-- In private rooms: `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true`, and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
+- In private rooms: `connectionId` is a UUID, `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true` (guests accept at most one moderator, never themselves), and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
 
 **State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 

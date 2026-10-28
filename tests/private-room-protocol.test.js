@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, controlWireSize, createRoomControlReader, validateRoomMessage, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -100,6 +100,9 @@ describe('private room binary protocol', () => {
   });
 });
 
+const uuid = slot => '00000000-0000-4000-8000-' + String(slot).padStart(12, '0');
+const filter = () => createRoomFilter({roomId: 'room'});
+
 describe('private room control boundaries', () => {
   test('parses only bounded object JSON or the native ping literal', () => {
     expect(decodeControl('ping')).toEqual({type: 'ping'});
@@ -154,12 +157,12 @@ describe('private room control boundaries', () => {
   });
   test('validates a full 256-player roster through bounded chunk frames', () => {
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
-      id: 'private-' + slot, connectionId: 'connection-' + slot, slot,
+      id: 'private-' + uuid(slot), connectionId: uuid(slot), slot,
       name: '名\"\\'.repeat(8), rank: 'Guest', points: 0, guest: false,
       moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
     }));
     const message = {type: 'roster', players};
-    const reader = createRoomControlReader(value => validateRoomMessage(value, 'room'));
+    const reader = createRoomControlReader(filter());
     let received = null;
     for (const frame of encodeControlFrames(message)) {
       expect(controlWireSize(frame)).toBeLessThanOrEqual(MAX_CONTROL_BYTES);
@@ -173,18 +176,18 @@ describe('private room control boundaries', () => {
   });
 
   test('refuses rosters over 256 players', () => {
-    const player = slot => ({id: 'private-' + slot, connectionId: 'connection-' + slot, slot, name: 'Guest', rank: 'Guest',
+    const player = slot => ({id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest', rank: 'Guest',
       points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE});
     const roster = length => ({type: 'roster', players: Array.from({length}, (_, slot) => player(slot))});
-    expect(() => validateRoomMessage(roster(MAX_ROOM_PLAYERS), 'room')).not.toThrow();
-    expect(() => validateRoomMessage(roster(MAX_ROOM_PLAYERS + 1), 'room')).toThrow('Invalid room roster');
+    expect(() => filter()(roster(MAX_ROOM_PLAYERS))).not.toThrow();
+    expect(() => filter()(roster(MAX_ROOM_PLAYERS + 1))).toThrow('Invalid room roster');
   });
 
   test('a host cannot make a guest assemble more than about 1 MB', () => {
     const players = Array.from({length: 8000}, (_, slot) => ({id: 'private-' + slot, connectionId: 'c' + slot, slot,
       name: 'N'.repeat(24), rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false,
       appearance: {title: 'T'.repeat(24), titleColor: '#ffffff', nameColor: '#ffffff', revision: 1}}));
-    const reader = createRoomControlReader(value => validateRoomMessage(value, 'room'));
+    const reader = createRoomControlReader(filter());
     let assembled = 0;
     expect(() => {
       for (const frame of encodeControlFrames({type: 'roster', players})) {
@@ -212,7 +215,7 @@ describe('private room control boundaries', () => {
   });
 
   test('rejects nested chunks and raw over-limit messages', () => {
-    const reader = createRoomControlReader(value => validateRoomMessage(value, 'room'));
+    const reader = createRoomControlReader(filter());
     const nested = {type: 'room-chunk', data: '{"type":"notice","text":"ok"}', final: true};
     expect(() => reader.read(JSON.stringify({type: 'room-chunk', data: JSON.stringify(nested), final: true}))).toThrow();
     expect(() => reader.read(' '.repeat(65537))).toThrow();

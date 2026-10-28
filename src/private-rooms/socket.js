@@ -1,4 +1,4 @@
-import {CLOSE, MAX_CONTROL_BYTES, createRoomControlReader, encodeControlFrames, validateRoomMessage, validateRoomBinary} from './protocol.js';
+import {CLOSE, MAX_CONTROL_BYTES, createRoomControlReader, createRoomFilter, encodeControlFrames, validateRoomBinary} from './protocol.js';
 
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 const PROTOCOL = 'surfd-v1';
@@ -197,17 +197,12 @@ export function createClosedSocket(code, reason) {
   return socket;
 }
 
-function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, onSocket, onDispose, onFailure}) {
+function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, host, onSocket, onDispose, onFailure}) {
   const socket = new RoomSocket();
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
   let negotiationTimer, queuedNegotiations = 0, remoteReceived = false;
-  let mapIds = null;
-  const incoming = createRoomControlReader(message => {
-    validateRoomMessage(message, roomId);
-    if (message.type === 'welcome') mapIds = new Set(message.maps.map(map => map.id));
-    else if (message.type === 'state' && !mapIds?.has(message.state.mapId)) throw new Error('Unknown room map');
-  });
+  const incoming = createRoomControlReader(host ? null : createRoomFilter({roomId, maps}));
   let negotiation = Promise.resolve();
   const candidates = [];
   const signal = (type, payload) => signalling.send({
@@ -220,7 +215,6 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     clearTimeout(negotiationTimer);
     candidates.length = 0;
     incoming.clear();
-    mapIds = null;
     pc?.close();
     onDispose?.();
   };
@@ -444,9 +438,9 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   return {socket, accept};
 }
 
-export function createPeerSocket({roomId, peerId, signalling, hello, rtcConfig, onFailure}) {
+export function createPeerSocket({roomId, peerId, signalling, hello, maps, rtcConfig, onFailure}) {
   let unsubscribe;
-  const connection = createConnection({roomId, peerId, signalling, hello, rtcConfig, onFailure, host: false,
+  const connection = createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, onFailure, host: false,
     onDispose: () => unsubscribe?.()});
   unsubscribe = signalling.subscribe(message => {
     if (message.roomId === roomId && message.peerId === (typeof peerId === 'function' ? peerId() : peerId)) {

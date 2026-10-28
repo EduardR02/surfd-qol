@@ -1,6 +1,6 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
+  catalogEntry, decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
@@ -12,7 +12,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   const catalog = new Map();
   for (const map of maps) {
     if (!map || typeof map.id !== 'string' || !map.id) throw new Error('Invalid map catalog');
-    catalog.set(map.id, {id: map.id, title: map.title ?? map.name ?? map.id, ...(map.tier !== undefined ? {tier: map.tier} : {})});
+    catalog.set(map.id, catalogEntry(map));
   }
   if (!catalog.has(mapId)) throw new Error('Map is not in the catalog');
   let state = {

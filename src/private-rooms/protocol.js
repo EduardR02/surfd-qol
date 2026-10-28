@@ -269,91 +269,107 @@ const record = value => value !== null && typeof value === 'object' && !Array.is
 const textValue = (value, max, empty = false) => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0);
 const identifier = value => textValue(value, 256);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
-function validatePlayer(player) {
-  requireValid(record(player) && identifier(player.id) && identifier(player.connectionId)
-    && uint(player.slot, 65535) && textValue(player.name, 24)
+export function catalogEntry(map) {
+  return {id: map.id, title: map.title ?? map.name ?? map.id, ...(map.tier !== undefined ? {tier: map.tier} : {})};
+}
+
+function readPlayer(player) {
+  requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
+    && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && textValue(player.name, 24)
     && player.rank === 'Guest' && player.points === 0 && player.guest === false
     && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
     && validAppearance(player.appearance), 'Invalid room player');
+  return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
+    rank: 'Guest', points: 0, guest: player.guest, moderator: player.moderator,
+    appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
 }
 
-function validatePlayers(players) {
-  requireValid(Array.isArray(players) && players.length <= MAX_ROOM_PLAYERS, 'Invalid room roster');
-  const slots = new Set(), connections = new Set(), ids = new Set();
-  for (const player of players) {
-    validatePlayer(player);
-    requireValid(!slots.has(player.slot) && !connections.has(player.connectionId) && !ids.has(player.id), 'Duplicate room player');
-    slots.add(player.slot);
-    connections.add(player.connectionId);
-    ids.add(player.id);
+// Each host message is rebuilt from the fields the game reads, so nothing else a host sends reaches it.
+// Maps come from the receiver's own catalog; host is true for the host's own view of its room.
+export function createRoomFilter({roomId, maps = [], host = false}) {
+  const catalog = new Map(maps.map(map => [map.id, catalogEntry(map)]));
+  let own = null;
+  function readPlayers(players) {
+    requireValid(Array.isArray(players) && players.length <= MAX_ROOM_PLAYERS, 'Invalid room roster');
+    const slots = new Set(), connections = new Set();
+    let moderators = 0;
+    const result = players.map(value => {
+      const player = readPlayer(value);
+      requireValid(!slots.has(player.slot) && !connections.has(player.connectionId), 'Duplicate room player');
+      slots.add(player.slot);
+      connections.add(player.connectionId);
+      if (player.moderator) moderators++;
+      requireValid(!player.moderator || own === null || (player.connectionId === own) === host, 'Invalid room moderator');
+      return player;
+    });
+    requireValid(moderators <= 1, 'Invalid room moderator');
+    return result;
   }
-}
-
-function validateState(state, roomId) {
-  requireValid(record(state) && state.roomId === roomId && textValue(state.name, 256)
-    && identifier(state.mapId) && textValue(state.mapTitle, 1024)
-    && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
-    && state.endsAt === 0 && state.untimed === true
-    && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
-    && record(state.nominations) && Object.keys(state.nominations).length === 0
-    && Array.isArray(state.rtv) && state.rtv.length === 0
-    && state.vote === null && state.nextMap === null, 'Invalid room state');
-}
-
-// Private peers cannot enable public-server services or supply ranked tokens.
-export function validateRoomMessage(message, roomId) {
-  requireValid(record(message), 'Invalid room message');
-  switch (message.type) {
-    case 'welcome': {
-      validateState(message.state, roomId);
-      validatePlayer(message.player);
-      validatePlayers(message.players);
-      const own = message.players.find(player => player.connectionId === message.player.connectionId);
-      requireValid(own && Object.keys(message.player).every(key => JSON.stringify(message.player[key]) === JSON.stringify(own[key])),
-        'Invalid own room player');
-      requireValid(Array.isArray(message.maps) && message.maps.length <= 65536, 'Invalid room maps');
-      const maps = new Set();
-      for (const map of message.maps) {
-        requireValid(record(map) && identifier(map.id) && textValue(map.title, 1024)
-          && (map.tier === undefined || uint(map.tier, 8) && map.tier > 0) && !maps.has(map.id), 'Invalid room map');
-        maps.add(map.id);
+  function readState(state) {
+    requireValid(record(state) && state.roomId === roomId && textValue(state.name, 40) && catalog.has(state.mapId)
+      && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
+      && state.endsAt === 0 && state.untimed === true
+      && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
+      && record(state.nominations) && Object.keys(state.nominations).length === 0
+      && Array.isArray(state.rtv) && state.rtv.length === 0
+      && state.vote === null && state.nextMap === null, 'Invalid room state');
+    return {roomId, name: state.name, mapId: state.mapId, mapTitle: catalog.get(state.mapId).title,
+      epoch: state.epoch, startedAt: state.startedAt, endsAt: 0, untimed: true,
+      recent: state.recent.filter(id => catalog.has(id)), nominations: {}, rtv: [], vote: null, nextMap: null};
+  }
+  return message => {
+    requireValid(record(message), 'Invalid room message');
+    switch (message.type) {
+      case 'welcome': {
+        const state = readState(message.state), player = readPlayer(message.player);
+        own = player.connectionId;
+        const players = readPlayers(message.players);
+        const entry = players.find(value => value.connectionId === own);
+        requireValid(entry && JSON.stringify(entry) === JSON.stringify(player), 'Invalid own room player');
+        requireValid(Array.isArray(message.maps) && timestamp(message.serverTime)
+          && message.spectatorStream === true && message.playtime === false && message.activityTracking === false
+          && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
+        'Invalid room welcome');
+        const ids = new Set(message.maps.map(map => record(map) ? map.id : null));
+        return {type: 'welcome', state, player, players, maps: [...ids].filter(id => catalog.has(id)).map(id => catalog.get(id)),
+          serverTime: message.serverTime, spectatorStream: true, playtime: false, activityTracking: false,
+          recentResults: [], chatMute: null};
       }
-      requireValid(maps.has(message.state.mapId) && timestamp(message.serverTime)
-        && message.spectatorStream === true && message.playtime === false && message.activityTracking === false
-        && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
-      'Invalid room welcome');
-      break;
+      case 'state':
+        requireValid(timestamp(message.serverTime), 'Invalid room time');
+        return {type: 'state', state: readState(message.state), serverTime: message.serverTime};
+      case 'roster':
+        return {type: 'roster', players: readPlayers(message.players)};
+      case 'chat':
+        requireValid(playerId(message.playerId) && textValue(message.name, 24) && textValue(message.text, 240)
+          && (message.rank === undefined || message.rank === 'Guest')
+          && (message.appearance === undefined || validAppearance(message.appearance)), 'Invalid room chat');
+        return {type: 'chat', playerId: message.playerId, name: message.name, text: message.text,
+          ...(message.rank === undefined ? {} : {rank: 'Guest'}),
+          ...(message.appearance === undefined ? {} : {appearance: normalizeAppearance(message.appearance)})};
+      case 'notice':
+      case 'error':
+        requireValid(textValue(message.text, 4096)
+          && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
+        return {type: message.type, text: message.text,
+          ...(message.spectatorRequest === undefined ? {} : {spectatorRequest: message.spectatorRequest})};
+      case 'spectator-demand':
+        requireValid(typeof message.active === 'boolean' && uint(message.count, MAX_ROOM_PLAYERS)
+          && (message.count > 0) === message.active, 'Invalid spectator demand');
+        return {type: 'spectator-demand', active: message.active, count: message.count};
+      case 'context':
+        requireValid(uint(message.epoch) && message.token === null, 'Invalid room context');
+        return {type: 'context', epoch: message.epoch, token: null};
+      default:
+        throw new Error('Invalid room message type');
     }
-    case 'state':
-      validateState(message.state, roomId);
-      requireValid(timestamp(message.serverTime), 'Invalid room time');
-      break;
-    case 'roster':
-      validatePlayers(message.players);
-      break;
-    case 'chat':
-      requireValid(identifier(message.playerId) && textValue(message.name, 24) && textValue(message.text, 240)
-        && (message.rank === undefined || message.rank === 'Guest')
-        && (message.appearance === undefined || validAppearance(message.appearance)), 'Invalid room chat');
-      break;
-    case 'notice':
-    case 'error':
-      requireValid(textValue(message.text, 4096) && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
-      break;
-    case 'spectator-demand':
-      requireValid(typeof message.active === 'boolean' && uint(message.count, MAX_ROOM_PLAYERS)
-        && (message.count > 0) === message.active, 'Invalid spectator demand');
-      break;
-    case 'context':
-      requireValid(uint(message.epoch) && message.token === null, 'Invalid room context');
-      break;
-    default:
-      throw new Error('Invalid room message type');
-  }
+  };
 }
 
-export function createRoomControlReader(validate = null) {
+export function createRoomControlReader(filter = null) {
   let chunks = [], length = 0;
   const clear = () => { chunks = []; length = 0; };
   return {
@@ -363,7 +379,7 @@ export function createRoomControlReader(validate = null) {
         && encoder.encode(text).byteLength <= MAX_CONTROL_BYTES, 'Invalid room frame');
       let message;
       try { message = JSON.parse(text); } catch {
-        requireValid(!chunks.length && (validate === null || text === 'pong'), 'Invalid room JSON');
+        requireValid(!chunks.length && (filter === null || text === 'pong'), 'Invalid room JSON');
         return text;
       }
       if (message?.type === 'room-chunk') {
@@ -378,8 +394,7 @@ export function createRoomControlReader(validate = null) {
         message = JSON.parse(text);
         requireValid(message?.type !== 'room-chunk', 'Nested room chunk');
       } else requireValid(!chunks.length, 'Interrupted room chunks');
-      validate?.(message);
-      return text;
+      return filter ? JSON.stringify(filter(message)) : text;
     },
   };
 }

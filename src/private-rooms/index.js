@@ -423,7 +423,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       const session = guestSession(id);
       timers.clearTimeout(session.idleTimer);
       const socket = session.socket = socketFactory({roomId: id,
-        peerId: () => session.signal.id, signalling: session.signalling, hello: hello(),
+        peerId: () => session.signal.id, signalling: session.signalling, hello: hello(), maps: rooms().maps(),
         async onFailure() {
           if (destroyed || latestSockets.get(id) !== socket) return null;
           // A closing tab can destroy SCTP before its final control frame arrives.
