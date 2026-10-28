@@ -2,7 +2,6 @@ import {isPrivateRoomId} from './ids.js';
 import {estimateBandwidth} from './bandwidth.js';
 
 const PRIVATE_HELP = 'Only people with this link can join. They need Surfd QoL.';
-const PUBLIC_HELP = 'Listed for everyone with Surfd QoL.';
 const text = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
 const hidden = (node, value) => { if (node && node.hidden !== value) node.hidden = value; };
 const decimal = value => value.toFixed(1);
@@ -22,7 +21,7 @@ export function bandwidthDetail(players, uploadMbps) {
 }
 
 export function createRoomUi({rooms, getAdapter, document: doc = globalThis.document, MutationObserver: Observer = globalThis.MutationObserver}) {
-  let root = null, hostButton = null, draft = null, help = null, choices = null, bandwidth = null;
+  let root = null, hostButton = null, draft = null, help = null, bandwidth = null;
   let staging = false, pending = false, destroyed = false, scheduled = false;
   let joinLabel = '', joinDisabled = false;
   const votes = new Map();
@@ -43,25 +42,6 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     node.type = 'button'; node.className = className; node.textContent = label;
     return node;
   };
-  function visibilityChoices() {
-    const group = doc.createElement('div');
-    group.className = 'seg'; group.setAttribute('role', 'group'); group.setAttribute('aria-label', 'Room visibility');
-    for (const [value, label, explanation] of [['private', 'Private', 'Only people with the invite link'], ['public', 'Public', 'Listed for everyone with Surfd QoL']]) {
-      const option = button(label, '');
-      option.dataset.visibility = value; option.title = explanation;
-      option.onclick = () => {
-        Promise.resolve(rooms.setVisibility(value)).then(refresh, fail);
-      };
-      group.append(option);
-    }
-    return group;
-  }
-  function selectVisibility(group, value) {
-    for (const option of group?.children ?? []) {
-      const pressed = String(option.dataset.visibility === value);
-      if (option.getAttribute('aria-pressed') !== pressed) option.setAttribute('aria-pressed', pressed);
-    }
-  }
   function fail(error) {
     text(root?.querySelector('#servers-status'), error?.message ?? String(error));
   }
@@ -80,7 +60,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (pending) return;
     pending = true; refresh();
     try {
-      await rooms.host({visibility: rooms.visibility()});
+      await rooms.host();
       staging = false;
     } catch (error) { fail(error); }
     finally { pending = false; refresh(); }
@@ -88,7 +68,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   function mount(next) {
     cancelDraft();
     root?.querySelector('#servers-join')?.removeEventListener('click', start, true);
-    hostButton?.remove(); draft?.remove(); help?.remove(); choices?.remove(); bandwidth?.remove();
+    hostButton?.remove(); draft?.remove(); help?.remove(); bandwidth?.remove();
     root = next; staging = false;
     const refreshButton = root?.querySelector('#servers-refresh');
     if (!refreshButton) return;
@@ -107,11 +87,9 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     draft = doc.createElement('div'); draft.className = 'srv-info'; draft.hidden = true;
     const title = doc.createElement('h3'); title.textContent = 'Host a room';
     const map = doc.createElement('p'); map.className = 'sub'; map.dataset.hostMap = '';
-    const group = visibilityChoices();
-    const explanation = doc.createElement('p'); explanation.className = 'lede'; explanation.dataset.visibilityHelp = '';
-    draft.append(title, map, group, explanation);
-    help = doc.createElement('p'); help.className = 'sub';
-    choices = visibilityChoices();
+    const explanation = doc.createElement('p'); explanation.className = 'lede'; explanation.textContent = 'Only people with the invite link';
+    draft.append(title, map, explanation);
+    help = doc.createElement('p'); help.className = 'sub'; help.textContent = PRIVATE_HELP;
     bandwidth = doc.createElement('p'); bandwidth.className = 'sub'; bandwidth.title = bandwidthTooltip();
   }
   function refresh() {
@@ -142,7 +120,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       const node = rowNodes.get(row.id);
       if (!node) continue;
       if (node.classList.contains('full')) node.classList.remove('full');
-      text(node.querySelector('.badge'), row.visibility === 'public' ? 'Public' : 'Private');
+      text(node.querySelector('.badge'), 'Private');
       text(node.querySelector('.players-cell'), String(row.players));
       const cells = node.querySelectorAll('td');
       if (cells[3]?.textContent === '—') text(cells[3], '');
@@ -156,8 +134,6 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       const map = adapter.currentMap();
       const metadata = adapter.maps().find(entry => entry.id === map?.id);
       text(draft.querySelector('[data-host-map]'), metadata?.title ?? map?.title ?? map?.id ?? 'Select a map first.');
-      selectVisibility(draft.querySelector('.seg'), rooms.visibility());
-      text(draft.querySelector('[data-visibility-help]'), rooms.visibility() === 'public' ? 'Listed for everyone with Surfd QoL' : 'Only people with the invite link');
       text(join, pending ? 'Starting…' : 'Start room'); join.disabled = pending || !map;
       return;
     }
@@ -166,22 +142,19 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const isCommunity = isPrivateRoomId(selected?.id);
     const info = detail.querySelector('.srv-info:not([hidden])');
     if (!isCommunity || !info) {
-      help?.remove(); choices?.remove(); bandwidth?.remove();
+      help?.remove(); bandwidth?.remove();
       return;
     }
-    text(info.querySelector('.sub'), selected.visibility === 'public' ? 'Public' : 'Private');
+    text(info.querySelector('.sub'), 'Private');
     text(detail.querySelector('.section-head small'), selected.online ? String(selected.players) : 'Offline');
     const ping = info.querySelector('[data-fact="ping"]');
     if (ping?.textContent === '—') text(ping, '');
-    text(help, selected.visibility === 'public' ? PUBLIC_HELP : PRIVATE_HELP);
     const invite = info.querySelector('.invite-line');
     if (invite && help.previousElementSibling !== invite) invite.after(help);
     if (hosting?.id === selected.id) {
-      if (choices.parentNode !== info) info.append(choices);
-      selectVisibility(choices, hosting.visibility);
       if (bandwidth.parentNode !== info) info.append(bandwidth);
       text(bandwidth, bandwidthDetail(hosting.players, hosting.uploadMbps));
-    } else { choices.remove(); bandwidth.remove(); }
+    } else bandwidth.remove();
   }
   const observer = doc && Observer ? new Observer(() => {
     if (scheduled || destroyed) return;
@@ -195,7 +168,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       destroyed = true; observer?.disconnect();
       cancelDraft();
       root?.querySelector('#servers-join')?.removeEventListener('click', start, true);
-      hostButton?.remove(); draft?.remove(); help?.remove(); choices?.remove(); bandwidth?.remove();
+      hostButton?.remove(); draft?.remove(); help?.remove(); bandwidth?.remove();
       for (const [node, wasHidden] of votes) hidden(node, wasHidden);
       votes.clear();
     }

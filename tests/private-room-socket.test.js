@@ -19,7 +19,7 @@ const roomPlayer = (slot = 0) => ({
   id: 'private-' + slot, connectionId: 'connection-' + slot, slot, name: 'Guest',
   rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
 });
-const roomState = {roomId: 'room-a', name: 'Room', visibility: 'private', mapId: 'one', mapTitle: 'One',
+const roomState = {roomId: 'room-a', name: 'Room', mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
   maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
@@ -669,7 +669,7 @@ describe('private room WebRTC socket', () => {
     const messages = [], host = accepted[0].socket;
     client.onmessage = event => messages.push(event.data);
     const controls = [
-      {type: 'state', state: {...roomState, visibility: 'public', epoch: 2}, serverTime: 2},
+      {type: 'state', state: {...roomState, epoch: 2}, serverTime: 2},
       {type: 'chat', playerId: 'private-0', name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: '<plain text>'},
       {type: 'error', text: 'Unavailable', spectatorRequest: 12},

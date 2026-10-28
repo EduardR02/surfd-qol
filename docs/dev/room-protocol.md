@@ -10,18 +10,16 @@ The game trusts its server and puts some fields (a map's tier, for one) into mar
 
 ## Ids and joining
 
-Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Public room ids (`eu`, `na`, `eut3`, …) never match.
+Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Official server ids (`eu`, `na`, `eut3`, …) never match.
 
-The game joins rooms from its server list. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite (`?join=<id>` highlights the row but doesn't join). Community rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available. They have no player cap and never take part in the game's Play now recommendation.
+The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available. They have no player cap and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
 
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
-Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
-
-Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; upload stats are sampled only while the host's own room is shown.
+Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups wait for the server browser and stop when it closes. Upload stats are sampled only while the host's own room is shown.
 
 Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
 
@@ -34,7 +32,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
 - In private rooms: `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true`, and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
 
-**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A community room sends `{roomId, name, visibility, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `visibility` is `"public"` or `"private"`; changing it broadcasts `state` without changing the epoch. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
+**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 
 ## Client → room
 
@@ -47,7 +45,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
 | `refresh`, `ack`, `activity` | ticket refresh, `check` reply, activity tracking | ignored |
 | `rtv`, `nominate`, `vote`, `extend` | map votes | ignored |
-| `query`, `report`, `reports`, `moderate` | public server services | ignored |
+| `query`, `report`, `reports`, `moderate` | official server services | ignored |
 
 ## Room → client
 
@@ -62,7 +60,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 | `spectator-demand` | `{active, count}`; `count` is 0–65535 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
 | `result` | a finished run (phase 3), below |
-| `check`, `afk-warning`, `chat-status`, `reports` | public server features; never sent by a private room |
+| `check`, `afk-warning`, `chat-status`, `reports` | official server features; never sent by a private room |
 
 **Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
 

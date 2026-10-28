@@ -82,7 +82,7 @@ function noticeHook(source) {
   }
 }
 
-function roomBrowserHooks(source, hook) {
+function roomBrowserHooks(source) {
   const start = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{let (${identifier})=\\[\\],(${identifier})="Checking servers…"`, 'g'), 'server browser');
   const end = unique(source.slice(start.index), new RegExp(`mapTitle:(${identifier})\\}\\}`, 'g'), 'server browser end');
   let body = source.slice(start.index, start.index + end.index + end[0].length);
@@ -101,15 +101,14 @@ function roomBrowserHooks(source, hook) {
   replace(new RegExp(`Number\\((${identifier})\\.online\\)-Number\\((${identifier})\\.online\\)\\|\\|`, 'g'),
     m => `Number(__qolCommunity(${m[2]}))-Number(__qolCommunity(${m[1]}))||Number(${m[1]}.online)-Number(${m[2]}.online)||`, 'official row order');
   replace(new RegExp(`\\.sort\\(\\((${identifier}),(${identifier})\\)=>\\((${identifier})\\(\\1\\[1\\]\\[0\\]\\)\\?\\?9999\\)-\\(\\3\\(\\2\\[1\\]\\[0\\]\\)\\?\\?9999\\)\\)`, 'g'),
-    m => `.sort((${m[1]},${m[2]})=>Number(${m[1]}[0]==="Community")-Number(${m[2]}[0]==="Community")||(${m[3]}(${m[1]}[1][0])??9999)-(${m[3]}(${m[2]}[1][0])??9999))`, 'official group order');
+    m => `.sort((${m[1]},${m[2]})=>Number(${m[1]}[0]==="Private")-Number(${m[2]}[0]==="Private")||(${m[3]}(${m[1]}[1][0])??9999)-(${m[3]}(${m[2]}[1][0])??9999))`, 'official group order');
   const tabs = unique(body, new RegExp(`(${identifier})\\.hidden=(${identifier})\\.length<2,\\1\\.innerHTML=\\2\\.length<2\\?"":`, 'g'), 'community tab visibility');
-  body = body.replace(tabs[0], `${tabs[1]}.hidden=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community"),${tabs[1]}.innerHTML=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community")?"":`);
+  body = body.replace(tabs[0], `${tabs[1]}.hidden=${tabs[2]}.length<2&&!${tabs[2]}.includes("Private"),${tabs[1]}.innerHTML=${tabs[2]}.length<2&&!${tabs[2]}.includes("Private")?"":`);
   const render = unique(body, new RegExp(`for\\(const (${identifier}) of ${identifier}\\("\\[data-region\\]",${identifier}\\)\\)\\1\\.onclick=\\(\\)=>\\{(${identifier})=\\1\\.dataset\\.region,(${identifier})\\(\\)\\}`, 'g'), 'region selection');
   const selected = unique(body, new RegExp(`typeof (${identifier})=="string"&&\\((${identifier})=\\1\\)`, 'g'), 'selected server');
-  const view = replace(new RegExp(`return\\{view:(${identifier}),update\\(`, 'g'),
-    m => `return{view:${m[1]},status:()=>${start[4]},selected:()=>${selected[2]},selectRoom:id=>{${selected[2]}=id;${render[2]}="all";${render[3]}()},update(`, 'browser adapter')[1];
-  body = body.replaceAll(`${start[2]}.refresh()`, `(${hook}?.refreshDirectory({open:!${view}.el.hidden}),${start[2]}.refresh())`);
-  body = body.replace(start[0], start[0].replace('{let ', '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;let '));
+  replace(new RegExp(`return\\{view:(${identifier}),update\\(`, 'g'),
+    m => `return{view:${m[1]},status:()=>${start[4]},selected:()=>${selected[2]},selectRoom:id=>{${selected[2]}=id;${render[2]}="all";${render[3]}()},update(`, 'browser adapter');
+  body = body.replace(start[0], start[0].replace('{let ', '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Private":row.region;let '));
   return source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
 }
 
@@ -132,7 +131,7 @@ function roomHooks(source, client, state) {
     if (clockCount !== 4) throw new Error(`Unsupported Surfd build: room countdown views (${clockCount} matches)`);
     const hook = 'globalThis.__SURFD_QOL__?.privateRooms';
     const toast = unique(source, new RegExp(`(${identifier})\\("toast"\\)\\.textContent=(${identifier}),\\1\\("toast"\\)\\.classList\\.add\\("show"\\),(${identifier})=performance\\.now\\(\\)\\+5e3`, 'g'), 'room notice');
-    source = roomBrowserHooks(source, hook);
+    source = roomBrowserHooks(source);
     const leave = unique(source, new RegExp(`function (${identifier})\\(\\)\\{(${identifier})\\?\\.disconnect\\(\\),(${identifier})=null,`, 'g'), 'explicit room leave');
     const receive = unique(source, new RegExp(`receive\\((${identifier})\\)\\{if\\(\\1==="pong"\\)`, 'g'), 'room receiver');
     const decode = unique(source, new RegExp(`if\\(typeof (${identifier})!="string"\\|\\|\\1\\.length>65536\\)throw Error\\("Invalid room data"\\);const (${identifier})=JSON\\.parse\\(\\1\\);`, 'g'), 'room JSON decoder');
@@ -148,7 +147,7 @@ function roomHooks(source, client, state) {
     source = source.replace(measure[0], measure[0].replace('{const ', `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
     source = source.replace(socket[0], `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId,${socket[1]},["surfd-v1",${socket[2]}])??${socket[0]})`);
     source = source.replace(/await this\.ticket\(\)/g, `(${hook}?.ticket(this.roomId)??await this.ticket())`);
-    source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)},refreshServers(){return ${bind[4]}()}`);
+    source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)}`);
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
     return {source, adapter: `
     rooms: {
@@ -160,7 +159,6 @@ function roomHooks(source, client, state) {
       status: () => ${lobby}.servers.status(),
       browserOpen: () => !${lobby}.servers.view.el.hidden,
       root: () => ${lobby}.servers.view.el,
-      refresh: () => {${hook}?.refreshDirectory({open:!${lobby}.servers.view.el.hidden});return ${lobby}.refreshServers()},
       select: id => ${lobby}.servers.selectRoom(id),
       selected: () => ${lobby}.servers.selected(),
       displayName: () => ${client}.session ? ${client}.profile?.username ?? ${hook}?.guestName?.() ?? "Guest" : ${hook}?.guestName?.() ?? "Guest",

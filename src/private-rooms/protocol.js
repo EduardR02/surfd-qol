@@ -288,7 +288,7 @@ function validatePlayers(players) {
 
 function validateState(state, roomId) {
   requireValid(record(state) && state.roomId === roomId && textValue(state.name, 256)
-    && ['private', 'public'].includes(state.visibility) && identifier(state.mapId) && textValue(state.mapTitle, 1024)
+    && identifier(state.mapId) && textValue(state.mapTitle, 1024)
     && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
     && state.endsAt === 0 && state.untimed === true
     && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
