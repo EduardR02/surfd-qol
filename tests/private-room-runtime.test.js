@@ -76,6 +76,7 @@ function clock() {
   };
 }
 function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
+  const accountListeners = new Set();
   const signals = [], peers = [], listeners = [], notices = [];
   const events = new EventTarget(), timers = clock();
   let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false;
@@ -86,6 +87,7 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     maps: () => [{id: 'map', title: 'Map'}, {id: 'other', title: 'Other'}],
     currentMap: () => ({id: 'map'}), displayName: () => displayName,
     appearance: () => ({}), guest: () => !displayName, userId: () => displayName ? ACCOUNT : null,
+    onAccountChange: listener => { accountListeners.add(listener); return () => accountListeners.delete(listener); },
     browserOpen: () => open, join: id => joined.push({id, row: rows.find(value => value.id === id)})
   }};
   const runtime = createPrivateRooms({getAdapter: () => adapter, events, timers, now: timers.now,
@@ -104,7 +106,8 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     uiFactory: () => ui
   });
   return {runtime, signals, peers, listeners, notices, events, timers, adapter, joined, ui,
-    updates: () => updates,
+    updates: () => updates, accountListeners,
+    signOut() { displayName = ''; for (const listener of [...accountListeners]) listener(); },
     rows: () => rows, open: value => { open = value; },
     async host(options) { const promise = runtime.host(options); signals.at(-1).ready(); return promise; },
     async join(id = ROOM) {
@@ -385,8 +388,6 @@ describe('private room runtime', () => {
     try {
       const name = f.runtime.guestName();
       expect(name).toMatch(/^Guest_[0-9a-f]{5}$/);
-      await f.host();
-      expect(f.joined[0].row.name).toBe(`${name}'s room`);
       const next = fixture({storage, displayName: ''});
       expect(next.runtime.guestName()).toBe(name);
       next.runtime.destroy();
@@ -636,6 +637,28 @@ describe('private room runtime', () => {
       socket.close(); await closed(socket);
       expect(f.runtime.mergeRooms([])[0].players).toBe(0);
       expect(f.signals[0].sent).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('hosting needs an account and signing out ends the room', async () => {
+    const guest = fixture({displayName: ''});
+    try {
+      await expect(guest.runtime.host()).rejects.toThrow('Sign in to host a room.');
+      expect(guest.signals).toEqual([]);
+    } finally { guest.runtime.destroy(); }
+    const f = fixture();
+    try {
+      const id = await f.host(), peer = new Socket(); peer.open();
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: false, appearance: {}});
+      const own = f.runtime.roomSocket(id); await opened(own);
+      expect(f.runtime.hosting().players).toBe(2);
+      f.accountListeners.forEach(listener => listener());
+      expect(f.runtime.hosting().id).toBe(id);
+      f.signOut();
+      expect(f.runtime.hosting()).toBeNull();
+      expect(peer.closed).toEqual({code: 4004, reason: 'The host closed the private room.'});
+      expect(f.signals[0].state).toBe('closed');
+      expect(f.accountListeners.size).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 

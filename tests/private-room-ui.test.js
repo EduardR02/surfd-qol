@@ -97,20 +97,21 @@ function fixture({observe = false, lateMenu = false} = {}) {
   const vote = add(menu, 'button', '', 'room-rtv', 'Rock the vote');
   if (!lateMenu) document.append(menu);
   const hud = add(document, 'div', '', 'hud');
-  let hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0;
+  let hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0, guest = false, signIns = 0;
   const calls = [], rows = [{id:'eu',region:'Europe',players:4,online:true}];
   const rooms = {
     hosting:()=>hosting, currentRoom:()=>current,
     async host(...options){calls.push(options);if(failure)throw failure;hosting={id:'p-aaaaaaaaaaaa',players:2,uploadMbps:0.2};current=hosting.id;selected=hosting.id;rows.push({...hosting,online:true});return hosting.id;}
   };
   let reads = 0;
-  const adapter = {rooms:{root:()=>root,browserOpen:()=>!root.hidden,rows:()=>{reads++;return rows;},selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
+  const adapter = {rooms:{guest:()=>guest,signIn:()=>{signIns++;},root:()=>root,browserOpen:()=>!root.hidden,rows:()=>{reads++;return rows;},selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
   join.onclick = () => {nativeJoins++;};
   const ui = createRoomUi({rooms,getAdapter:()=>adapter,document,MutationObserver:observe ? Observer : null});
   if (lateMenu) document.append(menu);
   return {ui,rooms,root,detail,info,invite,code,copy,foot,refresh,join,status,vote,menu,hud,calls,rows,reads:()=>reads,
     host:()=>foot.children.find(node=>node.textContent==='Host a room'),nativeJoins:()=>nativeJoins,
-    fail:error=>{failure=error;},select:id=>{selected=id;},current:id=>{current=id;}};
+    fail:error=>{failure=error;},select:id=>{selected=id;},current:id=>{current=id;},
+    signOut:()=>{guest=true;},signIns:()=>signIns};
 }
 
 describe('native room UI', () => {
@@ -191,6 +192,19 @@ describe('native room UI', () => {
     expect(f.nativeJoins()).toBe(0);
     f.select('eu');f.ui.refresh();
     expect(f.info.textContent).not.toContain('They need Surfd QoL');
+    f.ui.destroy();
+  });
+
+  test('a guest is sent to sign in instead of hosting', async () => {
+    const f=fixture();f.signOut();f.ui.refresh();
+    expect(f.host().hidden).toBe(false);
+    await f.host().click();
+    expect(f.signIns()).toBe(1);
+    expect(f.join.textContent).toBe('Join');
+    expect(f.info.hidden).toBe(false);
+    await f.join.click();
+    expect(f.calls).toEqual([]);
+    expect(f.nativeJoins()).toBe(1);
     f.ui.destroy();
   });
 

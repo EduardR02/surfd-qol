@@ -8,6 +8,7 @@ import { createRoomUi } from './ui.js';
 const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const HOST_LEFT = ROOM_TEXTS.hostClosed;
+const SIGN_IN = 'Sign in to host a room.';
 const DISCOVERY_TIMEOUT = 15000;
 const NAME_KEY = 'surfd-qol-room-guest-name';
 
@@ -233,6 +234,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
     markGone(closing.id);
     closing.room.close();
     closing.stop?.();
+    closing.stopAccount?.();
     closing.signal?.close();
   }
   async function sampleUpload() {
@@ -335,6 +337,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
   const api = {
     async host() {
       const adapter = rooms();
+      if (adapter.guest()) throw new Error(SIGN_IN);
       const mapId = adapter.currentMap()?.id, maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
       setup();
@@ -345,6 +348,10 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
         name: `${hello().name}'s room`,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
+      // Hosting needs an account, so signing out ends the room for everyone.
+      current.stopAccount = adapter.onAccountChange?.(() => {
+        if (hosted === current && getAdapter()?.rooms?.guest()) closeHost();
+      });
       try {
         const signal = current.signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'host', key: newHostKey()});
         const signalling = relay(signal, id, true);

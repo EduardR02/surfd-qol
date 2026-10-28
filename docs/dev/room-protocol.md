@@ -18,6 +18,8 @@ Before the game's own messages, each joining client sends the host an extension-
 
 A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
 
+Hosting needs a surfd.net account, as the game's moderators always have one: a guest's Host a room opens the game's sign-in, and signing out while hosting ends the room for everyone with "The host closed the private room." The host's own player is a signed-in moderator.
+
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 

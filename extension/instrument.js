@@ -136,6 +136,7 @@ function roomHooks(source, client, state) {
     // the room can't confirm who a player is, so a block could land on someone else's account.
     const profile = unique(source, new RegExp(`(${identifier})==="profile"&&(${identifier})\\.profile\\((${identifier})\\.id,\\3\\.name\\)`, 'g'), 'player profile');
     const block = unique(source, new RegExp(`\\$\\{!(${identifier})\\.guest&&(${identifier})\\.available&&\\2\\.block\\?`, 'g'), 'player block');
+    const account = unique(source, new RegExp(`onSignIn:\\(\\)=>(${identifier})\\.openAccount\\(\\)`, 'g'), 'sign in')[1];
     const toast = unique(source, new RegExp(`(${identifier})\\("toast"\\)\\.textContent=(${identifier}),\\1\\("toast"\\)\\.classList\\.add\\("show"\\),(${identifier})=performance\\.now\\(\\)\\+5e3`, 'g'), 'room notice');
     source = roomBrowserHooks(source);
     source = source.replace(profile[0], () => `${profile[1]}==="profile"&&${profile[2]}.profile(${profile[3]}.userId??${profile[3]}.id,${profile[3]}.name)`);
@@ -171,6 +172,8 @@ function roomHooks(source, client, state) {
       appearance: () => ${client}.profile?.appearance ?? null,
       guest: () => !${client}.session,
       userId: () => ${client}.session?.user?.id ?? null,
+      onAccountChange: listener => ${client}.onChange?.(listener) ?? (() => {}),
+      signIn: () => ${account}.openAccount(),
       maps: () => ${maps},
       currentMap: () => ${state}?.map ?? ${lobby}.selected(),
     },`};

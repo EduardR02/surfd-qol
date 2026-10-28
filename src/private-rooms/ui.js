@@ -75,6 +75,8 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (!refreshButton) return;
     hostButton = button('Host a room'); hostButton.title = bandwidthTooltip();
     hostButton.onclick = () => {
+      const adapter = getAdapter()?.rooms;
+      if (!staging && adapter?.guest?.()) { adapter.signIn?.(); return; }
       if (staging) cancelDraft();
       else {
         const join = root.querySelector('#servers-join');

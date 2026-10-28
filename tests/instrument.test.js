@@ -28,7 +28,7 @@ let starts={};
 function storedStart(map){return starts[map.id+':'+map.version]??null}
 function fresh(map){const session=new Session(map,liveRules(map),currentFormat),saved=storedStart(map);return saved&&session.setStartPosition(saved),session;}
 function restart(){nativeSession=fresh(replayMap??nativeSession.map);replayMap=null;return nativeSession;}
-const client={session:{user:{id:'account-a'}},config:{maps:[{id:'map',slug:'test-map'}]},
+const client={session:{user:{id:'account-a'}},listeners:new Set(),onChange(listener){client.listeners.add(listener);return()=>client.listeners.delete(listener)},config:{maps:[{id:'map',slug:'test-map'}]},
   board:()=>({boardId:'board'}),replay:async()=>null};
 const boards={key:'board:account-a',current:{boardId:'board',own:{runId:'pb-a'},entries:[]}};
 const route={prepare(){}},bank={entries:()=>[],save(){}},limit=20;
@@ -192,6 +192,7 @@ class NativeRoom {
   disconnect(){this.watchTarget=null;this.roomId=null}
 }
 let connection=null,active=null;
+const account={opened:0,openAccount(){account.opened++}},roomOptions={onSignIn:()=>account.openAccount()};
 const social={available:true,block(){},isBlocked:()=>false},menuActions={opened:null,profile(id,name){menuActions.opened={id,name}}};
 function playerMenu(_){return \`\${!_.guest&&social.available&&social.block?\`<button data-act="block">Block</button>\`:""}\`}
 function playerAction(H,_){H==="profile"&&menuActions.profile(_.id,_.name)}
@@ -220,7 +221,7 @@ function roomFixture(privateRooms, source = roomSource) {
   const runtime = new Function('globalThis', 'fetch', 'WebSocket', instrumented + `
     return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},
       guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()},
-      playerMenu,playerAction,menuActions};
+      playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
   `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
   return {adapter, runtime, requests, sockets, warnings, instrumented, failList: () => { failList = true; }};
 }
@@ -257,6 +258,16 @@ describe('optional native private room instrumentation', () => {
     expect(runtime.menuActions.opened).toEqual({id: 'account-1', name: 'Surfer'});
     runtime.playerAction('profile', {id: 'account-2', name: 'Official'});
     expect(runtime.menuActions.opened).toEqual({id: 'account-2', name: 'Official'});
+  });
+
+  test('account changes reach room listeners until they unsubscribe', () => {
+    const {adapter, runtime} = roomFixture(privateFixtureHooks());
+    const changes = [];
+    const stop = adapter.rooms.onAccountChange(() => changes.push(adapter.rooms.guest()));
+    runtime.signOut();
+    stop();
+    runtime.signOut();
+    expect(changes).toEqual([true]);
   });
 
   test('the room hook never receives the site ticket', async () => {
@@ -301,6 +312,8 @@ describe('optional native private room instrumentation', () => {
     runtime.guest();
     expect(adapter.rooms.guest()).toBe(true);
     expect(adapter.rooms.userId()).toBeNull();
+    adapter.rooms.signIn();
+    expect(runtime.account.opened).toBe(1);
     expect(adapter.rooms.maps()).toEqual([{id: 'map', title: 'Fixture map'}]);
     expect(adapter.rooms.currentMap()).toBe(adapter.getSession().map);
   });
