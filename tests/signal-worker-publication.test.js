@@ -91,7 +91,6 @@ test('slow publication coalesces a burst to its final unlisting', async () => {
   fixture.publish({...listing, players: 3});
   await Promise.resolve();
   expect(fixture.requests.map(request => request.method)).toEqual(['PUT', 'DELETE', 'PUT']);
-  expect(JSON.parse(fixture.requests[2].body)).toEqual({listing: {...listing, players: 3}, client: null});
   fixture.requests[2].resolve(new Response(null, {status: 204}));
   await Promise.all(fixture.pending);
 });

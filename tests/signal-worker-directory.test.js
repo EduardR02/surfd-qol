@@ -3,7 +3,7 @@ import worker from '../signal/src/worker.js';
 import {ORIGIN} from '../signal/src/room.js';
 
 const ROOM = 'p-abcdefghjkmn';
-const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1};
+const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, roster: [{name: 'Host_1', points: 0}]};
 
 test('directory refreshes share requests, reject failures and expire', async () => {
   let now = Date.now() + 100000;
@@ -28,7 +28,7 @@ test('directory refreshes share requests, reject failures and expire', async () 
     for (const response of await Promise.all(loading)) {
       expect(response.status).toBe(200);
       expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
-      expect((await response.json()).rooms[0].id).toBe(ROOM);
+      expect((await response.json()).rooms[0]).toEqual({id: ROOM, ...listing});
     }
     now += 9999;
     expect((await worker.fetch(request(), env)).status).toBe(200);

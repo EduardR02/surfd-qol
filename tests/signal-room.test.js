@@ -390,11 +390,17 @@ test('a room woken from hibernation carries on from its record and sockets', asy
   expect(room.world.record).toEqual({key: HASH, endedAt: room.world.time});
 });
 
-test('a host lists its room for the directory, updates and unlists it; guests cannot', async () => {
+test('a host publishes a sanitized public roster, updates and unlists it; guests cannot', async () => {
   const room = await claimed(1);
-  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3}});
+  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3,
+    roster: [{name: 'Nebula_1', points: 3, userId: 'private'}, {name: '<b>bad</b>', points: 9}, {name: 'Nebula_3', points: 1.5}]}});
+  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', players: 3}});
   room.say(room.host, {type: 'listing', data: null});
-  expect(room.world.published).toEqual([[ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3}, room.host.peer.client], [ROOM, null]]);
+  expect(room.world.published).toEqual([
+    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, roster: [{name: 'Nebula_1', points: 3}]}, room.host.peer.client],
+    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, roster: []}, room.host.peer.client],
+    [ROOM, null],
+  ]);
   for (const data of [{name: "Nebula\u0007's room", mapId: 'surf_utopia', players: 1}, {name: "Nebula's room", mapId: 'x', players: 257},
     {name: "Official's room", mapId: 'surf_utopia', players: 1}, {name: 'x', players: 1}, 'x', []]) {
     room.say(room.host, {type: 'listing', data});
@@ -403,7 +409,7 @@ test('a host lists its room for the directory, updates and unlists it; guests ca
   // A guest's listing is just a message for the host.
   room.say(room.guests[0], {type: 'listing', data: {name: 'x', mapId: 'x', players: 1}});
   expect(room.heard(room.host)).toEqual([{from: room.ids[0], type: 'listing', data: {name: 'x', mapId: 'x', players: 1}}]);
-  expect(room.world.published).toHaveLength(2);
+  expect(room.world.published).toHaveLength(3);
 });
 
 test('a room that ends unlists itself, whether its host left or never came back', async () => {
