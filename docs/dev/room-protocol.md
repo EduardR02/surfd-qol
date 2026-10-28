@@ -12,6 +12,8 @@ The game trusts its server and puts some fields (a map's tier, for one) into mar
 
 Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Official server ids (`eu`, `na`, `eut3`, …) never match.
 
+`parseRoomCode` accepts these ids, twelve-character codes, or HTTPS invite links on `surfd.net/`. Typed codes ignore case, spaces and dashes; display codes use three groups of four capitals. Other origins, ambiguous characters and malformed codes are rejected before discovery.
+
 The game joins rooms from its server list, where player-hosted rooms show under a Community tab. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite (`?join=<id>` highlights the row but doesn't join). Their rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId, browserId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`; `browserId` is a random UUID kept in localStorage, for bans. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
