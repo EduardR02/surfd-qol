@@ -147,7 +147,7 @@ function rtcPair(options = {}) {
     socket.send(JSON.stringify({type: 'welcome'}));
   }});
   cleanups.push(stop);
-  const client = createPeerSocket({roomId: 'room-a', peerId: 'peer-a', signalling,
+  const client = createPeerSocket({roomId: 'room-a', peerId: 'peer-a', signalling, onFailure: options.onFailure,
     hello: {name: 'Guest', appearance: {color: 'blue'}, guest: true}});
   client.onopen = () => events.push('open');
   client.onmessage = event => events.push(event.data);
@@ -498,6 +498,20 @@ describe('private room WebRTC socket', () => {
     connections[0].onconnectionstatechange();
     expect(await closed).toMatchObject({code: 1006, wasClean: false});
     expect(error.message).toBe('Room peer connection failed');
+  });
+
+  test('checks room closure before reporting an interrupted peer', async () => {
+    let resolve;
+    const result = new Promise(done => { resolve = done; });
+    const {client, connections} = rtcPair({onFailure: () => result});
+    await nextTask();
+    const closed = once(client, 'close');
+    connections[0].connectionState = 'failed';
+    connections[0].onconnectionstatechange();
+    expect(client.readyState).toBe(client.CLOSING);
+    expect(connections[0].connectionState).toBe('closed');
+    resolve({code: 4004, reason: 'The host closed the private room.'});
+    expect(await closed).toMatchObject({code: 4004, reason: 'The host closed the private room.'});
   });
 
   test('surfaces unavailable RTC asynchronously so callers can attach error handlers', async () => {

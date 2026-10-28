@@ -2,7 +2,7 @@ import {isPrivateRoomId} from './ids.js';
 import {CLOSE, VERSION, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', onChange = () => {}}) {
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', visibility = 'private', onChange = () => {}}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
@@ -12,7 +12,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   if (!catalog.has(mapId)) throw new Error('Map is not in the catalog');
   let state = {
-    roomId, name, mapId, mapTitle: catalog.get(mapId).title,
+    roomId, name, visibility, mapId, mapTitle: catalog.get(mapId).title,
     epoch: 1, startedAt: Date.now(), endsAt: 0, untimed: true,
     recent: [], nominations: {}, rtv: [], vote: null, nextMap: null,
   };
@@ -253,5 +253,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     socket.addEventListener('close', client.onClose);
     if (socket.readyState === 1) client.onOpen();
   }
-  return {addClient, close, get state() { return state; }, get players() { return players(); }};
+  function setVisibility(value) {
+    if (value !== 'private' && value !== 'public') throw new Error('Invalid room visibility.');
+    if (closed || state.visibility === value) return;
+    state = {...state, visibility: value};
+    broadcast({type: 'state', state, serverTime: Date.now()});
+    onChange();
+  }
+  return {addClient, close, setVisibility, get state() { return state; }, get players() { return players(); }};
 }

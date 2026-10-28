@@ -29,7 +29,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
 - In private rooms: `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true`, and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
 
-**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
+**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A community room sends `{roomId, name, visibility, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `visibility` is `"public"` or `"private"`; changing it broadcasts `state` without changing the epoch. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 
 ## Client → room
 
@@ -107,7 +107,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data and 4004 when the room is gone. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
-A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. A guest that learns the room is gone receives 4004 instead of retrying; loss of a guest's signalling socket after negotiation does not affect its peer connection.
+A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. If an established peer fails before receiving close metadata, the guest checks the meeting point: a gone room receives 4004; a live room keeps the relay connection for renegotiation. Loss of a guest's signalling socket after negotiation does not affect its peer connection.
 
 ## Testing safely
 

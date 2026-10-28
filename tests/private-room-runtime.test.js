@@ -78,7 +78,7 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
   let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false;
   let response = {ok: true, json: async () => ({rooms: []})};
   const joined = [], ui = {refreshes: 0, destroyed: false, refresh() { this.refreshes++; }, destroy() { this.destroyed = true; }};
-  const adapter = {notice: value => notices.push(value), rooms: {
+  const adapter = {rooms: {notice: value => notices.push(value),
     rows: () => rows, update: value => { rows = value; },
     maps: () => [{id: 'map', title: 'Map'}, {id: 'other', title: 'Other'}],
     currentMap: () => ({id: 'map'}), displayName: () => displayName,
@@ -117,6 +117,23 @@ const closed = socket => new Promise(resolve => socket.addEventListener('close',
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
 describe('private room runtime', () => {
+  test('connected room visibility overrides a cached public listing', async () => {
+    const f = fixture();
+    try {
+      f.open(true);
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      await f.runtime.refreshDirectory();
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      socket.message(JSON.stringify({type: 'state', state: {mapId: 'map', mapTitle: 'Map', epoch: 1, visibility: 'private'}}));
+      expect(f.rows().find(value => value.id === ROOM)).toMatchObject({visibility: 'private', region: 'Private'});
+      socket.message(JSON.stringify({type: 'state', state: {mapId: 'map', mapTitle: 'Map', epoch: 1, visibility: 'public'}}));
+      expect(f.rows().find(value => value.id === ROOM)).toMatchObject({visibility: 'public', region: 'Public'});
+      expect(socket.readyState).toBe(1);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('host waits for keyed relay readiness before native join', async () => {
     const f = fixture();
     try {
@@ -321,6 +338,8 @@ describe('private room runtime', () => {
       const socket = f.runtime.roomSocket(ROOM); socket.open();
       socket.send('ping'); f.timers.advance(24); socket.message('pong');
       expect(await f.runtime.measure(ROOM)).toBe(24);
+      socket.send('ping'); socket.message('pong');
+      expect(await f.runtime.measure(ROOM)).toBe(0);
       expect(f.requests).toEqual([]);
     } finally { f.runtime.destroy(); }
   });
@@ -341,6 +360,65 @@ describe('private room runtime', () => {
       f.runtime.leave(id);
       expect(f.runtime.hosting()).toBeNull();
     } finally { f.runtime.destroy(); }
+  });
+
+  test('a lost peer checks whether the host ended the room', async () => {
+    const f = fixture();
+    try {
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      const pending = socket.options.onFailure();
+      const probe = f.signals.at(-1);
+      probe.ready();
+      probe.end('no-room');
+      expect(await pending).toEqual({code: 4004, reason: 'The host closed the private room.'});
+      expect(f.rows().some(value => value.id === ROOM)).toBe(false);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('an interrupted live room keeps the relay for renegotiation', async () => {
+    const f = fixture();
+    try {
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      const pending = socket.options.onFailure();
+      const probe = f.signals.at(-1);
+      probe.ready();
+      probe.message('room-info', row());
+      expect(await pending).toBeNull();
+      f.runtime.roomSocket(ROOM);
+      expect(f.signals).toHaveLength(2);
+      expect(probe.state).toBe('open');
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('host closure shows a notice and stops guest retries', async () => {
+    const f = fixture();
+    try {
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      socket.close(4004, 'The host closed the private room.');
+      expect(f.notices).toEqual(['The host closed the private room.']);
+      expect(f.runtime.currentRoom()).toBeNull();
+      expect((await closed(f.runtime.roomSocket(ROOM))).code).toBe(4004);
+      expect(f.signals).toHaveLength(1);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('connection failures show their reason without forgetting the room', async () => {
+    for (const [code, reason] of [[1006, "Couldn't connect to the host. Their network or yours may block direct connections."], [4000, SERVICE]]) {
+      const f = fixture();
+      try {
+        await f.join();
+        const socket = f.runtime.roomSocket(ROOM);
+        socket.close(code, reason);
+        expect(f.notices).toEqual([reason]);
+        expect(f.rows().some(value => value.id === ROOM)).toBe(true);
+      } finally { f.runtime.destroy(); }
+    }
   });
 
   test('pagehide closes host peers and prevents retry', async () => {

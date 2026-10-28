@@ -43,7 +43,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const listed = directory.get(id);
       if (!listed || id === hosted?.id) community.set(id, row);
       else community.set(id, latestSockets.has(id)
-        ? {...row, visibility: 'public', region: 'Public'}
+        ? row
         : {...listed, roster: row.roster, ping: row.ping ?? listed.ping});
     }
     for (const id of gone) community.delete(id);
@@ -191,6 +191,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     return {name: adapter.displayName() || guestName(), appearance: adapter.appearance(), guest: adapter.guest()};
   }
   function track(socket, id) {
+    const ownHost = id === hosted?.id;
     sockets.set(socket, id);
     latestSockets.set(id, socket);
     socket.addEventListener('open', () => ui?.refresh(), {once: true});
@@ -206,7 +207,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       if (event.data === 'pong' && pingAt !== null) {
         const elapsed = now() - pingAt;
         pingAt = null;
-        if (previous && elapsed > 0 && Number.isFinite(elapsed)) { previous.ping = elapsed; updateLobby(); }
+        if (previous && elapsed >= 0 && Number.isFinite(elapsed)) { previous.ping = elapsed; updateLobby(); }
         return;
       }
       if (id === hosted?.id || !previous || typeof event.data !== 'string' || event.data === 'pong') return;
@@ -216,7 +217,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const state = message.state;
       const players = message.players;
       const row = normalize({...previous,
-        ...(state ? {mapId: state.mapId, mapTitle: state.mapTitle, epoch: state.epoch} : {}),
+        ...(state ? {mapId: state.mapId, mapTitle: state.mapTitle, epoch: state.epoch, visibility: state.visibility} : {}),
         ...(Array.isArray(players) ? {players: players.length, roster: players} : {})});
       if (row) { known.set(id, row); updateLobby(); }
     });
@@ -224,8 +225,15 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       sockets.delete(socket);
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
-      if (event.code === 4004) markGone(id);
-      else ui?.refresh();
+      if (event.code === 4004) {
+        markGone(id);
+        if (!ownHost && !destroyed) getAdapter()?.rooms?.notice?.(event.reason === HOST_LEFT ? HOST_LEFT : CLOSED);
+      } else {
+        ui?.refresh();
+        if (!ownHost && !destroyed && event.reason && (event.code === 1006 || event.reason === SERVICE)) {
+          getAdapter()?.rooms?.notice?.(event.reason);
+        }
+      }
     }, {once: true});
     return socket;
   }
@@ -308,7 +316,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         for (const [id, row] of next) directory.set(id, row);
         updateLobby();
       } catch {
-        if (!destroyed) getAdapter()?.notice?.(SERVICE);
+        if (!destroyed) getAdapter()?.rooms?.notice?.(SERVICE);
       } finally { directoryRequest = null; }
     })();
     return directoryRequest;
@@ -325,7 +333,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       store(VISIBILITY_KEY, visibility);
       const id = createRoomId();
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
-      current.room = createRoomHost({roomId: id, mapId, maps,
+      current.room = createRoomHost({roomId: id, mapId, maps, visibility,
         name: `${adapter.displayName() || guestName()}'s room`.slice(0, 40),
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
@@ -340,7 +348,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         }});
         signal.on('message', message => {
           if (hosted === current && message.type === 'room-info' && message.data === null && typeof message.from === 'string') {
-            signal.send(message.from, 'room-info', hostRow());
+            // Rosters travel over the peer connection; the relay has a 16KB message limit.
+            const {roster, ...row} = hostRow();
+            signal.send(message.from, 'room-info', row);
           }
         });
         await new Promise((resolve, reject) => {
@@ -374,7 +384,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       if (value !== 'public' && value !== 'private') throw new Error('Invalid room visibility.');
       visibility = value;
       store(VISIBILITY_KEY, value);
-      if (hosted) { hosted.visibility = value; publish(); }
+      if (hosted) { hosted.visibility = value; hosted.room.setVisibility(value); }
       else ui?.refresh();
     },
     ticket: id => isPrivateRoomId(id) ? 'private-room' : null,
@@ -402,7 +412,18 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const session = guestSession(id);
       timers.clearTimeout(session.idleTimer);
       const socket = session.socket = socketFactory({roomId: id,
-        peerId: () => session.signal.id, signalling: session.signalling, hello: hello()});
+        peerId: () => session.signal.id, signalling: session.signalling, hello: hello(),
+        async onFailure() {
+          // A closing tab can destroy SCTP before its final control frame arrives.
+          try {
+            await discover(id);
+            const retry = guests.get(id);
+            if (retry && !retry.socket) retry.idleTimer = timers.setTimeout(() => closeGuest(retry), 30000);
+          } catch {
+            if (gone.has(id)) return {code: 4004, reason: HOST_LEFT};
+          }
+          return null;
+        }});
       socket.addEventListener('open', () => closeGuest(session), {once: true});
       socket.addEventListener('close', () => closeGuest(session), {once: true});
       return track(socket, id);
@@ -424,7 +445,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         getAdapter()?.rooms?.select?.(invite);
         const session = guests.get(invite);
         if (session && !session.socket) session.idleTimer = timers.setTimeout(() => closeGuest(session), 30000);
-      }).catch(error => { if (!destroyed) getAdapter()?.notice?.(error.message); });
+      }).catch(error => { if (!destroyed) getAdapter()?.rooms?.notice?.(error.message); });
     },
     destroy() {
       if (destroyed) return;

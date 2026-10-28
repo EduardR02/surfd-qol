@@ -195,7 +195,7 @@ export function createClosedSocket(code, reason) {
   return socket;
 }
 
-function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, onSocket, onDispose}) {
+function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, onSocket, onDispose, onFailure}) {
   const socket = new RoomSocket();
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
@@ -219,9 +219,16 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   };
   const fail = error => {
     if (disposed) return;
+    if (closeInfo) { finish(closeInfo.code, closeInfo.reason, false); return; }
+    const wasOpen = socket.readyState === OPEN;
     socket._state = CLOSING;
     socket._emit('error', {error});
-    finish(1006, DIRECT_FAILURE, false);
+    dispose();
+    if (wasOpen && onFailure) {
+      Promise.resolve().then(onFailure).then(info => {
+        socket._finish(info?.code ?? 1006, info?.reason ?? DIRECT_FAILURE, false);
+      }, () => socket._finish(1006, DIRECT_FAILURE, false));
+    } else socket._finish(1006, DIRECT_FAILURE, false);
   };
   const sendControl = message => control.send(JSON.stringify(message));
   const drainClose = () => {
@@ -388,9 +395,9 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   return {socket, accept};
 }
 
-export function createPeerSocket({roomId, peerId, signalling, hello, rtcConfig}) {
+export function createPeerSocket({roomId, peerId, signalling, hello, rtcConfig, onFailure}) {
   let unsubscribe;
-  const connection = createConnection({roomId, peerId, signalling, hello, rtcConfig, host: false,
+  const connection = createConnection({roomId, peerId, signalling, hello, rtcConfig, onFailure, host: false,
     onDispose: () => unsubscribe?.()});
   unsubscribe = signalling.subscribe(message => {
     if (message.roomId === roomId && message.peerId === (typeof peerId === 'function' ? peerId() : peerId)) {
