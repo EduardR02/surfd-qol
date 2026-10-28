@@ -12,7 +12,7 @@ const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', met
 // with their attachments, and a clock. restart() is a wake from hibernation.
 // Each socket is its own client unless told otherwise.
 function harness({allowClient} = {}) {
-  const world = {time: 1000, record: null, alarm: null, open: new Set()};
+  const world = {time: 1000, record: null, alarm: null, open: new Set(), published: []};
   let room, clients = 0;
   const restart = () => room = createRoom({
     record: structuredClone(world.record),
@@ -24,6 +24,7 @@ function harness({allowClient} = {}) {
     attach(socket, peer) { socket.peer = structuredClone(peer); },
     refuse(socket, code, reason) { socket.closed = {code, reason}; },
     allowClient,
+    publish(...args) { world.published.push(args); },
     now: () => world.time,
   });
   restart();
@@ -31,7 +32,7 @@ function harness({allowClient} = {}) {
     send(text) { this.sent.push(text); },
     close(code, reason) { this.closed = {code, reason}; world.open.delete(this); }});
   const harnessed = {world, restart,
-    connect(role, client = `client-${++clients}`) { const s = socket(); room.connect(s, {role, client}); return s; },
+    connect(role, client = `client-${++clients}`) { const s = socket(); room.connect(s, {role, client, roomId: ROOM}); return s; },
     // A host connects and sends its key first.
     async claim(key = KEY, client) {
       const s = harnessed.connect('host', client);
@@ -100,7 +101,7 @@ test('a host claims an empty room; a second claimant is refused and changes noth
   const host = await room.claim(KEY);
   const [welcome] = room.heard(host);
   expect(welcome).toEqual({type: 'welcome', data: {id: expect.any(String), peers: []}});
-  expect(room.world.record).toEqual({host: welcome.data.id, conn: expect.any(String), key: HASH, goneAt: null});
+  expect(room.world.record).toEqual({host: welcome.data.id, conn: expect.any(String), key: HASH, goneAt: null, roomId: ROOM});
   expect(room.world.alarm).toBeNull();
   const intruder = await room.claim(OTHER);
   expect(intruder.closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
@@ -285,7 +286,7 @@ test('a room evaporates once its host has been gone past the grace period', asyn
   // Its host, returning late, gets a new, empty room under the same id.
   const back = await room.claim(KEY);
   expect(room.heard(back)[0].data).toEqual({id: expect.any(String), peers: []});
-  expect(room.world.record).toEqual({host: expect.any(String), conn: expect.any(String), key: HASH, goneAt: null});
+  expect(room.world.record).toEqual({host: expect.any(String), conn: expect.any(String), key: HASH, goneAt: null, roomId: ROOM});
   expect(room.world.alarm).toBeNull();
 });
 
@@ -389,13 +390,30 @@ test('a room woken from hibernation carries on from its record and sockets', asy
   expect(room.world.record).toEqual({key: HASH, endedAt: room.world.time});
 });
 
-test('a listing is an ordinary message: the host must name a guest, a guest sends it to the host', async () => {
+test('a host lists its room for the directory, updates and unlists it; guests cannot', async () => {
   const room = await claimed(1);
-  const data = {name: 'Room', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3};
-  room.say(room.host, {type: 'listing', data});
-  expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'no-peer', to: null}}]);
-  room.say(room.guests[0], {type: 'listing', data});
-  expect(room.heard(room.host)).toEqual([{from: room.ids[0], type: 'listing', data}]);
+  room.say(room.host, {type: 'listing', data: {name: ' Nebula\u0007 room ', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3}});
+  room.say(room.host, {type: 'listing', data: null});
+  expect(room.world.published).toEqual([[ROOM, {name: 'Nebula room', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3}, room.host.peer.client], [ROOM, null]]);
+  for (const data of [{name: '', mapId: 'x', players: 1}, {name: 'x', mapId: 'x', players: -1}, {name: 'x', players: 1}, 'x', []]) {
+    room.say(room.host, {type: 'listing', data});
+    expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'bad-message'}}]);
+  }
+  // A guest's listing is just a message for the host.
+  room.say(room.guests[0], {type: 'listing', data: {name: 'x', mapId: 'x', players: 1}});
+  expect(room.heard(room.host)).toEqual([{from: room.ids[0], type: 'listing', data: {name: 'x', mapId: 'x', players: 1}}]);
+  expect(room.world.published).toHaveLength(2);
+});
+
+test('a room that ends unlists itself, whether its host left or never came back', async () => {
+  const left = await claimed();
+  left.leave(left.host, 1000);
+  expect(left.world.published).toEqual([[ROOM, null]]);
+  const gone = await claimed();
+  gone.leave(gone.host);
+  expect(gone.world.published).toEqual([]);
+  gone.alarm();
+  expect(gone.world.published).toEqual([[ROOM, null]]);
 });
 
 test('one client takes at most MAX_GUESTS_PER_CLIENT guest places in a room', async () => {

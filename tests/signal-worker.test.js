@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {Room} from '../signal/src/worker.js';
 import {CLOSE, hashKey} from '../signal/src/room.js';
 
-const KEY = 'a'.repeat(32);
+const KEY = 'a'.repeat(32), ROOM = 'p-abcdefghjkmn';
 
 // The Room Durable Object over a fake ctx: storage, alarm and hibernatable sockets.
 async function durableObject() {
@@ -39,13 +39,13 @@ async function durableObject() {
 test('the room object holds a new host in its socket attachment until its key arrives, then stores only its hash', async () => {
   const {object, stored, state, socket} = await durableObject();
   const host = socket();
-  object.room.connect(host, {role: 'host'});
-  expect(host.attachment).toEqual({role: 'host', conn: expect.any(String), client: null, authBy: state.alarm});
+  object.room.connect(host, {role: 'host', roomId: ROOM});
+  expect(host.attachment).toEqual({role: 'host', conn: expect.any(String), client: null, roomId: ROOM, authBy: state.alarm});
   expect(stored.size).toBe(0);
   await object.webSocketMessage(host, JSON.stringify({type: 'auth', key: KEY}));
   const [welcome] = host.sent.map(text => JSON.parse(text));
   expect(host.attachment).toEqual({id: welcome.data.id, role: 'host', conn: host.attachment.conn, client: null});
-  expect(stored.get('room')).toEqual({host: welcome.data.id, conn: host.attachment.conn, key: await hashKey(KEY), goneAt: null});
+  expect(stored.get('room')).toEqual({host: welcome.data.id, conn: host.attachment.conn, key: await hashKey(KEY), goneAt: null, roomId: ROOM});
   expect(JSON.stringify([...stored.values()])).not.toContain(KEY);
   expect(state.alarm).toBeNull();
   const intruder = socket();

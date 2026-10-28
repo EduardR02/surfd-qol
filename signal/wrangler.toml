@@ -9,6 +9,11 @@ compatibility_date = "2025-09-01"
 name = "ROOMS"
 class_name = "Room"
 
+# The directory of public rooms.
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
 # SQLite-backed Durable Objects are the kind the free plan includes.
 [[migrations]]
 tag = "v1"
@@ -18,7 +23,11 @@ new_sqlite_classes = ["Room"]
 tag = "v2"
 new_sqlite_classes = ["Lobby"]
 
-# Rooms are reachable only by invite, so the public directory is gone.
 [[migrations]]
 tag = "v3"
 deleted_classes = ["Lobby"]
+
+# Public rooms are back, so the directory is too.
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["Lobby"]

@@ -5,7 +5,9 @@
 // A host claims a room with a secret key; guests then join, and the relay
 // passes JSON envelopes between the host and each guest, {to, type, data} in
 // and {from, type, data} out. Guests only ever talk to the host. The relay
-// never reads what a message carries, and nothing here logs it.
+// never reads what a message carries, and nothing here logs it; the one
+// exception is a host's listing, which is for the public directory.
+import {listingFrom} from './lobby.js';
 
 // The extension's page script runs on surfd.net, so its sockets carry this
 // Origin. Browsers set it themselves, which keeps other sites' pages out;
@@ -90,16 +92,18 @@ const tooLarge = raw => typeof raw === 'string'
   ? raw.length > MAX_MESSAGE || encoder.encode(raw).length > MAX_MESSAGE : raw.byteLength > MAX_MESSAGE;
 
 // One room's relay. The caller provides:
-// - record, save(record): the room's stored record, {host, conn, key, goneAt}
-//   once claimed (key hashed, goneAt set while the host is away), a tombstone
+// - record, save(record): the room's stored record, {host, conn, key, goneAt,
+//   roomId} once claimed (key hashed, goneAt set while the host is away), a tombstone
 //   {key, endedAt} for TOMBSTONE_MS once it ends, else null;
 // - wake(at): run alarm() at that time, or never (null);
 // - sockets(): the open sockets it accepted, and peerOf(socket): the peer
 //   accept(socket, peer) attached to one, or attach(socket, peer) since;
 //   refuse(socket, code, reason);
-// - allowClient(client): whether a client (limits.js) may send one more message.
+// - allowClient(client): whether a client (limits.js) may send one more message;
+// - publish(roomId, listing, client): list the room in the public directory
+//   for the host's client, or unlist it (null).
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, hash = hashKey, now = Date.now}) {
+export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, publish = () => {}, hash = hashKey, now = Date.now}) {
   let record = null, tomb = null;
   if (stored?.endedAt != null) tomb = stored;
   else record = stored;
@@ -147,6 +151,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   }
   function end() {
     for (const {socket} of members()) shut(socket, 'room-closed');
+    if (record.roomId) publish(record.roomId, null);
     store(null, {key: record.key, endedAt: now()});
   }
   // A room whose host has been away longer than the grace period is over,
@@ -157,12 +162,12 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   }
 
   // client: who the socket's messages count against (limits.js).
-  function connect(socket, {role, client = null}) {
+  function connect(socket, {role, client = null, roomId = null}) {
     expire();
     if (role === 'host') {
       // The key comes in the first message, which keeps it out of URLs and
       // so out of logs.
-      accept(socket, {role, conn: randomId(), client, authBy: now() + AUTH_MS});
+      accept(socket, {role, conn: randomId(), client, roomId, authBy: now() + AUTH_MS});
       return wake(due());
     }
     if (!record) return refuse(socket, CLOSE['no-room'], 'no-room');
@@ -204,7 +209,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     // the relay notices its old socket is gone. Its peer id stays the same.
     const previous = host(), id = record?.host ?? randomId();
     attach(socket, {id, role: 'host', conn: peer.conn, client: peer.client});
-    store({host: id, conn: peer.conn, key, goneAt: null});
+    store({host: id, conn: peer.conn, key, goneAt: null, roomId: record?.roomId ?? peer.roomId});
     if (previous) shut(previous.socket, 'replaced');
     post(socket, {type: 'welcome', data: {id, peers: guests().map(guest => guest.peer.id)}});
   }
@@ -226,6 +231,14 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     // A ping is a heartbeat, which the runtime usually answers without waking the room.
     const value = raw === 'ping' ? null : envelope(raw);
     if (peer.role === 'host') {
+      // A listing addressed to no one is for the public directory.
+      if (value?.type === 'listing' && value.to == null) {
+        if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
+        if (!allow(peer)) return;
+        if (value.data === null) return void publish(record.roomId, null);
+        const listing = listingFrom(value.data);
+        return listing && record.roomId ? void publish(record.roomId, listing, peer.client) : fail(socket, 'bad-message');
+      }
       const target = value && guests().find(guest => guest.peer.id === value.to);
       if (target) {
         if (!allow(target.peer, true) || !allowClient(target.peer.client)) return kick(target.socket, 'rate-limited');
