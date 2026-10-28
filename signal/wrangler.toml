@@ -6,9 +6,19 @@ compatibility_date = "2025-09-01"
 
 # Every room connects through Cloudflare's TURN relay, with credentials from
 # the TURN key in the secrets TURN_KEY_ID and TURN_KEY_API_TOKEN. Anything but
-# "on" stops issuing them, which stops new rooms and joins.
+# "on" stops issuing them, which stops new rooms and joins. Opt in deliberately:
+# room ownership is NOT surfd account authentication.
 [vars]
-RELAY = "on"
+RELAY = "off"
+# Explicit example grant budgets; choose limits before enabling paid relay.
+# All three MUST be positive safe integers. Counts are global rolling windows,
+# persisted in the singleton Lobby, and failed requests burn reservations.
+# Unexpired includes the one-hour TTL plus a five-second issuance window.
+# These are NOT byte/spend caps: one grant can relay arbitrary bytes, and hostile
+# callers can exhaust the grants. They are not account-authentication controls.
+RELAY_GRANTS_PER_HOUR = "256"
+RELAY_GRANTS_PER_DAY = "1024"
+RELAY_MAX_UNEXPIRED = "256"
 
 # One Durable Object per room.
 [[durable_objects.bindings]]

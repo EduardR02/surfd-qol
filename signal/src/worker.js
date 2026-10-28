@@ -6,6 +6,7 @@
 import {CONNECTIONS, MESSAGES, RELAYS, clientOf, createLimiter} from './limits.js';
 import {createLobby} from './lobby.js';
 import {createRelay} from './relay.js';
+import {RELAY_BUDGET_KEY, reserveRelay} from './relay-budget.js';
 import {ORIGIN, createRoom, parseRequest} from './room.js';
 
 const OPEN = 1;
@@ -17,6 +18,10 @@ const connections = createLimiter(CONNECTIONS), messages = createLimiter(MESSAGE
 const DIRECTORY_MS = 10000;
 let directory = null, directoryRequest = null;
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
+async function reserveCredentials(env) {
+  const response = await lobbyOf(env).fetch('https://lobby/relay-reservation', {method: 'POST'});
+  return response.status === 201 ? response.json() : null;
+}
 
 async function listRooms(request, env) {
   if (request.headers.get('Origin') !== ORIGIN) return refusal({status: 403, error: 'Origin not allowed'});
@@ -68,7 +73,7 @@ export class Room {
         // A refused socket still opens, so the browser gets the close code and reason.
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
         allowClient: messages,
-        relay: createRelay({env, allow: relays}),
+        relay: createRelay({env, allow: relays, reserve: () => reserveCredentials(env)}),
         // Keep only the latest queued state; a slow PUT must finish before DELETE.
         publish(roomId, listing, client) {
           pendingPublication = {roomId, listing, client};
@@ -108,11 +113,15 @@ export class Room {
 // The directory of public rooms. Only this Worker reaches it: rooms list and
 // unlist themselves, and /rooms reads it.
 export class Lobby {
-  constructor(ctx) {
+  constructor(ctx, env) {
+    this.storage = ctx.storage;
+    this.env = env;
     ctx.blockConcurrencyWhile(async () => {
       const {storage} = ctx;
+      const entries = await storage.list();
+      entries.delete(RELAY_BUDGET_KEY);
       this.lobby = createLobby({
-        entries: await storage.list(),
+        entries,
         save: (id, entry) => storage.put(id, entry),
         drop: id => storage.delete(id),
       });
@@ -120,6 +129,12 @@ export class Lobby {
   }
   async fetch(request) {
     const {pathname} = new URL(request.url);
+    // Not routed by the public Worker: only rooms can reserve via the binding.
+    if (pathname === '/relay-reservation') {
+      if (request.method !== 'POST') return new Response(null, {status: 405});
+      const reservation = await reserveRelay(this.storage, this.env);
+      return reservation ? Response.json(reservation, {status: 201}) : new Response(null, {status: 503});
+    }
     if (pathname === '/rooms') return Response.json({rooms: this.lobby.rooms()});
     const id = /^\/listing\/(p-[a-z0-9]+)$/.exec(pathname)?.[1];
     if (id && request.method === 'PUT') {

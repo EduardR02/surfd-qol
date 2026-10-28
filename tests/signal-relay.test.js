@@ -1,5 +1,5 @@
 import {expect, spyOn, test} from 'bun:test';
-import {RELAY_TTL, createRelay, turnServers} from '../signal/src/relay.js';
+import {RELAY_TTL, RELAY_TIMEOUT_MS, createRelay, turnServers} from '../signal/src/relay.js';
 import {CLOSE, RELAY, createRoom} from '../signal/src/room.js';
 import {RELAYS} from '../signal/src/limits.js';
 import {Room} from '../signal/src/worker.js';
@@ -13,15 +13,16 @@ const TURN = {
 // Cloudflare's documented 201 answer.
 const answer = () => new Response(JSON.stringify({iceServers: [{urls: ['stun:stun.cloudflare.com:3478']}, TURN]}), {status: 201});
 const ISSUED = {iceServers: [{...TURN, urls: TURN.urls.filter(url => !url.includes(':53?'))}], ttl: RELAY_TTL};
+const reserve = async () => ({issueBy: Date.now() + RELAY_TIMEOUT_MS});
 
 function cloudflare(respond = answer) {
   const calls = [];
   return {calls, fetch: async (url, options) => { calls.push({url, ...options}); return respond(); }};
 }
 
-test('credentials come from the documented endpoint with the TURN key, for a TTL covering a long session', async () => {
+test('credentials come from the documented endpoint with the TURN key and one-hour TTL', async () => {
   const api = cloudflare();
-  const issue = createRelay({env: ENV, allow: () => true, fetch: api.fetch});
+  const issue = createRelay({env: ENV, allow: () => true, reserve, fetch: api.fetch});
   expect(await issue('203.0.113.7')).toEqual(ISSUED);
   expect(api.calls).toHaveLength(1);
   const [call] = api.calls;
@@ -29,7 +30,7 @@ test('credentials come from the documented endpoint with the TURN key, for a TTL
   expect(call.method).toBe('POST');
   expect(call.headers).toEqual({Authorization: 'Bearer secret-token-456', 'Content-Type': 'application/json'});
   expect(JSON.parse(call.body)).toEqual({ttl: RELAY_TTL});
-  expect(RELAY_TTL).toBeGreaterThanOrEqual(3 * 60 * 60);
+  expect(RELAY_TTL).toBe(60 * 60);
   expect(call.signal).toBeInstanceOf(AbortSignal);
 });
 
@@ -49,11 +50,11 @@ test('only TURN servers are passed on, without port 53 or malformed entries', ()
 test('nothing is issued while RELAY is off, without the secrets, or past the client limit', async () => {
   for (const env of [{...ENV, RELAY: 'off'}, {...ENV, RELAY: undefined}, {...ENV, TURN_KEY_ID: undefined}, {...ENV, TURN_KEY_API_TOKEN: ''}]) {
     const api = cloudflare();
-    expect(await createRelay({env, allow: () => true, fetch: api.fetch})('a')).toBeNull();
+    expect(await createRelay({env, allow: () => true, reserve, fetch: api.fetch})('a')).toBeNull();
     expect(api.calls).toEqual([]);
   }
   const api = cloudflare(), asked = [];
-  expect(await createRelay({env: ENV, allow: client => { asked.push(client); return false; }, fetch: api.fetch})('a')).toBeNull();
+  expect(await createRelay({env: ENV, allow: client => { asked.push(client); return false; }, reserve, fetch: api.fetch})('a')).toBeNull();
   expect(asked).toEqual(['a']);
   expect(api.calls).toEqual([]);
 });
@@ -67,7 +68,7 @@ test('a failed or unexpected answer issues nothing and is never logged', async (
       () => new Response(JSON.stringify({iceServers: [{urls: ['stun:stun.cloudflare.com:3478']}]}), {status: 201}),
       () => { throw new Error(`fetch https://rtc.live.cloudflare.com/v1/turn/keys/${ENV.TURN_KEY_ID} with ${ENV.TURN_KEY_API_TOKEN} failed`); },
     ]) {
-      expect(await createRelay({env: ENV, allow: () => true, fetch: cloudflare(respond).fetch})('a')).toBeNull();
+      expect(await createRelay({env: ENV, allow: () => true, reserve, fetch: cloudflare(respond).fetch})('a')).toBeNull();
     }
     for (const log of logs) expect(log).not.toHaveBeenCalled();
   } finally { for (const log of logs) log.mockRestore(); }
@@ -146,7 +147,19 @@ test('the room object issues credentials through Cloudflare under the per-client
     const ctx = {setWebSocketAutoResponse() {}, blockConcurrencyWhile(callback) { ready = callback(); },
       storage: {get: async () => null, put() {}, deleteAll() {}, setAlarm() {}, deleteAlarm() {}},
       getWebSockets: () => [...open], acceptWebSocket(socket) { open.add(socket); }, waitUntil() {}};
-    const object = new Room(ctx, ENV);
+    const reservations = [];
+    const object = new Room(ctx, {...ENV, LOBBY: {
+      idFromName(name) { expect(name).toBe('lobby'); return name; },
+      get(id) {
+        expect(id).toBe('lobby');
+        return {async fetch(url, options) {
+          if (url !== 'https://lobby/relay-reservation') return new Response(null, {status: 204});
+          expect(options.method).toBe('POST');
+          reservations.push(url);
+          return Response.json(await reserve(), {status: 201});
+        }};
+      },
+    }});
     await ready;
     const socket = () => ({readyState: 1, sent: [], send(text) { this.sent.push(JSON.parse(text)); }, close() { this.readyState = 3; },
       serializeAttachment(peer) { this.peer = structuredClone(peer); }, deserializeAttachment() { return structuredClone(this.peer); }});
@@ -159,6 +172,7 @@ test('the room object issues credentials through Cloudflare under the per-client
     expect(answers.slice(0, RELAYS.burst)).toEqual(Array(RELAYS.burst).fill({type: RELAY, data: ISSUED}));
     expect(answers.at(-1)).toEqual({type: 'error', data: {code: 'no-relay'}});
     expect(calls).toHaveLength(RELAYS.burst);
+    expect(reservations).toHaveLength(RELAYS.burst);
     expect(calls[0].headers.Authorization).toBe(`Bearer ${ENV.TURN_KEY_API_TOKEN}`);
     expect(JSON.stringify(host.sent)).not.toContain(ENV.TURN_KEY_API_TOKEN);
     expect(JSON.stringify(host.sent)).not.toContain(ENV.TURN_KEY_ID);
@@ -167,4 +181,36 @@ test('the room object issues credentials through Cloudflare under the per-client
     if (original === undefined) delete globalThis.WebSocketRequestResponsePair;
     else globalThis.WebSocketRequestResponsePair = original;
   }
+});
+
+test('missing, denied, failed and expired reservations never call the provider', async () => {
+  for (const reserve of [
+    undefined, async () => null, async () => false, async () => ({}),
+    async () => ({issueBy: '5000'}), async () => ({issueBy: 1000}),
+    async () => { throw new Error('Storage unavailable'); },
+  ]) {
+    const api = cloudflare();
+    const issue = createRelay({env: ENV, allow: () => true, reserve, fetch: api.fetch, now: () => 1000});
+    expect(await issue('a')).toBeNull();
+    expect(api.calls).toEqual([]);
+  }
+});
+
+test('the provider waits for a committed reservation and uses its remaining issuance window', async () => {
+  let commit;
+  const api = cloudflare(), pending = new Promise(resolve => { commit = resolve; });
+  const issue = createRelay({env: ENV, allow: () => true, reserve: () => pending, fetch: api.fetch, now: () => 1000});
+  const issuing = issue('a');
+  expect(api.calls).toEqual([]);
+  commit({issueBy: 2000});
+  expect(await issuing).toEqual(ISSUED);
+  expect(api.calls).toHaveLength(1);
+});
+
+test('provider responses after the reserved issuance window are not handed to clients', async () => {
+  let at = 1000;
+  const api = cloudflare(() => { at = 2000; return answer(); });
+  const issue = createRelay({env: ENV, allow: () => true, reserve: async () => ({issueBy: 2000}), fetch: api.fetch, now: () => at});
+  expect(await issue('a')).toBeNull();
+  expect(api.calls).toHaveLength(1);
 });

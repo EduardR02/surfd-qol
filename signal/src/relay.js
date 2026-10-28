@@ -2,10 +2,10 @@
 // traffic so that no player ever sees another's IP address. Kept apart from
 // the Workers runtime so it can be tested anywhere; worker.js passes the env.
 
-// Long enough for a long session; rooms that outlast it renew before it ends.
-export const RELAY_TTL = 4 * 60 * 60;
+// Renew before an hour ends instead of leaving reusable credentials alive for four.
+export const RELAY_TTL = 60 * 60;
+export const RELAY_TIMEOUT_MS = 5000;
 const API = 'https://rtc.live.cloudflare.com/v1/turn/keys';
-const TIMEOUT_MS = 5000;
 
 // The TURN servers of Cloudflare's answer. STUN would only find addresses a
 // relay-only connection never uses, and browsers block port 53.
@@ -19,21 +19,24 @@ export function turnServers(body) {
   });
 }
 
-// issue(client) resolves to {iceServers, ttl}, or null when the relay is
-// switched off (env.RELAY isn't "on"), allow(client) refuses, or Cloudflare
-// doesn't answer as documented. It never throws, so neither the key nor
-// Cloudflare's answer can end up in an error log.
-export function createRelay({env, allow, fetch = (...args) => globalThis.fetch(...args)}) {
+// Every provider request needs both the per-client allowance and a committed
+// global reservation. Its issuance deadline bounds the reservation's lifetime.
+// Failures deliberately burn reservations; no provider answers or secrets log.
+export function createRelay({env, allow, reserve, fetch = (...args) => globalThis.fetch(...args), now = () => Date.now()}) {
   return async client => {
-    if (env?.RELAY !== 'on' || !env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN || !allow(client)) return null;
     try {
+      if (env?.RELAY !== 'on' || !env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN || !allow(client)) return null;
+      const reservation = await reserve();
+      if (!Number.isSafeInteger(reservation?.issueBy)) return null;
+      const remaining = Math.min(RELAY_TIMEOUT_MS, reservation.issueBy - now());
+      if (remaining <= 0) return null;
       const response = await fetch(`${API}/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
         method: 'POST',
         headers: {Authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json'},
         body: JSON.stringify({ttl: RELAY_TTL}),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(remaining),
       });
-      if (!response.ok) return null;
+      if (!response.ok || now() >= reservation.issueBy) return null;
       const iceServers = turnServers(await response.json());
       return iceServers.length ? {iceServers, ttl: RELAY_TTL} : null;
     } catch {
