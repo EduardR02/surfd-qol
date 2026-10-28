@@ -17,7 +17,9 @@ export const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 // At least 128 bits, as lowercase hex.
 export const HOST_KEY = /^[0-9a-f]{32,128}$/;
-export const MAX_GUESTS = 16;
+// Guests connected at once. They leave once their direct connection to the
+// host is up, so this bounds joins in flight (and abuse), not a room's size.
+export const MAX_GUESTS = 100;
 export const MAX_MESSAGE = 16 * 1024;
 export const RATE_MESSAGES = 50;
 export const RATE_WINDOW_MS = 10000;

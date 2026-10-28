@@ -17,7 +17,7 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 `GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
 
 - The host connects with `?role=host&key=<key>`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters, and claims the room. Only that key can reconnect to it.
-- Guests connect with `?role=guest`.
+- Guests connect with `?role=guest`, and leave once their direct connection to the host is up, so a room's size isn't limited here.
 - On joining, the relay sends `{"type":"welcome","data":{"id","peers":[guest ids]}}` to the host and `{"type":"welcome","data":{"id","host"}}` to a guest.
 - The host sends `{"to","type","data"}` to a guest and a guest `{"type","data"}` (or with `"to"` set to the host's id) to the host; each arrives as `{"from","type","data"}`. Guests never reach each other. `type` is up to 32 letters, digits, `_` or `-`; the relay never reads `data`.
 - The host hears `{"type":"peer-joined","from"}` and `{"type":"peer-left","from"}` as guests come and go.
@@ -36,7 +36,7 @@ The relay closes sockets with these codes (the reason is the name):
 | 4410 | `room-closed` | the host left for good; the room is gone |
 | 4413 | `too-large` | a message over 16 KB |
 | 4429 | `rate-limited` | over 50 messages in 10 seconds (the host: 50 per guest present) |
-| 4503 | `room-full` | 16 guests already |
+| 4503 | `room-full` | 100 guests connected at once |
 
 ## Tests
 
