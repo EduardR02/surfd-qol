@@ -26,19 +26,17 @@ export function createEnergyTrend() {
     tone = 'neutral';
     return publish();
   }
-  // time is simulated seconds (tick × dt) for exact local samples. A repeated
-  // network pose carries no new information, so it keeps the previous trend.
+  // Time is simulated seconds (tick × dt) from a local session or replay.
   // Suppressed samples (e.g. while surfing a ramp) stay neutral but keep the
   // baseline, so the trend responds immediately once suppression ends.
   // live: the tone is the gain or loss since the last sample alone, with no
   // averaging or hysteresis, so every costly input shows.
-  function sample({ x, y, z, vx, vy, vz, time, exact }, gravity, suppressed = false, live = false) {
+  function sample({ x, y, z, vx, vy, vz, time }, gravity, suppressed = false, live = false) {
     if (![x, y, z, vx, vy, vz, time, gravity].every(Number.isFinite)) return reset();
     const speedSquared = vx * vx + vy * vy + vz * vz;
     const energy = speedSquared + 2 * gravity * z;
     const dt = time - lastTime;
-    const repeated = energy === lastEnergy && x === lastX && y === lastY && z === lastZ;
-    if (dt === 0 || (repeated && !exact)) {
+    if (dt === 0) {
       if (suppressed) { rate = 0; tone = 'neutral'; }
       return publish();
     }
@@ -62,13 +60,11 @@ export function createEnergyTrend() {
   return { sample, reset };
 }
 
-// Local sessions carry exact simulated ticks; spectator poses only carry a
-// network timestamp, so they fall back to wall-clock time between new poses.
-export function energySample(state, dt, spectator, now = performance.now()) {
-  if (spectator) {
-    return state ? { x: state.x, y: state.y, z: state.z, vx: state.vx, vy: state.vy, vz: state.vz, time: now / 1000, exact: false } : null;
-  }
+// Interpolated network poses do not conserve mechanical energy between frames.
+// Only exact simulated ticks (local play and replays) can measure energy work.
+export function energySample(state, dt, spectator) {
+  if (spectator) return null;
   const position = state?.position, velocity = state?.velocity;
   if (!position || !velocity || !Number.isFinite(state.tick)) return null;
-  return { x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z, time: state.tick * dt, exact: true };
+  return { x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z, time: state.tick * dt };
 }

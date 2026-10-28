@@ -118,7 +118,7 @@ Everything is stored in this browser. The same page shows storage use and has **
 
 ### Replays and spectating
 
-Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback.
+Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback. Energy tint is also unavailable while spectating: interpolated network poses can look like gains or losses even during a physically neutral arc. The setting still applies to your own runs and locally simulated replays.
 
 ### Optional extras
 

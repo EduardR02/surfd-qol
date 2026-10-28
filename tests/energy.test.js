@@ -89,16 +89,23 @@ describe('energy trend', () => {
     expect(run(trend, s, 60, s => { s.tick++; s.position.x += 15; }).tone).toBe('neutral');
   });
 
-  test('repeated network poses keep the trend; invalid samples reset it', () => {
+  test('invalid local samples reset an existing trend', () => {
     const trend = createEnergyTrend();
-    const pose = { x: 0, y: 0, z: 0, vx: 1000, vy: 0, vz: 0 };
-    trend.sample(energySample(pose, dt, true, 0), gravity);
-    pose.vx += 2; pose.x += 50;
-    const gained = trend.sample(energySample(pose, dt, true, 50), gravity).rate;
-    expect(gained).toBeGreaterThan(0);
-    expect(trend.sample(energySample(pose, dt, true, 66), gravity).rate).toBe(gained);
-    expect(trend.sample(energySample({ ...pose, vz: undefined }, dt, true, 80), gravity).tone).toBe('neutral');
+    const s = state(0, { x: 0, y: 0, z: 0 }, { x: 1000, y: 0, z: 0 });
+    trend.sample(energySample(s, dt, false), gravity);
+    s.tick++; s.velocity.x += 2; s.position.x += 15;
+    expect(trend.sample(energySample(s, dt, false), gravity).tone).toBe('good');
+    s.tick++; s.velocity.z = NaN;
+    expect(trend.sample(energySample(s, dt, false), gravity)).toMatchObject({ tone: 'neutral', rate: 0 });
     expect(energySample(null, dt, false)).toBe(null);
+  });
+
+  test('spectator poses cannot produce energy work, even with local-looking fields', () => {
+    const pose = { x: 0, y: 0, z: 1000, vx: 1000, vy: 0, vz: 400 };
+    expect(energySample(pose, dt, true)).toBe(null);
+    const local = state(10, { x: 0, y: 0, z: 1000 }, { x: 1000, y: 0, z: 400 });
+    expect(energySample(local, dt, true)).toBe(null);
+    expect(energySample(local, dt, false).time).toBe(10 * dt);
   });
 });
 
@@ -114,18 +121,13 @@ test('suppressed samples read neutral but keep the baseline for an immediate res
   expect(trend.sample(energySample(s, dt, false), gravity).tone).toBe('good');
 });
 
-test('suppression clears the prior tone even without a new local tick or network pose', () => {
-  for (const spectator of [false, true]) {
-    const trend = createEnergyTrend();
-    const s = state(0, {x: 0, y: 0, z: 0}, {x: 1000, y: 0, z: 0});
-    const sample = now => energySample(spectator ? {
-      x: s.position.x, y: s.position.y, z: s.position.z,
-      vx: s.velocity.x, vy: s.velocity.y, vz: s.velocity.z,
-    } : s, dt, spectator, now);
-    trend.sample(sample(0), gravity);
-    s.tick++; s.position.x = 15; s.velocity.x = 1002;
-    expect(trend.sample(sample(15), gravity).tone).toBe('good');
-    expect(trend.sample(sample(spectator ? 30 : 15), gravity, true)).toMatchObject({tone: 'neutral', rate: 0, level: 0});
-    expect(trend.sample(sample(spectator ? 45 : 15), gravity)).toMatchObject({tone: 'neutral', rate: 0});
-  }
+test('suppression clears the prior tone even without a new simulated tick', () => {
+  const trend = createEnergyTrend();
+  const s = state(0, {x: 0, y: 0, z: 0}, {x: 1000, y: 0, z: 0});
+  const sample = () => energySample(s, dt, false);
+  trend.sample(sample(), gravity);
+  s.tick++; s.position.x = 15; s.velocity.x = 1002;
+  expect(trend.sample(sample(), gravity).tone).toBe('good');
+  expect(trend.sample(sample(), gravity, true)).toMatchObject({tone: 'neutral', rate: 0, level: 0});
+  expect(trend.sample(sample(), gravity)).toMatchObject({tone: 'neutral', rate: 0});
 });
