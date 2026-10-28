@@ -149,7 +149,8 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     for (const {socket} of members()) shut(socket, 'room-closed');
     store(null, {key: record.key, endedAt: now()});
   }
-  // A room whose host has been away longer than the grace period is over.
+  // A room whose host has been away longer than the grace period is over,
+  // and a tombstone past its time goes.
   function expire() {
     if (record?.goneAt != null && now() >= record.goneAt + GRACE_MS) end();
     if (tomb && now() >= tomb.endedAt + TOMBSTONE_MS) store(null);
@@ -231,9 +232,9 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
         return post(target.socket, {from: peer.id, type: value.type, data: value.data});
       }
       if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
-      // Mostly replies to guests that left before they came. Guests can cause
-      // those at will, so past the host's share they are dropped, never a
-      // reason to close the host.
+      // Mostly replies to guests that left before the reply arrived. Guests
+      // can cause those at will, so past the host's share they are dropped,
+      // never a reason to close the host.
       if (!allow(peer)) return;
       if (raw === 'ping') return void socket.send('pong');
       return value ? fail(socket, 'no-peer', value.to ?? null) : fail(socket, 'bad-message');
