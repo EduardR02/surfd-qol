@@ -186,7 +186,7 @@ export function decodeSpectator(buffer, forwarded = false) {
   return packet;
 }
 
-// Preserve the validated sender bytes, including quantization, while assigning the host-owned slot.
+// The sender's bytes go on unchanged (no second rounding); only the slot is the host's.
 export function relayPose(buffer, slot) {
   const batch = decodePoseBatch(buffer);
   requireValid(uint(slot, 65535), 'Invalid slot');

@@ -139,11 +139,10 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           spectate(client, message);
           break;
         case 'context':
-          // A null context resolves the native map-start wait without granting ranked submission authority.
+          // The game waits for this when a map starts; no token means no ranked runs.
           send(client, {type: 'context', epoch: state.epoch, token: null});
           break;
-        // Phase 1 has no votes, account refresh, activity checks, moderation or ranked results.
-        // Unknown native controls are intentionally inert rather than forwarded to public services.
+        // Votes, refreshes, activity, reports and moderation belong to public servers.
       }
     } catch {
       client.socket.close(CLOSE.invalid, 'Invalid private room data');

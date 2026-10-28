@@ -1,7 +1,7 @@
 const CHANNEL = 'surfd-qol-private-rooms-v1';
 
-// Development transport: BroadcastChannel reaches same-origin tabs only.
-// Delivery to this instance also permits a host and joiner in one runtime.
+// For development: BroadcastChannel reaches only tabs of the same browser. It
+// also delivers to this tab, so one page can host and join.
 export function createBroadcastSignalling() {
   const channel = new BroadcastChannel(CHANNEL);
   const subscribers = new Set();

@@ -6,8 +6,8 @@ import { createBroadcastSignalling } from './signalling.js';
 const DISCOVERY_TIMEOUT = 5000;
 const ROOM_LIFETIME = 15000;
 
-// Discovery is deliberately same-origin and ephemeral. The native lobby still
-// owns selection, loading screens, connecting, reconnecting and map loading.
+// Joining stays the game's own: this only puts private rooms in its server
+// list and supplies their sockets.
 export function createPrivateRooms({ getAdapter }) {
   const known = new Map();
   const pending = new Map();
@@ -42,8 +42,8 @@ export function createPrivateRooms({ getAdapter }) {
         !Number.isSafeInteger(row.capacity) || row.capacity < 1 || row.players > row.capacity ||
         !Number.isSafeInteger(row.epoch) || row.epoch < 1 ||
         !getAdapter()?.rooms?.maps().some(map => map.id === row.mapId)) return false;
-    // BroadcastChannel is shared, not a public directory: only an explicit
-    // join/invite, our own room, or an already-known room may become visible.
+    // Rooms are never listed publicly: only our own, one we were asked to
+    // join, or one already listed may appear.
     if (row.id !== hosted?.state.roomId && !pending.has(row.id) && !known.has(row.id)) return false;
     const nativeRow = {
       id: row.id, name: row.name, region: 'Private', mapId: row.mapId,
@@ -170,7 +170,7 @@ export function createPrivateRooms({ getAdapter }) {
       return roomId;
     },
     join,
-    // Null means native transport. These guards do not intercept public rooms.
+    // null: a public room, left to the game.
     ticket: id => isPrivateRoomId(id) ? 'private-room' : null,
     measure: id => isPrivateRoomId(id) ? 0 : null,
     mergeRooms,
@@ -196,8 +196,8 @@ export function createPrivateRooms({ getAdapter }) {
     attach() {
       if (!getAdapter()?.rooms || destroyed) return;
       setup();
-      // Native already reads ?join when choosing its highlighted row. Discover
-      // the metadata, but never auto-connect or change the user's play intent.
+      // The game highlights a ?join row itself: find the room so its row
+      // exists, but leave joining to the player.
       const invite = new URLSearchParams(globalThis.location?.search ?? '').get('join');
       if (isPrivateRoomId(invite)) discover(invite).catch(error => getAdapter()?.notice?.(error.message));
     },
