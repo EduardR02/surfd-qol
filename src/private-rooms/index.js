@@ -1,6 +1,6 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS, isPlayerName } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, catalogEntry, isPlayerName, isRoomName } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -45,18 +45,17 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
     if (adapter) adapter.update(mergeRooms(adapter.rows()));
     ui?.refresh();
   }
+  // Rows come from the host, so names must look like a player's room and map titles are our own.
   function normalize(row) {
-    if (!row || !isPrivateRoomId(row.id) || typeof row.name !== 'string' || row.name.length > 40 ||
-        typeof row.mapId !== 'string' || !row.mapId || row.mapId.length > 64 ||
-        typeof row.mapTitle !== 'string' || row.mapTitle.length > 64 ||
-        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > MAX_ROOM_PLAYERS ||
-        !getAdapter()?.rooms?.maps().some(map => map.id === row.mapId)) return null;
-    return {id: row.id, name: row.name, mapId: row.mapId, mapTitle: row.mapTitle,
+    const map = row && getAdapter()?.rooms?.maps().find(entry => entry.id === row.mapId);
+    if (!map || !isPrivateRoomId(row.id) || !isRoomName(row.name) ||
+        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > MAX_ROOM_PLAYERS) return null;
+    return {id: row.id, name: row.name, mapId: map.id, mapTitle: catalogEntry(map).title,
       players: row.players, region: 'Private', endsAt: 0, untimed: true,
       online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
       ping: known.get(row.id)?.ping ?? null,
-      roster: Array.isArray(row.roster) ? row.roster.filter(player => player &&
-        typeof player.name === 'string' && Number.isFinite(player.points)).map(player =>
+      roster: Array.isArray(row.roster) ? row.roster.slice(0, MAX_ROOM_PLAYERS).filter(player => player &&
+        isPlayerName(player.name) && Number.isSafeInteger(player.points)).map(player =>
         ({name: player.name, points: player.points})) : []};
   }
   function hostRow() {

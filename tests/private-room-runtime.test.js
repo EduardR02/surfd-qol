@@ -384,6 +384,19 @@ describe('private room runtime', () => {
     finally { long.runtime.destroy(); }
   });
 
+  test('room rows keep local map titles and refuse names that are not a player room', async () => {
+    const f = fixture();
+    try {
+      const joining = f.runtime.join(ROOM), signal = f.signals[0];
+      signal.ready();
+      signal.message('room-info', {...row(), name: 'Surfd EU 2 · Frankfurt'});
+      expect(f.runtime.mergeRooms([])).toEqual([]);
+      signal.message('room-info', {...row(), mapTitle: '<b>Spoof</b>', roster: [{name: '<i>x</i>', points: 0}, {name: 'Visitor', points: 3}]});
+      await joining;
+      expect(f.runtime.mergeRooms([])[0]).toMatchObject({name: "Guest's room", mapTitle: 'Map', roster: [{name: 'Visitor', points: 3}]});
+    } finally { f.runtime.destroy(); }
+  });
+
   test('private measurement bypasses native fetch and uses actual pong time', async () => {
     const f = fixture();
     try {
