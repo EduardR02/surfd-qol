@@ -26,14 +26,17 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   let staging = false, pending = false, destroyed = false, scheduled = false;
   let joinLabel = '', joinDisabled = false;
   const votes = new Map();
-  const menu = doc?.querySelector('.room-menu-actions');
-  let observedRoot, observedOpen, observedCommunity;
+  // Looked up when needed: the game may build its room menu after the extension attaches.
+  let menu = null;
+  const roomMenu = () => menu?.isConnected ? menu : (menu = doc?.querySelector('.room-menu-actions') ?? null);
+  let observedRoot, observedOpen, observedCommunity, observedMenu;
   function observe(open, community) {
-    if (root === observedRoot && open === observedOpen && community === observedCommunity) return;
-    observedRoot = root; observedOpen = open; observedCommunity = community;
+    const actions = community ? roomMenu() : null;
+    if (root === observedRoot && open === observedOpen && community === observedCommunity && actions === observedMenu) return;
+    observedRoot = root; observedOpen = open; observedCommunity = community; observedMenu = actions;
     observer?.disconnect();
     if (root) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: open, subtree: open});
-    if (menu && community) observer?.observe(menu, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
+    if (actions) observer?.observe(actions, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
   }
   const button = (label, className = 'btn') => {
     const node = doc.createElement('button');

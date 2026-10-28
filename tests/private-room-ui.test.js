@@ -10,6 +10,7 @@ class Element {
   }
   get textContent() { return this.content + this.children.map(child => child.textContent).join(''); }
   set textContent(value) { this.content = String(value); this.children = []; }
+  get isConnected() { let node = this; while (node.parentNode) node = node.parentNode; return node.tag === 'document'; }
   get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1] ?? null; }
   append(...nodes) { for (const node of nodes) {node.remove(); node.parentNode = this; this.children.push(node);} }
   remove() { if (this.parentNode) {this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null;} }
@@ -75,7 +76,7 @@ class Observer {
   }
 }
 
-function fixture({observe = false} = {}) {
+function fixture({observe = false, lateMenu = false} = {}) {
   const document = new Element('document'); document.documentElement = document; document.createElement = tag => new Element(tag);
   const add = (parent, tag, id = '', className = '', value = '') => {const node = new Element(tag); node.id = id; node.className = className; node.textContent = value; parent.append(node); return node;};
   const root = add(document, 'section');
@@ -92,8 +93,9 @@ function fixture({observe = false} = {}) {
   const refresh = add(foot, 'button', 'servers-refresh', 'btn', 'Refresh');
   const join = add(foot, 'button', 'servers-join', 'btn btn-primary', 'Join');
   const status = add(root, 'span', 'servers-status');
-  const menu = add(document, 'div', '', 'room-menu-actions');
+  const menu = new Element('div'); menu.className = 'room-menu-actions';
   const vote = add(menu, 'button', '', 'room-rtv', 'Rock the vote');
+  if (!lateMenu) document.append(menu);
   const hud = add(document, 'div', '', 'hud');
   let visibility = 'private', hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0;
   const calls = [], rows = [{id:'eu',region:'Europe',players:4,online:true}];
@@ -106,6 +108,7 @@ function fixture({observe = false} = {}) {
   const adapter = {rooms:{root:()=>root,browserOpen:()=>!root.hidden,rows:()=>{reads++;return rows;},selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
   join.onclick = () => {nativeJoins++;};
   const ui = createRoomUi({rooms,getAdapter:()=>adapter,document,MutationObserver:observe ? Observer : null});
+  if (lateMenu) document.append(menu);
   return {ui,rooms,root,detail,info,invite,code,copy,foot,refresh,join,status,vote,menu,hud,calls,rows,reads:()=>reads,
     host:()=>foot.children.find(node=>node.textContent==='Host a room'),nativeJoins:()=>nativeJoins,
     fail:error=>{failure=error;},select:id=>{selected=id;},current:id=>{current=id;}};
@@ -143,6 +146,17 @@ describe('native room UI', () => {
     Observer.mutate(f.root, 'attributes', 'hidden');
     await Promise.resolve();
     expect(f.reads()).toBeGreaterThan(reads);
+    f.ui.destroy();
+  });
+
+  test('vote buttons hide in a menu built after the UI', () => {
+    const f = fixture({lateMenu: true});
+    f.current('p-aaaaaaaaaaaa');
+    f.ui.refresh();
+    expect(f.vote.hidden).toBe(true);
+    f.current(null);
+    f.ui.refresh();
+    expect(f.vote.hidden).toBe(false);
     f.ui.destroy();
   });
 
