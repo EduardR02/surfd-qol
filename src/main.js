@@ -11,6 +11,7 @@ import { observePhysics } from './observer.js';
 import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
 import { applySettings as applySettingsTo, colorKeys, defaults, storageKey, storageLimitKeys } from './settings.js';
+import { createPrivateRooms } from './private-rooms/index.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -82,6 +83,7 @@ let runtimeStatus = 'Connecting physics observer…';
 let failed = false;
 let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
+const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
@@ -103,6 +105,7 @@ function fail(error) {
 const api = {
   adapter: null,
   settings,
+  privateRooms,
   attach(adapter) {
     if (destroyed || api.adapter) return;
     try {
@@ -120,6 +123,8 @@ const api = {
         onError: fail
       });
       api.adapter = adapter;
+      try { privateRooms.attach(); }
+      catch (error) { console.warn('[Surfd QoL] Private room discovery unavailable:', error); }
       runtimeStatus = 'Tick observer connected';
       failed = false;
       publishPageState();
@@ -138,6 +143,7 @@ const api = {
     if (destroyed) return;
     destroyed = true;
     clearInterval(bindingTimer);
+    privateRooms.destroy();
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
     // Remove the replay restore wrapper before the observer it wraps.

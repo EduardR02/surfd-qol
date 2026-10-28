@@ -1,5 +1,8 @@
 import {describe, expect, test} from 'bun:test';
 import {instrumentGame} from '../extension/instrument.js';
+import {createPrivateRooms} from '../src/private-rooms/index.js';
+import {isPrivateRoomId} from '../src/private-rooms/ids.js';
+import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
 
 // The private names are deliberately unrelated to the live bundle's names.
 // This miniature native module keeps the signatures used by instrumentation
@@ -142,5 +145,311 @@ describe('native practice destinations', () => {
     const destination = adapter.practice.destination();
     expect(destination.key).toBe(JSON.stringify(['map', 1, 'current', 8]));
     expect('startPosition' in destination).toBe(false);
+  });
+});
+
+// The fixture intentionally preserves only semantic/minified signatures, not
+// any live private name. Its network spies make unintended private traffic fail.
+const roomSource = nativeSource + `
+const catalog=[{id:'map',title:'Fixture map'}],ranking={refresh(){}},options={currentMap:()=> 'map'};
+let joined=null,listed=[{id:'public',mapId:'map',online:true}],joinCallback,refreshCallback;
+const secondsLeft=(end,now)=>Math.max(0,Math.ceil((end-now)/1000));
+function countdown(end,now){const seconds=secondsLeft(end,now);return seconds===0?"Changing map…":seconds+"s left"}
+function clocks(row){const connection={state:row},offset=0;return [
+  countdown(row.endsAt,Date.now()),countdown(row.endsAt,Date.now()),
+  countdown(connection.state.endsAt,Date.now()+offset),countdown(row.endsAt,Date.now()+offset)
+]}
+function lobbyFactory(){return {
+  servers:{rows:()=>listed},selected:()=>catalog[0],
+  updateServers(rows){listed=rows},
+  bindServers(connect,refresh){joinCallback=connect,refreshCallback=refresh,refresh()},
+  refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}
+}}
+const lobby=lobbyFactory();
+lobby.bindServers(id=>{joined={id,row:listed.find(row=>row.id===id)}},()=>{});
+class NativeRoom {
+  baseUrl='https://public.example';roomId=null;
+  ticket(){return fetch('/room-ticket',{method:'POST'}).then(response=>response.json()).then(data=>data.token)}
+  async list(){const response=await fetch(this.baseUrl+"/servers",{signal:AbortSignal.timeout(8e3),cache:"no-store"});if(!response.ok)throw Error("Servers unavailable");const data=await response.json();if(!Array.isArray(data.servers))throw Error("Invalid server list");return data.servers}
+  async measure(id){const started=performance.now();if(!(await fetch(this.baseUrl+"/servers/"+id+"/ping",{signal:AbortSignal.timeout(5e3),cache:"no-store"})).ok)throw Error("Server unavailable");return performance.now()-started}
+  async open(id){this.roomId=id;const token=await this.ticket();const url=new URL('/servers/'+id+'/ws',this.baseUrl);return new WebSocket(url,["surfd-v1",token])}
+  async refreshIdentity(){return await this.ticket()}
+}
+`;
+
+function roomFixture(privateRooms, source = roomSource) {
+  let adapter;
+  const requests = [], sockets = [], warnings = [];
+  let failList = false;
+  const fetch = async (url, options) => {
+    requests.push({url, options});
+    if (String(url).endsWith('/servers')) {
+      if (failList) throw new Error('offline');
+      return {ok: true, json: async () => ({servers: [{id: 'public', mapId: 'map', online: true}]})};
+    }
+    return {ok: true, json: async () => ({token: 'native-ticket'})};
+  };
+  function WebSocket(url, protocols) { sockets.push({url: String(url), protocols}); }
+  const warn = console.warn;
+  let instrumented;
+  try {
+    console.warn = (...args) => warnings.push(args);
+    instrumented = instrumentGame(source);
+  } finally { console.warn = warn; }
+  const runtime = new Function('globalThis', 'fetch', 'WebSocket', instrumented + `
+    return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},
+      guest:()=>{client.session=null}};
+  `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
+  return {adapter, runtime, requests, sockets, warnings, instrumented, failList: () => { failList = true; }};
+}
+
+function privateFixtureHooks() {
+  const row = {id: 'private-fixture', name: 'Private fixture', mapId: 'map', online: true};
+  const socket = {private: true};
+  return {
+    row, socket,
+    ticket: id => id === row.id ? 'private-ticket' : null,
+    measure: id => id === row.id ? 0 : null,
+    roomSocket: id => id === row.id ? socket : null,
+    mergeRooms: rows => [...rows, row]
+  };
+}
+
+describe('optional native private room instrumentation', () => {
+  test('public tickets, refresh, ping and WebSockets keep the native flow', async () => {
+    const fixture = roomFixture(privateFixtureHooks());
+    await fixture.runtime.room.open('public');
+    await fixture.runtime.room.refreshIdentity();
+    await fixture.runtime.room.measure('public');
+    expect(fixture.requests.filter(request => request.url === '/room-ticket')).toHaveLength(2);
+    expect(fixture.requests.some(request => request.url.endsWith('/servers/public/ping'))).toBe(true);
+    expect(fixture.sockets).toEqual([{url: 'https://public.example/servers/public/ws', protocols: ['surfd-v1', 'native-ticket']}]);
+    expect(fixture.warnings).toEqual([]);
+  });
+
+  test('private connect, identity refresh and measurement never touch site transport', async () => {
+    const hooks = privateFixtureHooks();
+    const fixture = roomFixture(hooks);
+    expect(await fixture.runtime.room.open(hooks.row.id)).toBe(hooks.socket);
+    expect(await fixture.runtime.room.refreshIdentity()).toBe('private-ticket');
+    expect(await fixture.runtime.room.measure(hooks.row.id)).toBe(0);
+    expect(fixture.requests).toEqual([]);
+    expect(fixture.sockets).toEqual([]);
+  });
+
+  test('known private rows merge with public results and survive public list outages', async () => {
+    const hooks = privateFixtureHooks();
+    const fixture = roomFixture(hooks);
+    expect(await fixture.runtime.room.list()).toEqual([{id: 'public', mapId: 'map', online: true}, hooks.row]);
+    fixture.failList();
+    expect(await fixture.runtime.room.list()).toEqual([hooks.row]);
+  });
+
+  test('adapter uses native join callback and selected row plus current identity and maps', () => {
+    const hooks = privateFixtureHooks();
+    const {adapter, runtime} = roomFixture(hooks);
+    adapter.rooms.update([hooks.row]);
+    adapter.rooms.join(hooks.row.id);
+    expect(runtime.joined()).toEqual({id: hooks.row.id, row: hooks.row});
+    const appearance = {title: '', nameColor: '#123456', titleColor: null, revision: 1};
+    runtime.profile({username: 'Fixture player', appearance});
+    expect(adapter.rooms.displayName()).toBe('Fixture player');
+    expect(adapter.rooms.appearance()).toBe(appearance);
+    expect(adapter.rooms.guest()).toBe(false);
+    runtime.guest();
+    expect(adapter.rooms.guest()).toBe(true);
+    expect(adapter.rooms.maps()).toEqual([{id: 'map', title: 'Fixture map'}]);
+    expect(adapter.rooms.currentMap()).toBe(adapter.getSession().map);
+  });
+
+  test('absent runtime hooks leave all native behavior available', async () => {
+    const fixture = roomFixture(undefined);
+    await fixture.runtime.room.open('public');
+    expect(fixture.sockets).toHaveLength(1);
+    expect(await fixture.runtime.room.list()).toEqual([{id: 'public', mapId: 'map', online: true}]);
+    fixture.failList();
+    await expect(fixture.runtime.room.list()).rejects.toThrow('offline');
+  });
+
+  test('an unrecognised optional hook warns and leaves the entire room transport unchanged', async () => {
+    const source = roomSource.replace('cache:\"no-store\"', 'cache:\"reload\"');
+    const fixture = roomFixture(privateFixtureHooks(), source);
+    expect(fixture.adapter.rooms).toBeUndefined();
+    expect(fixture.warnings).toHaveLength(1);
+    expect(fixture.warnings[0][0]).toContain('Private rooms unavailable');
+    await fixture.runtime.room.open('public');
+    expect(fixture.requests[0].url).toBe('/room-ticket');
+    expect(fixture.sockets).toHaveLength(1);
+  });
+
+  test('untimed private rows and room state show no time limit while public countdowns stay native', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    expect(runtime.clocks({endsAt: 0, untimed: true})).toEqual(Array(4).fill('No time limit'));
+    expect(runtime.clocks({endsAt: 0})).toEqual(Array(4).fill('Changing map…'));
+    for (const text of runtime.clocks({endsAt: Date.now() + 30000, untimed: false})) expect(text).toMatch(/^\d+s left$/);
+  });
+
+  test('instrumenting an instrumented bundle does not duplicate transport hooks', () => {
+    const fixture = roomFixture(privateFixtureHooks());
+    expect(instrumentGame(fixture.instrumented)).toBe(fixture.instrumented);
+  });
+});
+
+function privateRuntimeFixture() {
+  let rows = [{id: 'public', mapId: 'map'}], joined = null;
+  const adapter = {rooms: {
+    rows: () => rows,
+    update: value => { rows = value; },
+    join: id => { joined = {id, row: rows.find(row => row.id === id)}; },
+    currentMap: () => ({id: 'map'}),
+    maps: () => [{id: 'map', title: 'Fixture map'}],
+    displayName: () => 'Guest',
+    appearance: () => null,
+    guest: () => true
+  }};
+  const runtime = createPrivateRooms({getAdapter: () => adapter});
+  return {runtime, adapter, joined: () => joined};
+}
+
+describe('private room runtime native integration', () => {
+  test('hosting registers map metadata before native join and opens the local loopback', async () => {
+    const {runtime, joined} = privateRuntimeFixture();
+    try {
+      const id = await runtime.host();
+      expect(isPrivateRoomId(id)).toBe(true);
+      expect(joined()).toMatchObject({id, row: {id, mapId: 'map', region: 'Private', online: true, untimed: true}});
+      const native = roomFixture(privateFixtureHooks());
+      expect(native.runtime.clocks(joined().row)).toEqual(Array(4).fill('No time limit'));
+      const socket = runtime.roomSocket(id);
+      const welcome = await new Promise(resolve => {
+        socket.addEventListener('message', event => {
+          const message = JSON.parse(event.data);
+          if (message.type === 'welcome') resolve(message);
+        });
+      });
+      expect(welcome.state.mapId).toBe('map');
+      expect(welcome.player.name).toBe('Guest');
+      expect(runtime.ticket(id)).toBe('private-room');
+      expect(runtime.measure(id)).toBe(0);
+      expect(runtime.mergeRooms([{id: 'public'}]).filter(row => row.id === id)).toHaveLength(1);
+      const closed = new Promise(resolve => socket.addEventListener('close', resolve, {once: true}));
+      socket.close();
+      await closed;
+      expect(runtime.mergeRooms([]).find(row => row.id === id).online).toBe(false);
+    } finally { runtime.destroy(); }
+  });
+
+  test('same-origin peer discovers host metadata before native join without choosing a fallback map', async () => {
+    const host = privateRuntimeFixture(), peer = privateRuntimeFixture();
+    try {
+      const id = await host.runtime.host();
+      expect(await peer.runtime.join(id)).toBe(id);
+      expect(peer.joined()).toMatchObject({id, row: {mapId: 'map', name: "Guest's private room", online: true, untimed: true}});
+      const row = peer.runtime.mergeRooms([]).find(room => room.id === id);
+      expect(roomFixture(privateFixtureHooks()).runtime.clocks(row)).toEqual(Array(4).fill('No time limit'));
+    } finally { peer.runtime.destroy(); host.runtime.destroy(); }
+  });
+
+  test('only explicitly requested rooms appear; unsolicited announcements and global discovery stay private', async () => {
+    const {runtime, adapter, joined} = privateRuntimeFixture();
+    const signalling = createBroadcastSignalling(), queries = [];
+    const requested = 'p-aaaaaaaaaaaa', unrelated = 'p-bbbbbbbbbbbb';
+    const announce = (id, name) => signalling.send({
+      roomId: id, peerId: 'fixture-host', type: 'room-info',
+      payload: {id, name, mapId: 'map', players: 0, capacity: 16, epoch: 1, online: true}
+    });
+    signalling.subscribe(message => {
+      if (message.type !== 'room-query') return;
+      queries.push(message.roomId);
+      if (message.roomId === requested) {
+        announce(unrelated, 'Not invited');
+        announce(requested, 'Invited');
+      }
+    });
+    try {
+      runtime.attach();
+      await runtime.join(requested);
+      expect(queries).toEqual([requested]);
+      expect(runtime.mergeRooms([]).map(row => row.id)).toEqual([requested]);
+      expect(joined().row.name).toBe('Invited');
+      const update = adapter.rooms.update;
+      const changed = new Promise(resolve => {
+        adapter.rooms.update = rows => {
+          update(rows);
+          if (rows.some(row => row.id === requested && row.name === 'Still known')) resolve();
+        };
+      });
+      announce(unrelated, 'Still not invited');
+      announce(requested, 'Still known');
+      await changed;
+      expect(runtime.mergeRooms([]).map(row => row.id)).toEqual([requested]);
+    } finally { runtime.destroy(); signalling.close(); }
+  });
+
+  test('native invite metadata becomes known without auto-joining or discovering unrelated rooms', async () => {
+    const {runtime, adapter, joined} = privateRuntimeFixture();
+    const signalling = createBroadcastSignalling();
+    const id = 'p-cccccccccccc';
+    const location = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    const update = adapter.rooms.update;
+    const discovered = new Promise(resolve => {
+      adapter.rooms.update = rows => {
+        update(rows);
+        if (rows.some(row => row.id === id)) resolve();
+      };
+    });
+    signalling.subscribe(message => {
+      if (message.type === 'room-query' && message.roomId === id) signalling.send({
+        roomId: id, peerId: 'invited-host', type: 'room-info',
+        payload: {id, name: 'Invite room', mapId: 'map', players: 0, capacity: 16, epoch: 1}
+      });
+    });
+    try {
+      Object.defineProperty(globalThis, 'location', {configurable: true, value: {search: '?join=' + id}});
+      runtime.attach();
+      if (location) Object.defineProperty(globalThis, 'location', location);
+      else delete globalThis.location;
+      await discovered;
+      expect(runtime.mergeRooms([]).map(row => row.id)).toEqual([id]);
+      expect(joined()).toBeNull();
+    } finally {
+      if (location) Object.defineProperty(globalThis, 'location', location);
+      else delete globalThis.location;
+      runtime.destroy();
+      signalling.close();
+    }
+  });
+
+  test('public transport is untouched and invalid private entrypoints reject', async () => {
+    const {runtime, joined} = privateRuntimeFixture();
+    try {
+      expect(runtime.ticket('public')).toBeNull();
+      expect(runtime.measure('public')).toBeNull();
+      expect(runtime.roomSocket('public')).toBeNull();
+      expect(runtime.mergeRooms([{id: 'public'}])).toEqual([{id: 'public'}]);
+      await expect(runtime.join('public')).rejects.toThrow('Invalid private room');
+      expect(joined()).toBeNull();
+    } finally { runtime.destroy(); }
+  });
+
+  test('missing hooks or current map fail without invoking native join', async () => {
+    const unavailable = createPrivateRooms({getAdapter: () => null});
+    const {runtime, adapter, joined} = privateRuntimeFixture();
+    try {
+      await expect(unavailable.host()).rejects.toThrow('unavailable');
+      adapter.rooms.currentMap = () => null;
+      await expect(runtime.host()).rejects.toThrow('Select a map');
+      expect(joined()).toBeNull();
+      runtime.destroy();
+      await expect(runtime.host()).rejects.toThrow('closed');
+    } finally { runtime.destroy(); unavailable.destroy(); }
+  });
+
+  test('destroy cancels pending discovery and never invokes native join', async () => {
+    const {runtime, joined} = privateRuntimeFixture();
+    const pending = runtime.join('p-aaaaaaaaaaaa');
+    runtime.destroy();
+    await expect(pending).rejects.toThrow('closed');
+    expect(joined()).toBeNull();
   });
 });

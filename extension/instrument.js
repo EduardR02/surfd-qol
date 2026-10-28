@@ -79,11 +79,52 @@ function noticeHook(source) {
   }
 }
 
+// Room transport hooks are one optional unit: a partial match must never send
+// a private identifier to the site's ticket, ping or WebSocket endpoints.
+function roomHooks(source, client, state) {
+  try {
+    const list = unique(source, new RegExp(`async list\\(\\)\\{const (${identifier})=await fetch\\(this\\.baseUrl\\+"/servers",\\{signal:AbortSignal\\.timeout\\(8e3\\),cache:"no-store"\\}\\);if\\(!\\1\\.ok\\)throw Error\\("Servers unavailable"\\);const (${identifier})=await \\1\\.json\\(\\);if\\(!Array\\.isArray\\(\\2\\.servers\\)\\)throw Error\\("Invalid server list"\\);return \\2\\.servers\\}`, 'g'), 'room list');
+    const measure = unique(source, new RegExp(`async measure\\((${identifier})\\)\\{const (${identifier})=performance\\.now\\(\\);if\\(!\\(await fetch\\(this\\.baseUrl\\+"/servers/"\\+\\1\\+"/ping"`, 'g'), 'room ping');
+    const socket = unique(source, new RegExp(`new WebSocket\\((${identifier}),\\["surfd-v1",(${identifier})\\]\\)`, 'g'), 'room socket');
+    const tickets = [...source.matchAll(/await this\.ticket\(\)/g)];
+    if (tickets.length !== 2) throw new Error(`Unsupported Surfd build: room tickets (${tickets.length} matches)`);
+    const bind = unique(source, new RegExp(`bindServers\\((${identifier}),(${identifier})\\)\\{(${identifier})=\\1,(${identifier})=\\2,\\2\\(\\)\\}`, 'g'), 'room join callback');
+    const lobby = unique(source, new RegExp(`(${identifier})\\.bindServers\\(`, 'g'), 'room lobby')[1];
+    const maps = unique(source, new RegExp(`refreshTop10\\(\\)\\{${identifier}\\.refresh\\((${identifier})\\.find\\((${identifier})=>\\2\\.id===${identifier}\\.currentMap\\(\\)\\)\\?\\?null\\)\\}`, 'g'), 'room maps')[1];
+    const countdown = unique(source, new RegExp(`function (${identifier})\\((${identifier}),(${identifier})\\)\\{const (${identifier})=(${identifier})\\(\\2,\\3\\);return \\4===0\\?"Changing map…":`, 'g'), 'room countdown')[1];
+    const clocks = new RegExp(`${literal(countdown)}\\((${identifier}(?:\\.state)?)\\.endsAt,Date\\.now\\(\\)(?:\\+${identifier})?\\)`, 'g');
+    const clockCount = [...source.matchAll(clocks)].length;
+    if (clockCount !== 4) throw new Error(`Unsupported Surfd build: room countdown views (${clockCount} matches)`);
+    const hook = 'globalThis.__SURFD_QOL__?.privateRooms';
+    const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
+    source = source.replace(list[0], `async list(){try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
+    source = source.replace(measure[0], measure[0].replace('{const ', `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
+    source = source.replace(socket[0], `(${hook}?.roomSocket(this.roomId,${socket[1]},["surfd-v1",${socket[2]}])??${socket[0]})`);
+    source = source.replace(/await this\.ticket\(\)/g, `(${hook}?.ticket(this.roomId)??await this.ticket())`);
+    source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)}`);
+    source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
+    return {source, adapter: `
+    rooms: {
+      join: id => ${lobby}.joinServer(id),
+      rows: () => ${lobby}.servers.rows(),
+      update: rows => ${lobby}.updateServers(rows, "Choose a region and connect."),
+      displayName: () => ${client}.profile?.username ?? "Guest",
+      appearance: () => ${client}.profile?.appearance ?? null,
+      guest: () => !${client}.session,
+      maps: () => ${maps},
+      currentMap: () => ${state}?.map ?? ${lobby}.selected(),
+    },`};
+  } catch (error) {
+    console.warn('[Surfd QoL] Private rooms unavailable:', error.message);
+    return {source, adapter: ''};
+  }
+}
+
 // Append access to existing lexical objects; no original movement statement is rewritten.
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
   const injected = source.indexOf('\n/* surfd-qol-adapter-v');
-  if (injected >= 0) source = source.slice(0, injected);
+  if (injected >= 0) return source;
   const state = unique(source, new RegExp(`state:(${identifier})\\?\\.state,run:\\1\\?\\.timer\\.state`, 'g'), 'session snapshot')[1];
   const viewed = unique(source, new RegExp(`spectator:\\{target:(${identifier}),view:(${identifier})\\}`, 'g'), 'spectator view');
   const marker = unique(source, /checkpointSpeeds=\[\];startJumps=0/g, 'session fields').index;
@@ -98,8 +139,10 @@ export function instrumentGame(source) {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
+  const rooms = roomHooks(source, client, state);
+  source = rooms.source;
   return source + `
-/* surfd-qol-adapter-v5: viewed state, selectable reference routes, input binding and replay playback */
+/* surfd-qol-adapter-v6: viewed state, replay playback and optional private room transport */
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;
   if (!qol) return;
@@ -110,7 +153,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practiceHooks(source, sessionClass, state)}${noticeHook(source)}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practiceHooks(source, sessionClass, state)}${noticeHook(source)}${rooms.adapter}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;
