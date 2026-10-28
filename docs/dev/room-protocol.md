@@ -39,9 +39,9 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 | Message | Fields | Private host |
 | --- | --- | --- |
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
-| `chat` | `text`, trimmed and limited to 240 characters by the host | broadcasts to everyone, sender included, with the sender's fields |
+| `chat` | `text`, trimmed and limited to 240 characters by the host | broadcasts to everyone, sender included, with the sender's fields; 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
-| `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest` |
+| `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; 2 per second with bursts of 4, beyond which requests are dropped |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
 | `refresh`, `ack`, `activity` | ticket refresh, `check` reply, activity tracking | ignored |
 | `rtv`, `nominate`, `vote`, `extend` | map votes | ignored |
@@ -54,7 +54,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 | `pong` (plain text) | updates the ping display |
 | `welcome` | `{state, player, players, maps, serverTime, spectatorStream, playtime, activityTracking, recentResults?, chatMute?}`. Sets the own player, roster and state and loads the map. Private: `spectatorStream: true`, `playtime` and `activityTracking` false, `recentResults: []`, `chatMute: null`. |
 | `state` | `{state, serverTime}`. Lower epochs are ignored; a new epoch clears pose and spectator buffers, so the host republishes spectator demand after a map change. |
-| `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. |
+| `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. The private host sends at most one every 100 ms. |
 | `chat` | `{playerId, name, text, rank?, appearance?}` (flat fields, not a `sender` object) |
 | `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. |
 | `spectator-demand` | `{active, count}`; `count` is 0–65535 and positive exactly when `active`. Tells a player to stream detailed frames. |

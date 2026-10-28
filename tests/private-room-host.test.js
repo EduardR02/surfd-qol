@@ -31,6 +31,7 @@ function fixture(options = {}) {
   return {room, connect};
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 70));
+const rosterTick = () => new Promise(resolve => setTimeout(resolve, 110));
 const snapshots = socket => socket.sent.filter(value => value instanceof ArrayBuffer).map(decodeSnapshot);
 function controls(socket) {
   const messages = [];
@@ -59,7 +60,7 @@ function controls(socket) {
 });
 
 describe('private room host', () => {
-  test('waits for async open, welcomes using native schemas, and updates the roster', () => {
+  test('waits for async open, welcomes using native schemas, and updates the roster', async () => {
     const {room, connect} = fixture(), host = connect(true, hello, false);
     expect(host.sent).toEqual([]);
     host.open();
@@ -70,6 +71,7 @@ describe('private room host', () => {
     expect(welcome.state.capacity).toBeUndefined();
     const peer = connect();
     expect(peer.messages('welcome')[0].players).toHaveLength(2);
+    await rosterTick();
     expect(host.messages('roster').at(-1).players).toHaveLength(2);
     expect(room.players[1].moderator).toBe(false);
     expect(room.players[0].id).not.toBe(room.players[1].id);
@@ -142,11 +144,12 @@ describe('private room host', () => {
     expect(() => createRoomHost({roomId: createRoomId(), mapId: 'missing', maps: []})).toThrow();
   });
 
-  test('tracks spectator demand, rewrites forwarded slots, and cleans unsubscribe and leave', () => {
+  test('tracks spectator demand, rewrites forwarded slots, and cleans unsubscribe and leave', async () => {
     const {connect} = fixture(), host = connect(true), target = connect(), watcher = connect(), bystander = connect();
     const targetId = target.messages('welcome')[0].player.connectionId;
     watcher.receive({type: 'spectate', connectionId: targetId, request: 1});
     expect(target.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: true, count: 1});
+    await rosterTick();
     expect(host.messages('roster').at(-1).players[2].spectating).toBe(true);
     target.receive(encodeSpectator({slot: 65535, sequence: 0, epoch: 1, pose: detailed}));
     expect(decodeSpectator(watcher.sent.find(value => value instanceof ArrayBuffer), true).slot).toBe(1);
@@ -162,6 +165,7 @@ describe('private room host', () => {
     expect(target.messages('spectator-demand').at(-1).count).toBe(1);
     target.close(1000, 'Left');
     expect(bystander.messages('error').at(-1).spectatorRequest).toBe(4);
+    await rosterTick();
     expect(host.messages('roster').at(-1).players.find(player => player.slot === 3).spectating).toBe(false);
   });
 
@@ -292,7 +296,7 @@ describe('private room host', () => {
     room.close();
   });
 
-  test('chunks complete large welcomes and rosters', () => {
+  test('chunks complete large welcomes and rosters', async () => {
     const maps = Array.from({length: 1001}, (_, index) => ({id: index ? 'map-' + index : 'one', title: '名\"\\\\'.repeat(16)}));
     const {room} = fixture({maps});
     class Sink extends Socket { send() {} }
@@ -304,6 +308,7 @@ describe('private room host', () => {
     const receiver = new Socket();
     room.addClient(receiver, hello);
     receiver.open();
+    await rosterTick();
     const messages = controls(receiver), welcome = messages.find(message => message.type === 'welcome');
     expect(receiver.messages('room-chunk').length).toBeGreaterThan(1);
     expect(welcome.maps).toEqual(maps);
@@ -371,6 +376,34 @@ describe('private room host', () => {
     room.close();
     await tick();
     expect(snapshots(host)).toHaveLength(1);
+  });
+
+  test('a spectate and chat flood stays bounded', async () => {
+    let time = 0, bytes = 0;
+    const {room, connect} = fixture({now: () => time});
+    const peers = Array.from({length: 50}, () => connect());
+    await rosterTick();
+    for (const peer of peers) {
+      peer.sent.length = 0;
+      const send = peer.send.bind(peer);
+      peer.send = data => { bytes += typeof data === 'string' ? data.length : data.byteLength; send(data); };
+    }
+    const attacker = peers[0], target = room.players[1].connectionId;
+    for (let request = 0; request < 100; request++) {
+      attacker.receive({type: 'spectate', connectionId: request % 2 ? null : target, request});
+      attacker.receive({type: 'chat', text: 'x'.repeat(240)});
+    }
+    await rosterTick();
+    expect(bytes).toBeLessThan(1e6);
+    expect(peers[1].messages('chat')).toHaveLength(3);
+    expect(peers[1].messages('roster')).toHaveLength(1);
+    expect(peers[1].messages('spectator-demand')).toHaveLength(4);
+    expect(attacker.messages('error')).toEqual([{type: 'error', text: "You're sending messages too fast."}]);
+    time = 1000;
+    attacker.receive({type: 'chat', text: 'later'});
+    peers[2].receive({type: 'chat', text: 'unaffected'});
+    expect(peers[1].messages('chat').map(message => message.text).slice(-2)).toEqual(['later', 'unaffected']);
+    room.close();
   });
 });
 

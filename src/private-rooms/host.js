@@ -2,7 +2,10 @@ import {isPrivateRoomId} from './ids.js';
 import {CLOSE, VERSION, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', onChange = () => {}}) {
+const ROSTER_INTERVAL_MS = 100;
+const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
+
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
@@ -18,7 +21,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   };
   const clients = new Set();
   const slots = new Set(), pending = new Map();
-  let nextSlot = 0, hostClient = null, flushTimer = null;
+  let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
   let closed = false;
 
   const players = () => [...clients].filter(client => client.open).map(client => client.player);
@@ -38,9 +41,21 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const frames = message instanceof ArrayBuffer ? [message] : encodeControlFrames(message);
     for (const client of clients) if (client !== except) sendFrames(client, frames);
   }
+  // Every spectate toggle changes the roster; one broadcast per interval keeps output bounded.
   function roster() {
-    broadcast({type: 'roster', players: players()});
+    rosterTimer ??= setTimeout(() => {
+      rosterTimer = null;
+      if (!closed) broadcast({type: 'roster', players: players()});
+    }, ROSTER_INTERVAL_MS);
     onChange();
+  }
+  function take(bucket, {rate, burst}) {
+    const time = now();
+    bucket.tokens = Math.min(burst, bucket.tokens + Math.max(0, time - bucket.at) * rate / 1000);
+    bucket.at = time;
+    if (bucket.tokens < 1) return false;
+    bucket.tokens--;
+    return true;
   }
   function clearPending() {
     clearTimeout(flushTimer);
@@ -118,6 +133,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     if (closed) return;
     closed = true;
     clearPending();
+    clearTimeout(rosterTimer);
+    rosterTimer = null;
     for (const client of clients) {
       detach(client);
       client.open = false;
@@ -175,6 +192,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           send(client, 'pong');
           break;
         case 'chat':
+          if (!take(client.chat, CHAT_LIMIT)) {
+            if (!client.chat.limited) send(client, {type: 'error', text: "You're sending messages too fast."});
+            client.chat.limited = true;
+            break;
+          }
+          client.chat.limited = false;
           broadcast({type: 'chat', playerId: client.player.id, name: client.player.name,
             rank: client.player.rank, appearance: client.player.appearance, text: message.text});
           break;
@@ -195,7 +218,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           }
           break;
         case 'spectate':
-          spectate(client, message);
+          if (take(client.spectate, SPECTATE_LIMIT)) spectate(client, message);
           break;
         case 'context':
           // The game waits for this when a map starts; no token means no ranked runs.
@@ -231,7 +254,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const slot = nextSlot++;
     slots.add(slot);
     const connectionId = crypto.randomUUID();
-    const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(), player: {
+    const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
+      chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()}, player: {
       id: 'private-' + connectionId, connectionId, slot, name: hello.name.trim().slice(0, 24),
       appearance: normalizeAppearance(hello.appearance), guest: false, rank: 'Guest', points: 0,
       moderator: host, spectating: false,
