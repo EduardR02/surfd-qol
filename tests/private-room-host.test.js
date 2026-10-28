@@ -17,8 +17,8 @@ class Socket extends EventTarget {
   close(code, reason) { this.closed = {code, reason}; this.readyState = 3; this.dispatchEvent(new Event('close')); }
   messages(type) { return this.sent.filter(message => message?.type === type); }
 }
-const hello = {name: 'Surfer', appearance: null, guest: false};
-const guestHello = {name: 'Guest_0a1b2', appearance: null, guest: true};
+const hello = {name: 'Surfer', appearance: null, guest: false, browserId: crypto.randomUUID()};
+const guestHello = {...hello, name: 'Guest_0a1b2', guest: true};
 const pose = {time: 100, x: 1, y: 2, z: 3, vx: 4, vy: 5, vz: 6, yaw: 90, pitch: -30, flags: 1, seconds: 2};
 const detailed = {...pose, eyeHeight: 64, phase: 'running', untimed: true, checkpoints: 1, stage: 2, inputs: 1, inputPresses: 16};
 function fixture(options = {}) {
@@ -480,6 +480,35 @@ test('only a backlog that lasts 5 seconds disconnects a player', () => {
   peer.receive('ping');
   expect(peer.closed).toEqual({code: CLOSE.congested, reason: "Your connection couldn't keep up with the room."});
   expect(room.players).toHaveLength(0);
+  room.close();
+});
+
+test('the host kicks and bans for an hour by browser, and only the host moderates', () => {
+  let time = 0;
+  const {room, connect} = fixture({now: () => time}), host = connect(true);
+  const identity = {...hello, name: 'Rowdy', browserId: crypto.randomUUID()};
+  const id = socket => controls(socket).find(message => message.type === 'welcome').player.id;
+  const bystander = connect(), rowdy = connect(false, identity);
+  rowdy.receive({type: 'moderate', playerId: id(host), action: 'ban', minutes: 60});
+  bystander.receive({type: 'moderate', playerId: id(rowdy), action: 'kick', minutes: 60});
+  host.receive({type: 'moderate', playerId: id(host), action: 'kick', minutes: 60});
+  expect(host.closed).toBeNull();
+  expect(rowdy.closed).toBeNull();
+  host.receive({type: 'moderate', playerId: id(rowdy), action: 'kick', minutes: 60});
+  expect(rowdy.closed).toEqual({code: CLOSE.refused, reason: 'You were kicked from this room.'});
+  expect(bystander.messages('notice').at(-1).text).toBe('Rowdy was kicked.');
+  const back = connect(false, identity);
+  expect(back.closed).toBeNull();
+  host.receive({type: 'moderate', playerId: id(back), action: 'ban', minutes: 60});
+  expect(back.closed).toEqual({code: CLOSE.refused, reason: 'You were banned from this room for 1 hour.'});
+  expect(host.messages('notice').at(-1).text).toBe('Rowdy was banned for 1 hour.');
+  time = 60 * 60 * 1000 - 1;
+  expect(connect(false, identity).closed).toEqual({code: CLOSE.refused, reason: "You're banned from this room for now."});
+  expect(connect(false, {...identity, browserId: crypto.randomUUID()}).closed).toBeNull();
+  expect(connect(true, identity).closed).toBeNull();
+  expect(connect(false, {...identity, browserId: undefined}).closed.code).toBe(CLOSE.invalid);
+  time = 60 * 60 * 1000;
+  expect(connect(false, identity).closed).toBeNull();
   room.close();
 });
 

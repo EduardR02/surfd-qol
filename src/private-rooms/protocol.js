@@ -16,10 +16,16 @@ export const ROOM_TEXTS = Object.freeze({
   unknownMap: 'Map is not in the catalog.',
   tooFast: "You're sending messages too fast.",
   signInToChat: 'Sign in to send chat messages. You can still read chat.',
+  kicked: 'You were kicked from this room.',
+  banned: 'You were banned from this room for 1 hour.',
+  stillBanned: "You're banned from this room for now.",
 });
 const roomTexts = new Set(Object.values(ROOM_TEXTS));
+export const kickedNotice = name => `${name} was kicked.`;
+export const bannedNotice = name => `${name} was banned for 1 hour.`;
+const isRoomText = text => roomTexts.has(text) || /^[A-Za-z0-9_-]{3,24} was (kicked|banned for 1 hour)\.$/.test(text);
 export function roomCloseReason(code, reason) {
-  if (roomTexts.has(reason)) return reason;
+  if (isRoomText(reason)) return reason;
   return code === CLOSE.gone ? ROOM_TEXTS.closed : code === CLOSE.invalid ? ROOM_TEXTS.invalidData : '';
 }
 export const MAX_CONTROL_BYTES = 65536;
@@ -279,6 +285,9 @@ export function decodeControl(text) {
       requireValid((message.connectionId === null || typeof message.connectionId === 'string')
         && Number.isSafeInteger(message.request) && message.request >= 0, 'Invalid spectator request');
       return {type: 'spectate', connectionId: message.connectionId, request: message.request};
+    case 'moderate':
+      requireValid(typeof message.playerId === 'string' && (message.action === 'kick' || message.action === 'ban'), 'Invalid moderation');
+      return {type: 'moderate', playerId: message.playerId, action: message.action};
   }
   return {type: message.type};
 }
@@ -295,7 +304,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The site's username rules, which Guest_ names also meet.
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
 export const isGuestName = value => typeof value === 'string' && /^Guest_[0-9a-f]{5}$/.test(value);
-export const isUserId = value => typeof value === 'string' && UUID.test(value);
+export const isUuid = value => typeof value === 'string' && UUID.test(value);
 export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
@@ -308,7 +317,7 @@ function readPlayer(player) {
     && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && isPlayerName(player.name)
     && player.rank === 'Guest' && player.points === 0
     && (player.guest === true ? isGuestName(player.name) && player.userId === undefined
-      : player.guest === false && (player.userId === undefined || isUserId(player.userId)))
+      : player.guest === false && (player.userId === undefined || isUuid(player.userId)))
     && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
     && validAppearance(player.appearance), 'Invalid room player');
   return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
@@ -383,9 +392,9 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
       case 'error': {
         requireValid(textValue(message.text, 4096)
           && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
-        if (message.spectatorRequest === undefined) return roomTexts.has(message.text) ? {type: message.type, text: message.text} : null;
+        if (message.spectatorRequest === undefined) return isRoomText(message.text) ? {type: message.type, text: message.text} : null;
         // An error for the current spectate request is what stops spectating, so it keeps a text of our own.
-        return {type: message.type, text: roomTexts.has(message.text) ? message.text : ROOM_TEXTS.unavailable,
+        return {type: message.type, text: isRoomText(message.text) ? message.text : ROOM_TEXTS.unavailable,
           spectatorRequest: message.spectatorRequest};
       }
       case 'spectator-demand':

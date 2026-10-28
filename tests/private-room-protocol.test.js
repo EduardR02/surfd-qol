@@ -110,6 +110,8 @@ describe('private room control boundaries', () => {
     for (const input of [null, '{}', 'null', '[]', '1', '{', ' '.repeat(65537), '{"type":"chat","text":" "}', '{"type":"change-map","mapId":0}', '{"type":"spectate","connectionId":null,"request":-1}']) expect(() => decodeControl(input)).toThrow();
     expect(decodeControl('{"type":"spectate","connectionId":null,"request":1}').connectionId).toBeNull();
     expect(decodeControl('{"type":"refresh"}')).toEqual({type: 'refresh'});
+    expect(decodeControl('{"type":"moderate","playerId":"private-x","action":"ban","minutes":60}')).toEqual({type: 'moderate', playerId: 'private-x', action: 'ban'});
+    expect(() => decodeControl('{"type":"moderate","playerId":"private-x","action":"mute"}')).toThrow();
   });
   test('trims chat and drops obsolete fields', () => {
     expect(decodeControl(JSON.stringify({type: 'chat', text: ' ' + 'x'.repeat(1000) + ' ', memory: 'unused'}))).toEqual({type: 'chat', text: 'x'.repeat(240)});

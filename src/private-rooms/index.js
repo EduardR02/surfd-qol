@@ -1,6 +1,6 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isPlayerName, isRoomName } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isPlayerName, isRoomName, isUuid } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -11,6 +11,7 @@ const HOST_LEFT = ROOM_TEXTS.hostClosed;
 const SIGN_IN = 'Sign in to host a room.';
 const DISCOVERY_TIMEOUT = 15000;
 const NAME_KEY = 'surfd-qol-room-guest-name';
+const BROWSER_KEY = 'surfd-qol-room-browser';
 
 export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, now = Date.now,
   timers = globalThis, events = globalThis, storage,
@@ -30,6 +31,15 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       store(NAME_KEY, name);
     }
     return name;
+  }
+  // Lets a host's ban outlast a rejoin.
+  function browserId() {
+    let id = stored(BROWSER_KEY);
+    if (!isUuid(id)) {
+      id = crypto.randomUUID();
+      store(BROWSER_KEY, id);
+    }
+    return id;
   }
   function rooms() {
     if (destroyed) throw new Error(CLOSED);
@@ -175,7 +185,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
     const adapter = rooms();
     const name = adapter.displayName(), guest = adapter.guest();
     return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest,
-      userId: guest ? null : adapter.userId?.() ?? null};
+      userId: guest ? null : adapter.userId?.() ?? null, browserId: browserId()};
   }
   function track(socket, id) {
     const ownHost = id === hosted?.id;

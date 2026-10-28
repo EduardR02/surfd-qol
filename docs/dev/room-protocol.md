@@ -14,7 +14,7 @@ Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 
 
 The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They have no player cap and never take part in the game's Play now recommendation.
 
-Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
+Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId, browserId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`; `browserId` is a random UUID kept in localStorage, for bans. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
 
 A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
 
@@ -50,7 +50,8 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
 | `refresh`, `ack`, `activity` | ticket refresh, `check` reply, activity tracking | ignored |
 | `rtv`, `nominate`, `vote`, `extend` | map votes | ignored |
-| `query`, `report`, `reports`, `moderate` | official server services | ignored |
+| `moderate` | `playerId`, `action` (`"kick"` or `"ban"`), `minutes` (the game sends 60) | host only, not on itself: closes the player with 4008 "You were kicked from this room." or "You were banned from this room for 1 hour." and sends everyone a `notice` "<name> was kicked." or "<name> was banned for 1 hour.". A ban refuses that `browserId` for an hour with 4008 "You're banned from this room for now." |
+| `query`, `report`, `reports` | official server services | ignored |
 
 ## Room → client
 
@@ -114,7 +115,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 ## Closing
 
-The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. Guests replace any close reason that isn't one of the extension's own texts with "This private room has closed." for 4004, "Invalid private room data" for 4002, and nothing otherwise. The private host uses 4002 for invalid data, 4004 when the room is gone, 4008 for refused joins, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. Guests replace any close reason that isn't one of the extension's own texts with "This private room has closed." for 4004, "Invalid private room data" for 4002, and nothing otherwise. The private host uses 4002 for invalid data, 4004 when the room is gone, 4008 for full rooms, kicks and bans, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 

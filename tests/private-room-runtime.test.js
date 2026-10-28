@@ -306,6 +306,19 @@ describe('private room runtime', () => {
     }
   });
 
+  test('the hello carries a browser id that persists', async () => {
+    const storage = new Map(), ids = [];
+    for (let run = 0; run < 2; run++) {
+      const f = fixture({storage});
+      try {
+        await f.join();
+        ids.push(f.runtime.roomSocket(ROOM).options.hello.browserId);
+      } finally { f.runtime.destroy(); }
+    }
+    expect(ids[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(ids[1]).toBe(ids[0]);
+  });
+
   test('discovery and negotiation share one guest relay', async () => {
     const f = fixture();
     try {
@@ -523,7 +536,7 @@ describe('private room runtime', () => {
     try {
       f.runtime.attach();
       const id = await f.host(), peer = new Socket(); peer.open();
-      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}});
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}, browserId: crypto.randomUUID()});
       f.signals[0].emit('peer-left', 'guest');
       expect(f.runtime.hosting().players).toBe(1);
       f.events.dispatchEvent(new Event('pagehide'));
@@ -541,7 +554,7 @@ describe('private room runtime', () => {
       const id = await f.host();
       const peer = new Socket(); peer.open();
       peer.stats.set('transport', {type: 'transport', bytesSent: 1000});
-      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}});
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}, browserId: crypto.randomUUID()});
       f.timers.advance(30000); await flush();
       expect(peer.statsCalls).toBe(0);
       expect(f.timers.pending()).toBe(0);
@@ -649,7 +662,7 @@ describe('private room runtime', () => {
     const f = fixture();
     try {
       const id = await f.host(), peer = new Socket(); peer.open();
-      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: false, appearance: {}});
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: false, appearance: {}, browserId: crypto.randomUUID()});
       const own = f.runtime.roomSocket(id); await opened(own);
       expect(f.runtime.hosting().players).toBe(2);
       f.accountListeners.forEach(listener => listener());

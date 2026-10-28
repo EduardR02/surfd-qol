@@ -1,9 +1,11 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUserId, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
+  bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUuid, kickedNotice,
+  normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
+const BAN_MS = 60 * 60 * 1000;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
@@ -23,7 +25,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     recent: [], nominations: {}, rtv: [], vote: null, nextMap: null,
   };
   const clients = new Set();
-  const slots = new Set(), pending = new Map();
+  const slots = new Set(), pending = new Map(), bans = new Map();
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
   let closed = false;
 
@@ -181,6 +183,19 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }
     roster();
   }
+  function moderate(client, {playerId, action}) {
+    const target = [...clients].find(peer => peer.player.id === playerId);
+    if (!client.host || !target || target.host) return;
+    // A ban covers this browser only: clearing its site data gives it a new id.
+    if (action === 'ban') bans.set(target.browserId, now() + BAN_MS);
+    target.socket.close(CLOSE.refused, action === 'ban' ? ROOM_TEXTS.banned : ROOM_TEXTS.kicked);
+    leave(target);
+    broadcast({type: 'notice', text: action === 'ban' ? bannedNotice(target.player.name) : kickedNotice(target.player.name)});
+  }
+  function banned(browserId) {
+    for (const [id, until] of bans) if (until <= now()) bans.delete(id);
+    return bans.has(browserId);
+  }
   function receive(client, data) {
     if (!client.open || closed) return;
     try {
@@ -246,7 +261,10 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           // The game waits for this when a map starts; no token means no ranked runs.
           send(client, {type: 'context', epoch: state.epoch, token: null});
           break;
-        // Votes, refreshes, activity, reports and moderation belong to public servers.
+        case 'moderate':
+          moderate(client, message);
+          break;
+        // Votes, refreshes, activity and reports belong to official servers.
       }
     } catch {
       client.socket.close(CLOSE.invalid, ROOM_TEXTS.invalidData);
@@ -259,8 +277,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       socket.close(CLOSE.gone, ROOM_TEXTS.closed);
       return;
     }
-    if (!hello || typeof hello !== 'object' || typeof hello.guest !== 'boolean') {
+    if (!hello || typeof hello !== 'object' || typeof hello.guest !== 'boolean' || !isUuid(hello.browserId)) {
       socket.close(CLOSE.invalid, ROOM_TEXTS.invalidHello);
+      return;
+    }
+    if (!host && banned(hello.browserId)) {
+      socket.close(CLOSE.refused, ROOM_TEXTS.stillBanned);
       return;
     }
     // One place stays free for the host's own connection.
@@ -279,8 +301,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const connectionId = crypto.randomUUID();
     // Signed-in players are taken at their word; a hello that can't be one becomes a guest.
     const guest = hello.guest || !isPlayerName(hello.name);
-    const userId = !guest && isUserId(hello.userId) ? hello.userId : undefined;
-    const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
+    const userId = !guest && isUuid(hello.userId) ? hello.userId : undefined;
+    const client = {socket, host, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,

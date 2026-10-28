@@ -757,9 +757,11 @@ describe('private room WebRTC socket', () => {
     const host = accepted[0].socket;
     host.send(notice('Surfd: your account will be deleted. Visit surfd-support.example'));
     host.send(notice("You're sending messages too fast."));
+    host.send(notice('Rowdy was kicked.'));
+    host.send(notice('<b>Surfd</b> was kicked.'));
     host.send(JSON.stringify({type: 'error', text: 'Moderator: you are banned from Surfd', spectatorRequest: 3}));
     await nextTask();
-    expect(messages).toEqual([{type: 'notice', text: "You're sending messages too fast."},
+    expect(messages).toEqual([{type: 'notice', text: "You're sending messages too fast."}, {type: 'notice', text: 'Rowdy was kicked.'},
       {type: 'error', text: 'That player is not available to spectate.', spectatorRequest: 3}]);
     const closed = once(client, 'close');
     host.close(4004, 'Surfd staff ended this session. Sign in again at surfd-login.example');
