@@ -119,6 +119,8 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const community = isPrivateRoomId(rooms.currentRoom?.());
     const open = adapter?.browserOpen?.() ?? (!!root && !root.hidden);
     observe(open, community);
+    const hosting = rooms.hosting();
+    rooms.showHostDetails?.(open && hosting?.id === adapter?.selected?.());
     if (!open && !community && !votes.size) return;
     for (const node of menu?.querySelectorAll('[data-act="rtv"], [data-act="nominate"], [data-act="extend"], .room-rtv, .room-nominate, .room-extend') ?? []) {
       if (community) {
@@ -127,7 +129,6 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       } else if (votes.has(node)) { hidden(node, votes.get(node)); votes.delete(node); }
     }
     if (!open || !root || !hostButton) return;
-    const hosting = rooms.hosting();
     if (hosting) staging = false;
     hidden(hostButton, !!hosting); hostButton.disabled = pending;
     const rows = adapter.rows();

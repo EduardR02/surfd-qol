@@ -38,6 +38,7 @@ class Signal {
 class Socket extends EventTarget {
   readyState = 0;
   sent = [];
+  statsCalls = 0;
   stats = new Map();
   send(data) { this.sent.push(data); }
   open() { this.readyState = 1; this.dispatchEvent(new Event('open')); }
@@ -48,7 +49,7 @@ class Socket extends EventTarget {
     this.closed = {code, reason};
     this.dispatchEvent(Object.assign(new Event('close'), this.closed));
   }
-  getStats() { return Promise.resolve(this.stats); }
+  getStats() { this.statsCalls++; return Promise.resolve(this.stats); }
 }
 function clock() {
   let time = 1000, next = 0;
@@ -284,13 +285,16 @@ describe('private room runtime', () => {
       const count = signal.sent.length;
       f.runtime.setVisibility('public');
       expect(signal.sent).toHaveLength(count);
-      f.timers.advance(25000);
+      f.timers.advance(29999);
+      expect(signal.sent).toHaveLength(count);
+      f.timers.advance(1);
       expect(signal.sent).toHaveLength(count + 1);
       const next = fixture({storage});
       expect(next.runtime.visibility()).toBe('public');
       next.runtime.destroy();
       f.runtime.setVisibility('private');
       expect(signal.sent.at(-1)).toEqual({to: null, type: 'listing', data: null});
+      expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 
@@ -475,15 +479,27 @@ describe('private room runtime', () => {
   test('upload uses peer byte deltas rather than estimates', async () => {
     const f = fixture();
     try {
-      await f.host();
+      const id = await f.host();
       const peer = new Socket(); peer.open();
       peer.stats.set('transport', {type: 'transport', bytesSent: 1000});
       f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}});
+      f.timers.advance(30000); await flush();
+      expect(peer.statsCalls).toBe(0);
+      expect(f.timers.pending()).toBe(0);
+      f.open(true);
+      f.adapter.rooms.selected = () => id;
+      f.runtime.showHostDetails(true);
       f.timers.advance(5000); await flush();
       expect(f.runtime.hosting().uploadMbps).toBeNull();
       peer.stats.set('transport', {type: 'transport', bytesSent: 626000});
       f.timers.advance(5000); await flush();
       expect(f.runtime.hosting().uploadMbps).toBe(1);
+      f.open(false);
+      f.runtime.showHostDetails(false);
+      const calls = peer.statsCalls;
+      f.timers.advance(30000); await flush();
+      expect(peer.statsCalls).toBe(calls);
+      expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 

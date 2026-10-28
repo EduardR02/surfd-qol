@@ -16,7 +16,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   timers = globalThis, events = globalThis, storage,
   socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
   const known = new Map(), directory = new Map(), guests = new Map(), gone = new Set();
-  const sockets = new Map(), latestSockets = new Map(), uploadSamples = new WeakMap();
+  const sockets = new Map(), latestSockets = new Map();
+  let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
@@ -79,6 +80,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   }
   function publish(force = false) {
     if (!hosted) return;
+    updateHostTimers();
     const row = hostRow();
     known.set(row.id, normalize(row));
     const data = hosted.visibility === 'public'
@@ -243,6 +245,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     hosted = null;
     timers.clearInterval(heartbeat);
     heartbeat = null;
+    timers.clearInterval(uploadTimer);
+    uploadTimer = null; showingDetails = false;
+    uploadSamples = new WeakMap();
     markGone(closing.id);
     closing.signal?.send(null, 'listing', null);
     closing.room.close();
@@ -250,8 +255,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     closing.signal?.close();
   }
   async function sampleUpload() {
-    const current = hosted;
-    if (!current || sampling) return;
+    const current = hosted, samples = uploadSamples;
+    if (!current || sampling || !showingDetails || !getAdapter()?.rooms?.browserOpen?.() ||
+        getAdapter()?.rooms?.selected?.() !== current.id) return;
     sampling = true;
     try {
       let total = 0, measured = false;
@@ -264,14 +270,16 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
           else if (stat.type === 'data-channel') channels += stat.bytesSent;
         }
         const bytes = hasTransport ? transport : channels, time = now();
-        const previous = uploadSamples.get(socket);
-        uploadSamples.set(socket, {bytes, time});
+        const previous = samples.get(socket);
+        samples.set(socket, {bytes, time});
         if (previous && time > previous.time && bytes >= previous.bytes) {
           total += (bytes - previous.bytes) * 8 / ((time - previous.time) * 1000);
           measured = true;
         }
       }));
-      if (hosted === current) { current.uploadMbps = measured ? total : null; ui?.refresh(); }
+      if (hosted === current && samples === uploadSamples && showingDetails) {
+        current.uploadMbps = measured ? total : null; ui?.refresh();
+      }
     } catch { /* A peer may close while its stats are being collected. */ }
     finally { sampling = false; }
   }
@@ -280,12 +288,19 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     listening = true;
     events.addEventListener?.('pagehide', pagehide);
   }
-  function startHeartbeat() {
-    let beats = 0;
-    heartbeat = timers.setInterval(() => {
-      if (++beats % 5 === 0) publish(true);
-      void sampleUpload();
-    }, 5000);
+  function updateHostTimers() {
+    if (hosted?.visibility === 'public') {
+      heartbeat ??= timers.setInterval(() => publish(true), 30000);
+    } else {
+      timers.clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    if (hosted && showingDetails) {
+      uploadTimer ??= timers.setInterval(() => void sampleUpload(), 5000);
+    } else {
+      timers.clearInterval(uploadTimer);
+      uploadTimer = null;
+    }
   }
   function pagehide() { api.destroy(); }
   async function join(id) {
@@ -342,7 +357,6 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         name: `${adapter.displayName() || guestName()}'s room`.slice(0, 40),
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
-      startHeartbeat();
       try {
         const signal = current.signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'host', key: newHostKey()});
         const signalling = relay(signal, id, true);
@@ -385,6 +399,14 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     join, guestName, mergeRooms, refreshDirectory,
     hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility,
       players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
+    showHostDetails(visible) {
+      visible = !!visible && !!hosted;
+      if (showingDetails === visible) return;
+      showingDetails = visible;
+      uploadSamples = new WeakMap();
+      if (hosted) hosted.uploadMbps = null;
+      updateHostTimers();
+    },
     visibility: () => visibility,
     setVisibility(value) {
       if (value !== 'public' && value !== 'private') throw new Error('Invalid room visibility.');
