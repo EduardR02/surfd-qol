@@ -6,7 +6,7 @@ Code: `src/private-rooms/` (`host.js` the room, `protocol.js` the codecs, `socke
 
 The game's client validates binary frames strictly but consumes most JSON fields directly; what follows is what it reads. When the game updates, find the code again by these literals: `"surfd-v1"`, `"/servers/"`, `"Invalid spectator header"`, `"Changing map…"`, `"You were invited to"`.
 
-Guest transport validates complete host messages before delivery: state, catalog tiers, unique player identities/slots, appearance, chat, notices, demand, context and binary frames. Invalid data closes with 4002 without a room-service probe. Chunked messages are validated before any fragment reaches the game, then sent as bounded frames; public-server services and ranked tokens are not accepted from a private host.
+The game trusts its server and puts some fields (a map's tier, for one) into markup unescaped, so guests validate every message from the host before the game sees it. Invalid data closes with 4002.
 
 ## Ids and joining
 
@@ -17,16 +17,11 @@ The game joins rooms from its server list. Public rooms come from the meeting po
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
 
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
-Negotiation expires after 15 seconds. A guest leaving the meeting point cancels only its unfinished host-side peer; established RTC connections remain open. Queued negotiation work and pending ICE candidates are limited to 256 each.
-
-Invite discovery waits until the server browser opens and closes its meeting point socket after receiving the preview. Closing the browser cancels unfinished previews and directory fetches; teardown also aborts directory fetches.
+Unfinished negotiations expire after 15 seconds.
 
 Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
-Worker publication keeps one request in flight and only the latest pending state. A slow listing cannot overtake a later unlisting, and intermediate updates do not build a queue.
-Concurrent directory reads share one Lobby refresh. Only successful responses enter the ten-second cache; an unavailable Lobby returns HTTP 503 and can be retried by the next refresh.
 
-The room UI observes only the server browser and, in a community room, its room-menu controls. A hidden browser observes only its own visibility attributes; HUD mutations do not refresh room UI.
-Room metadata and pong measurements update the cache during play, not the hidden browser DOM. Opening the browser renders that cache; an explicit join also updates rows before invoking the native join callback.
+Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; upload stats are sampled only while the host's own room is shown.
 
 Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
 
@@ -72,8 +67,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 **Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
 
 Control frames stay within 65,536 bytes. Larger JSON messages use sequential `{type:"room-chunk",data,final}` frames on the reliable channel; `data` holds part of the original JSON string and `final:true` completes it. The room-client hook assembles the message before applying it.
-Assembly is limited to 64 Mi UTF-16 characters and 32,768 chunks, enough for every uint16 player slot. Invalid, nested, interrupted or oversized sequences release their fragments. Raw messages still have the 65,536-character limit; only a completed private-room chunk sequence enters the assembled-message path.
-The byte limit includes the transport's outer `{type:"data",data}` JSON envelope, including its second layer of escaping. Chunk payloads use 4,000 characters so escaped names and Unicode remain within that wire limit.
+Frame sizes are measured after the transport wraps and escapes them once more, so chunks carry at most 4,000 characters. Reassembly stops at 32,768 chunks.
 
 ## Binary frames
 
@@ -120,10 +114,6 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data and 4004 when the room is gone. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
-Leave, teardown and a newer join cancel pending discovery before the native join callback can run. A native join failure closes its discovery socket.
-Deferred peer-failure callbacks probe the meeting point only while their socket is still the room's active connection. Leave and teardown cannot reopen a relay through an old failure callback.
-
-Public hosting renews its listing every 30 seconds. Upload stats are sampled every 5 seconds only while the host selects its own room in the visible browser; hiding the browser or selecting another room stops sampling. Private hosting without that detail panel, idle attachment and connected guests have no runtime interval. Leave, replacement and startup failure clear host timers.
 
 ## Testing safely
 
