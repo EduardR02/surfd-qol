@@ -1,12 +1,18 @@
 import {MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, POSE_HEADER_BYTES, POSE_SAMPLE_BYTES, SNAPSHOT_HEADER_BYTES,
   SNAPSHOT_BLOCK_BYTES, SNAPSHOT_INTERVAL_MS, SPECTATOR_BYTES} from './protocol.js';
 
-export function estimateBandwidth(players) {
+// Host-link Mbps, not provider-billed transfer. Defaults budget a 30Hz stream
+// for every guest in both directions; pass actual demand for a typical scenario.
+export function estimateBandwidth(players, {spectatorViewers = Math.max(0, players - 1),
+  spectatorSenders = Math.max(0, players - 1)} = {}) {
   if (!Number.isInteger(players) || players < 0 || players > MAX_ROOM_PLAYERS) throw new RangeError('Invalid player count');
   const guests = Math.max(0, players - 1);
+  for (const streams of [spectatorViewers, spectatorSenders]) {
+    if (!Number.isInteger(streams) || streams < 0 || streams > guests) throw new RangeError('Invalid spectator stream count');
+  }
   if (!guests) return {upload: 0, download: 0};
   // Two samples every 98ms, 50ms snapshots, 97B IP/UDP/TURN ChannelData/DTLS/SCTP overhead per 1100B fragment,
-  // and one 30Hz spectator stream per guest in each direction; host loopback uses no network.
+  // with spectator streams only for the requested demand; host loopback uses no network.
   const batchSeconds = 2 * 49 / 1000, tickSeconds = SNAPSHOT_INTERVAL_MS / 1000;
   const overhead = 28 + 4 + 37 + 28, fragmentBytes = 1100;
   const poseBytes = POSE_HEADER_BYTES + 2 * POSE_SAMPLE_BYTES;
@@ -19,7 +25,7 @@ export function estimateBandwidth(players) {
   }
   const spectatorBytes = (SPECTATOR_BYTES + overhead) * 30;
   return {
-    upload: guests * (snapshotBytes / tickSeconds + spectatorBytes) * 8 / 1e6,
-    download: guests * ((poseBytes + overhead) / batchSeconds + spectatorBytes) * 8 / 1e6,
+    upload: (guests * snapshotBytes / tickSeconds + spectatorViewers * spectatorBytes) * 8 / 1e6,
+    download: (guests * (poseBytes + overhead) / batchSeconds + spectatorSenders * spectatorBytes) * 8 / 1e6,
   };
 }

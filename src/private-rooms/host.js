@@ -1,10 +1,12 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUuid, kickedNotice,
-  normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
+  normalizeAppearance, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
+// Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
+const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
@@ -12,6 +14,8 @@ const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 
 export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
+  const problem = roomNameProblem(name, visibility);
+  if (problem) throw new Error(problem);
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
   for (const map of maps) {
@@ -213,9 +217,14 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           if (flushTimer === null) flushTimer = setTimeout(flushPoses, SNAPSHOT_INTERVAL_MS);
         } else if (type === 3) {
           const packet = relaySpectator(data, client.player.slot);
-          if (packet.epoch === state.epoch && !client.player.spectating) {
-            for (const watcher of client.watchers) send(watcher, packet.buffer);
+          if (packet.epoch !== state.epoch) return;
+          if (client.spectatorSequence !== null) {
+            const distance = (packet.sequence - client.spectatorSequence) >>> 0;
+            if (distance === 0 || distance >= 0x80000000) return;
           }
+          client.spectatorSequence = packet.sequence;
+          if (!client.watchers.size || client.player.spectating || !take(client.spectator, SPECTATOR_LIMIT)) return;
+          for (const watcher of client.watchers) send(watcher, packet.buffer);
         } else throw new Error('Invalid packet type');
         return;
       }
@@ -247,7 +256,10 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
             state = {...state, mapId: message.mapId, mapTitle: catalog.get(message.mapId).title,
               epoch: state.epoch + 1, startedAt: Date.now(), recent: [state.mapId, ...state.recent].slice(0, 8)};
             clearPending();
-            for (const peer of clients) peer.sequence = null;
+            for (const peer of clients) {
+              peer.sequence = null;
+              peer.spectatorSequence = null;
+            }
             broadcast({type: 'state', state, serverTime: Date.now()});
             // The native client clears its viewer count on each epoch, not its demand flag.
             for (const peer of clients) demand(peer);
@@ -303,6 +315,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const guest = hello.guest || !isPlayerName(hello.name);
     const userId = !guest && isUuid(hello.userId) ? hello.userId : undefined;
     const client = {socket, host, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
+      spectatorSequence: null, spectator: {tokens: SPECTATOR_LIMIT.burst, at: now()},
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,
@@ -329,10 +342,20 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   function setVisibility(value) {
     if (value !== 'private' && value !== 'public') throw new Error('Invalid room visibility.');
+    const problem = roomNameProblem(state.name, value);
+    if (problem) throw new Error(problem);
     if (closed || state.visibility === value) return;
     state = {...state, visibility: value};
     broadcast({type: 'state', state, serverTime: Date.now()});
     onChange();
   }
-  return {addClient, close, setVisibility, get state() { return state; }, get players() { return players(); }};
+  function setName(name) {
+    const problem = roomNameProblem(name, state.visibility);
+    if (problem) throw new Error(problem);
+    if (closed || state.name === name) return;
+    state = {...state, name};
+    broadcast({type: 'state', state, serverTime: Date.now()});
+    onChange();
+  }
+  return {addClient, close, setVisibility, setName, get state() { return state; }, get players() { return players(); }};
 }

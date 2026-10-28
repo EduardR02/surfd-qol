@@ -26,4 +26,36 @@ describe('private room bandwidth', () => {
     expect(Number.isFinite(estimateBandwidth(MAX_ROOM_PLAYERS).upload)).toBe(true);
     for (const value of [-1, 1.5, NaN, Infinity, MAX_ROOM_PLAYERS + 1, '8', null]) expect(() => estimateBandwidth(value)).toThrow();
   });
+
+  test('distinguishes typical movement-only demand from the conservative spectator budget', () => {
+    for (const players of [2, 8, 16, 32, MAX_ROOM_PLAYERS]) {
+      const guests = players - 1, streamMbps = (56 + 97) * 30 * 8 / 1e6;
+      const typical = estimateBandwidth(players, {spectatorViewers: 0, spectatorSenders: 0});
+      const budget = estimateBandwidth(players);
+      expect(budget.upload - typical.upload).toBeCloseTo(guests * streamMbps, 10);
+      expect(budget.download - typical.download).toBeCloseTo(guests * streamMbps, 10);
+    }
+  });
+
+  test('counts guest viewers and distinct guest sources independently', () => {
+    const none = estimateBandwidth(8, {spectatorViewers: 0, spectatorSenders: 0});
+    const watched = estimateBandwidth(8, {spectatorViewers: 5, spectatorSenders: 1});
+    const streamMbps = (56 + 97) * 30 * 8 / 1e6;
+    expect(watched.upload - none.upload).toBeCloseTo(5 * streamMbps, 10);
+    expect(watched.download - none.download).toBeCloseTo(streamMbps, 10);
+    // A guest watching the host consumes host upload but no spectator download.
+    expect(estimateBandwidth(8, {spectatorViewers: 1, spectatorSenders: 0}).download).toBe(none.download);
+    // A host watching a guest consumes host download but no spectator upload.
+    expect(estimateBandwidth(8, {spectatorViewers: 0, spectatorSenders: 1}).upload).toBe(none.upload);
+  });
+
+  test('rejects impossible spectator demand, including streams in a host-only room', () => {
+    for (const value of [-1, 0.5, NaN, Infinity, 8, '1', null]) {
+      expect(() => estimateBandwidth(8, {spectatorViewers: value})).toThrow();
+      expect(() => estimateBandwidth(8, {spectatorSenders: value})).toThrow();
+    }
+    expect(() => estimateBandwidth(1, {spectatorViewers: 1})).toThrow();
+    expect(() => estimateBandwidth(0, {spectatorSenders: 1})).toThrow();
+    expect(estimateBandwidth(1, {spectatorViewers: 0, spectatorSenders: 0})).toEqual({upload: 0, download: 0});
+  });
 });

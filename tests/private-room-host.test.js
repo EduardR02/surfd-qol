@@ -425,6 +425,102 @@ describe('private room host', () => {
     expect(snapshots(host)).toHaveLength(1);
   });
 
+  test('preserves every native-permitted spectator sample, including the 1ms early-send tolerance', () => {
+    let time = 0;
+    const {room, connect} = fixture({now: () => time}), target = connect(), watcher = connect();
+    watcher.receive({type: 'spectate', connectionId: room.players[0].connectionId, request: 1});
+    const expected = [];
+    for (let sequence = 0; sequence < 600; sequence++) {
+      time = sequence * (1000 / 30 - 1);
+      const packet = {slot: 65535, sequence, epoch: 1, pose: {...detailed, time: sequence, x: sequence / 7}};
+      const source = encodeSpectator(packet), forwarded = source.slice(0), view = new DataView(forwarded);
+      view.setUint8(1, 4);
+      view.setUint16(2, 0, true);
+      expected.push(forwarded);
+      target.receive(source);
+    }
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toEqual(expected);
+    expect(target.closed).toBeNull();
+    room.close();
+  });
+
+  test('bounds spectator flood fanout to eight burst frames plus the native-permitted rate', () => {
+    let time = 0;
+    const {room, connect} = fixture({now: () => time}), target = connect();
+    const watchers = Array.from({length: 3}, () => connect());
+    for (const watcher of watchers) watcher.receive({type: 'spectate', connectionId: room.players[0].connectionId, request: 1});
+    const send = sequence => target.receive(encodeSpectator({slot: 0, sequence, epoch: 1, pose: detailed}));
+    for (let sequence = 0; sequence < 1000; sequence++) send(sequence);
+    for (const watcher of watchers) expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(8);
+    for (time = 1; time <= 1000; time++) send(1000 + time);
+    for (const watcher of watchers) {
+      const frames = watcher.sent.filter(value => value instanceof ArrayBuffer);
+      expect(frames).toHaveLength(8 + Math.floor(1000 / (1000 / 30 - 1)));
+      expect(frames.reduce((sum, frame) => sum + frame.byteLength, 0)).toBe(38 * 56);
+    }
+    expect(target.closed).toBeNull();
+    room.close();
+  });
+
+  test('drops duplicate and stale spectator sequences without spending burst tokens and accepts wraparound', () => {
+    const {room, connect} = fixture({now: () => 0}), target = connect(), watcher = connect();
+    watcher.receive({type: 'spectate', connectionId: room.players[0].connectionId, request: 1});
+    const send = sequence => target.receive(encodeSpectator({slot: 0, sequence, epoch: 1, pose: detailed}));
+    send(0xfffffffe);
+    for (let index = 0; index < 100; index++) {
+      send(0xfffffffe);
+      send(0xfffffffd);
+    }
+    send(0xffffffff);
+    send(0);
+    send(0xffffffff);
+    send(0x80000000);
+    for (let sequence = 1; sequence <= 5; sequence++) send(sequence);
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer).map(frame => decodeSpectator(frame, true).sequence))
+      .toEqual([0xfffffffe, 0xffffffff, 0, 1, 2, 3, 4, 5]);
+    room.close();
+  });
+
+  test('resets spectator sequencing on epochs without refilling burst tokens on epoch or demand changes', () => {
+    let time = 0;
+    const {room, connect} = fixture({now: () => time}), host = connect(true), target = connect(), watcher = connect();
+    const targetId = target.messages('welcome')[0].player.connectionId;
+    watcher.receive({type: 'spectate', connectionId: targetId, request: 1});
+    const send = (sequence, epoch) => target.receive(encodeSpectator({slot: 0, sequence, epoch, pose: detailed}));
+    for (let sequence = 0; sequence < 8; sequence++) send(sequence, 1);
+    watcher.receive({type: 'spectate', connectionId: null, request: 2});
+    watcher.receive({type: 'spectate', connectionId: targetId, request: 3});
+    send(8, 1);
+    host.receive({type: 'change-map', mapId: 'two'});
+    send(0, 2);
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(8);
+    time = 34;
+    send(100, 1);
+    send(0, 2);
+    send(1, 2);
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer).map(frame => {
+      const packet = decodeSpectator(frame, true);
+      return [packet.sequence, packet.epoch];
+    })).toEqual([...Array.from({length: 8}, (_, sequence) => [sequence, 1]), [1, 2]]);
+    room.close();
+  });
+
+  test('still validates malformed spectator data when unwatched or rate limited', () => {
+    for (const watched of [false, true]) {
+      const {room, connect} = fixture({now: () => 0}), target = connect(), watcher = connect();
+      if (watched) watcher.receive({type: 'spectate', connectionId: room.players[0].connectionId, request: 1});
+      for (let sequence = 0; sequence < 8; sequence++) {
+        target.receive(encodeSpectator({slot: 0, sequence, epoch: 1, pose: detailed}));
+      }
+      const invalid = encodeSpectator({slot: 0, sequence: 8, epoch: 1, pose: detailed});
+      new DataView(invalid).setFloat32(44, NaN, true);
+      target.receive(invalid);
+      expect(target.closed?.code).toBe(CLOSE.invalid);
+      expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(watched ? 8 : 0);
+      room.close();
+    }
+  });
+
   test('a spectate and chat flood stays bounded', async () => {
     let time = 0, bytes = 0;
     const {room, connect} = fixture({now: () => time});

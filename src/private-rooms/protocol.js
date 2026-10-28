@@ -253,14 +253,14 @@ export function relaySpectator(buffer, slot) {
   const output = buffer.slice(0), view = new DataView(output);
   view.setUint8(1, 4);
   view.setUint16(2, slot, true);
-  return {buffer: output, epoch: packet.epoch};
+  return {buffer: output, epoch: packet.epoch, sequence: packet.sequence};
 }
 
 export function encodeControlFrames(message) {
   const text = typeof message === 'string' ? message : JSON.stringify(message);
   if (text.length <= MAX_CONTROL_BYTES && controlWireSize(text) <= MAX_CONTROL_BYTES) return [text];
   const frames = [];
-  // The transport JSON wrapper escapes these chunks a second time.
+  // Bound chunks even when JSON escaping expands every character.
   for (let offset = 0; offset < text.length; offset += ROOM_CHUNK_CHARS) {
     frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + ROOM_CHUNK_CHARS),
       final: offset + ROOM_CHUNK_CHARS >= text.length}));
@@ -293,7 +293,7 @@ export function decodeControl(text) {
 }
 
 export function controlWireSize(text) {
-  return encoder.encode(JSON.stringify({type: 'data', data: text})).byteLength;
+  return 1 + encoder.encode(text).byteLength;
 }
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -308,6 +308,11 @@ export const isUuid = value => typeof value === 'string' && UUID.test(value);
 export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
 // Public rooms named like the site's own servers aren't listed (signal/src/lobby.js refuses them too).
 export const isListedName = value => isRoomName(value) && !/surfd|official/i.test(value);
+export function roomNameProblem(name, visibility = 'private') {
+  if (!isRoomName(name)) return "Use 3–24 letters, digits, _ or - before 's room.";
+  return visibility === 'public' && !isListedName(name)
+    ? "Rooms with Surfd or official in the name can't be public." : null;
+}
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
 export function catalogEntry(map) {

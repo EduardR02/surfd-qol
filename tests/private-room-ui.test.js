@@ -134,6 +134,7 @@ describe('native room UI', () => {
     f.root.hidden = true;
     Observer.mutate(f.root, 'attributes', 'hidden');
     await Promise.resolve();
+    expect([...Observer.instances].every(observer => observer.targets.size === 0)).toBe(true);
     const reads = f.reads();
     Observer.mutate(f.detail);
     Observer.mutate(f.menu);
@@ -144,8 +145,7 @@ describe('native room UI', () => {
     f.ui.refresh();
     expect(f.vote.hidden).toBe(true);
     f.root.hidden = false;
-    Observer.mutate(f.root, 'attributes', 'hidden');
-    await Promise.resolve();
+    f.ui.refresh();
     expect(f.reads()).toBeGreaterThan(reads);
     f.ui.destroy();
   });

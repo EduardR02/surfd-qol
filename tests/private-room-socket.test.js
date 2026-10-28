@@ -427,9 +427,107 @@ describe('private room WebRTC socket', () => {
     expect([...new Uint8Array(hostMessages[1])]).toEqual([1, 2]);
     expect(decodeSnapshot(clientMessages[0])).toEqual([batch(1, 1)]);
     expect(clientMessages[1]).toBe(notice('Map is not in the catalog.'));
-    expect(connections[0].channels[0].sent.map(JSON.parse).map(message => message.type)).toEqual(['hello', 'data']);
+    expect(connections[0].channels[0].sent).toEqual([
+      JSON.stringify({type: 'hello', hello: accepted[0].hello}), 'd{"type":"map"}',
+    ]);
     expect(connections[0].channels[1].sent).toHaveLength(1);
     expect(client.bufferedAmount).toBe(0);
+  });
+
+  test('sends native text byte-for-byte with only a one-byte tag and no control collisions', async () => {
+    const {client, accepted, connections} = rtcPair();
+    await nextTask();
+    const messages = [], encoder = new TextEncoder();
+    accepted[0].socket.onmessage = event => messages.push(event.data);
+    const texts = ['ping', ' { "type": "chat", "text": "名 😀 \\"quoted\\" \\\\ path" } ',
+      JSON.stringify({type: 'closed'}), 'd-prefix', ''];
+    for (const text of texts) {
+      client.send(text);
+      expect(connections[0].channels[0].sent.at(-1)).toBe('d' + text);
+      expect(encoder.encode(connections[0].channels[0].sent.at(-1)).byteLength).toBe(encoder.encode(text).byteLength + 1);
+    }
+    expect(client.bufferedAmount).toBe(texts.reduce((sum, text) => sum + encoder.encode(text).byteLength + 1, 0));
+    await nextTask();
+    expect(messages).toEqual(texts);
+    expect(client.readyState).toBe(client.OPEN);
+  });
+
+  test('accounts for exact before and after reliable payload bytes', async () => {
+    const {client, connections} = rtcPair();
+    await nextTask();
+    const encoder = new TextEncoder();
+    for (const [text, before, after] of [
+      ['ping', 29, 5],
+      [JSON.stringify({type: 'context', epoch: 1, token: null}), 74, 42],
+    ]) {
+      expect(encoder.encode(JSON.stringify({type: 'data', data: text})).byteLength).toBe(before);
+      client.send(text);
+      expect(encoder.encode(connections[0].channels[0].sent.at(-1)).byteLength).toBe(after);
+    }
+  });
+
+  test('accepts the exact tagged UTF-8 limit and refuses oversized sends before queueing them', async () => {
+    const {client, accepted, connections} = rtcPair();
+    await nextTask();
+    const text = '名'.repeat((MAX_CONTROL_BYTES - 1) / 3), messages = [];
+    accepted[0].socket.onmessage = event => messages.push(event.data);
+    client.send(text);
+    expect(client.bufferedAmount).toBe(MAX_CONTROL_BYTES);
+    await nextTask();
+    expect(messages).toEqual([text]);
+    const before = connections[0].channels[0].sent.length, closed = once(client, 'close');
+    client.send(text + 'x');
+    expect(await closed).toMatchObject({code: 1006, wasClean: false});
+    expect(connections[0].channels[0].sent).toHaveLength(before);
+  });
+
+  test('rejects legacy envelopes, invalid tagged JSON, unknown tags and non-text controls', async () => {
+    for (const data of [JSON.stringify({type: 'data', data: 'pong'}), 'd{', 'd', 'xpong',
+      new Uint8Array([100, 112]), 'd' + 'x'.repeat(MAX_CONTROL_BYTES)]) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const messages = [], closed = once(client, 'close');
+      client.onmessage = event => messages.push(event.data);
+      connections[0].channels[0].onmessage({data});
+      expect(await closed).toMatchObject({code: CLOSE.invalid, wasClean: false});
+      expect(messages).toEqual([]);
+    }
+  });
+
+  test('rejects tagged native data until both channels and the handshake are ready', async () => {
+    const {client, connections} = rtcPair({holdHostBinary: true});
+    await nextTask();
+    const closed = once(client, 'close');
+    connections[0].channels[0].onmessage({data: 'dpong'});
+    expect(await closed).toMatchObject({code: CLOSE.invalid, wasClean: false});
+  });
+
+  test('leaves every motion sample, sequence, epoch and demanded spectator frame unchanged', async () => {
+    const {client, accepted, connections} = rtcPair();
+    await nextTask();
+    const host = accepted[0].socket, uploads = [], downloads = [];
+    host.binaryType = client.binaryType = 'arraybuffer';
+    host.onmessage = event => uploads.push(event.data);
+    client.onmessage = event => downloads.push(event.data);
+    const detailed = {...pose, time: 0xffffffff, x: 131072, y: -131072, vx: 32767, vy: -32767,
+      yaw: 173.123, pitch: -45.123, flags: 63, seconds: 86400};
+    const moving = {sequence: 0xffffffff, epoch: 0xffffffff, slot: 65535, samples: [pose, detailed]};
+    const up = [encodePoseBatch(moving)], down = [encodeSnapshot([moving])];
+    for (let sequence = 0; sequence < 30; sequence++) {
+      const frame = {...spectator(sequence, 65535), epoch: 0xffffffff};
+      up.push(encodeSpectator(frame));
+      down.push(encodeSpectator(frame, true));
+    }
+    for (const frame of up) client.send(frame);
+    for (const frame of down) host.send(frame);
+    await nextTask();
+    expect(uploads).toEqual(up);
+    expect(downloads).toEqual(down);
+    expect(connections[0].channels[1].sent).toEqual(up);
+    expect(connections[1].channels[1].sent).toEqual(down);
+    expect(up[0].byteLength).toBe(76);
+    expect(down[0].byteLength).toBe(82);
+    expect(up.slice(1).every(frame => frame.byteLength === 56)).toBe(true);
   });
 
   test('propagates clean close metadata and tolerates binary closing before reliable acknowledgement', async () => {
@@ -583,7 +681,6 @@ describe('private room WebRTC socket', () => {
     const {client, connections, accepted, signalling} = rtcPair();
     await nextTask();
     const [guest, host] = connections, before = signalling.messages.length;
-    const controls = channel => channel.sent.filter(text => typeof text === 'string').map(JSON.parse);
     const fresh = {iceServers: [{...RELAY_SERVER, username: 'fresh'}], iceTransportPolicy: 'relay'};
     client.renewRelay(fresh);
     await nextTask();
@@ -592,8 +689,6 @@ describe('private room WebRTC socket', () => {
     expect(client.relayConfig).toBe(fresh);
     // The meeting point is gone by now; the offer, the answer and their candidates use the room's own channel.
     expect(signalling.messages).toHaveLength(before);
-    expect(controls(guest.channels[0]).map(message => message.type)).toEqual(['hello', 'offer', 'ice']);
-    expect(controls(host.channels[0]).map(message => message.type)).toEqual(['ready', 'data', 'answer', 'ice']);
     expect(host.candidates.at(-1)).toEqual({candidate: 'candidate-0'});
     expect(guest.candidates.at(-1)).toEqual({candidate: 'candidate-1'});
     expect([client.readyState, accepted[0].socket.readyState]).toEqual([client.OPEN, client.OPEN]);
@@ -604,8 +699,13 @@ describe('private room WebRTC socket', () => {
     await nextTask();
     expect(host.config).toEqual(hostFresh);
     expect(guest.restarts).toBe(2);
-    expect(controls(host.channels[0]).map(message => message.type)).toEqual(['ready', 'data', 'answer', 'ice', 'restart', 'answer', 'ice']);
     expect([client.readyState, accepted[0].socket.readyState]).toEqual([client.OPEN, client.OPEN]);
+    const hostReceived = once(accepted[0].socket, 'message');
+    client.send('ping');
+    expect((await hostReceived).data).toBe('ping');
+    const guestReceived = once(client, 'message');
+    accepted[0].socket.send('pong');
+    expect((await guestReceived).data).toBe('pong');
   });
 
   test('a guest restarts at most three times a minute for its host, and a host takes at most three offers', async () => {
@@ -834,7 +934,7 @@ describe('private room WebRTC socket', () => {
       await nextTask();
       const messages = [], closed = once(client, 'close');
       client.onmessage = event => messages.push(event.data);
-      connections[0].channels[0].onmessage({data: JSON.stringify({type: 'data', data: JSON.stringify(message)})});
+      connections[0].channels[0].onmessage({data: 'd' + JSON.stringify(message)});
       expect(await closed).toMatchObject({code: CLOSE.invalid});
       expect(messages).toEqual([]);
       expect(probes).toBe(0);
@@ -918,12 +1018,11 @@ describe('private room WebRTC socket', () => {
     expect(messages).toEqual([]);
   });
 
-  test('rejects oversized raw envelopes and interrupted chunks without game delivery', async () => {
+  test('rejects oversized tagged frames and interrupted chunks without game delivery', async () => {
     for (const frames of [
-      [JSON.stringify({type: 'data', data: notice('名'.repeat(22000))})],
-      [JSON.stringify({type: 'data', data: JSON.stringify({type: 'room-chunk', data: '{', final: false})}),
-        JSON.stringify({type: 'data', data: 'pong'})],
-      [JSON.stringify({type: 'data', data: JSON.stringify({type: 'room-chunk', data: '', final: false})})],
+      ['d' + notice('名'.repeat(22000))],
+      ['d' + JSON.stringify({type: 'room-chunk', data: '{', final: false}), 'dpong'],
+      ['d' + JSON.stringify({type: 'room-chunk', data: '', final: false})],
     ]) {
       const {client, connections} = rtcPair();
       await nextTask();

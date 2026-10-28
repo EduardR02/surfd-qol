@@ -1,6 +1,7 @@
 import { createRoomHost } from './host.js';
-import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid } from './protocol.js';
+import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
+import { commandReply } from './commands.js';
+import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -9,7 +10,7 @@ const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const HOST_LEFT = ROOM_TEXTS.hostClosed;
 const SIGN_IN = 'Sign in to host a room.';
-const UNLISTED = "Rooms with Surfd or official in the name can't be public.";
+const BAD_CODE = 'Check the room code.';
 const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
 // How long the meeting point has to answer for relay credentials, how long
@@ -29,7 +30,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
-  let browserVisible = null, pendingInvite = null, directoryAbort = null;
+  let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
@@ -58,6 +59,10 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     if (!adapter) throw new Error('Private rooms are unavailable in this game build.');
     return adapter;
   }
+  function directoryVisible() {
+    const adapter = getAdapter()?.rooms;
+    return !!(adapter?.browserOpen?.() || adapter?.menuOpen?.());
+  }
   function mergeRooms(rows) {
     const community = new Map(directory);
     for (const [id, row] of known) {
@@ -65,14 +70,14 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       if (!listed || id === hosted?.id) community.set(id, row);
       else community.set(id, latestSockets.has(id)
         ? row
-        : {...listed, roster: row.roster, ping: row.ping ?? listed.ping});
+        : {...listed, ping: row.ping ?? listed.ping});
     }
     for (const id of gone) community.delete(id);
     return [...rows.filter(row => !isPrivateRoomId(row.id)), ...community.values()];
   }
   function updateLobby(force = false) {
     const adapter = getAdapter()?.rooms;
-    if (destroyed || (!force && !adapter?.browserOpen?.())) return;
+    if (destroyed || (!force && !directoryVisible())) return;
     if (adapter) adapter.update(mergeRooms(adapter.rows()));
     ui?.refresh();
   }
@@ -87,7 +92,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       region: publicVisibility ? 'Public' : 'Private', endsAt: 0, untimed: true,
       online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
       ping: known.get(row.id)?.ping ?? directory.get(row.id)?.ping ?? null,
-      roster: Array.isArray(row.roster) ? row.roster.slice(0, MAX_ROOM_PLAYERS).filter(player => player &&
+      roster: Array.isArray(row.roster) ? row.roster.slice(0, publicRoom ? 24 : MAX_ROOM_PLAYERS).filter(player => player &&
         isPlayerName(player.name) && Number.isSafeInteger(player.points)).map(player =>
         ({name: player.name, points: player.points})) : []};
   }
@@ -103,7 +108,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const row = hostRow();
     known.set(row.id, normalize(row));
     const data = hosted.visibility === 'public'
-      ? {name: row.name, mapId: row.mapId, players: row.players} : null;
+      ? {name: row.name, mapId: row.mapId, players: row.players, roster: row.roster.slice(0, 24)} : null;
     const serialized = JSON.stringify(data);
     if ((force || serialized !== hosted.listing) && hosted.signal?.send(null, 'listing', data)) {
       hosted.listing = serialized;
@@ -293,7 +298,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const state = message.state;
       const players = message.players;
       const row = normalize({...previous,
-        ...(state ? {mapId: state.mapId, mapTitle: state.mapTitle, epoch: state.epoch, visibility: state.visibility} : {}),
+        ...(state ? {name: state.name ?? previous.name, mapId: state.mapId ?? previous.mapId,
+          epoch: state.epoch ?? previous.epoch, visibility: state.visibility ?? previous.visibility} : {}),
         ...(Array.isArray(players) ? {players: players.length, roster: players} : {})});
       if (row) { known.set(id, row); updateLobby(); }
     });
@@ -403,7 +409,6 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     try {
       const discovery = discover(id);
       session = guests.get(id);
-      if (session) session.preview = false;
       await discovery;
       rooms();
       if (pendingJoin !== attempt) throw new Error(CLOSED);
@@ -418,8 +423,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       if (pendingJoin === attempt) pendingJoin = null;
     }
   }
-  async function refreshDirectory({open = false} = {}) {
-    if (destroyed || !(open || getAdapter()?.rooms?.browserOpen?.())) return;
+  async function refreshDirectory() {
+    if (destroyed || !directoryVisible()) return;
     if (directoryRequest) return directoryRequest;
     if (now() - lastDirectory < 10000) return;
     lastDirectory = now();
@@ -450,35 +455,36 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   function browserVisibility(open) {
     if (destroyed || browserVisible === open) return;
     browserVisible = open;
-    if (!open) {
-      directoryAbort?.abort();
-      for (const session of guests.values()) if (session.preview && !session.socket) closeGuest(session);
-      return;
+    if (open) updateLobby();
+    else {
+      if (!directoryVisible()) directoryAbort?.abort();
+      ui?.refresh();
     }
-    updateLobby();
-    if (!pendingInvite) return;
-    const invite = pendingInvite;
-    pendingInvite = null;
-    const promise = discover(invite), session = guests.get(invite);
-    if (session) session.preview = true;
-    promise.then(() => {
-      if (!destroyed && browserVisible) getAdapter()?.rooms?.select?.(invite);
+  }
+  function menuVisibility(open) {
+    if (destroyed || menuVisible === open) return;
+    menuVisible = open;
+    if (directoryVisible()) {
+      updateLobby();
+      void refreshDirectory();
+    } else directoryAbort?.abort();
+  }
+  function joinInvite(id) {
+    Promise.resolve().then(() => {
+      if (!destroyed) return join(id);
     }).catch(error => {
-      if (!destroyed && browserVisible) getAdapter()?.rooms?.notice?.(error.message);
-      else if (!destroyed) pendingInvite = invite;
-    }).finally(() => {
-      if (session?.preview && !session.socket) closeGuest(session);
+      if (!destroyed) getAdapter()?.rooms?.notice?.(error.message);
     });
   }
   const api = {
-    async host({visibility: choice = visibility} = {}) {
+    async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id, name = api.roomName()} = {}) {
       const adapter = rooms();
       if (adapter.guest()) throw new Error(SIGN_IN);
       if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
-      const mapId = adapter.currentMap()?.id, maps = adapter.maps();
+      const maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
-      const name = roomName();
-      if (choice === 'public' && !isListedName(name)) throw new Error(UNLISTED);
+      const problem = roomNameProblem(name, choice);
+      if (problem) throw new Error(problem);
       setup();
       closeHost();
       visibility = choice;
@@ -547,7 +553,19 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         throw error;
       }
     },
-    join, guestName, mergeRooms, refreshDirectory, browserVisibility,
+    join, guestName, mergeRooms, refreshDirectory, browserVisibility, menuVisibility, commandReply,
+    joinCode(value) {
+      const id = parseRoomCode(value);
+      return id ? join(id) : Promise.reject(new Error(BAD_CODE));
+    },
+    roomInfo: id => known.get(id) ?? directory.get(id) ?? null,
+    roomName: () => hosted?.room.state.name ?? chosenName ?? roomName(),
+    rename(value) {
+      const problem = roomNameProblem(value, hosted?.visibility ?? visibility);
+      if (problem) throw new Error(problem);
+      chosenName = value;
+      hosted?.room.setName(value);
+    },
     hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility,
       players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
     showHostDetails(visible) {
@@ -561,7 +579,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     visibility: () => visibility,
     setVisibility(value) {
       if (value !== 'public' && value !== 'private') throw new Error('Invalid room visibility.');
-      if (value === 'public' && !isListedName(hosted?.room.state.name ?? roomName())) throw new Error(UNLISTED);
+      const problem = value === 'public' ? roomNameProblem(api.roomName(), value) : null;
+      if (problem) throw new Error(problem);
       visibility = value;
       store(VISIBILITY_KEY, value);
       if (hosted) { hosted.visibility = value; hosted.room.setVisibility(value); }
@@ -635,9 +654,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       attached = true;
       setup();
       const invite = new URLSearchParams(globalThis.location?.search ?? '').get('join');
-      pendingInvite = isPrivateRoomId(invite) ? invite : null;
+      const roomId = parseRoomCode(invite);
       ui = uiFactory({rooms: api, getAdapter});
       browserVisibility(!!getAdapter()?.rooms?.browserOpen?.());
+      if (getAdapter()?.rooms?.menuOpen?.()) menuVisibility(true);
+      if (roomId) joinInvite(roomId);
     },
     destroy() {
       if (destroyed) return;

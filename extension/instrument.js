@@ -1,4 +1,6 @@
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v11:';
+import {nativeRoomHooks} from './native-room-hooks.js';
+
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v12:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -110,6 +112,10 @@ function roomBrowserHooks(source, hook) {
   const selected = unique(body, new RegExp(`typeof (${identifier})=="string"&&\\((${identifier})=\\1\\)`, 'g'), 'selected server');
   const view = replace(new RegExp(`return\\{view:(${identifier}),update\\(`, 'g'),
     m => `return{view:${m[1]},status:()=>${start[4]},selected:()=>${selected[2]},selectRoom:id=>{${selected[2]}=id;${render[2]}="all";${render[3]}()},update(`, 'browser adapter')[1];
+  replace(new RegExp(`open\\((${identifier})\\)\\{typeof \\1=="string"`, 'g'),
+    m => `open(${m[1]}){${hook}?.browserVisibility?.(!${view}.el.hidden);typeof ${m[1]}=="string"`, 'browser open lifecycle');
+  replace(new RegExp(`close\\(\\)\\{clearInterval\\((${identifier})\\)\\}`, 'g'),
+    m => `close(){clearInterval(${m[1]});queueMicrotask(()=>${hook}?.browserVisibility?.(!${view}.el.hidden))}`, 'browser close lifecycle');
   body = body.replaceAll(`${start[2]}.refresh()`, () => `(${hook}?.refreshDirectory({open:!${view}.el.hidden}),${start[2]}.refresh())`);
   body = body.replace(start[0], () => start[0].replace('{let ', () => '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;let '));
   return source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
@@ -151,12 +157,14 @@ function roomHooks(source, client, state) {
     const disconnect = unique(source, /disconnect\(\)\{this\.watchTarget=null/g, 'room disconnect');
     source = source.replace(disconnect[0], () => 'disconnect(){this.__qolChunks=null;this.watchTarget=null');
     const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, () => `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
-    source = source.replace(list[0], () => `async list(){try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
+    source = source.replace(list[0], () => `async list(){${hook}?.refreshDirectory?.();try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
     source = source.replace(measure[0], () => measure[0].replace('{const ', () => `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
     source = source.replace(socket[0], () => `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId)??${socket[0]})`);
     source = source.replace(/await this\.ticket\(\)/g, () => `(${hook}?.ticket(this.roomId)??await this.ticket())`);
     source = source.replace(bind[0], () => `${bind[0]},joinServer(id){return ${bind[3]}(id)},refreshServers(){return ${bind[4]}()}`);
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
+    const native = nativeRoomHooks(source, hook, lobby);
+    source = native.source;
     return {source, adapter: `
     rooms: {
       // The HUD is hidden while the menu is open.
@@ -165,7 +173,7 @@ function roomHooks(source, client, state) {
       rows: () => ${lobby}.servers.rows(),
       update: rows => ${lobby}.updateServers(rows.map(({serverTime,...row})=>row), ${lobby}.servers.status()),
       status: () => ${lobby}.servers.status(),
-      browserOpen: () => !${lobby}.servers.view.el.hidden,
+      browserOpen: () => !${lobby}.servers.view.el.hidden,${native.adapter}
       root: () => ${lobby}.servers.view.el,
       refresh: () => {${hook}?.refreshDirectory({open:!${lobby}.servers.view.el.hidden});return ${lobby}.refreshServers()},
       select: id => ${lobby}.servers.selectRoom(id),

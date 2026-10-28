@@ -1,4 +1,4 @@
-import {CLOSE, MAX_CONTROL_BYTES, ROOM_TEXTS, createRoomControlReader, createRoomFilter, encodeControlFrames,
+import {CLOSE, MAX_CONTROL_BYTES, ROOM_TEXTS, controlWireSize, createRoomControlReader, createRoomFilter, encodeControlFrames,
   roomCloseReason, validateRoomBinary} from './protocol.js';
 
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
@@ -300,6 +300,22 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
     try {
       if (typeof event.data !== 'string' || event.data.length > MAX_CONTROL_BYTES ||
           encoder.encode(event.data).byteLength > MAX_CONTROL_BYTES) throw new Error('Invalid room control size');
+      // Native text has a one-byte tag, not a JSON envelope that escapes it again.
+      // Transport controls remain JSON, separate from every possible game string.
+      if (event.data[0] === 'd') {
+        if (socket.readyState === CONNECTING) throw new Error('Unexpected room data');
+        if (socket.readyState === OPEN) {
+          const text = event.data.slice(1), data = host ? text : incoming.read(text);
+          if (data !== null) {
+            const frames = host ? [data] : encodeControlFrames(data);
+            for (const frame of frames) {
+              if (socket.readyState !== OPEN) break;
+              socket._emit('message', {data: frame});
+            }
+          }
+        }
+        return;
+      }
       const message = JSON.parse(event.data);
       if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid room control message');
       switch (message.type) {
@@ -314,19 +330,6 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
               control.readyState !== 'open' || poses?.readyState !== 'open') throw new Error('Unexpected room ready');
           clearTimeout(negotiationTimer);
           socket._open();
-          break;
-        case 'data':
-          if (typeof message.data !== 'string' || socket.readyState === CONNECTING) throw new Error('Unexpected room data');
-          if (socket.readyState === OPEN) {
-            const data = host ? message.data : incoming.read(message.data);
-            if (data !== null) {
-              const frames = host ? [data] : encodeControlFrames(data);
-              for (const frame of frames) {
-                if (socket.readyState !== OPEN) break;
-                socket._emit('message', {data: frame});
-              }
-            }
-          }
           break;
         case 'close':
           if ((message.code !== 1000 && (!Number.isInteger(message.code) || message.code < 3000 || message.code > 4999)) ||
@@ -422,7 +425,13 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
         throw new Error('Room data channels are not open');
       }
       if (binary(data)) poses.send(data);
-      else sendControl({type: 'data', data: String(data)});
+      else {
+        const text = String(data);
+        if (text.length >= MAX_CONTROL_BYTES || controlWireSize(text) > MAX_CONTROL_BYTES) {
+          throw new Error('Invalid room control size');
+        }
+        control.send('d' + text);
+      }
     } catch (error) { fail(error); }
   };
   socket._close = (code, reason) => {

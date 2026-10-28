@@ -14,18 +14,18 @@ Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 
 
 `parseRoomCode` accepts these ids, twelve-character codes, or HTTPS invite links on `surfd.net/`. Typed codes ignore case, spaces and dashes; display codes use three groups of four capitals. Other origins, ambiguous characters and malformed codes are rejected before discovery.
 
-The game joins rooms from its server list, where player-hosted rooms show under a Community tab. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite (`?join=<id>` highlights the row but doesn't join). Their rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
+The game joins rooms from its server list, where player-hosted rooms show under a Community tab. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite. `?join=<id>` joins directly after adapter attachment, without opening the browser. Their rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId, browserId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`; `browserId` is a random UUID kept in localStorage, for bans. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
 
 A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
 
-Hosting needs a surfd.net account, as the game's moderators always have one: a guest's Host a room opens the game's sign-in, and signing out while hosting ends the room for everyone with "The host closed the private room." The host's own player is a signed-in moderator.
+The extension requires a surfd.net account to host: a guest's Host a room opens the game's sign-in, and signing out while hosting ends the room for everyone. This is a client-side restriction, not Worker authentication. A room key proves room ownership continuity, not account identity; modified clients can claim another player's name or public account id.
 
 The host connects to the meeting point with `role=host` and sends `{type: "auth", key}`, with a key from `newHostKey()`, as its first message; the key never goes in the URL. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
-Every peer connection goes through Cloudflare's TURN relay, so no player sees another's IP address: `RTCPeerConnection` gets only the meeting point's TURN servers, with `iceTransportPolicy: "relay"`, and there is no direct fallback. The host asks for credentials with `ice-servers` once it has sent its key; a guest asks on its `role=guest` connection before it makes its offer. When the meeting point can't issue them (an error `no-relay`, or no answer within 10 seconds), hosting fails and a joining socket closes with 4000, both with "Couldn't reach the room service. Try again in a moment."; the game retries 4000. Credentials last `ttl` seconds (4 hours) and are renewed 15 minutes before they expire, retried every minute if that fails: a guest asks on a meeting point connection of its own, closed straight after, and the host on its own connection. New credentials restart ICE over the open control channel, where the guest always makes the offer:
+Every peer connection uses the meeting point's TURN servers with `iceTransportPolicy: "relay"`; there is no direct fallback. Hosts request credentials after sending their room key, and guests before making their offer. Failure or a ten-second timeout prevents hosting or closes the joining socket with retryable 4000 and "Couldn't reach the room service. Try again in a moment." Credentials last one hour; the client renews fifteen minutes before expiry and retries each minute after a failure. A guest uses a short meeting-point connection; the host uses its existing connection. Renewal restarts ICE over the open control channel, with the guest making the offer:
 
 | Control message | From | Meaning |
 | --- | --- | --- |
@@ -34,11 +34,15 @@ Every peer connection goes through Cloudflare's TURN relay, so no player sees an
 | `{type: "answer", description}` | host | its answer |
 | `{type: "ice", candidate}` | either | a candidate gathered once the socket is open, sent after the description it belongs to |
 
-Public hosts send `listing` with `{name, mapId, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds, and rows the browser would refuse are skipped. A room whose name contains "surfd" or "official", in any case, can't be public.
+Public hosts send `listing` with `{name, mapId, players, roster}` when the row changes and at least every 30 seconds; `listing: null` makes the room private. The roster contains the first 24 `{name, points}` entries; the Worker and client bound and sanitize it before the native browser consumes it. `GET /rooms` returns `{rooms:[{id,name,mapId,players,roster,updatedAt}]}`. Refreshes follow native server refreshes or menu entry, only while the main menu or server browser is visible, at most once every ten seconds. Invalid rows are skipped individually. Names containing "surfd" or "official", in any case, cannot be public. Counts and names are host claims, not verified attendance.
 
-Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; relay credentials are renewed only while hosting or in a room; upload stats are sampled only while the host's own room is shown.
+Outside the main menu, server browser, explicit joining, hosting and being in a room, private rooms make no requests and run no timers or DOM observations. Closing the browser disconnects its observations; native open/close callbacks replace idle visibility observation. An explicit code/link join is not cancelled by closing the browser. Public listing heartbeats run only while hosting; relay renewal runs only while hosting or in a room; upload stats are sampled only while the host's own room is shown.
 
-Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`. Guests refuse other player, chat and room names.
+Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Guests use `Guest_` plus five lowercase hex characters kept in localStorage. Room names retain `<name>'s room`; `host({mapId,name,visibility})` validates the chosen map/name before signalling, and `rename(name)` broadcasts state and republishes without changing the map epoch. Renaming to an official-looking name is allowed only while private; switching that room to public is refused.
+
+Native friends/profile Join and accepted invitations route community ids through room discovery rather than official ticket APIs. Labels use the public room name/map or `Private room`/map, never a private code; passive private invite-link footers are suppressed. Explicit Invite uses the actual room id and the native authenticated endpoint, whose acceptance of community ids remains unverified. The native backend authors remote friends presence; the client deliberately publishes no presence while connected to a server, so this extension cannot promise community status reaches remote friends.
+
+Community command replies are local and fixed: votes explain that the host picks maps; `timeleft` reports no limit; `nextmap` points to the host; rank/playtime queries explain they need official servers. Official-room command handling is unchanged.
 
 ## Shared structures
 
@@ -83,8 +87,7 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 
 **Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
 
-Control frames stay within 65,536 bytes. Larger JSON messages use sequential `{type:"room-chunk",data,final}` frames on the reliable channel; `data` holds part of the original JSON string and `final:true` completes it. The room-client hook assembles the message before applying it.
-Frame sizes are measured after the transport wraps and escapes them once more, so chunks carry at most 4,000 characters. An assembled message stays within 1,048,576 characters (256 × 4,096) and 263 chunks.
+Reliable native text travels as a one-byte ASCII `d` tag followed by the original text, without another JSON envelope. Extension transport controls remain JSON. The tag and UTF-8 payload together must fit within 65,536 bytes. Larger native JSON messages retain sequential `{type:"room-chunk",data,final}` frames, bounded to 4,000 source characters per chunk. An assembled message stays within 1,048,576 characters and 263 chunks; nested chunks are refused.
 
 ## Binary frames
 
@@ -125,6 +128,10 @@ Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on
 | 55 | uint8 | presses since the last frame, 0–63; 0 when byte 54 is 0 |
 
 A player streams these at about 30 Hz while `spectator-demand` is active for them. The host rewrites only the type and slot and forwards each frame to that player's watchers alone. When a watcher leaves or switches, or the target leaves, demand and roster `spectating` are updated.
+
+The host validates spectator frames and drops wrong-epoch, duplicate and stale sequences, accepting forward uint32 wraparound independently of pose sequences. Per sender, fanout permits the native minimum interval of `1000/30 - 1` milliseconds plus an eight-frame jitter burst. Epoch and demand changes do not refill the bucket. This bounds outgoing amplification without reducing native-permitted cadence; it does not bound attacker ingress traffic or decoding work.
+
+`estimateBandwidth(players, {spectatorViewers, spectatorSenders})` models host-link upload/download. Its default budgets nominal 30-Hz spectator traffic per guest in both directions; explicit zero counts model movement alone. It assumes paired poses every 98 ms, 50-ms snapshots and 97 overhead bytes per 1,100-byte fragment. It excludes signalling, control messages, acknowledgements/retransmissions, ICE/keepalives and real path fragmentation. It is not Cloudflare billing measurement. Binary samples and precision are unchanged; the text framing saves about 11–12% on representative 8–32-player roster payloads, not on movement traffic.
 
 ## Closing
 

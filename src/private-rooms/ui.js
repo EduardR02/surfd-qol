@@ -36,7 +36,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (root === observedRoot && open === observedOpen && community === observedCommunity && actions === observedMenu) return;
     observedRoot = root; observedOpen = open; observedCommunity = community; observedMenu = actions;
     observer?.disconnect();
-    if (root) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: open, subtree: open});
+    if (root && open) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
     if (actions) observer?.observe(actions, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
   }
   const button = (label, className = 'btn') => {
