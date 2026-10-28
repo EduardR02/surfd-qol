@@ -70,6 +70,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 
 Control frames stay within 65,536 bytes. Larger JSON messages use sequential `{type:"room-chunk",data,final}` frames on the reliable channel; `data` holds part of the original JSON string and `final:true` completes it. The room-client hook assembles the message before applying it.
 Assembly is limited to 64 Mi UTF-16 characters and 32,768 chunks, enough for every uint16 player slot. Invalid, nested, interrupted or oversized sequences release their fragments. Raw messages still have the 65,536-character limit; only a completed private-room chunk sequence enters the assembled-message path.
+The byte limit includes the transport's outer `{type:"data",data}` JSON envelope, including its second layer of escaping. Chunk payloads use 4,000 characters so escaped names and Unicode remain within that wire limit.
 
 ## Binary frames
 

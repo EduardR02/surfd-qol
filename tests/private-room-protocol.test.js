@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {MAX_CONTROL_BYTES, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
+import {MAX_CONTROL_BYTES, controlWireSize, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -121,9 +121,9 @@ describe('private room control boundaries', () => {
     expect(() => decodeControl(JSON.stringify({type: 'chat', text: '名'.repeat(22000)}))).toThrow();
   });
 
-  test('keeps exact-size control frames intact', () => {
+  test('keeps exact-size transport envelopes intact', () => {
     const base = {type: 'roster', text: ''};
-    const message = {...base, text: 'x'.repeat(MAX_CONTROL_BYTES - JSON.stringify(base).length)};
+    const message = {...base, text: 'x'.repeat(MAX_CONTROL_BYTES - controlWireSize(JSON.stringify(base)))};
     expect(encodeControlFrames(message)).toEqual([JSON.stringify(message)]);
     expect(encodeControlFrames({...message, text: message.text + 'x'}).length).toBeGreaterThan(1);
   });
@@ -139,6 +139,7 @@ describe('private room control boundaries', () => {
       for (const frame of frames) {
         expect(frame.length).toBeLessThanOrEqual(MAX_CONTROL_BYTES);
         expect(encoder.encode(frame).byteLength).toBeLessThanOrEqual(MAX_CONTROL_BYTES);
+        expect(controlWireSize(frame)).toBeLessThanOrEqual(MAX_CONTROL_BYTES);
       }
       const parts = frames.map(JSON.parse);
       expect(parts.every(part => part.type === 'room-chunk')).toBe(true);

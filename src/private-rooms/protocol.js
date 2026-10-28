@@ -221,11 +221,11 @@ export function relaySpectator(buffer, slot) {
 
 export function encodeControlFrames(message) {
   const text = typeof message === 'string' ? message : JSON.stringify(message);
-  if (text.length <= MAX_CONTROL_BYTES && encoder.encode(text).byteLength <= MAX_CONTROL_BYTES) return [text];
+  if (text.length <= MAX_CONTROL_BYTES && controlWireSize(text) <= MAX_CONTROL_BYTES) return [text];
   const frames = [];
-  // Even six-byte JSON escapes fit; splitting a surrogate pair is safe after reassembly.
-  for (let offset = 0; offset < text.length; offset += 8000) {
-    frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + 8000), final: offset + 8000 >= text.length}));
+  // The transport JSON wrapper escapes these chunks a second time.
+  for (let offset = 0; offset < text.length; offset += 4000) {
+    frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + 4000), final: offset + 4000 >= text.length}));
   }
   return frames;
 }
@@ -249,4 +249,8 @@ export function decodeControl(text) {
       return {type: 'spectate', connectionId: message.connectionId, request: message.request};
   }
   return {type: message.type};
+}
+
+export function controlWireSize(text) {
+  return encoder.encode(JSON.stringify({type: 'data', data: text})).byteLength;
 }
