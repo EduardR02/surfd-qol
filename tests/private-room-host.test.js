@@ -1,7 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {createRoomHost} from '../src/private-rooms/host.js';
 import {createRoomId, isPrivateRoomId} from '../src/private-rooms/ids.js';
-import {CLOSE, DEFAULT_APPEARANCE, decodeSnapshot, decodeSpectator, encodePoseBatch, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {CLOSE, DEFAULT_APPEARANCE, MAX_ROOM_PLAYERS, decodeSnapshot, decodeSpectator, encodePoseBatch, encodeSpectator} from '../src/private-rooms/protocol.js';
 import {createLoopbackPair} from '../src/private-rooms/socket.js';
 
 class Socket extends EventTarget {
@@ -209,17 +209,18 @@ describe('private room host', () => {
     expect(waiting.messages('welcome')).toEqual([]);
   });
 
-  test('uses the entire uint16 slot range', () => {
+  test('refuses joins beyond 256 players but keeps a place for the host', () => {
     const {room, connect} = fixture();
-    const peers = Array.from({length: 65536}, () => connect(false, hello, false));
-    peers.at(-1).open();
-    expect(peers.at(-1).messages('welcome')[0].player.slot).toBe(65535);
-    expect(connect().closed.code).toBe(CLOSE.invalid);
+    const peers = Array.from({length: MAX_ROOM_PLAYERS - 1}, () => connect());
+    expect(connect().closed).toEqual({code: CLOSE.refused, reason: 'This room is full.'});
+    const host = connect(true);
+    expect(host.closed).toBeNull();
+    expect(room.players).toHaveLength(MAX_ROOM_PLAYERS);
+    expect(controls(host).find(message => message.type === 'welcome').player.slot).toBe(MAX_ROOM_PLAYERS - 1);
     peers[0].close(1000, 'Left');
-    expect(connect().messages('welcome')[0].player.slot).toBe(0);
-    expect(room.players).toHaveLength(2);
+    expect(controls(connect()).find(message => message.type === 'welcome').player.slot).toBe(0);
     room.close();
-  }, 15000);
+  });
 
   test('replaces live and connecting host registrations', () => {
     const {room, connect} = fixture(), host = connect(true), guest = connect();
@@ -300,7 +301,7 @@ describe('private room host', () => {
     const maps = Array.from({length: 1001}, (_, index) => ({id: index ? 'map-' + index : 'one', title: '名\"\\\\'.repeat(16)}));
     const {room} = fixture({maps});
     class Sink extends Socket { send() {} }
-    for (let index = 0; index < 1001; index++) {
+    for (let index = 0; index < MAX_ROOM_PLAYERS - 2; index++) {
       const socket = new Sink();
       room.addClient(socket, {...hello, name: '名\"\\\\'.repeat(8), memory: 'ignored'});
       socket.open();
@@ -313,7 +314,7 @@ describe('private room host', () => {
     expect(receiver.messages('room-chunk').length).toBeGreaterThan(1);
     expect(welcome.maps).toEqual(maps);
     expect(welcome.players).toEqual(room.players);
-    expect(welcome.players).toHaveLength(1002);
+    expect(welcome.players).toHaveLength(MAX_ROOM_PLAYERS - 1);
     expect(welcome.players[0].memory).toBeUndefined();
     expect(messages.find(message => message.type === 'roster').players).toEqual(room.players);
     expect(receiver.closed).toBeNull();

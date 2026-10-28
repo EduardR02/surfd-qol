@@ -1,5 +1,6 @@
 import {isPrivateRoomId} from './ids.js';
 import {estimateBandwidth} from './bandwidth.js';
+import {MAX_ROOM_PLAYERS} from './protocol.js';
 
 const PRIVATE_HELP = 'Only people with this link can join. They need Surfd QoL.';
 const text = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
@@ -15,7 +16,7 @@ export function bandwidthTooltip() {
 
 export function bandwidthDetail(players, uploadMbps) {
   const {upload, download} = estimateBandwidth(players);
-  const extra = players < 65536 ? estimateBandwidth(players + 1).upload - upload : upload - estimateBandwidth(players - 1).upload;
+  const extra = players < MAX_ROOM_PLAYERS ? estimateBandwidth(players + 1).upload - upload : upload - estimateBandwidth(players - 1).upload;
   return `${players} players need about ${decimal(upload)} Mbps up and ${decimal(download)} Mbps down. Each extra player adds about ${decimal(extra)} Mbps up.`
     + (Number.isFinite(uploadMbps) ? ` Now using ${decimal(uploadMbps)} Mbps up.` : '');
 }

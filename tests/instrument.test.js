@@ -1,5 +1,6 @@
 import {describe, expect, test} from 'bun:test';
-import {ADAPTER_MARKER, instrumentGame, isCurrentInstrumented} from '../extension/instrument.js';
+import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, isCurrentInstrumented} from '../extension/instrument.js';
+import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
 
 // The private names are deliberately unrelated to the live bundle's names.
 // This miniature native module keeps the signatures used by instrumentation
@@ -391,11 +392,16 @@ describe('optional native private room instrumentation', () => {
     const room = runtime.room;
     room.roomId = 'p-aaaaaaaaaaaa';
     const fragment = JSON.stringify({type: 'room-chunk', data: '', final: false});
-    for (let index = 0; index < 32768; index++) room.receive(fragment);
+    for (let index = 0; index < ROOM_CHUNKS; index++) room.receive(fragment);
     expect(() => room.receive(fragment)).toThrow('Invalid room chunk');
     expect(room.message).toBeUndefined();
     room.receive(JSON.stringify({type: 'room-chunk', data: '{"type":"roster","players":[]}', final: true}));
     expect(room.message).toEqual({type: 'roster', players: []});
+  });
+
+  test('the game hook bounds chunks like the room protocol', () => {
+    expect(ROOM_MESSAGE_CHARS).toBe(MAX_ROOM_MESSAGE_CHARS);
+    expect(ROOM_CHUNKS).toBe(MAX_ROOM_CHUNKS);
   });
 
   test('chunk bytes are bounded independently of frame count', () => {
@@ -404,7 +410,7 @@ describe('optional native private room instrumentation', () => {
     room.roomId = 'p-aaaaaaaaaaaa';
     const fragment = JSON.stringify({type: 'room-chunk', data: 'x'.repeat(65000), final: false});
     expect(fragment.length).toBeLessThan(65536);
-    for (let index = 0; index < Math.floor(64 * 1024 * 1024 / 65000); index++) room.receive(fragment);
+    for (let index = 0; index < Math.floor(ROOM_MESSAGE_CHARS / 65000); index++) room.receive(fragment);
     expect(() => room.receive(fragment)).toThrow('Invalid room chunk');
     room.receive(JSON.stringify({type: 'roster', players: []}));
     expect(room.message).toEqual({type: 'roster', players: []});

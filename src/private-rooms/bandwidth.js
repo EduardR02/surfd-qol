@@ -1,8 +1,8 @@
-import {MAX_SNAPSHOT_BLOCKS, POSE_HEADER_BYTES, POSE_SAMPLE_BYTES, SNAPSHOT_HEADER_BYTES,
+import {MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, POSE_HEADER_BYTES, POSE_SAMPLE_BYTES, SNAPSHOT_HEADER_BYTES,
   SNAPSHOT_BLOCK_BYTES, SNAPSHOT_INTERVAL_MS, SPECTATOR_BYTES} from './protocol.js';
 
 export function estimateBandwidth(players) {
-  if (!Number.isInteger(players) || players < 0 || players > 65536) throw new RangeError('Invalid player count');
+  if (!Number.isInteger(players) || players < 0 || players > MAX_ROOM_PLAYERS) throw new RangeError('Invalid player count');
   const guests = Math.max(0, players - 1);
   if (!guests) return {upload: 0, download: 0};
   // Two samples every 98ms, 50ms snapshots, 93B IP/UDP/DTLS/SCTP overhead per 1100B fragment,

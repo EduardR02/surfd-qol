@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
 import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
-import {CLOSE, DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {CLOSE, DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_PLAYERS, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, {once: true}));
@@ -673,7 +673,7 @@ describe('private room WebRTC socket', () => {
       {type: 'chat', playerId: 'private-0', name: '<Guest>', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: '<plain text>'},
       {type: 'error', text: 'Unavailable', spectatorRequest: 12},
-      {type: 'spectator-demand', active: true, count: 65535},
+      {type: 'spectator-demand', active: true, count: 255},
       {type: 'spectator-demand', active: false, count: 0},
       {type: 'context', epoch: 2, token: null},
     ];
@@ -740,7 +740,8 @@ describe('private room WebRTC socket', () => {
   test('buffers and validates complete large rosters before emitting bounded game frames', async () => {
     const {client, accepted, connections} = rtcPair();
     await nextTask();
-    const players = Array.from({length: 1100}, (_, slot) => roomPlayer(slot));
+    const appearance = {title: 'T'.repeat(24), titleColor: '#ffffff', nameColor: '#ffffff', revision: 1};
+    const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({...roomPlayer(slot), appearance}));
     const frames = encodeControlFrames({type: 'roster', players}), messages = [];
     client.onmessage = event => messages.push(event.data);
     for (const frame of frames.slice(0, -1)) accepted[0].socket.send(frame);

@@ -1,5 +1,5 @@
 import {isPrivateRoomId} from './ids.js';
-import {CLOSE, VERSION, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
+import {CLOSE, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   decodeControl, encodeControlFrames, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
@@ -257,16 +257,17 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       socket.close(CLOSE.invalid, 'Invalid private room hello');
       return;
     }
+    // One place stays free for the host's own connection.
+    if (!host && [...clients].filter(client => !client.host).length >= MAX_ROOM_PLAYERS - 1) {
+      socket.close(CLOSE.refused, 'This room is full.');
+      return;
+    }
     if (hostClient && host) {
       const stale = hostClient;
       leave(stale);
       stale.socket.close(1000, 'Host connection replaced');
     }
     while (slots.has(nextSlot)) nextSlot++;
-    if (nextSlot > 65535) {
-      socket.close(CLOSE.invalid, 'No room protocol slots available');
-      return;
-    }
     const slot = nextSlot++;
     slots.add(slot);
     const connectionId = crypto.randomUUID();

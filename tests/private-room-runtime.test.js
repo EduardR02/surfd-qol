@@ -480,7 +480,7 @@ describe('private room runtime', () => {
   });
 
   test('connection failures show their reason without forgetting the room', async () => {
-    for (const [code, reason] of [[1006, "Couldn't connect to the host. Their network or yours may block direct connections."], [4000, SERVICE]]) {
+    for (const [code, reason] of [[1006, "Couldn't connect to the host. Their network or yours may block direct connections."], [4000, SERVICE], [4008, 'This room is full.']]) {
       const f = fixture();
       try {
         await f.join();

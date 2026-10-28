@@ -1,5 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
+import {MAX_ROOM_PLAYERS} from '../src/private-rooms/protocol.js';
 
 describe('private room bandwidth', () => {
   test('excludes host loopback', () => {
@@ -15,8 +16,8 @@ describe('private room bandwidth', () => {
     expect(thirtyTwo.download / sixteen.download).toBeCloseTo(31 / 15, 10);
   });
 
-  test('accepts the uint16 slot limit and rejects invalid counts', () => {
-    expect(Number.isFinite(estimateBandwidth(65536).upload)).toBe(true);
-    for (const value of [-1, 1.5, NaN, Infinity, 65537, '8', null]) expect(() => estimateBandwidth(value)).toThrow();
+  test('accepts a full room and rejects invalid counts', () => {
+    expect(Number.isFinite(estimateBandwidth(MAX_ROOM_PLAYERS).upload)).toBe(true);
+    for (const value of [-1, 1.5, NaN, Infinity, MAX_ROOM_PLAYERS + 1, '8', null]) expect(() => estimateBandwidth(value)).toThrow();
   });
 });

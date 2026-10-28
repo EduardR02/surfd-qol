@@ -16,6 +16,8 @@ The game joins rooms from its server list. Private rooms appear only for their h
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
 
+A room holds at most 256 players, with one place kept for the host's own connection. The host refuses further joins with 4008 "This room is full.", and guests refuse rosters of more than 256 players.
+
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
@@ -57,7 +59,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 | `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. The private host sends at most one every 100 ms. |
 | `chat` | `{playerId, name, text, rank?, appearance?}` (flat fields, not a `sender` object) |
 | `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. |
-| `spectator-demand` | `{active, count}`; `count` is 0–65535 and positive exactly when `active`. Tells a player to stream detailed frames. |
+| `spectator-demand` | `{active, count}`; `count` is 0–256 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
 | `result` | a finished run (phase 3), below |
 | `check`, `afk-warning`, `chat-status`, `reports` | official server features; never sent by a private room |
@@ -65,7 +67,7 @@ Guest names are `Guest_` plus five lowercase hex characters, kept in localStorag
 **Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
 
 Control frames stay within 65,536 bytes. Larger JSON messages use sequential `{type:"room-chunk",data,final}` frames on the reliable channel; `data` holds part of the original JSON string and `final:true` completes it. The room-client hook assembles the message before applying it.
-Frame sizes are measured after the transport wraps and escapes them once more, so chunks carry at most 4,000 characters. Reassembly stops at 32,768 chunks.
+Frame sizes are measured after the transport wraps and escapes them once more, so chunks carry at most 4,000 characters. An assembled message stays within 1,048,576 characters (256 × 4,096) and 263 chunks.
 
 ## Binary frames
 
@@ -109,7 +111,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 ## Closing
 
-The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data, 4004 when the room is gone, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data, 4004 when the room is gone, 4008 for refused joins, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 

@@ -1,8 +1,11 @@
 export const VERSION = 1;
-export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, congested: 4013});
+export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, refused: 4008, congested: 4013});
 export const MAX_CONTROL_BYTES = 65536;
-// Large enough for every uint16 slot, including escaped names and appearances.
-export const MAX_ROOM_MESSAGE_CHARS = 64 * 1024 * 1024;
+export const MAX_ROOM_PLAYERS = 256;
+// A player's JSON stays under 512 characters; the rest leaves room for the map catalog.
+export const MAX_ROOM_MESSAGE_CHARS = MAX_ROOM_PLAYERS * 4096;
+export const ROOM_CHUNK_CHARS = 4000;
+export const MAX_ROOM_CHUNKS = Math.ceil(MAX_ROOM_MESSAGE_CHARS / ROOM_CHUNK_CHARS);
 export const MAX_SNAPSHOT_BLOCKS = 100;
 export const POSE_HEADER_BYTES = 12;
 export const POSE_SAMPLE_BYTES = 32;
@@ -230,8 +233,9 @@ export function encodeControlFrames(message) {
   if (text.length <= MAX_CONTROL_BYTES && controlWireSize(text) <= MAX_CONTROL_BYTES) return [text];
   const frames = [];
   // The transport JSON wrapper escapes these chunks a second time.
-  for (let offset = 0; offset < text.length; offset += 4000) {
-    frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + 4000), final: offset + 4000 >= text.length}));
+  for (let offset = 0; offset < text.length; offset += ROOM_CHUNK_CHARS) {
+    frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + ROOM_CHUNK_CHARS),
+      final: offset + ROOM_CHUNK_CHARS >= text.length}));
   }
   return frames;
 }
@@ -275,7 +279,7 @@ function validatePlayer(player) {
 }
 
 function validatePlayers(players) {
-  requireValid(Array.isArray(players) && players.length <= 65536, 'Invalid room roster');
+  requireValid(Array.isArray(players) && players.length <= MAX_ROOM_PLAYERS, 'Invalid room roster');
   const slots = new Set(), connections = new Set(), ids = new Set();
   for (const player of players) {
     validatePlayer(player);
@@ -338,7 +342,7 @@ export function validateRoomMessage(message, roomId) {
       requireValid(textValue(message.text, 4096) && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
       break;
     case 'spectator-demand':
-      requireValid(typeof message.active === 'boolean' && uint(message.count, 65535)
+      requireValid(typeof message.active === 'boolean' && uint(message.count, MAX_ROOM_PLAYERS)
         && (message.count > 0) === message.active, 'Invalid spectator demand');
       break;
     case 'context':
@@ -364,7 +368,7 @@ export function createRoomControlReader(validate = null) {
       }
       if (message?.type === 'room-chunk') {
         requireValid(typeof message.data === 'string' && message.data.length > 0
-          && typeof message.final === 'boolean' && chunks.length < 32768
+          && typeof message.final === 'boolean' && chunks.length < MAX_ROOM_CHUNKS
           && length + message.data.length <= MAX_ROOM_MESSAGE_CHARS, 'Invalid room chunk');
         chunks.push(message.data);
         length += message.data.length;

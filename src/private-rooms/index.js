@@ -1,5 +1,6 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
+import { CLOSE, MAX_ROOM_PLAYERS } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -48,7 +49,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
     if (!row || !isPrivateRoomId(row.id) || typeof row.name !== 'string' || row.name.length > 40 ||
         typeof row.mapId !== 'string' || !row.mapId || row.mapId.length > 64 ||
         typeof row.mapTitle !== 'string' || row.mapTitle.length > 64 ||
-        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > 65536 ||
+        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > MAX_ROOM_PLAYERS ||
         !getAdapter()?.rooms?.maps().some(map => map.id === row.mapId)) return null;
     return {id: row.id, name: row.name, mapId: row.mapId, mapTitle: row.mapTitle,
       players: row.players, region: 'Private', endsAt: 0, untimed: true,
@@ -212,10 +213,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       if (event.code === 4004) {
         markGone(id);
         if (!ownHost && !destroyed) getAdapter()?.rooms?.notice?.(event.reason === HOST_LEFT ? HOST_LEFT : CLOSED);
-      } else {
-        if (!ownHost && !destroyed && event.reason && (event.code === 1006 || event.reason === SERVICE)) {
-          getAdapter()?.rooms?.notice?.(event.reason);
-        }
+      } else if (!ownHost && !destroyed && event.reason &&
+          (event.code === 1006 || event.code === CLOSE.refused || event.reason === SERVICE)) {
+        getAdapter()?.rooms?.notice?.(event.reason);
       }
       ui?.refresh();
     }, {once: true});

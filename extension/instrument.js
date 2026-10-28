@@ -2,6 +2,8 @@ export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v11:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
+// Copies of MAX_ROOM_MESSAGE_CHARS and MAX_ROOM_CHUNKS in src/private-rooms/protocol.js, which extension/ cannot import.
+export const ROOM_MESSAGE_CHARS = 1048576, ROOM_CHUNKS = 263;
 // A captured identifier, matched literally inside another pattern.
 const literal = name => name.replace(/\$/g, () => '\\$');
 
@@ -137,9 +139,7 @@ function roomHooks(source, client, state) {
     const decode = unique(source, new RegExp(`if\\(typeof (${identifier})!="string"\\|\\|\\1\\.length>65536\\)throw Error\\("Invalid room data"\\);const (${identifier})=JSON\\.parse\\(\\1\\);`, 'g'), 'room JSON decoder');
     source = source.replace(leave[0], () => leave[0].replace('{', () => `{${hook}?.leave(${leave[2]}?.roomId);`));
     source = source.replace(receive[0], () => receive[0].replace('){', () => ',__qolAssembled=false){'));
-    // Match the transport's 64 Mi-character / 32768-chunk envelope bounds,
-    // large enough for all 65536 protocol slots without retaining endless fragments.
-    source = source.replace(decode[0], () => `if(typeof ${decode[1]}!="string"||${decode[1]}.length>(__qolAssembled&&/^p-[a-z0-9]{12}$/.test(this.roomId)?67108864:65536)){this.__qolChunks=null;throw Error("Invalid room data")}const ${decode[2]}=JSON.parse(${decode[1]});if(${decode[2]}.type==="room-chunk"&&/^p-[a-z0-9]{12}$/.test(this.roomId)){if(__qolAssembled||typeof ${decode[2]}.data!=="string"||typeof ${decode[2]}.final!=="boolean"){this.__qolChunks=null;throw Error("Invalid room chunk")}const chunks=this.__qolChunks??={parts:[],length:0};if(chunks.parts.length>=32768||chunks.length+${decode[2]}.data.length>67108864){this.__qolChunks=null;throw Error("Invalid room chunk")}chunks.parts.push(${decode[2]}.data);chunks.length+=${decode[2]}.data.length;if(${decode[2]}.final){this.__qolChunks=null;this.receive(chunks.parts.join(""),true)}return}if(this.__qolChunks){this.__qolChunks=null;throw Error("Invalid room chunk")}`);
+    source = source.replace(decode[0], () => `if(typeof ${decode[1]}!="string"||${decode[1]}.length>(__qolAssembled&&/^p-[a-z0-9]{12}$/.test(this.roomId)?${ROOM_MESSAGE_CHARS}:65536)){this.__qolChunks=null;throw Error("Invalid room data")}const ${decode[2]}=JSON.parse(${decode[1]});if(${decode[2]}.type==="room-chunk"&&/^p-[a-z0-9]{12}$/.test(this.roomId)){if(__qolAssembled||typeof ${decode[2]}.data!=="string"||typeof ${decode[2]}.final!=="boolean"){this.__qolChunks=null;throw Error("Invalid room chunk")}const chunks=this.__qolChunks??={parts:[],length:0};if(chunks.parts.length>=${ROOM_CHUNKS}||chunks.length+${decode[2]}.data.length>${ROOM_MESSAGE_CHARS}){this.__qolChunks=null;throw Error("Invalid room chunk")}chunks.parts.push(${decode[2]}.data);chunks.length+=${decode[2]}.data.length;if(${decode[2]}.final){this.__qolChunks=null;this.receive(chunks.parts.join(""),true)}return}if(this.__qolChunks){this.__qolChunks=null;throw Error("Invalid room chunk")}`);
     const disconnect = unique(source, /disconnect\(\)\{this\.watchTarget=null/g, 'room disconnect');
     source = source.replace(disconnect[0], () => 'disconnect(){this.__qolChunks=null;this.watchTarget=null');
     const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, () => `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
