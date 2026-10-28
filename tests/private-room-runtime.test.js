@@ -77,9 +77,10 @@ function clock() {
 }
 function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
   const accountListeners = new Set();
-  const signals = [], peers = [], listeners = [], notices = [];
+  const signals = [], peers = [], listeners = [], notices = [], requests = [], requestOptions = [];
   const events = new EventTarget(), timers = clock();
   let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false;
+  let response = {ok: true, json: async () => ({rooms: []})};
   let updates = 0;
   const joined = [], ui = {refreshes: 0, destroyed: false, refresh() { this.refreshes++; }, destroy() { this.destroyed = true; }};
   const adapter = {rooms: {notice: value => notices.push(value),
@@ -103,12 +104,13 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
       return socket;
     },
     listen: options => { listeners.push(options); return () => {}; },
-    uiFactory: () => ui
+    uiFactory: () => ui,
+    fetch: async (url, options) => { requests.push(url); requestOptions.push(options); return response; }
   });
-  return {runtime, signals, peers, listeners, notices, events, timers, adapter, joined, ui,
+  return {runtime, signals, peers, listeners, notices, requests, requestOptions, events, timers, adapter, joined, ui,
     updates: () => updates, accountListeners,
     signOut() { displayName = ''; for (const listener of [...accountListeners]) listener(); },
-    rows: () => rows, open: value => { open = value; },
+    rows: () => rows, open: value => { open = value; }, response: value => { response = value; },
     async host(options) { const promise = runtime.host(options); signals.at(-1).ready(); return promise; },
     async join(id = ROOM) {
       const promise = runtime.join(id), signal = signals.at(-1);
@@ -123,12 +125,14 @@ const closed = socket => new Promise(resolve => socket.addEventListener('close',
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
 describe('private room runtime', () => {
-  test('closed browser holds no room connections or timers', async () => {
+  test('closed browser holds no room requests or timers', async () => {
     const f = fixture();
     try {
       f.runtime.attach();
       f.timers.advance(60000);
+      await f.runtime.refreshDirectory();
       await f.runtime.measure(ROOM);
+      expect(f.requests).toEqual([]);
       expect(f.signals).toEqual([]);
       expect(f.timers.pending()).toBe(0);
       await f.join();
@@ -177,26 +181,31 @@ describe('private room runtime', () => {
     } finally { globalThis.location = previous; f.runtime.destroy(); }
   });
 
-  test('closing the browser cancels invite discovery', async () => {
+  test('closing the browser cancels discovery and directory work', async () => {
     const previous = globalThis.location;
     const f = fixture();
+    let resolve;
     try {
       globalThis.location = {search: `?join=${ROOM}`};
       f.runtime.attach(); f.open(true); f.runtime.browserVisibility(true);
+      f.response(new Promise(yes => { resolve = yes; }));
+      const pending = f.runtime.refreshDirectory();
       f.open(false); f.runtime.browserVisibility(false);
       expect(f.signals[0].state).toBe('closed');
+      expect(f.requestOptions[0].signal.aborted).toBe(true);
       expect(f.timers.pending()).toBe(0);
-      await flush();
+      resolve({ok: true, json: async () => ({rooms: [row()]})});
+      await pending; await flush();
       expect(f.runtime.mergeRooms([])).toEqual([]);
       expect(f.notices).toEqual([]);
     } finally { globalThis.location = previous; f.runtime.destroy(); }
   });
 
-  test('leaving or failing hosting leaves no timers', async () => {
+  test('leaving or failing hosting releases its heartbeat', async () => {
     const f = fixture();
     try {
-      await f.host();
-      expect(f.timers.pending()).toBe(0);
+      await f.host({visibility: 'public'});
+      expect(f.timers.pending()).toBe(1);
       f.runtime.leave();
       expect(f.timers.pending()).toBe(0);
       const pending = f.runtime.host();
@@ -265,9 +274,9 @@ describe('private room runtime', () => {
       expect(f.signals[0].options).toMatchObject({role: 'host', key: expect.stringMatching(/^[0-9a-f]{32}$/)});
       f.signals[0].ready();
       const id = await pending;
-      expect(f.joined[0]).toMatchObject({id, row: {id, name: "Surfer's room", region: 'Private'}});
-      expect(f.runtime.hosting()).toEqual({id, players: 0, uploadMbps: null});
-      expect(f.signals[0].sent).toEqual([]);
+      expect(f.joined[0]).toMatchObject({id, row: {id, name: "Surfer's room", visibility: 'private'}});
+      expect(f.runtime.hosting()).toEqual({id, visibility: 'private', players: 0, uploadMbps: null});
+      expect(f.signals[0].sent).toEqual([{to: null, type: 'listing', data: null}]);
     } finally { f.runtime.destroy(); }
   });
 
@@ -384,15 +393,38 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('host relay retries keep the room', async () => {
+  test('host retries preserve room and force public relisting', async () => {
     const f = fixture();
     try {
-      const id = await f.host(), signal = f.signals[0];
+      const id = await f.host({visibility: 'public'}), signal = f.signals[0];
       signal.state = 'reconnecting'; signal.emit('reconnecting');
       expect(f.runtime.hosting().id).toBe(id);
       signal.ready();
-      expect(f.runtime.hosting().id).toBe(id);
+      expect(signal.sent.filter(message => message.type === 'listing')).toHaveLength(2);
       expect(f.signals).toHaveLength(1);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('visibility persists and listing heartbeats renew unchanged rooms', async () => {
+    const storage = new Map(), f = fixture({storage});
+    try {
+      await f.host();
+      f.runtime.setVisibility('public');
+      const signal = f.signals[0];
+      expect(signal.sent.at(-1)).toMatchObject({to: null, type: 'listing', data: {name: "Surfer's room", players: 0}});
+      const count = signal.sent.length;
+      f.runtime.setVisibility('public');
+      expect(signal.sent).toHaveLength(count);
+      f.timers.advance(29999);
+      expect(signal.sent).toHaveLength(count);
+      f.timers.advance(1);
+      expect(signal.sent).toHaveLength(count + 1);
+      const next = fixture({storage});
+      expect(next.runtime.visibility()).toBe('public');
+      next.runtime.destroy();
+      f.runtime.setVisibility('private');
+      expect(signal.sent.at(-1)).toEqual({to: null, type: 'listing', data: null});
+      expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 
@@ -423,6 +455,76 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('directory refresh is browser-only and throttled', async () => {
+    const f = fixture();
+    try {
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toEqual([]);
+      f.open(true);
+      await Promise.all([f.runtime.refreshDirectory(), f.runtime.refreshDirectory()]);
+      expect(f.requests).toHaveLength(1);
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      expect(f.rows()[1]).toMatchObject({visibility: 'public', ping: null});
+      f.timers.advance(9999); await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      f.timers.advance(1); await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('directory preserves known private rooms and rejects unsolicited rows', async () => {
+    const f = fixture();
+    try {
+      f.open(true);
+      const signal = await f.join();
+      signal.message('room-info', row(OTHER));
+      expect(f.runtime.mergeRooms([]).map(value => value.id)).toEqual([ROOM]);
+      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      await f.runtime.refreshDirectory({open: true});
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
+      f.timers.advance(10000);
+      f.response({ok: true, json: async () => ({rooms: []})});
+      await f.runtime.refreshDirectory({open: true});
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('directory errors retain officials and report the service copy', async () => {
+    const f = fixture();
+    try {
+      for (const response of [
+        {ok: false, json: async () => ({rooms: []})},
+        {ok: true, json: async () => [row()]},
+        {ok: true, json: async () => ({rooms: Array.from({length: 201}, () => row())})},
+        {ok: true, json: async () => ({rooms: [{...row(), name: 'x'.repeat(41)}]})}
+      ]) {
+        f.response(response);
+        await f.runtime.refreshDirectory({open: true});
+        expect(f.notices.at(-1)).toBe(SERVICE);
+        expect(f.rows().map(value => value.id)).toEqual(['official']);
+        f.timers.advance(10000);
+      }
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('connected room visibility overrides a cached public listing', async () => {
+    const f = fixture();
+    try {
+      f.open(true);
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      await f.runtime.refreshDirectory();
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      socket.message(JSON.stringify({type: 'state', state: {mapId: 'map', mapTitle: 'Map', epoch: 1, visibility: 'private'}}));
+      expect(f.rows().find(value => value.id === ROOM)).toMatchObject({visibility: 'private', region: 'Private'});
+      socket.message(JSON.stringify({type: 'state', state: {mapId: 'map', mapTitle: 'Map', epoch: 1, visibility: 'public'}}));
+      expect(f.rows().find(value => value.id === ROOM)).toMatchObject({visibility: 'public', region: 'Public'});
+      expect(socket.readyState).toBe(1);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('private measurement bypasses native fetch and uses actual pong time', async () => {
     const f = fixture();
     try {
@@ -435,6 +537,7 @@ describe('private room runtime', () => {
       expect(await f.runtime.measure(ROOM)).toBe(24);
       socket.send('ping'); socket.message('pong');
       expect(await f.runtime.measure(ROOM)).toBe(0);
+      expect(f.requests).toEqual([]);
     } finally { f.runtime.destroy(); }
   });
 
@@ -654,22 +757,21 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('the hosted row follows membership and map changes', async () => {
+  test('public listings follow membership and host map changes', async () => {
     const f = fixture();
     try {
-      const id = await f.host();
+      const id = await f.host({visibility: 'public'});
       const socket = f.runtime.roomSocket(id); await opened(socket);
-      expect(f.runtime.mergeRooms([])[0]).toMatchObject({id, players: 1});
+      expect(f.signals[0].sent.at(-1).data.players).toBe(1);
       socket.send(JSON.stringify({type: 'change-map', mapId: 'other'}));
       await new Promise(resolve => socket.addEventListener('message', function receive(event) {
         if (typeof event.data !== 'string' || JSON.parse(event.data).type !== 'state') return;
         socket.removeEventListener('message', receive);
         resolve();
       }));
-      expect(f.runtime.mergeRooms([])[0]).toMatchObject({mapId: 'other', mapTitle: 'Other', players: 1});
+      expect(f.signals[0].sent.at(-1).data).toMatchObject({mapId: 'other', mapTitle: 'Other', players: 1});
       socket.close(); await closed(socket);
-      expect(f.runtime.mergeRooms([])[0].players).toBe(0);
-      expect(f.signals[0].sent).toEqual([]);
+      expect(f.signals[0].sent.at(-1).data.players).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 

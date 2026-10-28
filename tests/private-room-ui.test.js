@@ -97,11 +97,12 @@ function fixture({observe = false, lateMenu = false} = {}) {
   const vote = add(menu, 'button', '', 'room-rtv', 'Rock the vote');
   if (!lateMenu) document.append(menu);
   const hud = add(document, 'div', '', 'hud');
-  let hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0, guest = false, signIns = 0;
+  let visibility = 'private', hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0, guest = false, signIns = 0;
   const calls = [], rows = [{id:'eu',region:'Europe',players:4,online:true}];
   const rooms = {
-    hosting:()=>hosting, currentRoom:()=>current,
-    async host(...options){calls.push(options);if(failure)throw failure;hosting={id:'p-aaaaaaaaaaaa',players:2,uploadMbps:0.2};current=hosting.id;selected=hosting.id;rows.push({...hosting,online:true});return hosting.id;}
+    visibility:()=>visibility, hosting:()=>hosting, currentRoom:()=>current,
+    setVisibility(value){visibility=value;if(hosting){hosting.visibility=value;rows.find(row=>row.id===hosting.id).visibility=value;}},
+    async host(options){calls.push(options);if(failure)throw failure;hosting={id:'p-aaaaaaaaaaaa',visibility,players:2,uploadMbps:0.2};current=hosting.id;selected=hosting.id;rows.push({...hosting,online:true});return hosting.id;}
   };
   let reads = 0;
   const adapter = {rooms:{guest:()=>guest,signIn:()=>{signIns++;},root:()=>root,browserOpen:()=>!root.hidden,rows:()=>{reads++;return rows;},selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
@@ -167,25 +168,30 @@ describe('native room UI', () => {
     await f.host().click();
     expect(f.join.textContent).toBe('Start room');
     expect(f.detail.textContent).toContain('Loaded map');
-    expect(f.detail.textContent).toContain('Only people with the invite link');
-    expect(f.detail.querySelector('[data-visibility]')).toBeNull();
+    const publicChoice=f.detail.querySelector('[data-visibility="public"]');
+    await publicChoice.click();
+    await Promise.resolve();
+    expect(f.rooms.visibility()).toBe('public');
     await f.join.click();
-    expect(f.calls).toEqual([[]]);
+    expect(f.calls).toEqual([{visibility:'public'}]);
     expect(f.nativeJoins()).toBe(0);
     expect(f.host().hidden).toBe(true);
     expect(f.vote.hidden).toBe(true);
     expect(f.code.textContent).toBe('surfd.example/?join=p-aaaaaaaaaaaa');
     expect(f.copy.textContent).toBe('Copy');
+    expect(f.info.textContent).toContain('Listed for everyone with Surfd QoL.');
     expect(f.info.textContent).toContain('Now using 0.2 Mbps up.');
+    await f.info.querySelector('[data-visibility="private"]').click();
+    await Promise.resolve();
+    expect(f.rooms.hosting().visibility).toBe('private');
     expect(f.info.textContent).toContain('Only people with this link can join. They need Surfd QoL.');
-    expect(f.info.querySelector('[data-visibility]')).toBeNull();
     f.ui.destroy();
     expect(f.vote.hidden).toBe(false);
   });
 
   test('private invites stay native', () => {
     const f=fixture();
-    f.rows.push({id:'p-aaaaaaaaaaaa',region:'Private',players:91,online:true});f.select('p-aaaaaaaaaaaa');f.ui.refresh();
+    f.rows.push({id:'p-aaaaaaaaaaaa',visibility:'private',players:91,online:true});f.select('p-aaaaaaaaaaaa');f.ui.refresh();
     expect(f.info.textContent).toContain('Only people with this link can join. They need Surfd QoL.');
     expect(f.detail.querySelector('.section-head small').textContent).toBe('91');
     expect(f.info.querySelector('[data-fact="ping"]').textContent).toBe('');

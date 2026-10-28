@@ -12,7 +12,7 @@ The game trusts its server and puts some fields (a map's tier, for one) into mar
 
 Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Official server ids (`eu`, `na`, `eut3`, …) never match.
 
-The game joins rooms from its server list. Private rooms appear only for their host or someone holding an invite, under the server browser's Private tab (`?join=<id>` highlights the row but doesn't join). Their rows carry their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
+The game joins rooms from its server list, where player-hosted rooms show under a Community tab. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite (`?join=<id>` highlights the row but doesn't join). Their rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available; their map titles come from the player's own catalog. They show no capacity and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest, userId, browserId}` (no tokens). `userId` is a signed-in player's public account id (a UUID) or `null`; `browserId` is a random UUID kept in localStorage, for bans. The host takes a signed-in player at their word; a guest whose name isn't a `Guest_` name, or a player whose name breaks the name rules below, joins as a guest with a new `Guest_` name. Invalid appearances fall back to the default.
 
@@ -23,7 +23,9 @@ Hosting needs a surfd.net account, as the game's moderators always have one: a g
 The host connects to the meeting point with `role=host` and sends `{type: "auth", key}`, with a key from `newHostKey()`, as its first message; the key never goes in the URL. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
-Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups wait for the server browser and stop when it closes. Upload stats are sampled only while the host's own room is shown.
+Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
+
+Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; upload stats are sampled only while the host's own room is shown.
 
 Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`. Guests refuse other player, chat and room names.
 
@@ -37,7 +39,7 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 - In private rooms: `connectionId` is a UUID, `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true` (guests accept at most one moderator, never themselves), and `guest` is the player's real status, as on official servers. Signed-in players may carry `userId`; guests never do.
 - The game refuses to send chat for its own guest player, shows map controls only to moderators who aren't guests, and hides View profile, Add friend and Block for guests. Add friend sends a request by name. In private rooms View profile opens `userId` instead of `id`, and Block is hidden, as the room can't confirm who a player is.
 
-**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
+**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A player-hosted room sends `{roomId, name, visibility, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `visibility` is `"public"` or `"private"`; changing it broadcasts `state` without changing the epoch. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 
 ## Client → room
 

@@ -235,6 +235,18 @@ describe('private room host', () => {
     room.close();
   });
 
+  test('visibility changes keep the current map and epoch', () => {
+    const {room, connect} = fixture(), host = connect(true), guest = connect();
+    room.setVisibility('public');
+    for (const socket of [host, guest]) {
+      expect(socket.messages('state').at(-1).state).toMatchObject({visibility: 'public', mapId: 'one', epoch: 1});
+    }
+    room.setVisibility('private');
+    expect(guest.messages('state').at(-1).state.visibility).toBe('private');
+    expect(room.players).toHaveLength(2);
+    room.close();
+  });
+
   test('explicit close shuts down connecting sockets too', () => {
     const {room, connect} = fixture(), waiting = connect(false, hello, false);
     room.close();

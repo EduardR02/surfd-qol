@@ -21,7 +21,7 @@ const roomPlayer = (slot = 0) => ({
   rank: 'Guest', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
 });
 const maps = [{id: 'one', title: 'One', tier: 1}];
-const roomState = {roomId: 'room-a', name: "Host's room", mapId: 'one', mapTitle: 'One',
+const roomState = {roomId: 'room-a', name: "Host's room", visibility: 'private', mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
   maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
@@ -688,7 +688,7 @@ describe('private room WebRTC socket', () => {
     const messages = [], host = accepted[0].socket;
     client.onmessage = event => messages.push(event.data);
     const controls = [
-      {type: 'state', state: {...roomState, epoch: 2}, serverTime: 2},
+      {type: 'state', state: {...roomState, visibility: 'public', epoch: 2}, serverTime: 2},
       {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: 'This room is full.'},
       {type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: 12},
@@ -730,6 +730,7 @@ describe('private room WebRTC socket', () => {
       {type: 'roster', players: [{...roomPlayer(), name: 'Guest_0a1b2', guest: true, userId: uuid(9)}]},
       {type: 'roster', players: [{...roomPlayer(), userId: 'account-1'}]},
       {type: 'state', state: {...roomState, name: 'Official Surfd server'}, serverTime: 1},
+      {type: 'state', state: {...roomState, visibility: 'listed'}, serverTime: 1},
       {type: 'notice', text: {}}, {type: 'error', text: 'bad', spectatorRequest: -1},
       {type: 'spectator-demand', active: true, count: 0},
       {type: 'context', epoch: 1, token: 'host-supplied-ranked-token'},

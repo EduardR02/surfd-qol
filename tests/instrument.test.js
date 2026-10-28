@@ -355,18 +355,18 @@ describe('optional native private room instrumentation', () => {
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
   });
 
-  test('private rooms never win the official recommendation', () => {
+  test('community never wins official recommendation', () => {
     const {adapter, runtime} = roomFixture(privateFixtureHooks());
     adapter.rooms.update([
-      {id:'p-aaaaaaaaaaaa',region:'Private',players:300,capacity:1000,online:true,ping:1},
+      {id:'p-aaaaaaaaaaaa',region:'Public',players:300,capacity:1000,online:true,ping:1},
       {id:'eu',region:'Europe',players:2,capacity:64,online:true,ping:90},
       {id:'p-bbbbbbbbbbbb',region:'Private',players:0,online:true}
     ]);
     expect(runtime.browser.best().id).toBe('eu');
     runtime.browser.filters(true,true);
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['eu','p-aaaaaaaaaaaa']);
-    expect(runtime.browser.groups().map(([region])=>region)).toEqual(['Europe','Private']);
-    runtime.browser.region('Private');
+    expect(runtime.browser.groups().map(([region])=>region)).toEqual(['Europe','Community']);
+    runtime.browser.region('Community');
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa']);
     runtime.browser.filters(true,false);
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
@@ -489,14 +489,19 @@ describe('optional native private room instrumentation', () => {
     }
   });
 
-  test('private room measurements never call native endpoints', async () => {
-    const hooks = privateFixtureHooks();
+  test('community measurements never refresh the directory or call native endpoints', async () => {
+    const refreshes = [], hooks = privateFixtureHooks();
     hooks.row.id = 'p-aaaaaaaaaaaa';
+    hooks.refreshDirectory = options => refreshes.push(options);
     const fixture = roomFixture(hooks);
     expect(await fixture.runtime.room.measure(hooks.row.id)).toBe(0);
+    expect(refreshes).toEqual([]);
+    expect(fixture.requests).toEqual([]);
+    fixture.adapter.rooms.refresh();
+    expect(refreshes).toEqual([{open: false}]);
     fixture.runtime.browser.view.el.hidden = false;
     fixture.runtime.browser.view.open(hooks.row.id);
-    expect(fixture.requests).toEqual([]);
+    expect(refreshes).toEqual([{open: false}, {open: true}]);
   });
 
   test('an unknown community ping remains unknown without a native fallback request', async () => {

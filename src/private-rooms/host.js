@@ -10,7 +10,7 @@ const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRA
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", onChange = () => {}, now = Date.now}) {
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
@@ -20,7 +20,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   if (!catalog.has(mapId)) throw new Error('Map is not in the catalog');
   let state = {
-    roomId, name, mapId, mapTitle: catalog.get(mapId).title,
+    roomId, name, visibility, mapId, mapTitle: catalog.get(mapId).title,
     epoch: 1, startedAt: Date.now(), endsAt: 0, untimed: true,
     recent: [], nominations: {}, rtv: [], vote: null, nextMap: null,
   };
@@ -327,5 +327,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     socket.addEventListener('close', client.onClose);
     if (socket.readyState === 1) client.onOpen();
   }
-  return {addClient, close, get state() { return state; }, get players() { return players(); }};
+  function setVisibility(value) {
+    if (value !== 'private' && value !== 'public') throw new Error('Invalid room visibility.');
+    if (closed || state.visibility === value) return;
+    state = {...state, visibility: value};
+    broadcast({type: 'state', state, serverTime: Date.now()});
+    onChange();
+  }
+  return {addClient, close, setVisibility, get state() { return state; }, get players() { return players(); }};
 }

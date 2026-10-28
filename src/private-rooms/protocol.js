@@ -347,14 +347,15 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
     return result;
   }
   function readState(state) {
-    requireValid(record(state) && state.roomId === roomId && isRoomName(state.name) && catalog.has(state.mapId)
+    requireValid(record(state) && state.roomId === roomId && isRoomName(state.name)
+      && ['private', 'public'].includes(state.visibility) && catalog.has(state.mapId)
       && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
       && state.endsAt === 0 && state.untimed === true
       && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
       && record(state.nominations) && Object.keys(state.nominations).length === 0
       && Array.isArray(state.rtv) && state.rtv.length === 0
       && state.vote === null && state.nextMap === null, 'Invalid room state');
-    return {roomId, name: state.name, mapId: state.mapId, mapTitle: catalog.get(state.mapId).title,
+    return {roomId, name: state.name, visibility: state.visibility, mapId: state.mapId, mapTitle: catalog.get(state.mapId).title,
       epoch: state.epoch, startedAt: state.startedAt, endsAt: 0, untimed: true,
       recent: state.recent.filter(id => catalog.has(id)), nominations: {}, rtv: [], vote: null, nextMap: null};
   }
