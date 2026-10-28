@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {GRACE_MS, REASONS, ROOM_ID, connectSignal, newHostKey, newRoomId} from '../src/private-rooms/signal-client.js';
 import {createRoom, hashKey, parseRequest} from '../signal/src/room.js';
 
-const ROOM = 'p-abcdefghjk', KEY = 'a'.repeat(32);
+const ROOM = 'p-abcdefghjkmn', KEY = 'a'.repeat(32);
 const EVENTS = ['ready', 'message', 'peer-joined', 'peer-left', 'reconnecting', 'error', 'closed'];
 
 // A socket the test plays the relay for.
@@ -74,7 +74,7 @@ test('bad arguments throw before anything connects', () => {
   const base = {url: 'https://signal.example', roomId: ROOM, WebSocket: FakeSocket};
   FakeSocket.made = [];
   expect(() => connectSignal({...base, url: '', role: 'guest'})).toThrow(/SIGNAL_URL/);
-  expect(() => connectSignal({...base, roomId: 'p-abcdefghj0', role: 'guest'})).toThrow(TypeError);
+  expect(() => connectSignal({...base, roomId: 'p-abcdefghjkm0', role: 'guest'})).toThrow(TypeError);
   expect(() => connectSignal({...base, role: 'host'})).toThrow(TypeError);
   expect(() => connectSignal({...base, role: 'host', key: 'short'})).toThrow(TypeError);
   expect(() => connectSignal({...base, role: 'admin'})).toThrow(TypeError);
@@ -334,4 +334,11 @@ test('end to end: clients and the relay agree on claiming, relaying, reconnectin
   host.close();
   await settle();
   expect(room.heard()).toEqual([['closed', 'closed'], ['closed', 'room-closed'], ['closed', 'room-closed']]);
+});
+
+test('the game, the client and the Worker agree on room ids', async () => {
+  const {createRoomId, isPrivateRoomId} = await import('../src/private-rooms/ids.js');
+  const {ROOM_ID: WORKER} = await import('../signal/src/room.js');
+  const ids = [...Array.from({length: 200}, createRoomId), ...Array.from({length: 200}, newRoomId)];
+  for (const id of ids) expect([isPrivateRoomId(id), ROOM_ID.test(id), WORKER.test(id)]).toEqual([true, true, true]);
 });

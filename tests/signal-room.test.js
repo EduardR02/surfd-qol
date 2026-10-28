@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
 import worker from '../signal/src/worker.js';
 
-const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjk';
+const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjkmn';
 const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', method = 'GET'} = {}) =>
   new Request(`https://signal.example${path}`, {method, headers: {...origin ? {Origin: origin} : {}, ...upgrade ? {Upgrade: upgrade} : {}}});
 
@@ -51,7 +51,7 @@ function claimed(guests = 0) {
 test('requests: only surfd.net WebSocket upgrades to well-formed rooms, with a role and a host key', () => {
   expect(parseRequest(request(`/rooms/${ROOM}?role=host&key=${KEY}`))).toEqual({roomId: ROOM, role: 'host', key: KEY});
   expect(parseRequest(request(`/rooms/${ROOM}?role=guest&key=x`))).toEqual({roomId: ROOM, role: 'guest', key: null});
-  for (const id of ['p-abcdefghj', 'p-abcdefghjkm', 'q-abcdefghjk', 'p-ABCDEFGHJK', 'p-abcdefghj0', 'p-abcdefghjo', 'p-abcdefghj1', 'p-abcdefghjl', 'p-abcdefghji', 'p-abcdefgh%20']) {
+  for (const id of ['p-abcdefghjkm', 'p-abcdefghjkmnp', 'q-abcdefghjkmn', 'p-ABCDEFGHJKMN', 'p-abcdefghjkm0', 'p-abcdefghjkmo', 'p-abcdefghjkm1', 'p-abcdefghjkml', 'p-abcdefghjkmi', 'p-abcdefghjk%20']) {
     expect(parseRequest(request(`/rooms/${id}?role=guest`)).status).toBe(404);
   }
   for (const path of ['/', '/rooms/', `/rooms/${ROOM}/x?role=guest`, `/room/${ROOM}?role=guest`]) expect(parseRequest(request(path)).status).toBe(404);
@@ -76,7 +76,7 @@ test('the Worker answers bad requests itself and sends good ones to the room nam
 });
 
 test('ids and key hashes: unambiguous random ids, hashes that never echo the key', async () => {
-  const ids = new Set(Array.from({length: 200}, () => randomId(10)));
+  const ids = new Set(Array.from({length: 200}, () => randomId(12)));
   expect(ids.size).toBe(200);
   for (const id of ids) expect(ROOM_ID.test(`p-${id}`)).toBe(true);
   expect(randomId()).toHaveLength(8);

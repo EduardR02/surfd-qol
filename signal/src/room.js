@@ -11,9 +11,10 @@
 // Origin. Browsers set it themselves, which keeps other sites' pages out;
 // scripts outside a browser can send anything, which the limits below cover.
 export const ORIGIN = 'https://surfd.net';
-// No 0/o or 1/l/i, since room ids get read out and retyped.
+// No 0/o or 1/l/i, since room ids get read out and retyped. The extension
+// makes them (src/private-rooms/ids.js): p- and 12 of these characters.
 export const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
-export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{10}$`);
+export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 // At least 128 bits, as lowercase hex.
 export const HOST_KEY = /^[0-9a-f]{32,128}$/;
 export const MAX_GUESTS = 16;

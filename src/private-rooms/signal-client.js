@@ -12,9 +12,9 @@
 // The deployed Worker's URL, such as 'https://surfd-signal.<subdomain>.workers.dev'
 // (see signal/README.md).
 export const SIGNAL_URL = '';
-// Matches signal/src/room.js.
+// Matches signal/src/room.js, and the ids ids.js makes.
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
-export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{10}$`);
+export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 const HOST_KEY = /^[0-9a-f]{32,128}$/;
 export const GRACE_MS = 30000;
 const MAX_MESSAGE = 16 * 1024;
@@ -37,7 +37,7 @@ function randomString(length) {
   }
   return text;
 }
-export const newRoomId = () => `p-${randomString(10)}`;
+export const newRoomId = () => `p-${randomString(12)}`;
 // 128 random bits, as hex: what lets a host, and only it, reclaim its room.
 export const newHostKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 

@@ -14,7 +14,7 @@ Run `npx wrangler deploy` again after changing `src/`. `npx wrangler tail` strea
 
 ## Protocol
 
-`GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 10 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
+`GET /rooms/<roomId>` upgrades to a WebSocket. A room id is `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789`. Only pages on `https://surfd.net` may connect (checked by the `Origin` header). Bad requests get a plain HTTP error: 404 (path or room id), 403 (origin), 426 (not a WebSocket upgrade), 400 (role or key).
 
 - The host connects with `?role=host&key=<key>`, a random secret of at least 128 bits as 32 to 128 lowercase hex characters, and claims the room. Only that key can reconnect to it.
 - Guests connect with `?role=guest`.
