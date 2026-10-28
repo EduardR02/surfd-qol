@@ -24,7 +24,7 @@ Rooms are reachable only through their invite link; there is no directory of roo
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
 
-A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once.
+A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once. An ended room's id stays reserved for 6 hours, so stale invite links never lead into someone else's room: guests get `no-room`, other keys `room-taken`, and only the old key can claim it again, as a new room.
 
 The relay closes sockets with these codes (the reason is the name):
 

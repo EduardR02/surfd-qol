@@ -1,5 +1,5 @@
 import {expect, test} from 'bun:test';
-import {CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
+import {CLOSE, GRACE_MS, MAX_GUESTS, MAX_MESSAGE, RATE_MESSAGES, RATE_WINDOW_MS, TOMBSTONE_MS, createRoom, hashKey, parseRequest, randomId, ROOM_ID} from '../signal/src/room.js';
 import worker from '../signal/src/worker.js';
 
 const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjkmn';
@@ -193,9 +193,24 @@ test('a host that says goodbye ends the room at once', () => {
   const room = claimed(2);
   room.leave(room.host, 1000);
   for (const guest of room.guests) expect(guest.closed).toEqual({code: CLOSE['room-closed'], reason: 'room-closed'});
+  expect(room.world.record).toEqual({key: KEY, endedAt: 1000});
+  expect(room.connect('guest').closed.reason).toBe('no-room');
+});
+
+test('the id of an ended room stays unclaimable by other keys for six hours, then nothing of it is stored', () => {
+  const room = claimed(1);
+  room.leave(room.host, 1000);
+  expect(room.world.alarm).toBe(1000 + TOMBSTONE_MS);
+  room.world.time += TOMBSTONE_MS - 1;
+  room.restart();
+  expect(room.connect('host', OTHER).closed).toEqual({code: CLOSE['room-taken'], reason: 'room-taken'});
+  expect(room.connect('guest').closed.reason).toBe('no-room');
+  room.alarm();
   expect(room.world.record).toBeNull();
   expect(room.world.alarm).toBeNull();
-  expect(room.connect('guest').closed.reason).toBe('no-room');
+  const next = room.connect('host', OTHER);
+  expect(room.heard(next)[0].data).toEqual({id: expect.any(String), peers: []});
+  expect(room.world.record.key).toBe(OTHER);
 });
 
 test('a room evaporates once its host has been gone past the grace period', () => {
@@ -203,12 +218,14 @@ test('a room evaporates once its host has been gone past the grace period', () =
   room.leave(room.host);
   room.alarm();
   for (const guest of room.guests) expect(guest.closed).toEqual({code: CLOSE['room-closed'], reason: 'room-closed'});
-  expect(room.world.record).toBeNull();
-  expect(room.world.alarm).toBeNull();
+  expect(room.world.record).toEqual({key: KEY, endedAt: 1000 + GRACE_MS});
   expect(room.connect('guest').closed.reason).toBe('no-room');
-  // The id is free again: whoever claims it gets a new, empty room.
-  const next = room.connect('host', OTHER);
-  expect(room.heard(next)[0].data.peers).toEqual([]);
+  expect(room.connect('host', OTHER).closed.reason).toBe('room-taken');
+  // Its host, returning late, gets a new, empty room under the same id.
+  const back = room.connect('host', KEY);
+  expect(room.heard(back)[0].data).toEqual({id: expect.any(String), peers: []});
+  expect(room.world.record).toEqual({host: expect.any(String), conn: expect.any(String), key: KEY, goneAt: null});
+  expect(room.world.alarm).toBeNull();
 });
 
 test('expiry does not wait for a late alarm, and an early alarm is set again', () => {
@@ -306,7 +323,7 @@ test('a room woken from hibernation carries on from its record and sockets', () 
   room.restart();
   room.alarm();
   expect(guest.closed.reason).toBe('room-closed');
-  expect(room.world.record).toBeNull();
+  expect(room.world.record).toEqual({key: KEY, endedAt: room.world.time});
 });
 
 test('a listing is an ordinary message: the host must name a guest, a guest sends it to the host', () => {

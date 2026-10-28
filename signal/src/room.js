@@ -25,10 +25,13 @@ export const RATE_MESSAGES = 50;
 export const RATE_WINDOW_MS = 10000;
 // How long a host whose socket dropped keeps the room for a reconnect.
 export const GRACE_MS = 30000;
+// How long an ended room's id stays unclaimable, so that nobody else can
+// claim it and catch the guests of stale invite links.
+export const TOMBSTONE_MS = 6 * 60 * 60 * 1000;
 // The close codes (and reasons) the relay ends a socket with.
 export const CLOSE = {
   'room-taken': 4403, // a host without the room's key
-  'no-room': 4404, // a guest before any host
+  'no-room': 4404, // a guest before any host, or after the room ended
   replaced: 4409, // the host reconnected on another socket
   'room-closed': 4410, // the host left for good
   'too-large': 4413,
@@ -85,12 +88,16 @@ const tooLarge = raw => typeof raw === 'string'
 
 // One room's relay. The caller provides:
 // - record, save(record): the room's stored record, {host, conn, key, goneAt}
-//   once claimed (key hashed, goneAt set while the host is away), else null;
+//   once claimed (key hashed, goneAt set while the host is away), a tombstone
+//   {key, endedAt} for TOMBSTONE_MS once it ends, else null;
 // - wake(at): run alarm() at that time, or never (null);
 // - sockets(): the open sockets it accepted, and peerOf(socket): the peer
 //   accept(socket, peer) attached to one; refuse(socket, code, reason).
 // A socket needs send(text) and close(code, reason).
-export function createRoom({record = null, save, wake, sockets, peerOf, accept, refuse, now = Date.now}) {
+export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, refuse, now = Date.now}) {
+  let record = null, tomb = null;
+  if (stored?.endedAt != null) tomb = stored;
+  else record = stored;
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
   const rates = new Map(), departed = new Set();
@@ -111,24 +118,34 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
   }
   const guests = () => members().filter(member => member.peer.role === 'guest');
   const host = () => members().find(member => member.peer.role === 'host');
-  function store(next) {
+  // When alarm() has work: a host's grace period or a tombstone running out.
+  function due() {
+    if (record) return record.goneAt == null ? null : record.goneAt + GRACE_MS;
+    return tomb && tomb.endedAt + TOMBSTONE_MS;
+  }
+  function store(next, ended = null) {
     record = next;
-    save(next);
-    wake(next?.goneAt == null ? null : next.goneAt + GRACE_MS);
+    tomb = ended;
+    save(next ?? ended);
+    wake(due());
   }
   function end() {
     for (const {socket} of members()) shut(socket, 'room-closed');
-    store(null);
+    store(null, {key: record.key, endedAt: now()});
   }
   // A room whose host has been away longer than the grace period is over.
   function expire() {
     if (record?.goneAt != null && now() >= record.goneAt + GRACE_MS) end();
+    if (tomb && now() >= tomb.endedAt + TOMBSTONE_MS) store(null);
   }
 
   function connect(socket, {role, key}) {
     expire();
     if (role === 'host') {
-      if (record && record.key !== key) return refuse(socket, CLOSE['room-taken'], 'room-taken');
+      // An ended room's key may claim its id again, as a new room: that is
+      // its host coming back after the grace period.
+      const holder = record ?? tomb;
+      if (holder && holder.key !== key) return refuse(socket, CLOSE['room-taken'], 'room-taken');
       // The key's holder takes over: a reconnecting host may arrive before
       // the relay notices its old socket is gone. Its peer id stays the same.
       const previous = host();
@@ -214,7 +231,7 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
 
   function alarm() {
     expire();
-    if (record?.goneAt != null) wake(record.goneAt + GRACE_MS);
+    wake(due());
   }
 
   return {connect, message, disconnect, alarm};

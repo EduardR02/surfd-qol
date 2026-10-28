@@ -22,7 +22,7 @@ export class Room {
       const {storage} = ctx;
       this.room = createRoom({
         record: await storage.get('room') ?? null,
-        // An ended room deletes everything, so nothing of it stays stored.
+        // An expired tombstone deletes everything, so nothing of the room stays stored.
         save: record => record ? storage.put('room', record) : storage.deleteAll(),
         wake: at => at == null ? storage.deleteAlarm() : storage.setAlarm(at),
         sockets: () => ctx.getWebSockets().filter(socket => socket.readyState === OPEN),

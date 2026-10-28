@@ -78,6 +78,8 @@ try {
 
   const late = open('role=guest');
   check('the room is gone afterwards (4404)', (await late.closed).code === 4404);
+  const squatter = open(`role=host&key=${'f'.repeat(32)}`);
+  check('another key cannot claim the ended room (4403)', (await squatter.closed).code === 4403);
 } catch (error) {
   check('no step timed out', false, error.message);
 }
