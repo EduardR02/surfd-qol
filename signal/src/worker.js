@@ -40,6 +40,7 @@ export class Room {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     ctx.blockConcurrencyWhile(async () => {
       const {storage} = ctx;
+      let publication = null, pendingPublication = null;
       this.room = createRoom({
         record: await storage.get('room') ?? null,
         // An ended room deletes everything, so nothing of it stays stored.
@@ -50,10 +51,22 @@ export class Room {
         accept(socket, peer) { ctx.acceptWebSocket(socket); socket.serializeAttachment(peer); },
         // A refused socket still opens, so the browser gets the close code and reason.
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
-        // A lost update is fixed by the host's next one, at most 30 s later.
+        // Keep only the latest queued state; a slow PUT must finish before DELETE.
         publish(roomId, listing) {
-          ctx.waitUntil(lobbyOf(env).fetch(`https://lobby/listing/${roomId}`, listing
-            ? {method: 'PUT', body: JSON.stringify(listing)} : {method: 'DELETE'}).catch(() => {}));
+          pendingPublication = {roomId, listing};
+          if (publication) return;
+          publication = Promise.resolve().then(async () => {
+            while (pendingPublication) {
+              const {roomId, listing} = pendingPublication;
+              pendingPublication = null;
+              try {
+                await lobbyOf(env).fetch(`https://lobby/listing/${roomId}`, listing
+                  ? {method: 'PUT', body: JSON.stringify(listing)} : {method: 'DELETE'});
+              } catch { /* Failed requests expire through the directory TTL. */ }
+            }
+            publication = null;
+          });
+          ctx.waitUntil(publication);
         },
       });
     });

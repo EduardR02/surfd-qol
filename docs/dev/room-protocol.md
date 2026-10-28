@@ -19,6 +19,7 @@ The host connects to the meeting point with `role=host` and a key from `newHostK
 Invite discovery waits until the server browser opens and closes its meeting point socket after receiving the preview. Closing the browser cancels unfinished previews and directory fetches; teardown also aborts directory fetches.
 
 Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
+Worker publication keeps one request in flight and only the latest pending state. A slow listing cannot overtake a later unlisting, and intermediate updates do not build a queue.
 
 The room UI observes only the server browser and, in a community room, its room-menu controls. A hidden browser observes only its own visibility attributes; HUD mutations do not refresh room UI.
 Room metadata and pong measurements update the cache during play, not the hidden browser DOM. Opening the browser renders that cache; an explicit join also updates rows before invoking the native join callback.
