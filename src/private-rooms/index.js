@@ -10,13 +10,14 @@ const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const HOST_LEFT = ROOM_TEXTS.hostClosed;
 const SIGN_IN = 'Sign in to host a room.';
 const DISCOVERY_TIMEOUT = 15000;
+const DROP_WINDOW = 30000, MAX_DROPS = 3;
 const NAME_KEY = 'surfd-qol-room-guest-name';
 const BROWSER_KEY = 'surfd-qol-room-browser';
 
 export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, now = Date.now,
   timers = globalThis, events = globalThis, storage,
   socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
-  const known = new Map(), guests = new Map(), gone = new Set();
+  const known = new Map(), guests = new Map(), gone = new Set(), drops = new Map();
   const sockets = new Map(), latestSockets = new Map();
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, destroyed = false, attached = false, listening = false;
@@ -191,8 +192,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
     latestSockets.set(id, socket);
-    socket.addEventListener('open', () => ui?.refresh(), {once: true});
-    let pingAt = null;
+    let pingAt = null, opened = false;
+    socket.addEventListener('open', () => { opened = true; ui?.refresh(); }, {once: true});
     const send = socket.send.bind(socket);
     socket.send = data => {
       if (data === 'ping' && socket.readyState === 1) pingAt = now();
@@ -222,6 +223,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       sockets.delete(socket);
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
+      if (opened && !ownHost) drops.set(id, [...recentDrops(id), now()]);
       if (event.code === 4004) {
         markGone(id);
         if (!ownHost && !destroyed) getAdapter()?.rooms?.notice?.(event.reason === HOST_LEFT ? HOST_LEFT : CLOSED);
@@ -232,6 +234,12 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       ui?.refresh();
     }, {once: true});
     return socket;
+  }
+  function recentDrops(id) {
+    const recent = (drops.get(id) ?? []).filter(time => now() - time < DROP_WINDOW);
+    if (recent.length) drops.set(id, recent);
+    else drops.delete(id);
+    return recent;
   }
   function closeHost() {
     const closing = hosted;
@@ -433,6 +441,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
         current.room.addClient(host, hello(), {host: true});
         return track(client, id);
       }
+      // A host that keeps dropping its guests would otherwise have the game reconnect forever.
+      if (recentDrops(id).length > MAX_DROPS) return createClosedSocket(4004, CLOSED);
       const previous = guests.get(id);
       if (previous?.socket) {
         closeGuest(previous);
@@ -492,6 +502,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       sockets.clear();
       latestSockets.clear();
       known.clear();
+      drops.clear();
     }
   };
   return api;

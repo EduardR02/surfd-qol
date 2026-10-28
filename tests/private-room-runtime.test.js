@@ -518,6 +518,26 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('a room that keeps dropping the connection stops reconnects for 30 seconds', async () => {
+    const f = fixture();
+    try {
+      await f.join();
+      for (let drop = 0; drop < 4; drop++) {
+        const socket = f.runtime.roomSocket(ROOM);
+        f.signals.at(-1).ready();
+        socket.open();
+        f.timers.advance(1000);
+        socket.close(4000, '');
+      }
+      const signals = f.signals.length, refused = f.runtime.roomSocket(ROOM);
+      expect(await closed(refused)).toMatchObject({code: 4004, reason: CLOSED});
+      expect(f.signals).toHaveLength(signals);
+      f.timers.advance(27000);
+      expect(f.runtime.roomSocket(ROOM).readyState).toBe(0);
+      expect(f.signals).toHaveLength(signals + 1);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('connection failures show their reason without forgetting the room', async () => {
     for (const [code, reason] of [[1006, "Couldn't connect to the host. Their network or yours may block direct connections."], [4000, SERVICE], [4008, 'This room is full.']]) {
       const f = fixture();
