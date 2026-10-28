@@ -466,3 +466,35 @@ test('a host and a dozen guests on one home network, joining and reconnecting, s
   }
   expect(room.world.record.goneAt).toBeNull();
 });
+
+test('guests that leave before the host answers never get the host closed', async () => {
+  const room = await claimed();
+  const asked = [];
+  for (let i = 0; i < 3 * RATE_MESSAGES; i++) {
+    const guest = room.connect('guest');
+    asked.push(room.heard(guest)[0].data.id);
+    room.say(guest, {type: 'room-info', data: null});
+    room.leave(guest, 1000);
+  }
+  room.heard(room.host);
+  for (const id of asked) room.say(room.host, {to: id, type: 'room-info', data: {id: ROOM}});
+  expect(room.host.closed).toBeNull();
+  expect(room.world.record.goneAt).toBeNull();
+  // The relay answers within the host's share and drops the rest.
+  expect(room.heard(room.host)).toEqual(asked.slice(0, RATE_MESSAGES).map(to => ({type: 'error', data: {code: 'no-peer', to}})));
+  const guest = room.connect('guest');
+  const id = room.heard(guest)[0].data.id;
+  room.say(guest, {type: 'answer'});
+  room.say(room.host, {to: id, type: 'offer'});
+  expect(room.heard(room.host)).toEqual([{type: 'peer-joined', from: id}, {from: id, type: 'answer'}]);
+  expect(room.heard(guest)).toEqual([{from: room.hostId, type: 'offer'}]);
+});
+
+test('a host past its client limit is closed, so its dropped messages are still bounded', async () => {
+  const allowClient = createLimiter({burst: 5, every: 1000, now: () => 0});
+  const room = await claimed(0, {allowClient});
+  for (let i = 0; i < 5; i++) room.say(room.host, {to: 'gone', type: 'offer'});
+  expect(room.host.closed).toBeNull();
+  room.say(room.host, 'junk');
+  expect(room.host.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
+});

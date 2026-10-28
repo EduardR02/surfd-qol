@@ -208,13 +208,12 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     post(socket, {type: 'welcome', data: {id, peers: guests().map(guest => guest.peer.id)}});
   }
 
-  // Directed host replies spend the recipient's share, connection and
-  // client both, not the host's.
+  // Directed host replies spend the recipient's share, not the host's.
   function allow(peer, directed = false) {
     const time = now(), key = `${directed ? 'reply' : 'send'}:${peer.conn}`;
     let rate = rates.get(key);
     if (!rate || time - rate.start >= RATE_WINDOW_MS) rates.set(key, rate = {start: time, count: 0});
-    return ++rate.count <= RATE_MESSAGES && allowClient(peer.client);
+    return ++rate.count <= RATE_MESSAGES;
   }
 
   function message(socket, raw) {
@@ -228,14 +227,18 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (peer.role === 'host') {
       const target = value && guests().find(guest => guest.peer.id === value.to);
       if (target) {
-        if (!allow(target.peer, true)) return kick(target.socket, 'rate-limited');
+        if (!allow(target.peer, true) || !allowClient(target.peer.client)) return kick(target.socket, 'rate-limited');
         return post(target.socket, {from: peer.id, type: value.type, data: value.data});
       }
-      if (!allow(peer)) return kick(socket, 'rate-limited');
+      if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
+      // Mostly replies to guests that left before they came. Guests can cause
+      // those at will, so past the host's share they are dropped, never a
+      // reason to close the host.
+      if (!allow(peer)) return;
       if (raw === 'ping') return void socket.send('pong');
       return value ? fail(socket, 'no-peer', value.to ?? null) : fail(socket, 'bad-message');
     }
-    if (!allow(peer)) return kick(socket, 'rate-limited');
+    if (!allow(peer) || !allowClient(peer.client)) return kick(socket, 'rate-limited');
     if (raw === 'ping') return void socket.send('pong');
     if (!value) return fail(socket, 'bad-message');
     const {to, type, data} = value;

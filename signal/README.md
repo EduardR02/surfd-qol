@@ -24,7 +24,7 @@ Rooms are reachable only through their invite link; there is no directory of roo
 - A message the relay won't pass on gets back `{"type":"error","data":{"code","to"?}}`, with code `bad-message`, `no-peer` (no such guest), `forbidden` (a guest naming someone other than the host) or `host-away`.
 - The text `ping` is answered with `pong`, without waking the room.
 
-Limits are per client, an IPv4 address or an IPv6 /64, counted in memory by each Worker isolate: 60 new connections at once, then one more every 30 seconds; 2,000 messages at once, then one more a second. A host's message to a guest counts against that guest and its client, so a guest that asks for too much is the one disconnected.
+Limits are per client, an IPv4 address or an IPv6 /64, counted in memory by each Worker isolate: 60 new connections at once, then one more every 30 seconds; 2,000 messages at once, then one more a second. A host's message to a guest counts against that guest and its client, so a guest that asks for too much is the one disconnected. The host's other messages past 50 in 10 seconds, such as replies to guests that already left, are dropped without an error.
 
 A host whose socket drops keeps the room for 30 seconds: its guests stay, and it can reconnect with its key (keeping its id; the welcome lists the guests now present). A host closing with code 1000 ends the room at once. An ended room's id stays reserved for 6 hours, so stale invite links never lead into someone else's room: guests get `no-room`, other keys `room-taken`, and only the old key can claim it again, as a new room.
 
@@ -38,7 +38,7 @@ The relay closes sockets with these codes (the reason is the name):
 | 4409 | `replaced` | the host reconnected on another socket |
 | 4410 | `room-closed` | the host left for good; the room is gone |
 | 4413 | `too-large` | a message over 16 KB |
-| 4429 | `rate-limited` | over 50 messages in 10 seconds on one socket (the host: 50 per guest present), or its client over its limit |
+| 4429 | `rate-limited` | a guest over 50 messages in 10 seconds, or the host over 50 to it; or a client over its limit |
 | 4503 | `room-full` | 100 guests connected at once, or 20 from one client |
 
 ## Tests
