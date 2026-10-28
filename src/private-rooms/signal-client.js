@@ -9,9 +9,9 @@
 // 'unreachable' or 'lost'), once and last. A host whose socket drops
 // reconnects with its key for up to GRACE_MS, keeping the room and its guests.
 
-// The deployed Worker's URL, such as 'https://surfd-signal.<subdomain>.workers.dev'
-// (see signal/README.md).
-export const SIGNAL_URL = '';
+// The deployed Worker (see signal/README.md). A public address: players
+// connect anonymously, and deploying needs the owner's own Wrangler login.
+export const SIGNAL_URL = 'https://surfd-signal.lightconelabs.workers.dev';
 // Matches signal/src/room.js, and the ids ids.js makes.
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
