@@ -342,6 +342,19 @@ describe('optional native private room instrumentation', () => {
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
   });
 
+  test('identifiers containing $ survive instrumentation', () => {
+    const source = roomSource.replaceAll('status', () => 's$1')
+      .replace('receive(data){if(data==="pong")return;if(typeof data!="string"||data.length>65536)throw Error("Invalid room data");const message=JSON.parse(data);this.message=message}',
+        () => 'receive(d$1){if(d$1==="pong")return;if(typeof d$1!="string"||d$1.length>65536)throw Error("Invalid room data");const m$$=JSON.parse(d$1);this.message=m$$}');
+    const {adapter, runtime, warnings} = roomFixture(privateFixtureHooks(), source);
+    expect(warnings).toEqual([]);
+    runtime.browser.update([], 'Offline; try again.');
+    expect(adapter.rooms.status()).toBe('Offline; try again.');
+    runtime.room.roomId = 'p-aaaaaaaaaaaa';
+    runtime.room.receive(JSON.stringify({type: 'roster', players: []}));
+    expect(runtime.room.message).toEqual({type: 'roster', players: []});
+  });
+
   test('row updates preserve clocks and status', () => {
     const {adapter,runtime} = roomFixture(privateFixtureHooks());
     runtime.browser.update([{id:'eu',endsAt:1000,serverTime:Date.now()-5000}], 'Offline; try again.');
