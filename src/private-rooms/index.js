@@ -1,221 +1,445 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
-import { createBroadcastSignalling } from './signalling.js';
+import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
+import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
+import { createRoomUi } from './ui.js';
 
-const DISCOVERY_TIMEOUT = 5000;
-const ROOM_LIFETIME = 15000;
+const CLOSED = 'This private room has closed.';
+const SERVICE = "Couldn't reach the room service. Try again in a moment.";
+const HOST_LEFT = 'The host closed the private room.';
+const DISCOVERY_TIMEOUT = 15000;
+const VISIBILITY_KEY = 'surfd-qol-room-visibility';
+const NAME_KEY = 'surfd-qol-room-guest-name';
 
-// Joining stays the game's own: this only puts private rooms in its server
-// list and supplies their sockets.
-export function createPrivateRooms({ getAdapter }) {
-  const known = new Map();
-  const pending = new Map();
-  const sockets = new Set();
-  const peerId = createRoomId();
-  let signalling = null, unsubscribe = null, heartbeat = null;
-  let hosted = null, stopListening = null, destroyed = false;
+export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
+  fetch: fetchRooms = (...args) => globalThis.fetch(...args), now = Date.now,
+  timers = globalThis, events = globalThis, storage,
+  socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
+  const known = new Map(), directory = new Map(), guests = new Map(), gone = new Set();
+  const sockets = new Map(), latestSockets = new Map(), uploadSamples = new WeakMap();
+  let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false;
+  let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
+  const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
+  const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
+  let visibility = stored(VISIBILITY_KEY) === 'public' ? 'public' : 'private';
+  let name = stored(NAME_KEY);
 
+  function guestName() {
+    if (!/^Guest_[0-9a-f]{5}$/.test(name ?? '')) {
+      name = `Guest_${newHostKey().slice(0, 5)}`;
+      store(NAME_KEY, name);
+    }
+    return name;
+  }
   function rooms() {
-    if (destroyed) throw new Error('Private rooms have been closed.');
+    if (destroyed) throw new Error(CLOSED);
     const adapter = getAdapter()?.rooms;
     if (!adapter) throw new Error('Private rooms are unavailable in this game build.');
     return adapter;
   }
-
   function mergeRooms(rows) {
-    const now = Date.now();
-    for (const [id, entry] of known) {
-      if (entry.expires <= now && id !== hosted?.state.roomId) known.delete(id);
+    const community = new Map(directory);
+    for (const [id, row] of known) {
+      const listed = directory.get(id);
+      if (!listed || id === hosted?.id) community.set(id, row);
+      else community.set(id, latestSockets.has(id)
+        ? {...row, visibility: 'public', region: 'Public'}
+        : {...listed, roster: row.roster, ping: row.ping ?? listed.ping});
     }
-    return [...rows.filter(row => !isPrivateRoomId(row.id)), ...[...known.values()].map(entry => entry.row)];
+    for (const id of gone) community.delete(id);
+    return [...rows.filter(row => !isPrivateRoomId(row.id)), ...community.values()];
   }
-
   function updateLobby() {
     const adapter = getAdapter()?.rooms;
-    if (adapter && !destroyed) adapter.update(mergeRooms(adapter.rows()));
+    if (destroyed) return;
+    if (adapter) adapter.update(mergeRooms(adapter.rows()));
+    ui?.refresh();
   }
-
-  function remember(row) {
-    if (!row || !isPrivateRoomId(row.id) || typeof row.name !== 'string' || row.name.length > 100 ||
-        typeof row.mapId !== 'string' || !Number.isSafeInteger(row.players) || row.players < 0 ||
-        !Number.isSafeInteger(row.capacity) || row.capacity < 1 || row.players > row.capacity ||
-        !Number.isSafeInteger(row.epoch) || row.epoch < 1 ||
-        !getAdapter()?.rooms?.maps().some(map => map.id === row.mapId)) return false;
-    // Rooms are never listed publicly: only our own, one we were asked to
-    // join, or one already listed may appear.
-    if (row.id !== hosted?.state.roomId && !pending.has(row.id) && !known.has(row.id)) return false;
-    const nativeRow = {
-      id: row.id, name: row.name, region: 'Private', mapId: row.mapId,
-      mapTitle: typeof row.mapTitle === 'string' ? row.mapTitle : '',
-      players: row.players, capacity: row.capacity, epoch: row.epoch,
-      endsAt: 0, untimed: true, online: row.online !== false, ping: 0,
-      roster: Array.isArray(row.roster) ? row.roster.filter(player =>
-        player && typeof player.name === 'string' && Number.isFinite(player.points)).map(player =>
-        ({name: player.name, points: player.points})) : []
-    };
-    const previous = known.get(row.id)?.row;
-    known.set(row.id, {row: nativeRow, expires: Date.now() + ROOM_LIFETIME});
-    if (JSON.stringify(previous) !== JSON.stringify(nativeRow)) updateLobby();
-    const waiting = pending.get(row.id);
-    if (waiting) {
-      pending.delete(row.id);
-      clearTimeout(waiting.timer);
-      if (nativeRow.online) waiting.resolve(nativeRow);
-      else waiting.reject(new Error('The private room host has left.'));
-    }
-    return true;
+  function normalize(row, publicRoom = false) {
+    if (!row || !isPrivateRoomId(row.id) || typeof row.name !== 'string' || row.name.length > 40 ||
+        typeof row.mapId !== 'string' || !row.mapId || row.mapId.length > 64 ||
+        typeof row.mapTitle !== 'string' || row.mapTitle.length > 64 ||
+        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > 65536 ||
+        !getAdapter()?.rooms?.maps().some(map => map.id === row.mapId)) return null;
+    const publicVisibility = publicRoom || row.visibility === 'public';
+    return {id: row.id, name: row.name, mapId: row.mapId, mapTitle: row.mapTitle,
+      players: row.players, visibility: publicVisibility ? 'public' : 'private',
+      region: publicVisibility ? 'Public' : 'Private', endsAt: 0, untimed: true,
+      online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
+      ping: known.get(row.id)?.ping ?? directory.get(row.id)?.ping ?? null,
+      roster: Array.isArray(row.roster) ? row.roster.filter(player => player &&
+        typeof player.name === 'string' && Number.isFinite(player.points)).map(player =>
+        ({name: player.name, points: player.points})) : []};
   }
-
-  function roomRow(online = true) {
-    const state = hosted.state;
-    return {
-      id: state.roomId, name: state.name, mapId: state.mapId, mapTitle: state.mapTitle,
-      epoch: state.epoch, endsAt: 0, untimed: true, capacity: state.capacity,
-      players: hosted.players.length, online,
-      roster: hosted.players.map(player => ({name: player.name, points: player.points}))
-    };
+  function hostRow() {
+    const {state, players} = hosted.room;
+    return {id: state.roomId, name: state.name, mapId: state.mapId, mapTitle: state.mapTitle.slice(0, 64),
+      epoch: state.epoch, players: players.length, visibility: hosted.visibility,
+      roster: players.map(player => ({name: player.name, points: player.points}))};
   }
-
-  function announce(online = true) {
+  function publish(force = false) {
     if (!hosted) return;
-    const row = roomRow(online);
-    remember(row);
-    signalling.send({roomId: row.id, peerId, type: 'room-info', payload: row});
-  }
-
-  function setup() {
-    if (signalling) return;
-    signalling = createBroadcastSignalling();
-    unsubscribe = signalling.subscribe(message => {
-      if (!message || message.peerId === peerId) return;
-      if (message.type === 'room-query' && hosted && message.roomId === hosted.state.roomId) announce();
-      if (message.type === 'room-info' && message.payload?.id === message.roomId) remember(message.payload);
-    });
-    heartbeat = setInterval(() => {
-      announce();
-      const size = known.size;
-      mergeRooms([]);
-      if (size !== known.size) updateLobby();
-    }, 5000);
-  }
-
-  function discover(id) {
-    if (id === hosted?.state.roomId) {
-      announce();
-      return Promise.resolve(known.get(id).row);
+    const row = hostRow();
+    known.set(row.id, normalize(row));
+    const data = hosted.visibility === 'public'
+      ? {name: row.name, mapId: row.mapId, mapTitle: row.mapTitle, players: row.players} : null;
+    const serialized = JSON.stringify(data);
+    if ((force || serialized !== hosted.listing) && hosted.signal?.send(null, 'listing', data)) {
+      hosted.listing = serialized;
     }
-    if (pending.has(id)) return pending.get(id).promise;
+    updateLobby();
+  }
+  function relay(signal, id, host) {
+    const subscribers = new Set(), peers = new Set(), queued = [];
+    if (host) {
+      signal.on('peer-joined', peer => peers.add(peer));
+      signal.on('peer-left', peer => peers.delete(peer));
+    }
+    signal.on('message', message => {
+      if (typeof message.from !== 'string' || (!host && message.from !== signal.host)) return;
+      if (host) peers.add(message.from);
+      for (const callback of subscribers) callback({roomId: id,
+        peerId: host ? message.from : signal.id, type: message.type, payload: message.data});
+    });
+    signal.on('ready', () => {
+      for (const message of queued.splice(0)) {
+        if (!host || peers.has(message.peerId)) signal.send(host ? message.peerId : null, message.type, message.payload);
+      }
+    });
+    return {
+      send(message) {
+        if (signal.state === 'closed' || (host && !peers.has(message.peerId))) return false;
+        if (signal.state !== 'open') { queued.push(message); return false; }
+        return signal.send(host ? message.peerId : null, message.type, message.payload);
+      },
+      subscribe(callback) { subscribers.add(callback); return () => subscribers.delete(callback); }
+    };
+  }
+  function markGone(id) {
+    gone.add(id);
+    known.delete(id);
+    directory.delete(id);
+    updateLobby();
+  }
+  function finishDiscovery(session, error, row) {
+    if (!session.waiting) return;
+    timers.clearTimeout(session.timer);
+    const waiting = session.waiting;
+    session.waiting = null;
+    if (error) waiting.reject(error);
+    else waiting.resolve(row);
+  }
+  function closeGuest(session) {
+    if (guests.get(session.id) === session) guests.delete(session.id);
+    timers.clearTimeout(session.idleTimer);
+    session.intentional = true;
+    session.signal.close();
+    finishDiscovery(session, new Error(CLOSED));
+  }
+  function guestSession(id) {
+    const existing = guests.get(id);
+    if (existing && existing.signal.state !== 'closed') return existing;
+    const signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'guest'});
+    const session = {id, signal, socket: null, waiting: null, intentional: false};
+    guests.set(id, session);
+    signal.on('ready', () => signal.send(null, 'room-info', null));
+    session.signalling = relay(signal, id, false);
+    signal.on('message', message => {
+      if (message.from !== signal.host || message.type !== 'room-info' || message.data?.id !== id) return;
+      if (message.data.online === false) {
+        markGone(id);
+        finishDiscovery(session, new Error(CLOSED));
+        session.socket?.close(4004, CLOSED);
+        closeGuest(session);
+        return;
+      }
+      const row = normalize(message.data);
+      if (!row) return;
+      known.set(id, row);
+      finishDiscovery(session, null, row);
+      updateLobby();
+    });
+    signal.on('closed', reason => {
+      if (session.intentional) return;
+      if (guests.get(id) === session) guests.delete(id);
+      timers.clearTimeout(session.idleTimer);
+      const terminal = reason === 'no-room' || reason === 'room-closed';
+      if (terminal) markGone(id);
+      finishDiscovery(session, new Error(terminal ? CLOSED : SERVICE));
+      if (session.socket?.readyState < 2) session.socket.close(terminal ? 4004 : 4000, terminal ? CLOSED : SERVICE);
+    });
+    if (signal.state === 'open') signal.send(null, 'room-info', null);
+    return session;
+  }
+  function discover(id) {
+    if (gone.has(id)) return Promise.reject(new Error(CLOSED));
+    if (id === hosted?.id) return Promise.resolve(known.get(id));
+    const session = guestSession(id);
+    if (session.waiting) return session.waiting.promise;
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error('Private room not found. Keep its host tab open on this browser origin.'));
+    session.waiting = {promise, resolve, reject};
+    session.timer = timers.setTimeout(() => {
+      finishDiscovery(session, new Error(SERVICE));
+      closeGuest(session);
     }, DISCOVERY_TIMEOUT);
-    pending.set(id, {promise, resolve, reject, timer});
-    signalling.send({roomId: id, peerId, type: 'room-query', payload: null});
+    if (session.signal.state === 'open') session.signal.send(null, 'room-info', null);
     return promise;
   }
-
   function hello() {
     const adapter = rooms();
-    return {name: adapter.displayName(), appearance: adapter.appearance(), guest: adapter.guest()};
+    return {name: adapter.displayName() || guestName(), appearance: adapter.appearance(), guest: adapter.guest()};
   }
-
-  function track(socket) {
-    sockets.add(socket);
-    socket.addEventListener('close', () => sockets.delete(socket), {once: true});
+  function track(socket, id) {
+    sockets.set(socket, id);
+    latestSockets.set(id, socket);
+    socket.addEventListener('open', () => ui?.refresh(), {once: true});
+    let pingAt = null;
+    const send = socket.send.bind(socket);
+    socket.send = data => {
+      if (data === 'ping' && socket.readyState === 1) pingAt = now();
+      return send(data);
+    };
+    socket.addEventListener('message', event => {
+      if (latestSockets.get(id) !== socket) return;
+      const previous = known.get(id) ?? directory.get(id);
+      if (event.data === 'pong' && pingAt !== null) {
+        const elapsed = now() - pingAt;
+        pingAt = null;
+        if (previous && elapsed > 0 && Number.isFinite(elapsed)) { previous.ping = elapsed; updateLobby(); }
+        return;
+      }
+      if (id === hosted?.id || !previous || typeof event.data !== 'string' || event.data === 'pong') return;
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (!message || !['welcome', 'state', 'roster'].includes(message.type)) return;
+      const state = message.state;
+      const players = message.players;
+      const row = normalize({...previous,
+        ...(state ? {mapId: state.mapId, mapTitle: state.mapTitle, epoch: state.epoch} : {}),
+        ...(Array.isArray(players) ? {players: players.length, roster: players} : {})});
+      if (row) { known.set(id, row); updateLobby(); }
+    });
+    socket.addEventListener('close', event => {
+      sockets.delete(socket);
+      if (latestSockets.get(id) !== socket) return;
+      latestSockets.delete(id);
+      if (event.code === 4004) markGone(id);
+      else ui?.refresh();
+    }, {once: true});
     return socket;
   }
-
   function closeHost() {
-    if (!hosted) return;
-    announce(false);
     const closing = hosted;
+    if (!closing) return;
     hosted = null;
-    closing.close();
-    stopListening?.();
-    stopListening = null;
+    markGone(closing.id);
+    closing.signal?.send(null, 'listing', null);
+    closing.room.close();
+    closing.stop?.();
+    closing.signal?.close();
   }
-
+  async function sampleUpload() {
+    const current = hosted;
+    if (!current || sampling) return;
+    sampling = true;
+    try {
+      let total = 0, measured = false;
+      await Promise.all([...current.sockets].map(async socket => {
+        const report = await socket.getStats();
+        let transport = 0, channels = 0, hasTransport = false;
+        for (const stat of report.values()) {
+          if (!Number.isFinite(stat.bytesSent)) continue;
+          if (stat.type === 'transport') { transport += stat.bytesSent; hasTransport = true; }
+          else if (stat.type === 'data-channel') channels += stat.bytesSent;
+        }
+        const bytes = hasTransport ? transport : channels, time = now();
+        const previous = uploadSamples.get(socket);
+        uploadSamples.set(socket, {bytes, time});
+        if (previous && time > previous.time && bytes >= previous.bytes) {
+          total += (bytes - previous.bytes) * 8 / ((time - previous.time) * 1000);
+          measured = true;
+        }
+      }));
+      if (hosted === current) { current.uploadMbps = measured ? total : null; ui?.refresh(); }
+    } catch { /* A peer may close while its stats are being collected. */ }
+    finally { sampling = false; }
+  }
+  function setup() {
+    if (heartbeat !== null) return;
+    let beats = 0;
+    heartbeat = timers.setInterval(() => {
+      if (++beats % 5 === 0) publish(true);
+      void sampleUpload();
+    }, 5000);
+    events.addEventListener?.('pagehide', pagehide);
+  }
+  function pagehide() { api.destroy(); }
   async function join(id) {
     const adapter = rooms();
     if (!isPrivateRoomId(id)) throw new Error('Invalid private room identifier.');
     setup();
     await discover(id);
     rooms();
-    // Register map metadata before native join reads its selected row.
     updateLobby();
     await adapter.join(id);
     return id;
   }
-
-  return {
-    async host() {
+  async function refreshDirectory({open = false} = {}) {
+    if (destroyed || !(open || getAdapter()?.rooms?.browserOpen?.())) return;
+    if (directoryRequest) return directoryRequest;
+    if (now() - lastDirectory < 10000) return;
+    lastDirectory = now();
+    directoryRequest = (async () => {
+      try {
+        const response = await fetchRooms(new URL('/rooms', SIGNAL_URL).href);
+        if (!response.ok) throw new Error(SERVICE);
+        const body = await response.json();
+        const rows = body?.rooms;
+        if (!Array.isArray(rows) || rows.length > 200) throw new Error(SERVICE);
+        const next = new Map();
+        for (const value of rows) {
+          const row = normalize(value, true);
+          if (!row || !Number.isFinite(value.updatedAt) || value.updatedAt < 0) throw new Error(SERVICE);
+          if (!gone.has(row.id)) next.set(row.id, row);
+        }
+        if (destroyed) return;
+        directory.clear();
+        for (const [id, row] of next) directory.set(id, row);
+        updateLobby();
+      } catch {
+        if (!destroyed) getAdapter()?.notice?.(SERVICE);
+      } finally { directoryRequest = null; }
+    })();
+    return directoryRequest;
+  }
+  const api = {
+    async host({visibility: choice = visibility} = {}) {
       const adapter = rooms();
-      const mapId = adapter.currentMap()?.id;
-      const maps = adapter.maps();
+      if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
+      const mapId = adapter.currentMap()?.id, maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a private room.');
       setup();
       closeHost();
-      const roomId = createRoomId();
-      hosted = createRoomHost({roomId, mapId, maps, name: `${adapter.displayName()}'s private room`});
-      const roomHost = hosted;
-      stopListening = listenRoom({roomId, signalling, onSocket: (socket, identity) => {
-        roomHost.addClient(socket, identity);
-        announce();
-      }});
-      announce();
-      await join(roomId);
-      return roomId;
+      visibility = choice;
+      store(VISIBILITY_KEY, visibility);
+      const id = createRoomId();
+      const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
+      current.room = createRoomHost({roomId: id, mapId, maps,
+        name: `${adapter.displayName() || guestName()}'s room`.slice(0, 40),
+        onChange: () => { if (hosted === current) publish(); }});
+      hosted = current;
+      try {
+        const signal = current.signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'host', key: newHostKey()});
+        const signalling = relay(signal, id, true);
+        current.stop = listen({roomId: id, signalling, onSocket: (socket, identity) => {
+          if (hosted !== current) { socket.close(4004, HOST_LEFT); return; }
+          current.sockets.add(socket);
+          socket.addEventListener('close', () => current.sockets.delete(socket), {once: true});
+          current.room.addClient(socket, identity);
+        }});
+        signal.on('message', message => {
+          if (hosted === current && message.type === 'room-info' && message.data === null && typeof message.from === 'string') {
+            signal.send(message.from, 'room-info', hostRow());
+          }
+        });
+        await new Promise((resolve, reject) => {
+          const timer = timers.setTimeout(() => reject(new Error(SERVICE)), DISCOVERY_TIMEOUT);
+          signal.on('ready', () => {
+            if (hosted !== current) return;
+            timers.clearTimeout(timer);
+            publish(true);
+            resolve();
+          });
+          signal.on('closed', () => {
+            timers.clearTimeout(timer);
+            reject(new Error(SERVICE));
+            if (hosted === current) closeHost();
+          });
+          if (signal.state === 'open') { timers.clearTimeout(timer); publish(true); resolve(); }
+        });
+        if (hosted !== current) throw new Error(CLOSED);
+        await join(id);
+        return id;
+      } catch (error) {
+        if (hosted === current) closeHost();
+        throw error;
+      }
     },
-    join,
-    // null: a public room, left to the game.
+    join, guestName, mergeRooms, refreshDirectory,
+    hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility,
+      players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
+    visibility: () => visibility,
+    setVisibility(value) {
+      if (value !== 'public' && value !== 'private') throw new Error('Invalid room visibility.');
+      visibility = value;
+      store(VISIBILITY_KEY, value);
+      if (hosted) { hosted.visibility = value; publish(); }
+      else ui?.refresh();
+    },
     ticket: id => isPrivateRoomId(id) ? 'private-room' : null,
-    measure: id => isPrivateRoomId(id) ? 0 : null,
-    mergeRooms,
-    roomSocket(id, url, protocols) {
+    measure: id => isPrivateRoomId(id) ? Promise.resolve(known.get(id)?.ping ?? directory.get(id)?.ping ?? null) : null,
+    currentRoom: () => {
+      for (const [socket, id] of sockets) if (socket.readyState < 2) return id;
+      return null;
+    },
+    roomSocket(id) {
       if (!isPrivateRoomId(id)) return null;
+      if (destroyed || gone.has(id)) return createClosedSocket(4004, CLOSED);
       rooms();
       setup();
-      if (id === hosted?.state.roomId) {
+      if (id === hosted?.id) {
+        const current = hosted;
         const [client, host] = createLoopbackPair();
-        hosted.addClient(host, hello(), {host: true});
-        client.addEventListener('message', event => {
-          if (hosted?.state.roomId !== id || typeof event.data !== 'string' || event.data === 'pong') return;
-          const message = JSON.parse(event.data);
-          if (['welcome', 'state', 'roster'].includes(message.type)) announce();
-        });
-        client.addEventListener('close', () => {
-          if (hosted?.state.roomId === id) closeHost();
-        }, {once: true});
-        return track(client);
+        current.room.addClient(host, hello(), {host: true});
+        return track(client, id);
       }
-      return track(createPeerSocket({roomId: id, peerId: createRoomId(), signalling, hello: hello()}));
+      const previous = guests.get(id);
+      if (previous?.socket) {
+        closeGuest(previous);
+        previous.socket.close(1000, '');
+      }
+      const session = guestSession(id);
+      timers.clearTimeout(session.idleTimer);
+      const socket = session.socket = socketFactory({roomId: id,
+        peerId: () => session.signal.id, signalling: session.signalling, hello: hello()});
+      socket.addEventListener('open', () => closeGuest(session), {once: true});
+      socket.addEventListener('close', () => closeGuest(session), {once: true});
+      return track(socket, id);
+    },
+    leave(id) {
+      if (hosted && (id == null || id === hosted.id)) closeHost();
+      for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
+      for (const [socket, roomId] of sockets) if (id == null || id === roomId) socket.close(1000, '');
+      updateLobby();
     },
     attach() {
-      if (!getAdapter()?.rooms || destroyed) return;
+      if (!getAdapter()?.rooms || destroyed || attached) return;
+      attached = true;
       setup();
-      // The game highlights a ?join row itself: find the room so its row
-      // exists, but leave joining to the player.
+      ui = uiFactory({rooms: api, getAdapter});
       const invite = new URLSearchParams(globalThis.location?.search ?? '').get('join');
-      if (isPrivateRoomId(invite)) discover(invite).catch(error => getAdapter()?.notice?.(error.message));
+      if (isPrivateRoomId(invite)) discover(invite).then(() => {
+        if (destroyed) return;
+        getAdapter()?.rooms?.select?.(invite);
+        const session = guests.get(invite);
+        if (session && !session.socket) session.idleTimer = timers.setTimeout(() => closeGuest(session), 30000);
+      }).catch(error => { if (!destroyed) getAdapter()?.notice?.(error.message); });
     },
     destroy() {
       if (destroyed) return;
       closeHost();
       destroyed = true;
-      clearInterval(heartbeat);
-      unsubscribe?.();
-      for (const socket of sockets) socket.close(4004, 'Private rooms closed');
+      timers.clearInterval(heartbeat);
+      events.removeEventListener?.('pagehide', pagehide);
+      ui?.destroy();
+      for (const session of guests.values()) closeGuest(session);
+      for (const socket of sockets.keys()) socket.close(4004, HOST_LEFT);
       sockets.clear();
-      signalling?.close();
-      for (const waiting of pending.values()) {
-        clearTimeout(waiting.timer);
-        waiting.reject(new Error('Private rooms have been closed.'));
-      }
-      pending.clear();
+      latestSockets.clear();
       known.clear();
+      directory.clear();
     }
   };
+  return api;
 }

@@ -10,27 +10,33 @@ The game's client validates binary frames strictly but consumes most JSON fields
 
 Room ids are `p-` and 12 characters of `abcdefghjkmnpqrstuvwxyz23456789` (no 0, 1, i, l or o), random and unguessable. Public room ids (`eu`, `na`, `eut3`, …) never match.
 
-The game joins rooms from its server list, so a private room must be in that list for whoever knows it: the host and anyone holding an invite (`?join=<id>`, which highlights the row but doesn't join on its own). Private rows: `{id, name, region: "Private", mapId, mapTitle, players, capacity: 16, epoch, endsAt: 0, untimed: true, online, ping: 0, roster}`. The game's countdowns show "No time limit" for `untimed` rows. For private ids the extension resolves the room ticket, ping and socket itself; nothing is sent to the site.
+The game joins rooms from its server list. Public rooms come from the meeting point's directory; private rooms appear only for their host or someone holding an invite (`?join=<id>` highlights the row but doesn't join). Community rows carry `visibility: "public" | "private"`, their player count, `endsAt: 0`, `untimed: true`, and a measured ping when available. They have no player cap and never take part in the game's Play now recommendation.
 
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
+
+The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
+
+Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
+
+Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
 
 ## Shared structures
 
 **Appearance:** `{title, titleColor, nameColor, revision}`. `title` is at most 24 characters of letters, digits, space and `_.'!?-`; the colours are `null` or `#RRGGBB`; `revision` is a non-negative integer. The default is `{title: "", titleColor: null, nameColor: null, revision: 0}`.
 
 **Player:** `{id, connectionId, slot, name, rank, points, guest, moderator, appearance, spectating}`.
-- `id` drives mutes, own-player checks and chat senders; `connectionId` tells live connections apart and picks spectator targets; `slot` (0–15, uint16 on the wire) picks the interpolation buffer for binary poses.
+- `id` drives mutes, own-player checks and chat senders; `connectionId` tells live connections apart and picks spectator targets; `slot` (a unique uint16) picks the interpolation buffer for binary poses.
 - A freed slot is reused with a new `connectionId`, which makes the game clear the old buffer.
 - In private rooms: `id` is `private-<connectionId>`, `rank` is `"Guest"`, `points` 0, only the host has `moderator: true`, and **every player has `guest: false`**. The game refuses to send chat for guests and shows map controls only for moderators who aren't guests; the flag changes nothing on the site.
 
-**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, capacity: 16, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
+**State:** the game reads `mapId`, `epoch`, `endsAt`, `recent`, `nominations`, `vote` and `nextMap`. A private room sends `{roomId, name, mapId, mapTitle, epoch, startedAt, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null}`. `epoch` starts at 1 and goes up when the host changes the map; `recent` keeps up to 8 earlier maps. On its own, `endsAt: 0` would read "Changing map…", which is why the countdown hook checks `untimed`.
 
 ## Client → room
 
 | Message | Fields | Private host |
 | --- | --- | --- |
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
-| `chat` | `text` (the game's input allows 240 characters) | broadcasts to everyone, sender included, with the sender's fields |
+| `chat` | `text`, trimmed and limited to 240 characters by the host | broadcasts to everyone, sender included, with the sender's fields |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
 | `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest` |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
@@ -55,6 +61,8 @@ Before the game's own messages, each joining client sends the host an extension-
 
 **Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
 
+Control frames stay within 65,536 bytes. Larger JSON messages use sequential `{type:"room-chunk",data,final}` frames on the reliable channel; `data` holds part of the original JSON string and `final:true` completes it. The room-client hook assembles the message before applying it.
+
 ## Binary frames
 
 Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on every receiving socket; the default `blob` breaks the JSON/binary split). A frame whose epoch isn't the room's current one is dropped.
@@ -74,7 +82,7 @@ Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on
 
 **Type 1, client pose batch** (44 or 76 bytes): version, type 1, sample count (1 or 2), reserved 0, uint32 sequence, uint32 epoch, then the poses. The game samples at most every 49 ms, usually sends pairs, and closes its socket with 4013 when more than 64 KB is buffered.
 
-**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host wraps each upload in one block with the sender's slot, keeping its bytes as they are, and sends it to everyone else. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
+**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host keeps each sender's latest upload and bundles the blocks for each recipient about every 50 ms, excluding that recipient. More than 100 blocks are split across snapshots. Pose bytes stay unchanged. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
 
 **Types 3 and 4, spectator frames** (56 bytes; 3 uploaded, 4 forwarded):
 
@@ -97,7 +105,9 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 ## Closing
 
-The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data, 4004 when the room is gone and 4008 when it is full. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data and 4004 when the room is gone. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+
+A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. A guest that learns the room is gone receives 4004 instead of retrying; loss of a guest's signalling socket after negotiation does not affect its peer connection.
 
 ## Testing safely
 

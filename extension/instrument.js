@@ -1,3 +1,6 @@
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v7:';
+export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
+
 const identifier = '[A-Za-z_$][\\w$]*';
 // A captured identifier, matched literally inside another pattern.
 const literal = name => name.replace(/\$/g, '\\$');
@@ -79,9 +82,41 @@ function noticeHook(source) {
   }
 }
 
+function roomBrowserHooks(source, hook) {
+  const start = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{let (${identifier})=\\[\\],(${identifier})="Checking servers…"`, 'g'), 'server browser');
+  const end = unique(source.slice(start.index), new RegExp(`mapTitle:(${identifier})\\}\\}`, 'g'), 'server browser end');
+  let body = source.slice(start.index, start.index + end.index + end[0].length);
+  const replace = (pattern, replacement, label) => {
+    const match = unique(body, pattern, label);
+    body = body.replace(match[0], typeof replacement === 'function' ? replacement(match) : replacement);
+    return match;
+  };
+  const joins = replace(new RegExp(`(${identifier})=(${identifier})=>\\2\\.online&&!\\2\\.preview&&\\2\\.players<\\2\\.capacity`, 'g'),
+    m => `${m[1]}=${m[2]}=>${m[2]}.online&&!${m[2]}.preview&&(__qolCommunity(${m[2]})||${m[2]}.players<${m[2]}.capacity)`, 'server eligibility');
+  replace(new RegExp(`${literal(start[3])}\\.filter\\(${literal(joins[1])}\\)`, 'g'),
+    `${start[3]}.filter(row=>!__qolCommunity(row)&&${joins[1]}(row))`, 'official recommendation');
+  replace(new RegExp(`\\(!(${identifier})\\|\\|(${identifier})\\.players<\\2\\.capacity\\)&&\\(!(${identifier})\\|\\|\\2\\.players>0\\)`, 'g'),
+    m => `(__qolCommunity(${m[2]})||(!${m[1]}||${m[2]}.players<${m[2]}.capacity)&&(!${m[3]}||${m[2]}.players>0))`, 'community filters');
+  body = body.replace(new RegExp(`(?<![\\w$.])(${identifier})\\.region`, 'g'), '__qolRegion($1)');
+  replace(new RegExp(`Number\\((${identifier})\\.online\\)-Number\\((${identifier})\\.online\\)\\|\\|`, 'g'),
+    m => `Number(__qolCommunity(${m[2]}))-Number(__qolCommunity(${m[1]}))||Number(${m[1]}.online)-Number(${m[2]}.online)||`, 'official row order');
+  replace(new RegExp(`\\.sort\\(\\((${identifier}),(${identifier})\\)=>\\((${identifier})\\(\\1\\[1\\]\\[0\\]\\)\\?\\?9999\\)-\\(\\3\\(\\2\\[1\\]\\[0\\]\\)\\?\\?9999\\)\\)`, 'g'),
+    m => `.sort((${m[1]},${m[2]})=>Number(${m[1]}[0]==="Community")-Number(${m[2]}[0]==="Community")||(${m[3]}(${m[1]}[1][0])??9999)-(${m[3]}(${m[2]}[1][0])??9999))`, 'official group order');
+  const tabs = unique(body, new RegExp(`(${identifier})\\.hidden=(${identifier})\\.length<2,\\1\\.innerHTML=\\2\\.length<2\\?"":`, 'g'), 'community tab visibility');
+  body = body.replace(tabs[0], `${tabs[1]}.hidden=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community"),${tabs[1]}.innerHTML=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community")?"":`);
+  const render = unique(body, new RegExp(`for\\(const (${identifier}) of ${identifier}\\("\\[data-region\\]",${identifier}\\)\\)\\1\\.onclick=\\(\\)=>\\{(${identifier})=\\1\\.dataset\\.region,(${identifier})\\(\\)\\}`, 'g'), 'region selection');
+  const selected = unique(body, new RegExp(`typeof (${identifier})=="string"&&\\((${identifier})=\\1\\)`, 'g'), 'selected server');
+  const view = replace(new RegExp(`return\\{view:(${identifier}),update\\(`, 'g'),
+    m => `return{view:${m[1]},status:()=>${start[4]},selected:()=>${selected[2]},selectRoom:id=>{${selected[2]}=id;${render[2]}="all";${render[3]}()},update(`, 'browser adapter')[1];
+  body = body.replaceAll(`${start[2]}.refresh()`, `(${hook}?.refreshDirectory({open:!${view}.el.hidden}),${start[2]}.refresh())`);
+  body = body.replace(start[0], start[0].replace('{let ', '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;let '));
+  return source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
+}
+
 // Room transport hooks are one optional unit: a partial match must never send
 // a private identifier to the site's ticket, ping or WebSocket endpoints.
 function roomHooks(source, client, state) {
+  const original = source;
   try {
     const list = unique(source, new RegExp(`async list\\(\\)\\{const (${identifier})=await fetch\\(this\\.baseUrl\\+"/servers",\\{signal:AbortSignal\\.timeout\\(8e3\\),cache:"no-store"\\}\\);if\\(!\\1\\.ok\\)throw Error\\("Servers unavailable"\\);const (${identifier})=await \\1\\.json\\(\\);if\\(!Array\\.isArray\\(\\2\\.servers\\)\\)throw Error\\("Invalid server list"\\);return \\2\\.servers\\}`, 'g'), 'room list');
     const measure = unique(source, new RegExp(`async measure\\((${identifier})\\)\\{const (${identifier})=performance\\.now\\(\\);if\\(!\\(await fetch\\(this\\.baseUrl\\+"/servers/"\\+\\1\\+"/ping"`, 'g'), 'room ping');
@@ -96,19 +131,34 @@ function roomHooks(source, client, state) {
     const clockCount = [...source.matchAll(clocks)].length;
     if (clockCount !== 4) throw new Error(`Unsupported Surfd build: room countdown views (${clockCount} matches)`);
     const hook = 'globalThis.__SURFD_QOL__?.privateRooms';
+    source = roomBrowserHooks(source, hook);
+    const leave = unique(source, new RegExp(`function (${identifier})\\(\\)\\{(${identifier})\\?\\.disconnect\\(\\),(${identifier})=null,`, 'g'), 'explicit room leave');
+    const receive = unique(source, new RegExp(`receive\\((${identifier})\\)\\{if\\(\\1==="pong"\\)`, 'g'), 'room receiver');
+    const decode = unique(source, new RegExp(`if\\(typeof (${identifier})!="string"\\|\\|\\1\\.length>65536\\)throw Error\\("Invalid room data"\\);const (${identifier})=JSON\\.parse\\(\\1\\);`, 'g'), 'room JSON decoder');
+    source = source.replace(leave[0], leave[0].replace('{', `{${hook}?.leave(${leave[2]}?.roomId);`));
+    source = source.replace(receive[0], receive[0].replace('){', ',__qolAssembled=false){'));
+    source = source.replace(decode[0], `if(typeof ${decode[1]}!="string"||${decode[1]}.length>65536&&!__qolAssembled)throw Error("Invalid room data");const ${decode[2]}=JSON.parse(${decode[1]});if(${decode[2]}.type==="room-chunk"&&/^p-[a-z0-9]{12}$/.test(this.roomId)){if(__qolAssembled||typeof ${decode[2]}.data!=="string"||typeof ${decode[2]}.final!=="boolean")throw Error("Invalid room chunk");(this.__qolChunks??=[]).push(${decode[2]}.data);if(${decode[2]}.final){const json=this.__qolChunks.join("");this.__qolChunks=null;this.receive(json,true)}return}`);
+    const disconnect = unique(source, /disconnect\(\)\{this\.watchTarget=null/g, 'room disconnect');
+    source = source.replace(disconnect[0], 'disconnect(){this.__qolChunks=null;this.watchTarget=null');
     const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
     source = source.replace(list[0], `async list(){try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
     source = source.replace(measure[0], measure[0].replace('{const ', `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
-    source = source.replace(socket[0], `(${hook}?.roomSocket(this.roomId,${socket[1]},["surfd-v1",${socket[2]}])??${socket[0]})`);
+    source = source.replace(socket[0], `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId,${socket[1]},["surfd-v1",${socket[2]}])??${socket[0]})`);
     source = source.replace(/await this\.ticket\(\)/g, `(${hook}?.ticket(this.roomId)??await this.ticket())`);
-    source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)}`);
+    source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)},refreshServers(){return ${bind[4]}()}`);
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
     return {source, adapter: `
     rooms: {
       join: id => ${lobby}.joinServer(id),
       rows: () => ${lobby}.servers.rows(),
-      update: rows => ${lobby}.updateServers(rows, "Choose a region and connect."),
-      displayName: () => ${client}.profile?.username ?? "Guest",
+      update: rows => ${lobby}.updateServers(rows.map(({serverTime,...row})=>row), ${lobby}.servers.status()),
+      status: () => ${lobby}.servers.status(),
+      browserOpen: () => !${lobby}.servers.view.el.hidden,
+      root: () => ${lobby}.servers.view.el,
+      refresh: () => {${hook}?.refreshDirectory({open:!${lobby}.servers.view.el.hidden});return ${lobby}.refreshServers()},
+      select: id => ${lobby}.servers.selectRoom(id),
+      selected: () => ${lobby}.servers.selected(),
+      displayName: () => ${client}.session ? ${client}.profile?.username ?? ${hook}?.guestName?.() ?? "Guest" : ${hook}?.guestName?.() ?? "Guest",
       appearance: () => ${client}.profile?.appearance ?? null,
       guest: () => !${client}.session,
       maps: () => ${maps},
@@ -116,7 +166,7 @@ function roomHooks(source, client, state) {
     },`};
   } catch (error) {
     console.warn('[Surfd QoL] Private rooms unavailable:', error.message);
-    return {source, adapter: ''};
+    return {source: original, adapter: ''};
   }
 }
 
@@ -124,7 +174,10 @@ function roomHooks(source, client, state) {
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
   const injected = source.indexOf('\n/* surfd-qol-adapter-v');
-  if (injected >= 0) return source;
+  if (injected >= 0) {
+    if (isCurrentInstrumented(source)) return source;
+    throw new Error('Stale Surfd QoL adapter');
+  }
   const state = unique(source, new RegExp(`state:(${identifier})\\?\\.state,run:\\1\\?\\.timer\\.state`, 'g'), 'session snapshot')[1];
   const viewed = unique(source, new RegExp(`spectator:\\{target:(${identifier}),view:(${identifier})\\}`, 'g'), 'spectator view');
   const marker = unique(source, /checkpointSpeeds=\[\];startJumps=0/g, 'session fields').index;
@@ -142,7 +195,7 @@ export function instrumentGame(source) {
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
   return source + `
-/* surfd-qol-adapter-v6: viewed state, replay playback and optional private room transport */
+/* surfd-qol-adapter-v7: native community rooms and optional room transport */
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;
   if (!qol) return;

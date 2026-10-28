@@ -1,12 +1,20 @@
 import {afterEach, describe, expect, test} from 'bun:test';
-import {createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
+import {createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
 import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
+import {decodePoseBatch, decodeSnapshot, decodeSpectator, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, {once: true}));
 const originalRTC = globalThis.RTCPeerConnection;
 const originalBroadcast = globalThis.BroadcastChannel;
 const cleanups = [];
+const directFailure = "Couldn't connect to the host. Their network or yours may block direct connections.";
+const pose = {time: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: 0, flags: 0, seconds: 0};
+const batch = (sequence, slot = 0) => ({sequence, slot, epoch: 1, samples: [pose]});
+const spectator = (sequence, slot) => ({
+  sequence, slot, epoch: 1,
+  pose: {...pose, eyeHeight: 1, phase: 'ready', untimed: false, checkpoints: 0, stage: 0},
+});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   await nextTask();
@@ -56,10 +64,13 @@ class FakeChannel {
   close() {
     if (this.readyState === 'closed' || this.readyState === 'closing') return;
     this.readyState = 'closing';
+    this.onclosing?.({});
     queueMicrotask(() => {
       this.readyState = 'closed';
       this.onclose?.({});
       if (this.peer && this.peer.readyState !== 'closed') {
+        this.peer.readyState = 'closing';
+        this.peer.onclosing?.({});
         this.peer.readyState = 'closed';
         this.peer.onclose?.({});
       }
@@ -67,7 +78,7 @@ class FakeChannel {
   }
 }
 
-function fakeRTC({holdHostBinary = false, rejectRemote = false} = {}) {
+function fakeRTC({holdHostBinary = false, holdClientBinary = false, rejectRemote = false} = {}) {
   const connections = [];
   class FakeRTC {
     constructor(config) {
@@ -76,6 +87,7 @@ function fakeRTC({holdHostBinary = false, rejectRemote = false} = {}) {
       this.channels = [];
       this.candidates = [];
       this.connectionState = 'new';
+      this.stats = new Map([['transport', {type: 'transport', bytesSent: 1200, bytesReceived: 900}]]);
       connections.push(this);
     }
     createDataChannel(label, options) {
@@ -106,7 +118,8 @@ function fakeRTC({holdHostBinary = false, rejectRemote = false} = {}) {
           this.ondatachannel?.({channel});
         }
       } else {
-        for (const channel of this.channels) channel.open();
+        this.channels[0].open();
+        if (!holdClientBinary) this.channels[1].open();
         this.host.channels[0].open();
         // Client hello arrives before the host's binary channel is ready.
         if (!holdHostBinary) queueMicrotask(() => this.host.channels[1].open());
@@ -116,6 +129,7 @@ function fakeRTC({holdHostBinary = false, rejectRemote = false} = {}) {
       if (!this.remoteDescription) throw new Error('ICE arrived before remote description');
       this.candidates.push(candidate);
     }
+    async getStats() { return this.stats; }
     close() {
       this.connectionState = 'closed';
       for (const channel of this.channels) channel.close();
@@ -218,6 +232,128 @@ describe('private room loopback socket', () => {
     expect(events).toEqual(['error', 'close']);
     expect(host.readyState).toBe(host.CLOSED);
   });
+
+  test('batches bursts in one task and releases both ports', async () => {
+    const NativeMessageChannel = globalThis.MessageChannel;
+    let channel, posts = 0, closedPorts = 0;
+    globalThis.MessageChannel = class {
+      constructor() {
+        channel = this;
+        this.port1 = {onmessage: null, close() { closedPorts++; }};
+        this.port2 = {postMessage() { posts++; }, close() { closedPorts++; }};
+      }
+    };
+    let client, host;
+    try { [client, host] = createLoopbackPair(); }
+    finally { globalThis.MessageChannel = NativeMessageChannel; }
+    cleanups.push(() => client.close());
+    const events = [];
+    client.onopen = () => events.push('open');
+    host.onmessage = event => events.push(event.data);
+    await channel.port1.onmessage();
+    expect(events).toEqual(['open']);
+    for (let index = 0; index < 200; index++) client.send('control-' + index);
+    client.close(4004, 'Room closed');
+    host.onclose = () => events.push('close');
+    expect(posts).toBe(2);
+    expect(events).toEqual(['open']);
+    await channel.port1.onmessage();
+    expect(events).toEqual(['open', ...Array.from({length: 200}, (_, index) => 'control-' + index), 'close']);
+    expect(client.bufferedAmount).toBe(0);
+    expect(closedPorts).toBe(2);
+    expect(channel.port1.onmessage).toBeNull();
+  });
+
+  test('retains latest poses without dropping reliable controls', async () => {
+    const [client, host] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    host.binaryType = 'arraybuffer';
+    await once(client, 'open');
+    const received = [];
+    host.onmessage = event => received.push(event.data);
+    client.send('chat');
+    for (let sequence = 0; sequence < 2000; sequence++) client.send(encodePoseBatch(batch(sequence)));
+    client.send('state');
+    client.send(encodePoseBatch(batch(2000)));
+    client.send('control');
+    expect(client.bufferedAmount).toBe(44 + 4 + 5 + 7);
+    const closed = once(host, 'close');
+    client.close();
+    await closed;
+    expect(received.filter(data => typeof data === 'string')).toEqual(['chat', 'state', 'control']);
+    expect(decodePoseBatch(received[2]).sequence).toBe(2000);
+    expect(received).toHaveLength(4);
+    expect(client.bufferedAmount).toBe(0);
+  });
+
+  test('coalesces snapshot blocks by slot without losing disjoint chunks', async () => {
+    const [client, host] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    host.binaryType = 'arraybuffer';
+    await once(client, 'open');
+    const received = [];
+    host.onmessage = event => received.push(decodeSnapshot(event.data));
+    client.send(encodeSnapshot(Array.from({length: 100}, (_, slot) => batch(1, slot))));
+    client.send(encodeSnapshot([batch(1, 100), batch(1, 65535)]));
+    client.send(encodeSnapshot([batch(2, 2), batch(2, 65535)]));
+    expect(client.bufferedAmount).toBe(3 * 4 + 102 * 46);
+    const closed = once(host, 'close');
+    client.close();
+    await closed;
+    expect(received.map(blocks => blocks.length)).toEqual([99, 1, 2]);
+    const blocks = received.flat(), slots = new Map(blocks.map(block => [block.slot, block.sequence]));
+    expect(blocks).toHaveLength(102);
+    expect(slots.size).toBe(102);
+    expect(slots.get(2)).toBe(2);
+    expect(slots.get(65535)).toBe(2);
+    expect(slots.get(100)).toBe(1);
+    expect(client.bufferedAmount).toBe(0);
+  });
+
+  test('keeps spectator senders and directions independent', async () => {
+    const [client, host] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    client.binaryType = host.binaryType = 'arraybuffer';
+    await once(client, 'open');
+    const incoming = [], outgoing = [];
+    host.onmessage = event => incoming.push(decodeSpectator(event.data, true));
+    client.onmessage = event => outgoing.push(decodeSpectator(event.data, true));
+    client.send(encodeSpectator(spectator(1, 1), true));
+    client.send(encodeSpectator(spectator(1, 2), true));
+    host.send(encodeSpectator(spectator(3, 1), true));
+    client.send(encodeSpectator(spectator(2, 1), true));
+    expect(client.bufferedAmount).toBe(112);
+    expect(host.bufferedAmount).toBe(56);
+    const closed = once(host, 'close');
+    client.close();
+    await closed;
+    expect(incoming.map(packet => [packet.slot, packet.sequence])).toEqual([[2, 1], [1, 2]]);
+    expect(outgoing.map(packet => [packet.slot, packet.sequence])).toEqual([[1, 3]]);
+  });
+
+  test('does not coalesce unknown or malformed binary frames', async () => {
+    const [client, host] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    host.binaryType = 'arraybuffer';
+    await once(client, 'open');
+    const frames = [[1, 9, 0, 0], [1, 2, 1, 0], [1, 1, 1, 0]], received = [];
+    host.onmessage = event => received.push([...new Uint8Array(event.data)]);
+    for (const frame of frames) {
+      client.send(new Uint8Array(frame));
+      client.send(new Uint8Array(frame));
+    }
+    expect(client.bufferedAmount).toBe(24);
+    const closed = once(host, 'close');
+    client.close();
+    await closed;
+    expect(received).toEqual(frames.flatMap(frame => [frame, frame]));
+  });
+
+  test('returns empty loopback stats', async () => {
+    const [client] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    expect(await client.getStats()).toEqual(new Map());
+  });
 });
 
 describe('private room WebRTC socket', () => {
@@ -293,7 +429,7 @@ describe('private room WebRTC socket', () => {
     const closed = once(client, 'close');
     connections[0].channels[0].onerror({error: new Error('SCTP failed')});
     connections[0].channels[0].onerror({error: new Error('Duplicate')});
-    expect(await closed).toMatchObject({code: 1006, reason: '', wasClean: false});
+    expect(await closed).toMatchObject({code: 1006, reason: directFailure, wasClean: false});
     expect(errors).toEqual(['SCTP failed']);
   });
 
@@ -391,6 +527,140 @@ describe('private room WebRTC socket', () => {
     expect(signalling.messages).toEqual([]);
     expect(signalling.subscribers).toBe(0);
     expect(connections[0].connectionState).toBe('closed');
+  });
+
+  test('waits for the guest binary channel before sending hello', async () => {
+    const {client, connections, accepted} = rtcPair({holdClientBinary: true});
+    await nextTask();
+    expect(client.readyState).toBe(client.CONNECTING);
+    expect(connections[0].channels[0].sent).toEqual([]);
+    expect(accepted).toEqual([]);
+    connections[0].channels[1].open();
+    await nextTask();
+    expect(client.readyState).toBe(client.OPEN);
+    expect(accepted).toHaveLength(1);
+  });
+
+  test('refuses all sends if either channel stops being open', async () => {
+    for (const index of [0, 1]) {
+      for (const data of ['chat', new Uint8Array([1])]) {
+        const {client, connections} = rtcPair();
+        await nextTask();
+        const channels = connections[0].channels, sent = channels.map(channel => channel.sent.length);
+        const errors = [], closed = once(client, 'close');
+        client.onerror = event => errors.push(event.error);
+        channels[index].readyState = 'closing';
+        expect(() => client.send(data)).not.toThrow();
+        expect(await closed).toMatchObject({code: 1006, reason: directFailure, wasClean: false});
+        expect(channels.map(channel => channel.sent.length)).toEqual(sent);
+        expect(errors).toHaveLength(1);
+        expect(client.readyState).toBe(client.CLOSED);
+        expect(client.bufferedAmount).toBe(0);
+      }
+    }
+  });
+
+  test('contains datachannel send failures', async () => {
+    for (const index of [0, 1]) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const error = new Error('SCTP send rejected'), errors = [], closed = once(client, 'close');
+      client.onerror = event => errors.push(event.error);
+      connections[0].channels[index].send = () => { throw error; };
+      expect(() => client.send(index ? new Uint8Array([1]) : 'chat')).not.toThrow();
+      expect(await closed).toMatchObject({code: 1006, reason: directFailure, wasClean: false});
+      expect(errors).toEqual([error]);
+      expect(() => client.send('after close')).not.toThrow();
+    }
+  });
+
+  test('closes immediately when a channel starts closing unexpectedly', async () => {
+    for (const index of [0, 1]) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const channel = connections[0].channels[index], errors = [], closed = once(client, 'close');
+      client.onerror = event => errors.push(event.error);
+      channel.readyState = 'closing';
+      channel.onclosing({});
+      expect(client.readyState).toBe(client.CLOSED);
+      expect(() => client.send('late')).not.toThrow();
+      channel.onclose({});
+      expect(await closed).toMatchObject({code: 1006, reason: directFailure, wasClean: false});
+      expect(errors).toHaveLength(1);
+    }
+  });
+
+  test('preserves application close metadata during negotiation', async () => {
+    const connections = fakeRTC(), signalling = signalBus();
+    const client = createPeerSocket({roomId: 'a', peerId: 'p', signalling, hello: {guest: true}});
+    const events = [], closed = once(client, 'close');
+    client.onopen = () => events.push('open');
+    client.onerror = () => events.push('error');
+    client.close(4004, 'This private room has closed.');
+    expect(client.readyState).toBe(client.CLOSING);
+    expect(await closed).toMatchObject({code: 4004, reason: 'This private room has closed.', wasClean: true});
+    expect(events).toEqual([]);
+    expect(signalling.subscribers).toBe(0);
+    expect(signalling.messages).toEqual([]);
+    expect(connections[0].connectionState).toBe('closed');
+  });
+
+  test('returns the native RTC stats report', async () => {
+    const {client, connections} = rtcPair();
+    await nextTask();
+    expect(await client.getStats()).toBe(connections[0].stats);
+    expect((await client.getStats()).get('transport')).toMatchObject({bytesSent: 1200, bytesReceived: 900});
+  });
+
+  test('keeps RTC connected after signalling peer departure', async () => {
+    const {client, signalling, accepted} = rtcPair();
+    await nextTask();
+    signalling.send({roomId: 'room-a', peerId: 'peer-a', type: 'peer-left'});
+    await nextTask();
+    expect(client.readyState).toBe(client.OPEN);
+    expect(accepted[0].socket.readyState).toBe(client.OPEN);
+    const incoming = once(client, 'message');
+    accepted[0].socket.send('still connected');
+    expect((await incoming).data).toBe('still connected');
+  });
+
+  test('resolves a deferred signalling peer identity', async () => {
+    fakeRTC({rejectRemote: true});
+    const signalling = signalBus();
+    let peerId = null;
+    const client = createPeerSocket({roomId: 'a', peerId: () => peerId, signalling, hello: {guest: true}});
+    cleanups.push(() => client.close());
+    peerId = 'p';
+    await nextTask();
+    expect(signalling.messages.every(message => message.peerId === 'p')).toBe(true);
+    const closed = once(client, 'close');
+    signalling.send({roomId: 'a', peerId: 'p', type: 'answer', payload: {type: 'answer', sdp: '0'}});
+    expect(await closed).toMatchObject({code: 1006, wasClean: false});
+    expect(signalling.subscribers).toBe(0);
+  });
+});
+
+describe('terminal private room socket', () => {
+  test('closes asynchronously without opening or losing terminal metadata', async () => {
+    const socket = createClosedSocket(4004, 'This private room has closed.'), events = [];
+    socket.onopen = () => events.push('open');
+    socket.onerror = () => events.push('error');
+    socket.onclose = () => events.push('close');
+    expect(socket.readyState).toBe(socket.CLOSING);
+    expect(events).toEqual([]);
+    expect(() => socket.send('ignored')).not.toThrow();
+    socket.close();
+    expect(await once(socket, 'close')).toMatchObject({
+      code: 4004, reason: 'This private room has closed.', wasClean: true,
+    });
+    expect(socket.readyState).toBe(socket.CLOSED);
+    expect(events).toEqual(['close']);
+    expect(await socket.getStats()).toEqual(new Map());
+  });
+
+  test('marks direct failures as unclean', async () => {
+    const socket = createClosedSocket(1006, directFailure);
+    expect(await once(socket, 'close')).toMatchObject({code: 1006, reason: directFailure, wasClean: false});
   });
 });
 

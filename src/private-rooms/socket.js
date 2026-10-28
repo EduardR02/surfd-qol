@@ -1,6 +1,7 @@
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 const PROTOCOL = 'surfd-v1';
 const RTC_CONFIG = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
+const DIRECT_FAILURE = "Couldn't connect to the host. Their network or yours may block direct connections.";
 const encoder = new TextEncoder();
 
 class RoomSocket extends EventTarget {
@@ -23,6 +24,7 @@ class RoomSocket extends EventTarget {
   get bufferedAmount() { return this._amount(); }
   get protocol() { return PROTOCOL; }
   get extensions() { return ''; }
+  async getStats() { return new Map(); }
   send(data) {
     if (this._state === CONNECTING) throw new DOMException('Socket is connecting', 'InvalidStateError');
     if (this._state !== OPEN) return;
@@ -75,39 +77,122 @@ async function receive(socket, data) {
   if (socket.readyState !== CLOSED) socket._emit('message', {data});
 }
 
+function frameParts(data) {
+  if (!(data instanceof ArrayBuffer) || data.byteLength < 4) return [];
+  const view = new DataView(data), type = view.getUint8(1);
+  if (view.getUint8(0) !== 1) return [];
+  if (type === 1 && (view.getUint8(2) === 1 || view.getUint8(2) === 2) &&
+      data.byteLength === 12 + view.getUint8(2) * 32) {
+    return [{key: '1', offset: 0, length: data.byteLength}];
+  }
+  if ((type === 3 || type === 4) && data.byteLength === 56) {
+    return [{key: type + ':' + view.getUint16(2, true), offset: 0, length: data.byteLength}];
+  }
+  if (type !== 2) return [];
+  const count = view.getUint16(2, true), parts = [], slots = new Set();
+  if (count > 100) return [];
+  let offset = 4;
+  for (let index = 0; index < count; index++) {
+    if (offset + 14 > data.byteLength) return [];
+    const slot = view.getUint16(offset, true), samples = view.getUint8(offset + 10);
+    const length = 14 + samples * 32;
+    if (slots.has(slot) || samples < 1 || samples > 2 || offset + length > data.byteLength) return [];
+    slots.add(slot);
+    parts.push({key: '2:' + slot, offset, length});
+    offset += length;
+  }
+  return offset === data.byteLength ? parts : [];
+}
+
 export function createLoopbackPair() {
-  const sockets = [new RoomSocket(), new RoomSocket()];
-  let pending = Promise.resolve();
-  const enqueue = callback => {
-    pending = pending.then(() => new Promise(resolve => setTimeout(resolve, 0))).then(callback);
+  const sockets = [new RoomSocket(), new RoomSocket()], queue = new Set();
+  const channel = new MessageChannel();
+  let scheduled = false;
+  const enqueue = entry => {
+    queue.add(entry);
+    if (!scheduled) {
+      scheduled = true;
+      channel.port2.postMessage(null);
+    }
+  };
+  channel.port1.onmessage = async () => {
+    try {
+      for (const entry of queue) {
+        queue.delete(entry);
+        if (entry.run) {
+          entry.run();
+          continue;
+        }
+        const {socket, peer, pending, parts} = entry;
+        for (const part of parts) if (!part.removed) pending.delete(part.key);
+        let data = entry.data;
+        if (parts.length && entry.size !== data.byteLength) {
+          const compact = new Uint8Array(entry.size), source = new Uint8Array(data);
+          compact.set(source.subarray(0, 4));
+          let offset = 4, count = 0;
+          for (const part of parts) if (!part.removed) {
+            compact.set(source.subarray(part.offset, part.offset + part.length), offset);
+            offset += part.length;
+            count++;
+          }
+          new DataView(compact.buffer).setUint16(2, count, true);
+          data = compact.buffer;
+        }
+        socket._buffered -= entry.size;
+        await receive(peer, data);
+      }
+    } finally {
+      scheduled = false;
+    }
   };
   for (const [index, socket] of sockets.entries()) {
-    const peer = sockets[1 - index];
+    const peer = sockets[1 - index], pending = new Map();
     socket._send = data => {
-      const copy = copyData(data), size = dataSize(copy);
-      socket._buffered += size;
-      enqueue(async () => {
-        socket._buffered -= size;
-        await receive(peer, copy);
-      });
+      const copy = copyData(data), parts = frameParts(copy);
+      const entry = {socket, peer, pending, parts, data: copy, size: dataSize(copy), remaining: parts.length};
+      for (const part of parts) {
+        const previous = pending.get(part.key);
+        if (previous) {
+          const {entry: stale, part: old} = previous;
+          old.removed = true;
+          stale.remaining--;
+          const removed = stale.remaining ? old.length : stale.size;
+          stale.size -= removed;
+          socket._buffered -= removed;
+          if (!stale.remaining) queue.delete(stale);
+        }
+        pending.set(part.key, {entry, part});
+      }
+      socket._buffered += entry.size;
+      enqueue(entry);
     };
     socket._close = (code, reason) => {
       const connecting = socket.readyState === CONNECTING;
       socket._state = CLOSING;
       peer._state = CLOSING;
-      enqueue(() => {
+      enqueue({run() {
+        channel.port1.onmessage = null;
+        channel.port1.close();
+        channel.port2.close();
         if (connecting) socket._emit('error', {error: new Error('Socket closed while connecting')});
         socket._finish(connecting ? 1006 : code, connecting ? '' : reason, !connecting);
         peer._finish(connecting ? 1006 : code, connecting ? '' : reason, !connecting);
-      });
+      }});
     };
   }
-  enqueue(() => {
+  enqueue({run() {
     // Both endpoints must be writable before either open callback can send.
     for (const socket of sockets) if (socket.readyState === CONNECTING) socket._state = OPEN;
     for (const socket of sockets) if (socket.readyState === OPEN) socket._emit('open');
-  });
+  }});
   return sockets;
+}
+
+export function createClosedSocket(code, reason) {
+  const socket = new RoomSocket();
+  socket._state = CLOSING;
+  queueMicrotask(() => socket._finish(code, reason, code !== 1006));
+  return socket;
 }
 
 function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, onSocket, onDispose}) {
@@ -116,7 +201,9 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
   let negotiation = Promise.resolve();
   const candidates = [];
-  const signal = (type, payload) => signalling.send({roomId, peerId, type, payload});
+  const signal = (type, payload) => signalling.send({
+    roomId, peerId: typeof peerId === 'function' ? peerId() : peerId, type, payload,
+  });
   const dispose = () => {
     if (disposed) return;
     disposed = true;
@@ -132,8 +219,9 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   };
   const fail = error => {
     if (disposed) return;
+    socket._state = CLOSING;
     socket._emit('error', {error});
-    finish(1006, '', false);
+    finish(1006, DIRECT_FAILURE, false);
   };
   const sendControl = message => control.send(JSON.stringify(message));
   const drainClose = () => {
@@ -143,7 +231,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
   };
   const beginClose = () => {
     socket._state = CLOSING;
-    closeTimer = setTimeout(() => finish(1006, '', false), 2000);
+    closeTimer = setTimeout(() => fail(new Error('Room close acknowledgement timed out')), 2000);
   };
   const ready = () => {
     if (socket.readyState !== CONNECTING || control?.readyState !== 'open' || poses?.readyState !== 'open') return;
@@ -170,7 +258,8 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
           ready();
           break;
         case 'ready':
-          if (host || !helloSent || socket.readyState !== CONNECTING) throw new Error('Unexpected room ready');
+          if (host || !helloSent || socket.readyState !== CONNECTING ||
+              control.readyState !== 'open' || poses?.readyState !== 'open') throw new Error('Unexpected room ready');
           socket._open();
           break;
         case 'data':
@@ -212,25 +301,37 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     }
     channel.onopen = () => { try { ready(); } catch (error) { fail(error); } };
     channel.onerror = event => fail(event.error || new Error('Room data channel failed'));
+    channel.onclosing = () => {
+      if (!disposed && !closeInfo) fail(new Error('Room data channel is closing'));
+    };
     channel.onclose = () => {
       if (disposed) return;
       if (channel === poses && socket.readyState === CLOSING && closeInfo) return;
       // A clean control close drains the reliable metadata before closing SCTP.
       if (cleanClose && closeInfo) {
         if (control.readyState === 'closed') finish(closeInfo.code, closeInfo.reason, true);
-      } else finish(1006, '', false);
+      } else fail(new Error('Room data channel closed'));
     };
     ready();
   };
-  socket._amount = () => (control?.bufferedAmount || 0) + (poses?.bufferedAmount || 0);
+  socket.getStats = () => pc ? pc.getStats() : Promise.resolve(new Map());
+  socket._amount = () => disposed ? 0 : (control?.bufferedAmount || 0) + (poses?.bufferedAmount || 0);
   socket._send = data => {
-    if (binary(data)) poses.send(data);
-    else sendControl({type: 'data', data: String(data)});
+    try {
+      if (control?.readyState !== 'open' || poses?.readyState !== 'open') {
+        throw new Error('Room data channels are not open');
+      }
+      if (binary(data)) poses.send(data);
+      else sendControl({type: 'data', data: String(data)});
+    } catch (error) { fail(error); }
   };
   socket._close = (code, reason) => {
     if (socket.readyState === CONNECTING) {
       socket._state = CLOSING;
-      queueMicrotask(() => fail(new Error('Socket closed while connecting')));
+      queueMicrotask(() => {
+        if (code >= 3000) finish(code, reason, true);
+        else fail(new Error('Socket closed while connecting'));
+      });
       return;
     }
     closeInfo = {code, reason};
@@ -272,7 +373,7 @@ function createConnection({roomId, peerId, signalling, hello, rtcConfig, host, o
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed') fail(new Error('Room peer connection failed'));
-      else if (pc.connectionState === 'closed' && !disposed) finish(1006, '', false);
+      else if (pc.connectionState === 'closed' && !disposed) fail(new Error('Room peer connection closed'));
     };
     if (host) pc.ondatachannel = event => attach(event.channel);
     else {
@@ -292,7 +393,9 @@ export function createPeerSocket({roomId, peerId, signalling, hello, rtcConfig})
   const connection = createConnection({roomId, peerId, signalling, hello, rtcConfig, host: false,
     onDispose: () => unsubscribe?.()});
   unsubscribe = signalling.subscribe(message => {
-    if (message.roomId === roomId && message.peerId === peerId) connection.accept(message);
+    if (message.roomId === roomId && message.peerId === (typeof peerId === 'function' ? peerId() : peerId)) {
+      connection.accept(message);
+    }
   });
   return connection.socket;
 }

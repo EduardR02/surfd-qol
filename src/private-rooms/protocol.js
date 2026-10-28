@@ -1,6 +1,14 @@
 export const VERSION = 1;
-export const CAPACITY = 16;
-export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, full: 4008});
+export const CLOSE = Object.freeze({invalid: 4002, gone: 4004});
+export const MAX_CONTROL_BYTES = 65536;
+export const MAX_SNAPSHOT_BLOCKS = 100;
+export const POSE_HEADER_BYTES = 12;
+export const POSE_SAMPLE_BYTES = 32;
+export const SNAPSHOT_HEADER_BYTES = 4;
+export const SNAPSHOT_BLOCK_BYTES = 14;
+export const SPECTATOR_BYTES = 56;
+export const SNAPSHOT_INTERVAL_MS = 50;
+const encoder = new TextEncoder();
 export const FLAGS = Object.freeze({grounded: 1, crouched: 2, teleport: 4, practice: 8, idle: 16, finished: 32});
 export const DEFAULT_APPEARANCE = Object.freeze({title: '', titleColor: null, nameColor: null, revision: 0});
 const PHASES = ['ready', 'running', 'finished'];
@@ -69,7 +77,7 @@ function dataView(buffer, min, max = min) {
 
 export function encodePoseBatch(batch) {
   validateBatch(batch);
-  const buffer = new ArrayBuffer(12 + 32 * batch.samples.length), view = new DataView(buffer);
+  const buffer = new ArrayBuffer(POSE_HEADER_BYTES + POSE_SAMPLE_BYTES * batch.samples.length), view = new DataView(buffer);
   view.setUint8(0, VERSION);
   view.setUint8(1, 1);
   view.setUint8(2, batch.samples.length);
@@ -89,14 +97,14 @@ export function decodePoseBatch(buffer) {
 }
 
 export function encodeSnapshot(blocks) {
-  requireValid(Array.isArray(blocks) && blocks.length <= 100, 'Invalid snapshot');
-  let length = 4;
+  requireValid(Array.isArray(blocks) && blocks.length <= MAX_SNAPSHOT_BLOCKS, 'Invalid snapshot');
+  let length = SNAPSHOT_HEADER_BYTES;
   const slots = new Set();
   for (const block of blocks) {
     validateBatch(block);
     requireValid(uint(block.slot, 65535) && !slots.has(block.slot), 'Invalid snapshot slot');
     slots.add(block.slot);
-    length += 14 + block.samples.length * 32;
+    length += SNAPSHOT_BLOCK_BYTES + block.samples.length * POSE_SAMPLE_BYTES;
   }
   const buffer = new ArrayBuffer(length), view = new DataView(buffer);
   view.setUint8(0, VERSION);
@@ -152,7 +160,7 @@ function validSpectator(packet) {
 
 export function encodeSpectator(packet, forwarded = false) {
   requireValid(validSpectator(packet), 'Invalid spectator state');
-  const buffer = new ArrayBuffer(56), view = new DataView(buffer), pose = packet.pose;
+  const buffer = new ArrayBuffer(SPECTATOR_BYTES), view = new DataView(buffer), pose = packet.pose;
   view.setUint8(0, VERSION);
   view.setUint8(1, forwarded ? 4 : 3);
   view.setUint16(2, packet.slot, true);
@@ -199,7 +207,7 @@ export function relayPose(buffer, slot) {
   view.setUint32(10, batch.epoch, true);
   view.setUint8(14, batch.samples.length);
   new Uint8Array(output, 18).set(new Uint8Array(buffer, 12));
-  return {buffer: output, epoch: batch.epoch};
+  return {buffer: output, epoch: batch.epoch, sequence: batch.sequence};
 }
 
 export function relaySpectator(buffer, slot) {
@@ -211,22 +219,34 @@ export function relaySpectator(buffer, slot) {
   return {buffer: output, epoch: packet.epoch};
 }
 
+export function encodeControlFrames(message) {
+  const text = typeof message === 'string' ? message : JSON.stringify(message);
+  if (text.length <= MAX_CONTROL_BYTES && encoder.encode(text).byteLength <= MAX_CONTROL_BYTES) return [text];
+  const frames = [];
+  // Even six-byte JSON escapes fit; splitting a surrogate pair is safe after reassembly.
+  for (let offset = 0; offset < text.length; offset += 8000) {
+    frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + 8000), final: offset + 8000 >= text.length}));
+  }
+  return frames;
+}
+
 export function decodeControl(text) {
-  requireValid(typeof text === 'string' && text.length <= 65536, 'Invalid room data');
+  requireValid(typeof text === 'string' && text.length <= MAX_CONTROL_BYTES
+    && encoder.encode(text).byteLength <= MAX_CONTROL_BYTES, 'Invalid room data');
   if (text === 'ping') return {type: 'ping'};
   const message = JSON.parse(text);
   requireValid(message && typeof message === 'object' && !Array.isArray(message) && typeof message.type === 'string', 'Invalid room message');
   switch (message.type) {
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');
-      break;
+      return {type: 'chat', text: message.text.trim().slice(0, 240)};
     case 'change-map':
       requireValid(typeof message.mapId === 'string' && message.mapId.length > 0, 'Invalid map');
-      break;
+      return {type: 'change-map', mapId: message.mapId};
     case 'spectate':
       requireValid((message.connectionId === null || typeof message.connectionId === 'string')
         && Number.isSafeInteger(message.request) && message.request >= 0, 'Invalid spectator request');
-      break;
+      return {type: 'spectate', connectionId: message.connectionId, request: message.request};
   }
-  return message;
+  return {type: message.type};
 }

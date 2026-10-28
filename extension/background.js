@@ -1,4 +1,5 @@
 import { instrumentGame } from './instrument.js';
+import { loadGameSource } from './source-loader.js';
 import { createUpdateChecker } from './update-check.js';
 
 const sessions = new Map();
@@ -55,17 +56,12 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   let released = false;
   try {
     if (![200, 304].includes(params.responseStatusCode) || new URL(params.request.url).origin !== origin) return;
-    let text;
-    if (params.responseStatusCode === 304) {
-      // A conditional module request has no response body. Fetch just this
-      // public asset afresh; do not disable caching for maps/textures/audio.
-      const fresh = await fetch(params.request.url, { cache: 'no-store', credentials: 'omit' });
-      if (!fresh.ok) throw new Error(`Could not read game module: HTTP ${fresh.status}`);
-      text = await fresh.text();
-    } else {
+    let text = null;
+    if (params.responseStatusCode !== 304) {
       const response = await command(tabId, 'Fetch.getResponseBody', { requestId });
       text = response.base64Encoded ? new TextDecoder().decode(Uint8Array.from(atob(response.body), c => c.charCodeAt(0))) : response.body;
     }
+    text = await loadGameSource(params.request.url, text);
     const patched = instrumentGame(text);
     const bytes = new TextEncoder().encode(patched);
     // Modules are ASCII in current builds; conversion also handles future UTF-8 assets.
