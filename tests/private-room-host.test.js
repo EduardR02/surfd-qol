@@ -407,6 +407,47 @@ describe('private room host', () => {
   });
 });
 
+test('a congested player skips poses but keeps reliable messages', async () => {
+  const {room, connect} = fixture(), sender = connect(), watcher = connect(), healthy = connect();
+  watcher.receive({type: 'spectate', connectionId: room.players[0].connectionId, request: 1});
+  watcher.bufferedAmount = 64 * 1024 + 1;
+  sender.receive(encodePoseBatch({sequence: 1, epoch: 1, samples: [pose]}));
+  sender.receive(encodeSpectator({slot: 0, sequence: 1, epoch: 1, pose: detailed}));
+  sender.receive({type: 'chat', text: 'still here'});
+  await tick();
+  expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(0);
+  expect(snapshots(healthy)).toHaveLength(1);
+  expect(watcher.messages('chat')).toHaveLength(1);
+  expect(watcher.closed).toBeNull();
+  watcher.bufferedAmount = 0;
+  sender.receive(encodeSpectator({slot: 0, sequence: 2, epoch: 1, pose: detailed}));
+  expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(1);
+  room.close();
+});
+
+test('only a backlog that lasts 5 seconds disconnects a player', () => {
+  let time = 0;
+  const {room, connect} = fixture({now: () => time}), peer = connect();
+  const backlogged = 8 * 1024 * 1024 + 1;
+  peer.bufferedAmount = backlogged;
+  peer.receive('ping');
+  time = 4999;
+  peer.receive('ping');
+  peer.bufferedAmount = 0;
+  peer.receive('ping');
+  peer.bufferedAmount = backlogged;
+  time = 6000;
+  peer.receive('ping');
+  time = 10999;
+  peer.receive('ping');
+  expect(peer.closed).toBeNull();
+  time = 11000;
+  peer.receive('ping');
+  expect(peer.closed).toEqual({code: CLOSE.congested, reason: "Your connection couldn't keep up with the room."});
+  expect(room.players).toHaveLength(0);
+  room.close();
+});
+
 test('real loopback host receives binary as ArrayBuffer and relays native packets', async () => {
   const room = createRoomHost({roomId: createRoomId(), mapId: 'one'});
   const [sender, hostSender] = createLoopbackPair();

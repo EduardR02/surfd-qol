@@ -1,5 +1,5 @@
 export const VERSION = 1;
-export const CLOSE = Object.freeze({invalid: 4002, gone: 4004});
+export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, congested: 4013});
 export const MAX_CONTROL_BYTES = 65536;
 // Large enough for every uint16 slot, including escaped names and appearances.
 export const MAX_ROOM_MESSAGE_CHARS = 64 * 1024 * 1024;

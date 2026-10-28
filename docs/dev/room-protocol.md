@@ -86,7 +86,7 @@ Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on
 
 **Type 1, client pose batch** (44 or 76 bytes): version, type 1, sample count (1 or 2), reserved 0, uint32 sequence, uint32 epoch, then the poses. The game samples at most every 49 ms, usually sends pairs, and closes its socket with 4013 when more than 64 KB is buffered.
 
-**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host keeps each sender's latest upload and bundles the blocks for each recipient about every 50 ms, excluding that recipient. More than 100 blocks are split across snapshots. Pose bytes stay unchanged. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
+**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host keeps each sender's latest upload and bundles the blocks for each recipient about every 50 ms, excluding that recipient. More than 100 blocks are split across snapshots. Pose bytes stay unchanged. A recipient with more than 64 KB buffered skips snapshots and spectator frames until it drains. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
 
 **Types 3 and 4, spectator frames** (56 bytes; 3 uploaded, 4 forwarded):
 
@@ -109,7 +109,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 ## Closing
 
-The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data and 4004 when the room is gone. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data, 4004 when the room is gone, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 

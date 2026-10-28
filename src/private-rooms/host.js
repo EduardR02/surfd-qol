@@ -4,6 +4,7 @@ import {CLOSE, VERSION, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INT
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
+const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
 export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = 'Private room', onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
@@ -27,12 +28,27 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   const players = () => [...clients].filter(client => client.open).map(client => client.player);
   function sendFrames(client, frames) {
     if (!client.open || client.socket.readyState !== 1) return;
+    const lossy = frames[0] instanceof ArrayBuffer;
+    // The next snapshot or spectator frame supersedes this one, so a congested player just skips it.
+    if (lossy && client.socket.bufferedAmount > LOSSY_BACKLOG) return;
     try {
       for (const frame of frames) client.socket.send(frame);
     } catch {
       client.socket.close(CLOSE.gone, 'Private room connection lost');
       leave(client);
+      return;
     }
+    if (!lossy) checkBacklog(client);
+  }
+  function checkBacklog(client) {
+    if (!(client.socket.bufferedAmount > RELIABLE_BACKLOG)) {
+      client.backlogSince = null;
+      return;
+    }
+    client.backlogSince ??= now();
+    if (now() - client.backlogSince < BACKLOG_GRACE_MS) return;
+    client.socket.close(CLOSE.congested, "Your connection couldn't keep up with the room.");
+    leave(client);
   }
   function send(client, message) {
     sendFrames(client, message instanceof ArrayBuffer ? [message] : encodeControlFrames(message));
@@ -255,7 +271,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     slots.add(slot);
     const connectionId = crypto.randomUUID();
     const client = {socket, host, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
-      chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()}, player: {
+      chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
+      backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot, name: hello.name.trim().slice(0, 24),
       appearance: normalizeAppearance(hello.appearance), guest: false, rank: 'Guest', points: 0,
       moderator: host, spectating: false,
