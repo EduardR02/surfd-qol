@@ -21,11 +21,11 @@ export function turnServers(body) {
 
 // issue(client) resolves to {iceServers, ttl}, or null when the relay is
 // switched off (env.RELAY isn't "on"), allow(client) refuses, or Cloudflare
-// doesn't answer as documented. It never throws, so nothing it was sent can
-// end up in an error log.
+// doesn't answer as documented. It never throws, so neither the key nor
+// Cloudflare's answer can end up in an error log.
 export function createRelay({env, allow, fetch = (...args) => globalThis.fetch(...args)}) {
   return async client => {
-    if (env.RELAY !== 'on' || !env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN || !allow(client)) return null;
+    if (env?.RELAY !== 'on' || !env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN || !allow(client)) return null;
     try {
       const response = await fetch(`${API}/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
         method: 'POST',
