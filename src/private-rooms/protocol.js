@@ -1,5 +1,26 @@
 export const VERSION = 1;
 export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, refused: 4008, congested: 4013});
+// Everything a host may show its players. Guests replace or drop any other notice or close text.
+export const ROOM_TEXTS = Object.freeze({
+  closed: 'This private room has closed.',
+  hostClosed: 'The host closed the private room.',
+  connectionLost: 'Private room connection lost',
+  cancelled: 'Room connection cancelled',
+  invalidData: 'Invalid private room data',
+  invalidHello: 'Invalid private room hello',
+  full: 'This room is full.',
+  congested: "Your connection couldn't keep up with the room.",
+  unavailable: 'That player is not available to spectate.',
+  noLongerAvailable: 'That player is no longer available to spectate.',
+  hostChangesMaps: 'Only the private room host can change maps.',
+  unknownMap: 'Map is not in the catalog.',
+  tooFast: "You're sending messages too fast.",
+});
+const roomTexts = new Set(Object.values(ROOM_TEXTS));
+export function roomCloseReason(code, reason) {
+  if (roomTexts.has(reason)) return reason;
+  return code === CLOSE.gone ? ROOM_TEXTS.closed : code === CLOSE.invalid ? ROOM_TEXTS.invalidData : '';
+}
 export const MAX_CONTROL_BYTES = 65536;
 export const MAX_ROOM_PLAYERS = 256;
 // A player's JSON stays under 512 characters; the rest leaves room for the map catalog.
@@ -354,11 +375,14 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
           ...(message.rank === undefined ? {} : {rank: 'Guest'}),
           ...(message.appearance === undefined ? {} : {appearance: normalizeAppearance(message.appearance)})};
       case 'notice':
-      case 'error':
+      case 'error': {
         requireValid(textValue(message.text, 4096)
           && (message.spectatorRequest === undefined || timestamp(message.spectatorRequest)), 'Invalid room notice');
-        return {type: message.type, text: message.text,
-          ...(message.spectatorRequest === undefined ? {} : {spectatorRequest: message.spectatorRequest})};
+        if (message.spectatorRequest === undefined) return roomTexts.has(message.text) ? {type: message.type, text: message.text} : null;
+        // An error for the current spectate request is what stops spectating, so it keeps a text of our own.
+        return {type: message.type, text: roomTexts.has(message.text) ? message.text : ROOM_TEXTS.unavailable,
+          spectatorRequest: message.spectatorRequest};
+      }
       case 'spectator-demand':
         requireValid(typeof message.active === 'boolean' && uint(message.count, MAX_ROOM_PLAYERS)
           && (message.count > 0) === message.active, 'Invalid spectator demand');
@@ -397,7 +421,9 @@ export function createRoomControlReader(filter = null) {
         message = JSON.parse(text);
         requireValid(message?.type !== 'room-chunk', 'Nested room chunk');
       } else requireValid(!chunks.length, 'Interrupted room chunks');
-      return filter ? JSON.stringify(filter(message)) : text;
+      if (!filter) return text;
+      const rebuilt = filter(message);
+      return rebuilt === null ? null : JSON.stringify(rebuilt);
     },
   };
 }

@@ -398,13 +398,13 @@ describe('private room WebRTC socket', () => {
     client.send('{"type":"map"}');
     client.send(new Uint8Array([1, 2]).buffer);
     host.send(new Uint8Array(encodeSnapshot([batch(1, 1)])));
-    host.send(notice('chat'));
+    host.send(notice('Map is not in the catalog.'));
     expect(client.bufferedAmount).toBeGreaterThan(0);
     await nextTask();
     expect(hostMessages[0]).toBe('{"type":"map"}');
     expect([...new Uint8Array(hostMessages[1])]).toEqual([1, 2]);
     expect(decodeSnapshot(clientMessages[0])).toEqual([batch(1, 1)]);
-    expect(clientMessages[1]).toBe(notice('chat'));
+    expect(clientMessages[1]).toBe(notice('Map is not in the catalog.'));
     expect(connections[0].channels[0].sent.map(JSON.parse).map(message => message.type)).toEqual(['hello', 'data']);
     expect(connections[0].channels[1].sent).toHaveLength(1);
     expect(client.bufferedAmount).toBe(0);
@@ -495,9 +495,9 @@ describe('private room WebRTC socket', () => {
     expect(accepted.size).toBe(2);
     const messages = [];
     clients.forEach((client, index) => { client.onmessage = event => messages.push([index, event.data]); });
-    accepted.get('second').send(notice('private to second'));
+    accepted.get('second').send(notice('That player is not available to spectate.'));
     await nextTask();
-    expect(messages).toEqual([[1, notice('private to second')]]);
+    expect(messages).toEqual([[1, notice('That player is not available to spectate.')]]);
   });
 
   test('reports peer connection failures as errors and abnormal closes', async () => {
@@ -646,8 +646,8 @@ describe('private room WebRTC socket', () => {
     expect(client.readyState).toBe(client.OPEN);
     expect(accepted[0].socket.readyState).toBe(client.OPEN);
     const incoming = once(client, 'message');
-    accepted[0].socket.send(notice('still connected'));
-    expect((await incoming).data).toBe(notice('still connected'));
+    accepted[0].socket.send(notice('Only the private room host can change maps.'));
+    expect((await incoming).data).toBe(notice('Only the private room host can change maps.'));
   });
 
   test('resolves a deferred signalling peer identity', async () => {
@@ -673,8 +673,8 @@ describe('private room WebRTC socket', () => {
     const controls = [
       {type: 'state', state: {...roomState, epoch: 2}, serverTime: 2},
       {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
-      {type: 'notice', text: '<plain text>'},
-      {type: 'error', text: 'Unavailable', spectatorRequest: 12},
+      {type: 'notice', text: 'This room is full.'},
+      {type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: 12},
       {type: 'spectator-demand', active: true, count: 255},
       {type: 'spectator-demand', active: false, count: 0},
       {type: 'context', epoch: 2, token: null},
@@ -742,6 +742,23 @@ describe('private room WebRTC socket', () => {
     await nextTask();
     expect(messages).toEqual([welcome(), {type: 'state', state: {...roomState, recent: ['one']}, serverTime: 2},
       {type: 'roster', players: [roomPlayer(), {...roomPlayer(1), moderator: true}]}]);
+  });
+
+  test('guests see only the extension\'s own notice, error and close texts', async () => {
+    const {client, accepted} = rtcPair();
+    await nextTask();
+    const messages = [];
+    client.onmessage = event => messages.push(JSON.parse(event.data));
+    const host = accepted[0].socket;
+    host.send(notice('Surfd: your account will be deleted. Visit surfd-support.example'));
+    host.send(notice("You're sending messages too fast."));
+    host.send(JSON.stringify({type: 'error', text: 'Moderator: you are banned from Surfd', spectatorRequest: 3}));
+    await nextTask();
+    expect(messages).toEqual([{type: 'notice', text: "You're sending messages too fast."},
+      {type: 'error', text: 'That player is not available to spectate.', spectatorRequest: 3}]);
+    const closed = once(client, 'close');
+    host.close(4004, 'Surfd staff ended this session. Sign in again at surfd-login.example');
+    expect(await closed).toMatchObject({code: 4004, reason: 'This private room has closed.'});
   });
 
   test('rejects invalid snapshots and spectator values before the game receives binary', async () => {

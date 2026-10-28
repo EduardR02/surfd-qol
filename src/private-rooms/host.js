@@ -1,5 +1,5 @@
 import {isPrivateRoomId} from './ids.js';
-import {CLOSE, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
+import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   catalogEntry, decodeControl, encodeControlFrames, isPlayerName, normalizeAppearance, relayPose, relaySpectator} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
@@ -36,7 +36,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     try {
       for (const frame of frames) client.socket.send(frame);
     } catch {
-      client.socket.close(CLOSE.gone, 'Private room connection lost');
+      client.socket.close(CLOSE.gone, ROOM_TEXTS.connectionLost);
       leave(client);
       return;
     }
@@ -49,7 +49,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }
     client.backlogSince ??= now();
     if (now() - client.backlogSince < BACKLOG_GRACE_MS) return;
-    client.socket.close(CLOSE.congested, "Your connection couldn't keep up with the room.");
+    client.socket.close(CLOSE.congested, ROOM_TEXTS.congested);
     leave(client);
   }
   function send(client, message) {
@@ -126,7 +126,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   function releaseWatchers(client) {
     for (const watcher of [...client.watchers]) {
       unwatch(watcher);
-      send(watcher, {type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: watcher.request});
+      send(watcher, {type: 'error', text: ROOM_TEXTS.noLongerAvailable, spectatorRequest: watcher.request});
     }
   }
   function detach(client) {
@@ -156,7 +156,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     for (const client of clients) {
       detach(client);
       client.open = false;
-      client.socket.close(CLOSE.gone, 'The host closed the private room.');
+      client.socket.close(CLOSE.gone, ROOM_TEXTS.hostClosed);
     }
     clients.clear();
     slots.clear();
@@ -167,7 +167,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const target = message.connectionId === null ? null
       : [...clients].find(peer => peer.open && peer.player.connectionId === message.connectionId);
     if (message.connectionId !== null && (!target || target === client || target.player.spectating)) {
-      send(client, {type: 'error', text: 'That player is not available to spectate.', spectatorRequest: message.request});
+      send(client, {type: 'error', text: ROOM_TEXTS.unavailable, spectatorRequest: message.request});
       return;
     }
     client.request = message.request;
@@ -211,7 +211,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           break;
         case 'chat':
           if (!take(client.chat, CHAT_LIMIT)) {
-            if (!client.chat.limited) send(client, {type: 'error', text: "You're sending messages too fast."});
+            if (!client.chat.limited) send(client, {type: 'error', text: ROOM_TEXTS.tooFast});
             client.chat.limited = true;
             break;
           }
@@ -221,9 +221,9 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           break;
         case 'change-map':
           if (!client.host) {
-            send(client, {type: 'error', text: 'Only the private room host can change maps.'});
+            send(client, {type: 'error', text: ROOM_TEXTS.hostChangesMaps});
           } else if (!catalog.has(message.mapId)) {
-            send(client, {type: 'error', text: 'Map is not in the catalog.'});
+            send(client, {type: 'error', text: ROOM_TEXTS.unknownMap});
           } else if (message.mapId !== state.mapId) {
             state = {...state, mapId: message.mapId, mapTitle: catalog.get(message.mapId).title,
               epoch: state.epoch + 1, startedAt: Date.now(), recent: [state.mapId, ...state.recent].slice(0, 8)};
@@ -245,23 +245,23 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
         // Votes, refreshes, activity, reports and moderation belong to public servers.
       }
     } catch {
-      client.socket.close(CLOSE.invalid, 'Invalid private room data');
+      client.socket.close(CLOSE.invalid, ROOM_TEXTS.invalidData);
       leave(client);
     }
   }
   function addClient(socket, hello, {host = false} = {}) {
     socket.binaryType = 'arraybuffer';
     if (closed) {
-      socket.close(CLOSE.gone, 'This private room has closed.');
+      socket.close(CLOSE.gone, ROOM_TEXTS.closed);
       return;
     }
     if (!hello || typeof hello !== 'object' || typeof hello.guest !== 'boolean') {
-      socket.close(CLOSE.invalid, 'Invalid private room hello');
+      socket.close(CLOSE.invalid, ROOM_TEXTS.invalidHello);
       return;
     }
     // One place stays free for the host's own connection.
     if (!host && [...clients].filter(client => !client.host).length >= MAX_ROOM_PLAYERS - 1) {
-      socket.close(CLOSE.refused, 'This room is full.');
+      socket.close(CLOSE.refused, ROOM_TEXTS.full);
       return;
     }
     if (hostClient && host) {

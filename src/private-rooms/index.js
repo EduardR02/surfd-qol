@@ -1,13 +1,13 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS, catalogEntry, isPlayerName, isRoomName } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isPlayerName, isRoomName } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
 
-const CLOSED = 'This private room has closed.';
+const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
-const HOST_LEFT = 'The host closed the private room.';
+const HOST_LEFT = ROOM_TEXTS.hostClosed;
 const DISCOVERY_TIMEOUT = 15000;
 const NAME_KEY = 'surfd-qol-room-guest-name';
 

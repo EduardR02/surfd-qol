@@ -58,7 +58,7 @@ Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Gues
 | `state` | `{state, serverTime}`. Lower epochs are ignored; a new epoch clears pose and spectator buffers, so the host republishes spectator demand after a map change. |
 | `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. The private host sends at most one every 100 ms. |
 | `chat` | `{playerId, name, text, rank?, appearance?}` (flat fields, not a `sender` object) |
-| `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. |
+| `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. Guests keep only the extension's own texts (`ROOM_TEXTS`): they drop other notices and give an `error` with `spectatorRequest` "That player is not available to spectate." |
 | `spectator-demand` | `{active, count}`; `count` is 0–256 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
 | `result` | a finished run (phase 3), below |
@@ -111,7 +111,7 @@ A player streams these at about 30 Hz while `spectator-demand` is active for the
 
 ## Closing
 
-The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. The private host uses 4002 for invalid data, 4004 when the room is gone, 4008 for refused joins, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
+The game treats 4002, 4004, 4008 and 4009 as final and shows the reason without retrying; other unexpected closes retry six times with backoff. Guests replace any close reason that isn't one of the extension's own texts with "This private room has closed." for 4004, "Invalid private room data" for 4002, and nothing otherwise. The private host uses 4002 for invalid data, 4004 when the room is gone, 4008 for refused joins, and 4013 (which the game retries) for a player whose buffer stays above 8 MB for 5 seconds. The game itself closes with 4000 (no welcome within 10 s), 4013 (too much buffered), 4003 (session refresh) and 1000 (leaving).
 
 A replacement host loopback removes the old host connection without ending the room. Explicit Leave and `pagehide` close the room. When a guest's peer connection drops without a close message, the guest asks the meeting point: if the room is gone, it closes with 4004; otherwise it reconnects through the meeting point. Closing a guest's meeting point socket after negotiation doesn't affect its peer connection.
 

@@ -1,4 +1,5 @@
-import {CLOSE, MAX_CONTROL_BYTES, createRoomControlReader, createRoomFilter, encodeControlFrames, validateRoomBinary} from './protocol.js';
+import {CLOSE, MAX_CONTROL_BYTES, ROOM_TEXTS, createRoomControlReader, createRoomFilter, encodeControlFrames,
+  roomCloseReason, validateRoomBinary} from './protocol.js';
 
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 const PROTOCOL = 'surfd-v1';
@@ -301,7 +302,7 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
         case 'close':
           if ((message.code !== 1000 && (!Number.isInteger(message.code) || message.code < 3000 || message.code > 4999)) ||
               typeof message.reason !== 'string' || encoder.encode(message.reason).byteLength > 123) throw new Error('Invalid room close');
-          closeInfo = {code: message.code, reason: message.reason};
+          closeInfo = {code: message.code, reason: host ? message.reason : roomCloseReason(message.code, message.reason)};
           if (socket.readyState < CLOSING) beginClose();
           sendControl({type: 'closed'});
           drainClose();
@@ -457,7 +458,7 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig, now = Date.
     if (message.type === 'peer-left') {
       offers.delete(message.peerId);
       const connection = peers.get(message.peerId);
-      if (connection?.socket.readyState === CONNECTING) connection.socket.close(CLOSE.gone, 'Room connection cancelled');
+      if (connection?.socket.readyState === CONNECTING) connection.socket.close(CLOSE.gone, ROOM_TEXTS.cancelled);
       return;
     }
     if (message.type !== 'offer' && !(message.type === 'ice' && message.payload?.from === 'client')) return;
@@ -475,7 +476,7 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig, now = Date.
     if (!connection) {
       if (rate?.count > 3 || peers.size >= 65536) return;
       const pending = [...peers.values()].filter(peer => peer.socket.readyState === CONNECTING);
-      if (pending.length >= 32) pending[0].socket.close(CLOSE.gone, 'Room connection cancelled');
+      if (pending.length >= 32) pending[0].socket.close(CLOSE.gone, ROOM_TEXTS.cancelled);
       connection = createConnection({roomId, peerId: message.peerId, signalling, rtcConfig, host: true, onSocket,
         onDispose: () => { if (peers.get(message.peerId) === connection) peers.delete(message.peerId); }});
       peers.set(message.peerId, connection);
@@ -484,7 +485,7 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig, now = Date.
   });
   return () => {
     unsubscribe();
-    for (const {socket} of peers.values()) socket.close(4004, 'The host closed the private room.');
+    for (const {socket} of peers.values()) socket.close(CLOSE.gone, ROOM_TEXTS.hostClosed);
     peers.clear();
     offers.clear();
   };
