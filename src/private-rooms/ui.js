@@ -26,6 +26,15 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   let staging = false, pending = false, destroyed = false, scheduled = false;
   let joinLabel = '', joinDisabled = false;
   const votes = new Map();
+  const menu = doc?.querySelector('.room-menu-actions');
+  let observedRoot, observedOpen, observedCommunity;
+  function observe(open, community) {
+    if (root === observedRoot && open === observedOpen && community === observedCommunity) return;
+    observedRoot = root; observedOpen = open; observedCommunity = community;
+    observer?.disconnect();
+    if (root) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: open, subtree: open});
+    if (menu && community) observer?.observe(menu, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
+  }
   const button = (label, className = 'btn') => {
     const node = doc.createElement('button');
     node.type = 'button'; node.className = className; node.textContent = label;
@@ -108,13 +117,16 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const next = adapter?.root?.();
     if (next !== root) mount(next);
     const community = isPrivateRoomId(rooms.currentRoom?.());
-    for (const node of doc.querySelectorAll('[data-act="rtv"], [data-act="nominate"], [data-act="extend"], .room-rtv, .room-nominate, .room-extend')) {
+    const open = adapter?.browserOpen?.() ?? (!!root && !root.hidden);
+    observe(open, community);
+    if (!open && !community && !votes.size) return;
+    for (const node of menu?.querySelectorAll('[data-act="rtv"], [data-act="nominate"], [data-act="extend"], .room-rtv, .room-nominate, .room-extend') ?? []) {
       if (community) {
         if (!votes.has(node)) votes.set(node, node.hidden);
         hidden(node, true);
       } else if (votes.has(node)) { hidden(node, votes.get(node)); votes.delete(node); }
     }
-    if (!root || !hostButton) return;
+    if (!open || !root || !hostButton) return;
     const hosting = rooms.hosting();
     if (hosting) staging = false;
     hidden(hostButton, !!hosting); hostButton.disabled = pending;
@@ -171,7 +183,6 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     scheduled = true;
     queueMicrotask(() => { scheduled = false; refresh(); });
   }) : null;
-  observer?.observe(doc.documentElement, {subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class']});
   refresh();
   return {
     refresh,

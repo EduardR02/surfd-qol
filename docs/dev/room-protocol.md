@@ -18,6 +18,8 @@ The host connects to the meeting point with `role=host` and a key from `newHostK
 
 Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
 
+The room UI observes only the server browser and, in a community room, its room-menu controls. A hidden browser observes only its own visibility attributes; HUD mutations do not refresh room UI.
+
 Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`.
 
 ## Shared structures

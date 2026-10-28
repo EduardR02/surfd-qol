@@ -55,7 +55,27 @@ class Element {
   querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
 }
 
-function fixture() {
+class Observer {
+  static instances = new Set();
+  targets = new Map();
+  constructor(callback) { this.callback = callback; Observer.instances.add(this); }
+  observe(node, options) { this.targets.set(node, options); }
+  disconnect() { this.targets.clear(); }
+  static mutate(node, type = 'childList', attributeName) {
+    for (const observer of Observer.instances) {
+      for (const [target, options] of observer.targets) {
+        let inside = node === target;
+        for (let parent = node.parentNode; options.subtree && parent; parent = parent.parentNode) inside ||= parent === target;
+        if (inside && options[type] && (!attributeName || !options.attributeFilter || options.attributeFilter.includes(attributeName))) {
+          observer.callback([{target: node, type, attributeName}]);
+          break;
+        }
+      }
+    }
+  }
+}
+
+function fixture({observe = false} = {}) {
   const document = new Element('document'); document.documentElement = document; document.createElement = tag => new Element(tag);
   const add = (parent, tag, id = '', className = '', value = '') => {const node = new Element(tag); node.id = id; node.className = className; node.textContent = value; parent.append(node); return node;};
   const root = add(document, 'section');
@@ -72,7 +92,9 @@ function fixture() {
   const refresh = add(foot, 'button', 'servers-refresh', 'btn', 'Refresh');
   const join = add(foot, 'button', 'servers-join', 'btn btn-primary', 'Join');
   const status = add(root, 'span', 'servers-status');
-  const vote = add(document, 'button', '', 'room-rtv', 'Rock the vote');
+  const menu = add(document, 'div', '', 'room-menu-actions');
+  const vote = add(menu, 'button', '', 'room-rtv', 'Rock the vote');
+  const hud = add(document, 'div', '', 'hud');
   let visibility = 'private', hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0;
   const calls = [], rows = [{id:'eu',region:'Europe',players:4,online:true}];
   const rooms = {
@@ -80,15 +102,50 @@ function fixture() {
     setVisibility(value){visibility=value;if(hosting){hosting.visibility=value;rows.find(row=>row.id===hosting.id).visibility=value;}},
     async host(options){calls.push(options);if(failure)throw failure;hosting={id:'p-aaaaaaaaaaaa',visibility,players:2,uploadMbps:0.2};current=hosting.id;selected=hosting.id;rows.push({...hosting,online:true});return hosting.id;}
   };
-  const adapter = {rooms:{root:()=>root,rows:()=>rows,selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
+  let reads = 0;
+  const adapter = {rooms:{root:()=>root,browserOpen:()=>!root.hidden,rows:()=>{reads++;return rows;},selected:()=>selected,currentMap:()=>({id:'map'}),maps:()=>[{id:'map',title:'Loaded map'}]}};
   join.onclick = () => {nativeJoins++;};
-  const ui = createRoomUi({rooms,getAdapter:()=>adapter,document,MutationObserver:null});
-  return {ui,rooms,root,detail,info,invite,code,copy,foot,refresh,join,status,vote,calls,rows,
+  const ui = createRoomUi({rooms,getAdapter:()=>adapter,document,MutationObserver:observe ? Observer : null});
+  return {ui,rooms,root,detail,info,invite,code,copy,foot,refresh,join,status,vote,menu,hud,calls,rows,reads:()=>reads,
     host:()=>foot.children.find(node=>node.textContent==='Host a room'),nativeJoins:()=>nativeJoins,
     fail:error=>{failure=error;},select:id=>{selected=id;},current:id=>{current=id;}};
 }
 
 describe('native room UI', () => {
+  test('HUD mutations never refresh room UI', async () => {
+    const f = fixture({observe: true});
+    const reads = f.reads();
+    Observer.mutate(f.hud);
+    Observer.mutate(f.hud, 'attributes', 'class');
+    await Promise.resolve();
+    expect(f.reads()).toBe(reads);
+    Observer.mutate(f.detail);
+    await Promise.resolve();
+    expect(f.reads()).toBeGreaterThan(reads);
+    f.ui.destroy();
+  });
+
+  test('hidden browser ignores rows and menu outside community rooms', async () => {
+    const f = fixture({observe: true});
+    f.root.hidden = true;
+    Observer.mutate(f.root, 'attributes', 'hidden');
+    await Promise.resolve();
+    const reads = f.reads();
+    Observer.mutate(f.detail);
+    Observer.mutate(f.menu);
+    f.ui.refresh();
+    await Promise.resolve();
+    expect(f.reads()).toBe(reads);
+    f.current('p-aaaaaaaaaaaa');
+    f.ui.refresh();
+    expect(f.vote.hidden).toBe(true);
+    f.root.hidden = false;
+    Observer.mutate(f.root, 'attributes', 'hidden');
+    await Promise.resolve();
+    expect(f.reads()).toBeGreaterThan(reads);
+    f.ui.destroy();
+  });
+
   test('host starts from native footer', async () => {
     const f=fixture();
     expect(f.host().className).toBe('btn');
