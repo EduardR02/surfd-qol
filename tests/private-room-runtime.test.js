@@ -496,15 +496,41 @@ describe('private room runtime', () => {
       for (const response of [
         {ok: false, json: async () => ({rooms: []})},
         {ok: true, json: async () => [row()]},
-        {ok: true, json: async () => ({rooms: Array.from({length: 201}, () => row())})},
-        {ok: true, json: async () => ({rooms: [{...row(), name: 'x'.repeat(41)}]})}
+        {ok: true, json: async () => { throw new SyntaxError('Unexpected token'); }},
       ]) {
         f.response(response);
         await f.runtime.refreshDirectory({open: true});
-        expect(f.notices.at(-1)).toBe(SERVICE);
+        expect(f.notices).toEqual([SERVICE]);
         expect(f.rows().map(value => value.id)).toEqual(['official']);
+        f.notices.length = 0;
         f.timers.advance(10000);
       }
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('directory rows the browser cannot show are skipped and the rest listed', async () => {
+    const f = fixture();
+    try {
+      f.open(true);
+      const bad = [null, 'x', {...row('p-aaaaaaaaaaaa'), name: 'x'.repeat(41)}, {...row('p-bbbbbbbbbbbb'), mapId: 'unknown'},
+        {...row('p-cccccccccccc'), players: 257}, {...row('p-dddddddddddd'), name: "Surfd's room"},
+        {...row('p-eeeeeeeeeeee'), name: "Official_eu's room"}, {...row(), id: 'eu'}];
+      f.response({ok: true, json: async () => ({rooms: [...bad, row(OTHER), ...Array.from({length: 200}, () => row())]})});
+      await f.runtime.refreshDirectory();
+      expect(f.notices).toEqual([]);
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('a name the directory would refuse cannot go public', async () => {
+    const f = fixture({displayName: 'SurfdFan'});
+    try {
+      await expect(f.runtime.host({visibility: 'public'})).rejects.toThrow("Rooms with Surfd or official in the name can't be public.");
+      expect(f.signals).toEqual([]);
+      const id = await f.host({visibility: 'private'});
+      expect(() => f.runtime.setVisibility('public')).toThrow("can't be public");
+      expect(f.runtime.hosting()).toMatchObject({id, visibility: 'private'});
+      expect(f.signals[0].sent.filter(message => message.data !== null)).toEqual([]);
     } finally { f.runtime.destroy(); }
   });
 
@@ -769,7 +795,7 @@ describe('private room runtime', () => {
         socket.removeEventListener('message', receive);
         resolve();
       }));
-      expect(f.signals[0].sent.at(-1).data).toMatchObject({mapId: 'other', mapTitle: 'Other', players: 1});
+      expect(f.signals[0].sent.at(-1).data).toEqual({name: "Surfer's room", mapId: 'other', players: 1});
       socket.close(); await closed(socket);
       expect(f.signals[0].sent.at(-1).data.players).toBe(0);
     } finally { f.runtime.destroy(); }

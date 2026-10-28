@@ -89,7 +89,7 @@ try {
     return false;
   };
   check('the directory refuses other origins (403)', await status('/rooms', {Origin: 'https://evil.example'}) === 403);
-  host.socket.send(JSON.stringify({type: 'listing', data: {name: 'check-live', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 1}}));
+  host.socket.send(JSON.stringify({type: 'listing', data: {name: "check-live's room", mapId: 'surf_utopia', players: 1}}));
   check('a listed room shows in the directory', await listed(true));
   host.socket.send(JSON.stringify({type: 'listing', data: null}));
   check('an unlisted room leaves the directory', await listed(false));

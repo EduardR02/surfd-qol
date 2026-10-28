@@ -1,6 +1,6 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
-import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isPlayerName, isRoomName, isUuid } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -9,7 +9,9 @@ const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const HOST_LEFT = ROOM_TEXTS.hostClosed;
 const SIGN_IN = 'Sign in to host a room.';
+const UNLISTED = "Rooms with Surfd or official in the name can't be public.";
 const DISCOVERY_TIMEOUT = 15000;
+const DIRECTORY_SIZE = 200;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
 const VISIBILITY_KEY = 'surfd-qol-room-visibility';
 const NAME_KEY = 'surfd-qol-room-guest-name';
@@ -98,7 +100,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const row = hostRow();
     known.set(row.id, normalize(row));
     const data = hosted.visibility === 'public'
-      ? {name: row.name, mapId: row.mapId, mapTitle: row.mapTitle, players: row.players} : null;
+      ? {name: row.name, mapId: row.mapId, players: row.players} : null;
     const serialized = JSON.stringify(data);
     if ((force || serialized !== hosted.listing) && hosted.signal?.send(null, 'listing', data)) {
       hosted.listing = serialized;
@@ -211,6 +213,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest,
       userId: guest ? null : adapter.userId?.() ?? null, browserId: browserId()};
   }
+  const roomName = () => `${hello().name}'s room`;
   function track(socket, id) {
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
@@ -374,12 +377,12 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         if (!response.ok) throw new Error(SERVICE);
         const body = await response.json();
         const rows = body?.rooms;
-        if (!Array.isArray(rows) || rows.length > 200) throw new Error(SERVICE);
+        if (!Array.isArray(rows)) throw new Error(SERVICE);
         const next = new Map();
-        for (const value of rows) {
-          const row = normalize(value, true);
-          if (!row || !Number.isFinite(value.updatedAt) || value.updatedAt < 0) throw new Error(SERVICE);
-          if (!gone.has(row.id)) next.set(row.id, row);
+        // Rows this browser can't show are skipped, so one bad listing never hides the others.
+        for (const value of rows.slice(0, DIRECTORY_SIZE)) {
+          const row = isListedName(value?.name) ? normalize(value, true) : null;
+          if (row && !gone.has(row.id)) next.set(row.id, row);
         }
         if (destroyed || controller.signal.aborted) return;
         directory.clear();
@@ -421,6 +424,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
       const mapId = adapter.currentMap()?.id, maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
+      const name = roomName();
+      if (choice === 'public' && !isListedName(name)) throw new Error(UNLISTED);
       setup();
       closeHost();
       visibility = choice;
@@ -428,7 +433,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const id = createRoomId();
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
       current.room = createRoomHost({roomId: id, mapId, maps, visibility,
-        name: `${hello().name}'s room`,
+        name,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
       // Hosting needs an account, so signing out ends the room for everyone.
@@ -493,6 +498,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     visibility: () => visibility,
     setVisibility(value) {
       if (value !== 'public' && value !== 'private') throw new Error('Invalid room visibility.');
+      if (value === 'public' && !isListedName(hosted?.room.state.name ?? roomName())) throw new Error(UNLISTED);
       visibility = value;
       store(VISIBILITY_KEY, value);
       if (hosted) { hosted.visibility = value; hosted.room.setVisibility(value); }

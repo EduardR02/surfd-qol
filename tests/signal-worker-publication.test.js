@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {Room} from '../signal/src/worker.js';
 
 const ROOM = 'p-abcdefghjkmn';
-const listing = {name: 'Room', mapId: 'map', mapTitle: 'Map', players: 1};
+const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1};
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -91,7 +91,7 @@ test('slow publication coalesces a burst to its final unlisting', async () => {
   fixture.publish({...listing, players: 3});
   await Promise.resolve();
   expect(fixture.requests.map(request => request.method)).toEqual(['PUT', 'DELETE', 'PUT']);
-  expect(JSON.parse(fixture.requests[2].body).players).toBe(3);
+  expect(JSON.parse(fixture.requests[2].body)).toEqual({listing: {...listing, players: 3}, client: null});
   fixture.requests[2].resolve(new Response(null, {status: 204}));
   await Promise.all(fixture.pending);
 });

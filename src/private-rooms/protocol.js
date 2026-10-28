@@ -306,6 +306,8 @@ export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-
 export const isGuestName = value => typeof value === 'string' && /^Guest_[0-9a-f]{5}$/.test(value);
 export const isUuid = value => typeof value === 'string' && UUID.test(value);
 export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
+// Public rooms named like the site's own servers aren't listed (signal/src/lobby.js refuses them too).
+export const isListedName = value => isRoomName(value) && !/surfd|official/i.test(value);
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
 export function catalogEntry(map) {

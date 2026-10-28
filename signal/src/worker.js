@@ -67,16 +67,16 @@ export class Room {
         refuse(socket, code, reason) { socket.accept(); socket.close(code, reason); },
         allowClient: messages,
         // Keep only the latest queued state; a slow PUT must finish before DELETE.
-        publish(roomId, listing) {
-          pendingPublication = {roomId, listing};
+        publish(roomId, listing, client) {
+          pendingPublication = {roomId, listing, client};
           if (publication) return;
           publication = Promise.resolve().then(async () => {
             while (pendingPublication) {
-              const {roomId, listing} = pendingPublication;
+              const {roomId, listing, client} = pendingPublication;
               pendingPublication = null;
               try {
                 await lobbyOf(env).fetch(`https://lobby/listing/${roomId}`, listing
-                  ? {method: 'PUT', body: JSON.stringify(listing)} : {method: 'DELETE'});
+                  ? {method: 'PUT', body: JSON.stringify({listing, client})} : {method: 'DELETE'});
               } catch { /* Failed requests expire through the directory TTL. */ }
             }
             publication = null;
@@ -119,7 +119,10 @@ export class Lobby {
     const {pathname} = new URL(request.url);
     if (pathname === '/rooms') return Response.json({rooms: this.lobby.rooms()});
     const id = /^\/listing\/(p-[a-z0-9]+)$/.exec(pathname)?.[1];
-    if (id && request.method === 'PUT') return new Response(null, {status: this.lobby.put(id, await request.json()) ? 204 : 507});
+    if (id && request.method === 'PUT') {
+      const {listing, client} = await request.json();
+      return new Response(null, {status: this.lobby.put(id, listing, client) ? 204 : 507});
+    }
     if (id && request.method === 'DELETE') { this.lobby.remove(id); return new Response(null, {status: 204}); }
     return new Response(null, {status: 404});
   }

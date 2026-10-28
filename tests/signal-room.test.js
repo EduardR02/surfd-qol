@@ -392,10 +392,11 @@ test('a room woken from hibernation carries on from its record and sockets', asy
 
 test('a host lists its room for the directory, updates and unlists it; guests cannot', async () => {
   const room = await claimed(1);
-  room.say(room.host, {type: 'listing', data: {name: ' Nebula\u0007 room ', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3}});
+  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3}});
   room.say(room.host, {type: 'listing', data: null});
-  expect(room.world.published).toEqual([[ROOM, {name: 'Nebula room', mapId: 'surf_utopia', mapTitle: 'Utopia', players: 3}, room.host.peer.client], [ROOM, null]]);
-  for (const data of [{name: '', mapId: 'x', players: 1}, {name: 'x', mapId: 'x', players: -1}, {name: 'x', players: 1}, 'x', []]) {
+  expect(room.world.published).toEqual([[ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3}, room.host.peer.client], [ROOM, null]]);
+  for (const data of [{name: "Nebula\u0007's room", mapId: 'surf_utopia', players: 1}, {name: "Nebula's room", mapId: 'x', players: 257},
+    {name: "Official's room", mapId: 'surf_utopia', players: 1}, {name: 'x', players: 1}, 'x', []]) {
     room.say(room.host, {type: 'listing', data});
     expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'bad-message'}}]);
   }
