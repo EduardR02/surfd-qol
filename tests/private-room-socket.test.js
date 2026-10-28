@@ -368,6 +368,23 @@ describe('private room loopback socket', () => {
   });
 });
 
+test('the host\'s own game reads its room through the guest filter', async () => {
+  const [client, host] = createLoopbackPair({roomId: 'room-a', maps});
+  const messages = [];
+  client.onmessage = event => messages.push(event.data);
+  await nextTask();
+  const own = {...roomPlayer(), moderator: true};
+  host.send(JSON.stringify({...welcome(), player: own, players: [own], extra: 1}));
+  host.send(notice('Surfd: verify your account at surfd-login.example'));
+  host.send(notice('Map is not in the catalog.'));
+  await nextTask();
+  expect(messages.map(JSON.parse)).toEqual([{...welcome(), player: own, players: [own]}, JSON.parse(notice('Map is not in the catalog.'))]);
+  const closed = once(client, 'close');
+  host.send(JSON.stringify({type: 'roster', players: [own, {...roomPlayer(1), moderator: true}]}));
+  expect(await closed).toMatchObject({code: CLOSE.invalid, reason: 'Invalid private room data'});
+  expect(messages).toHaveLength(2);
+});
+
 describe('private room WebRTC socket', () => {
   test('waits for both channels and hello, then opens before the host welcome', async () => {
     const {client, connections, accepted, events} = rtcPair({holdHostBinary: true});

@@ -437,7 +437,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal, 
       setup();
       if (id === hosted?.id) {
         const current = hosted;
-        const [client, host] = createLoopbackPair();
+        const [client, host] = createLoopbackPair({roomId: id, maps: rooms().maps()});
         current.room.addClient(host, hello(), {host: true});
         return track(client, id);
       }

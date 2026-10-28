@@ -107,8 +107,24 @@ function frameParts(data) {
   return offset === data.byteLength ? parts : [];
 }
 
-export function createLoopbackPair() {
+// With a roomId, the first socket (the host's own game) reads the room through the same filter as guests.
+export function createLoopbackPair({roomId = null, maps = []} = {}) {
   const sockets = [new RoomSocket(), new RoomSocket()], queue = new Set();
+  const incoming = roomId === null ? null : createRoomControlReader(createRoomFilter({roomId, maps, host: true}));
+  const deliver = async (peer, data) => {
+    if (!incoming || peer !== sockets[0]) return receive(peer, data);
+    try {
+      if (typeof data !== 'string') {
+        validateRoomBinary(data);
+        return await receive(peer, data);
+      }
+      const text = incoming.read(data);
+      if (text !== null) for (const frame of encodeControlFrames(text)) await receive(peer, frame);
+    } catch {
+      incoming.clear();
+      peer.close(CLOSE.invalid, ROOM_TEXTS.invalidData);
+    }
+  };
   const channel = new MessageChannel();
   let scheduled = false;
   const enqueue = entry => {
@@ -142,7 +158,7 @@ export function createLoopbackPair() {
           data = compact.buffer;
         }
         socket._buffered -= entry.size;
-        await receive(peer, data);
+        await deliver(peer, data);
       }
     } finally {
       scheduled = false;
