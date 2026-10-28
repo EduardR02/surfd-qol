@@ -145,7 +145,7 @@ function roomHooks(source, client, state) {
     const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
     source = source.replace(list[0], `async list(){try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
     source = source.replace(measure[0], measure[0].replace('{const ', `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
-    source = source.replace(socket[0], `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId,${socket[1]},["surfd-v1",${socket[2]}])??${socket[0]})`);
+    source = source.replace(socket[0], `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId)??${socket[0]})`);
     source = source.replace(/await this\.ticket\(\)/g, `(${hook}?.ticket(this.roomId)??await this.ticket())`);
     source = source.replace(bind[0], `${bind[0]},joinServer(id){return ${bind[3]}(id)}`);
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);

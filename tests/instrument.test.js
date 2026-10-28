@@ -244,6 +244,15 @@ describe('optional native private room instrumentation', () => {
     expect(fixture.warnings).toEqual([]);
   });
 
+  test('the room hook never receives the site ticket', async () => {
+    const calls = [], hooks = privateFixtureHooks();
+    hooks.roomSocket = (...args) => { calls.push(args); return null; };
+    const fixture = roomFixture(hooks);
+    await fixture.runtime.room.open('public');
+    expect(calls).toEqual([['public']]);
+    expect(fixture.sockets[0].protocols).toEqual(['surfd-v1', 'native-ticket']);
+  });
+
   test('private connect, identity refresh and measurement never touch site transport', async () => {
     const hooks = privateFixtureHooks();
     const fixture = roomFixture(hooks);
