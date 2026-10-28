@@ -257,29 +257,38 @@ test('messages over 16 KB close the sender, counting UTF-8 bytes', () => {
   expect(room.world.record.goneAt).toBe(room.world.time);
 });
 
-test('each connection may send 50 messages per 10 s; the host 50 per guest', () => {
+test('relay reply floods disconnect only the targeted guest', () => {
   const room = claimed(2);
-  const [guest] = room.guests;
+  const [attacker, other] = room.guests;
+  const send = room.host.send.bind(room.host);
+  room.host.send = text => {
+    send(text);
+    const message = JSON.parse(text);
+    if (message.type === 'room-info') room.say(room.host, {to: message.from, type: 'room-info', data: {id: ROOM}});
+  };
+  room.say(room.host, {type: 'listing', data: {name: 'Room', mapId: 'surf_boreas', mapTitle: '', players: 1}});
+  for (let i = 0; i < RATE_MESSAGES; i++) room.say(attacker, {type: 'room-info', data: null});
+  expect(room.host.closed).toBeNull();
+  expect(attacker.closed).toBeNull();
+  room.say(room.host, {to: room.ids[0], type: 'room-info', data: {id: ROOM}});
+  expect(attacker.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
+  room.say(room.host, {to: room.ids[1], type: 'answer', data: {sdp: 'answer'}});
+  expect(room.heard(other)).toEqual([{from: room.hostId, type: 'answer', data: {sdp: 'answer'}}]);
+  expect(room.host.closed).toBeNull();
+  expect(room.world.record.goneAt).toBeNull();
+});
+
+test('guest message budgets reset after ten seconds', () => {
+  const room = claimed(2);
+  const [guest, other] = room.guests;
   for (let i = 0; i < RATE_MESSAGES; i++) room.say(guest, {type: 'candidate'});
-  room.world.time += RATE_WINDOW_MS - 1;
   room.say(guest, {type: 'candidate'});
   expect(guest.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
-  const heard = room.heard(room.host);
-  expect(heard).toHaveLength(RATE_MESSAGES + 1);
-  expect(heard.at(-1)).toEqual({type: 'peer-left', from: room.ids[0]});
-  const other = room.guests[1];
   for (let i = 0; i < RATE_MESSAGES; i++) room.say(other, {type: 'candidate'});
   room.world.time += RATE_WINDOW_MS;
   room.say(other, {type: 'candidate'});
   expect(other.closed).toBeNull();
-  // Two guests joined, one was closed: the host's budget is 50 per guest present.
-  const third = room.connect('guest');
-  room.heard(room.host);
-  for (let i = 0; i < 2 * RATE_MESSAGES; i++) room.say(room.host, {to: room.ids[1], type: 'candidate'});
   expect(room.host.closed).toBeNull();
-  room.say(room.host, {to: room.ids[1], type: 'candidate'});
-  expect(room.host.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
-  expect(third.closed).toBeNull();
 });
 
 test('a room woken from hibernation carries on from its record and sockets', () => {

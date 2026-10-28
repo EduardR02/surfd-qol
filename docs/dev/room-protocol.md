@@ -17,7 +17,7 @@ The game joins rooms from its server list. Public rooms come from the meeting po
 Before the game's own messages, each joining client sends the host an extension-only hello: `{name, appearance, guest}` (no tokens). The host trims the name to 24 characters and falls back to the default appearance when it's invalid.
 
 The host connects to the meeting point with `role=host` and a key from `newHostKey()`. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
-Unfinished negotiations expire after 15 seconds.
+The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
 Public hosts send `listing` with `{name, mapId, mapTitle, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,mapTitle,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds.
 

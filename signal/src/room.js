@@ -155,34 +155,42 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
     if (current) post(current.socket, {type: 'peer-joined', from: id});
   }
 
-  // Fixed windows per connection. The host's budget grows with the room,
-  // since it negotiates with every guest (an offer and its candidates each).
-  function allow(peer) {
-    const time = now();
-    let rate = rates.get(peer.conn);
-    if (!rate || time - rate.start >= RATE_WINDOW_MS) rates.set(peer.conn, rate = {start: time, count: 0});
-    return ++rate.count <= RATE_MESSAGES * (peer.role === 'host' ? Math.max(1, guests().length) : 1);
+  // Directed host replies spend the recipient's share, not the host's.
+  function allow(peer, directed = false) {
+    const time = now(), key = `${directed ? 'reply' : 'send'}:${peer.conn}`;
+    let rate = rates.get(key);
+    if (!rate || time - rate.start >= RATE_WINDOW_MS) rates.set(key, rate = {start: time, count: 0});
+    return ++rate.count <= RATE_MESSAGES;
   }
 
   function message(socket, raw) {
     const peer = peerOf(socket);
     if (!record || !peer || departed.has(peer.conn) || peer.role === 'host' && peer.conn !== record.conn) return;
     if (tooLarge(raw)) return kick(socket, 'too-large');
-    if (!allow(peer)) return kick(socket, 'rate-limited');
+    if (peer.role !== 'host' && !allow(peer)) return kick(socket, 'rate-limited');
     // Heartbeats; the runtime usually answers them without waking the room.
-    if (raw === 'ping') return void socket.send('pong');
+    if (raw === 'ping') {
+      if (peer.role === 'host' && !allow(peer)) return kick(socket, 'rate-limited');
+      return void socket.send('pong');
+    }
     const value = envelope(raw);
     if (!value) return fail(socket, 'bad-message');
     const {to, type, data} = value;
     if (peer.role === 'host') {
       // A listing addressed to no one is for the public directory.
       if (type === 'listing' && to == null) {
+        if (!allow(peer)) return kick(socket, 'rate-limited');
         if (data === null) return void publish(record.roomId, null);
         const listing = listingFrom(data);
         return listing && record.roomId ? void publish(record.roomId, listing) : fail(socket, 'bad-message');
       }
       const target = guests().find(guest => guest.peer.id === to);
-      return target ? post(target.socket, {from: peer.id, type, data}) : fail(socket, 'no-peer', to ?? null);
+      if (target) {
+        if (!allow(target.peer, true)) return kick(target.socket, 'rate-limited');
+        return post(target.socket, {from: peer.id, type, data});
+      }
+      if (!allow(peer)) return kick(socket, 'rate-limited');
+      return fail(socket, 'no-peer', to ?? null);
     }
     if (to != null && to !== record.host) return fail(socket, 'forbidden', to);
     const current = host();
@@ -196,7 +204,8 @@ export function createRoom({record = null, save, wake, sockets, peerOf, accept, 
     const peer = peerOf(socket);
     if (!peer || departed.has(peer.conn)) return;
     departed.add(peer.conn);
-    rates.delete(peer.conn);
+    rates.delete(`send:${peer.conn}`);
+    rates.delete(`reply:${peer.conn}`);
     if (peer.role === 'guest') {
       const current = record && host();
       if (current) post(current.socket, {type: 'peer-left', from: peer.id});

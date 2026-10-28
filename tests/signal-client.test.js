@@ -120,23 +120,31 @@ test('a guest talks only to the host, which is implied', () => {
   expect(room.socket.last).toEqual({type: 'answer', data: {sdp: 'a'}});
 });
 
-test('the relay\'s close codes end the client with their reason and no retry', () => {
+test('relay refusals end guest connections without retrying', () => {
   for (const [code, reason] of Object.entries(REASONS)) {
-    for (const role of ['host', 'guest']) {
-      const room = rig();
-      room.connect({role, key: KEY});
-      room.socket.accept({id: 'x', host: 'x', peers: []});
-      room.socket.drop(Number(code));
-      room.advance(GRACE_MS * 2);
-      expect(room.heard()).toEqual([['ready', {id: 'x', host: 'x'}], ['closed', reason]]);
-      expect(room.sockets).toHaveLength(1);
-    }
+    const room = rig();
+    room.connect({role: 'guest'});
+    room.socket.accept({id: 'x', host: 'x'});
+    room.socket.drop(Number(code));
+    room.advance(GRACE_MS * 2);
+    expect(room.heard()).toEqual([['ready', {id: 'x', host: 'x'}], ['closed', reason]]);
+    expect(room.sockets).toHaveLength(1);
   }
-  // Refused before any welcome, as a guest before the host is.
-  const room = rig();
-  room.connect({role: 'guest'});
-  room.socket.drop(4404);
-  expect(room.heard()).toEqual([['closed', 'no-room']]);
+});
+
+test('hosts reconnect after every unexpected relay close', () => {
+  for (const code of [1000, 1006, ...Object.keys(REASONS).map(Number)]) {
+    const room = rig();
+    const client = room.connect({role: 'host', key: KEY});
+    room.socket.accept({id: 'h', peers: ['g']});
+    room.socket.drop(code);
+    room.advance(250);
+    expect(client.state).toBe('reconnecting');
+    room.socket.accept({id: 'h', peers: ['g']});
+    expect(client.state).toBe('open');
+    expect(room.heard().filter(([name]) => name === 'closed')).toEqual([]);
+    client.close();
+  }
 });
 
 test('a guest whose socket drops is closed; a first connection that fails is unreachable', () => {
@@ -188,23 +196,17 @@ test('a host that drops reconnects with its key and catches up on its guests', (
   expect(room.sockets).toHaveLength(4);
 });
 
-test('a host gives up once the grace period is over', () => {
+test('a relay outage does not end the hosted room', () => {
   const room = rig();
-  room.connect({role: 'host', key: KEY});
+  const client = room.connect({role: 'host', key: KEY});
   room.socket.accept({id: 'h1', peers: []});
-  room.socket.drop(1006);
-  let seen = room.sockets.length;
-  while (!room.events.some(([name]) => name === 'closed')) {
-    room.advance(50);
-    if (room.sockets.length > seen) { seen = room.sockets.length; room.socket.drop(1006); }
-  }
-  expect(room.now()).toBeGreaterThanOrEqual(GRACE_MS);
-  expect(room.now()).toBeLessThan(GRACE_MS + 100);
-  expect(room.heard().at(-1)).toEqual(['closed', 'lost']);
-  expect(room.sockets.length).toBeGreaterThan(5);
-  expect(room.sockets.length).toBeLessThan(15);
-  room.advance(GRACE_MS);
-  expect(room.sockets.length).toBe(seen);
+  room.socket.drop(4429);
+  room.advance(GRACE_MS * 3);
+  expect(client.state).toBe('reconnecting');
+  expect(room.events.some(([name]) => name === 'closed')).toBe(false);
+  room.socket.accept({id: 'h1', peers: []});
+  expect(client.state).toBe('open');
+  client.close();
 });
 
 test('heartbeats keep the socket honest: one gone quiet is replaced without ending the room', () => {

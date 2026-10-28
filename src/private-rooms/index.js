@@ -412,6 +412,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       try {
         const signal = current.signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'host', key: newHostKey()});
         const signalling = relay(signal, id, true);
+        const infoReplies = new Map();
+        signal.on('peer-left', peer => infoReplies.delete(peer));
         current.stop = listen({roomId: id, signalling, onSocket: (socket, identity) => {
           if (hosted !== current) { socket.close(4004, HOST_LEFT); return; }
           current.sockets.add(socket);
@@ -420,6 +422,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         }});
         signal.on('message', message => {
           if (hosted === current && message.type === 'room-info' && message.data === null && typeof message.from === 'string') {
+            const time = now();
+            if (time - (infoReplies.get(message.from) ?? -Infinity) < 5000) return;
+            infoReplies.set(message.from, time);
             // Rosters travel over the peer connection; the relay has a 16KB message limit.
             const {roster, ...row} = hostRow();
             signal.send(message.from, 'room-info', row);

@@ -305,6 +305,15 @@ describe('private room runtime', () => {
       signal.emit('peer-left', 'visitor');
       expect(signal.sent).toHaveLength(count);
       expect(f.runtime.hosting().id).toBe(id);
+      signal.message('room-info', null, 'visitor');
+      signal.message('room-info', null, 'visitor');
+      expect(signal.sent).toHaveLength(count + 1);
+      f.timers.advance(4999);
+      signal.message('room-info', null, 'visitor');
+      expect(signal.sent).toHaveLength(count + 1);
+      f.timers.advance(1);
+      signal.message('room-info', null, 'visitor');
+      expect(signal.sent).toHaveLength(count + 2);
     } finally { f.runtime.destroy(); }
   });
 

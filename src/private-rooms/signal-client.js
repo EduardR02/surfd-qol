@@ -7,7 +7,7 @@
 // (host only, with a guest's id), 'reconnecting', 'error' {code, to} for a
 // message the relay refused, and 'closed' with a reason (REASONS, 'closed',
 // 'unreachable' or 'lost'), once and last. A host whose socket drops
-// reconnects with its key for up to GRACE_MS, keeping the room and its guests.
+// reconnects with its key; existing peer connections do not depend on the relay.
 
 // The deployed Worker (see signal/README.md). A public address: players
 // connect anonymously, and deploying needs the owner's own Wrangler login.
@@ -56,7 +56,7 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
   if (role === 'host') address.searchParams.set('key', key);
   const handlers = new Map();
   // pending cancels the live socket's heartbeat or the next reconnect.
-  let socket = null, pending = null, state = 'connecting', id = null, host = null, peers = new Set(), droppedAt = null, attempt = 0;
+  let socket = null, pending = null, state = 'connecting', id = null, host = null, peers = new Set(), attempt = 0;
   const emit = (event, value) => { for (const handler of [...handlers.get(event) ?? []]) handler(value); };
 
   function open() {
@@ -89,13 +89,8 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
   function drop(code) {
     if (state === 'closed') return;
     release(4000);
-    if (REASONS[code]) return finish(REASONS[code]);
-    // Only the host holds its room across a drop; a guest would come back as someone new.
-    if (role !== 'host' || id === null) return finish(id === null ? 'unreachable' : 'lost');
-    droppedAt ??= now();
-    const left = droppedAt + GRACE_MS - now();
-    if (left <= 0) return finish('lost');
-    pending = timer(open, Math.min(RETRY_MS[Math.min(attempt++, RETRY_MS.length - 1)], left));
+    if (role !== 'host' || id === null) return finish(REASONS[code] ?? (id === null ? 'unreachable' : 'lost'));
+    pending = timer(open, RETRY_MS[Math.min(attempt++, RETRY_MS.length - 1)]);
     if (state !== 'reconnecting') {
       state = 'reconnecting';
       emit('reconnecting');
@@ -126,7 +121,6 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
     id = data.id;
     host = role === 'host' ? data.id : data.host;
     state = 'open';
-    droppedAt = null;
     attempt = 0;
     // A returning host catches up on guests that came or went meanwhile.
     const present = new Set(role === 'host' ? data.peers : []);

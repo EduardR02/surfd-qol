@@ -794,6 +794,35 @@ describe('private room WebRTC socket', () => {
     expect(connections[1].connectionState).toBe('closed');
   });
 
+  test('offer floods stop creating connections for one peer', async () => {
+    const connections = fakeRTC({rejectRemote: true}), signalling = signalBus();
+    let time = 0;
+    const stop = listenRoom({roomId: 'a', signalling, onSocket() {}, now: () => time});
+    cleanups.push(stop);
+    for (let i = 0; i < 20; i++) {
+      signalling.send({roomId: 'a', peerId: 'flood', type: 'offer', payload: {}});
+      await nextTask();
+    }
+    expect(connections).toHaveLength(3);
+    expect(connections.every(connection => connection.connectionState === 'closed')).toBe(true);
+    time = 60000;
+    signalling.send({roomId: 'a', peerId: 'flood', type: 'offer', payload: {}});
+    await nextTask();
+    expect(connections).toHaveLength(4);
+  });
+
+  test('pending negotiations drop the oldest at the bound', async () => {
+    const connections = fakeRTC(), signalling = signalBus();
+    const stop = listenRoom({roomId: 'a', signalling, onSocket() {}});
+    cleanups.push(stop);
+    for (let i = 0; i < 33; i++) {
+      signalling.send({roomId: 'a', peerId: 'p' + i, type: 'ice', payload: {from: 'client', candidate: {}}});
+    }
+    await nextTask();
+    expect(connections[0].connectionState).toBe('closed');
+    expect(connections.slice(1).every(connection => connection.connectionState !== 'closed')).toBe(true);
+  });
+
   test('expires unfinished negotiations but clears the deadline once connected', async () => {
     const originalTimeout = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
     const deadlines = new Set();

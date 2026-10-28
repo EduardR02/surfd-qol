@@ -456,21 +456,34 @@ export function createPeerSocket({roomId, peerId, signalling, hello, rtcConfig, 
   return connection.socket;
 }
 
-export function listenRoom({roomId, signalling, onSocket, rtcConfig}) {
-  const peers = new Map();
+export function listenRoom({roomId, signalling, onSocket, rtcConfig, now = Date.now}) {
+  const peers = new Map(), offers = new Map();
   const unsubscribe = signalling.subscribe(message => {
     if (message.roomId !== roomId || typeof message.peerId !== 'string') return;
     if (message.type === 'peer-left') {
+      offers.delete(message.peerId);
       const connection = peers.get(message.peerId);
       if (connection?.socket.readyState === CONNECTING) connection.socket.close(CLOSE.gone, 'Room connection cancelled');
       return;
     }
     if (message.type !== 'offer' && !(message.type === 'ice' && message.payload?.from === 'client')) return;
+    const time = now();
+    for (const [id, rate] of offers) if (time - rate.start >= 60000) offers.delete(id);
+    let rate = offers.get(message.peerId);
+    if (message.type === 'offer') {
+      if (!rate) {
+        if (offers.size >= 4096) return;
+        offers.set(message.peerId, rate = {start: time, count: 0});
+      }
+      if (++rate.count > 3) return;
+    }
     let connection = peers.get(message.peerId);
     if (!connection) {
-      if (peers.size >= 65536) return;
+      if (rate?.count > 3 || peers.size >= 65536) return;
+      const pending = [...peers.values()].filter(peer => peer.socket.readyState === CONNECTING);
+      if (pending.length >= 32) pending[0].socket.close(CLOSE.gone, 'Room connection cancelled');
       connection = createConnection({roomId, peerId: message.peerId, signalling, rtcConfig, host: true, onSocket,
-        onDispose: () => peers.delete(message.peerId)});
+        onDispose: () => { if (peers.get(message.peerId) === connection) peers.delete(message.peerId); }});
       peers.set(message.peerId, connection);
     }
     connection.accept(message);
@@ -479,5 +492,6 @@ export function listenRoom({roomId, signalling, onSocket, rtcConfig}) {
     unsubscribe();
     for (const {socket} of peers.values()) socket.close(4004, 'The host closed the private room.');
     peers.clear();
+    offers.clear();
   };
 }
