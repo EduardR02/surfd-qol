@@ -2,7 +2,7 @@ import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId } from './ids.js';
 import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
-import { connectSignal, newHostKey, SIGNAL_URL } from './signal-client.js';
+import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
 
 const CLOSED = ROOM_TEXTS.closed;
@@ -12,6 +12,9 @@ const SIGN_IN = 'Sign in to host a room.';
 const UNLISTED = "Rooms with Surfd or official in the name can't be public.";
 const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
+// How long the meeting point has to answer for relay credentials, how long
+// before they expire they are renewed, and how often a failed renewal retries.
+const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
 const VISIBILITY_KEY = 'surfd-qol-room-visibility';
 const NAME_KEY = 'surfd-qol-room-guest-name';
@@ -214,6 +217,55 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       userId: guest ? null : adapter.userId?.() ?? null, browserId: browserId()};
   }
   const roomName = () => `${hello().name}'s room`;
+  // TURN relay credentials, {config, ttl}, over a meeting point connection
+  // that is open or opening. Rejects with the service copy.
+  function askRelay(signal) {
+    if (signal.state === 'closed') return Promise.reject(new Error(SERVICE));
+    return new Promise((resolve, reject) => {
+      const stops = [];
+      const settle = (callback, value) => {
+        for (const stop of stops.splice(0)) stop();
+        timers.clearTimeout(timer);
+        callback(value);
+      };
+      const timer = timers.setTimeout(() => settle(reject, new Error(SERVICE)), RELAY_TIMEOUT);
+      // A host that reconnects asks again: an answer to its old socket is lost.
+      const ask = () => signal.send(null, 'ice-servers', null);
+      stops.push(signal.on('ice-servers', data => {
+        const relay = relayServers(data);
+        if (relay) settle(resolve, relay);
+        else settle(reject, new Error(SERVICE));
+      }));
+      stops.push(signal.on('error', data => { if (data?.code === 'no-relay') settle(reject, new Error(SERVICE)); }));
+      stops.push(signal.on('closed', () => settle(reject, new Error(SERVICE))));
+      stops.push(signal.on('ready', ask));
+      if (signal.state === 'open') ask();
+    });
+  }
+  // A guest asks on a meeting point connection of its own, closed straight after.
+  async function guestRelay(id) {
+    const signal = signalFactory({url: SIGNAL_URL, roomId: id, role: 'guest'});
+    try { return await askRelay(signal); } finally { signal.close(); }
+  }
+  // Renews credentials of ttl seconds before they expire, and again each
+  // time, until the returned stop() is called.
+  function keepRelay(ttl, renew, apply) {
+    let timer = null, stopped = false;
+    const wait = seconds => { timer = timers.setTimeout(attempt, Math.max(seconds * 500, seconds * 1000 - RELAY_RENEW_MS)); };
+    async function attempt() {
+      timer = null;
+      try {
+        const relay = await renew();
+        if (stopped) return;
+        apply(relay.config);
+        wait(relay.ttl);
+      } catch {
+        if (!stopped) timer = timers.setTimeout(attempt, RELAY_RETRY_MS);
+      }
+    }
+    wait(ttl);
+    return () => { stopped = true; timers.clearTimeout(timer); };
+  }
   function track(socket, id) {
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
@@ -282,6 +334,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     closing.room.close();
     closing.stop?.();
     closing.stopAccount?.();
+    closing.stopRelay?.();
     closing.signal?.close();
   }
   async function sampleUpload() {
@@ -445,10 +498,12 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         const signalling = relay(signal, id, true);
         const infoReplies = new Map();
         signal.on('peer-left', peer => infoReplies.delete(peer));
-        current.stop = listen({roomId: id, signalling, onSocket: (socket, identity) => {
+        current.stop = listen({roomId: id, signalling, rtcConfig: () => current.relayConfig, onSocket: (socket, identity) => {
           if (hosted !== current) { socket.close(4004, HOST_LEFT); return; }
           current.sockets.add(socket);
           socket.addEventListener('close', () => current.sockets.delete(socket), {once: true});
+          // A guest that connected while the host renewed its credentials catches up.
+          if (socket.relayConfig !== current.relayConfig) socket.renewRelay?.(current.relayConfig);
           current.room.addClient(socket, identity);
         }});
         signal.on('message', message => {
@@ -466,7 +521,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
           signal.on('ready', () => {
             if (hosted !== current) return;
             timers.clearTimeout(timer);
-            publish(true);
+            if (current.relayConfig) publish(true);
             resolve();
           });
           signal.on('closed', () => {
@@ -474,9 +529,17 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
             reject(new Error(SERVICE));
             if (hosted === current) closeHost();
           });
-          if (signal.state === 'open') { timers.clearTimeout(timer); publish(true); resolve(); }
+          if (signal.state === 'open') { timers.clearTimeout(timer); resolve(); }
         });
         if (hosted !== current) throw new Error(CLOSED);
+        const issued = await askRelay(signal);
+        if (hosted !== current) throw new Error(CLOSED);
+        current.relayConfig = issued.config;
+        current.stopRelay = keepRelay(issued.ttl, () => askRelay(signal), config => {
+          current.relayConfig = config;
+          for (const socket of current.sockets) socket.renewRelay?.(config);
+        });
+        publish(true);
         await join(id);
         return id;
       } catch (error) {
@@ -530,8 +593,14 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       }
       const session = guestSession(id);
       timers.clearTimeout(session.idleTimer);
+      let stopRelay = null;
       const socket = session.socket = socketFactory({roomId: id,
         peerId: () => session.signal.id, signalling: session.signalling, hello: hello(), maps: rooms().maps(),
+        async rtcConfig() {
+          const issued = await askRelay(session.signal);
+          if (socket.readyState < 2) stopRelay = keepRelay(issued.ttl, () => guestRelay(id), config => socket.renewRelay?.(config));
+          return issued.config;
+        },
         async onFailure() {
           if (destroyed || latestSockets.get(id) !== socket) return null;
           // A closing tab can destroy SCTP before its final control frame arrives.
@@ -546,7 +615,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
           return null;
         }});
       socket.addEventListener('open', () => closeGuest(session), {once: true});
-      socket.addEventListener('close', () => closeGuest(session), {once: true});
+      socket.addEventListener('close', () => { closeGuest(session); stopRelay?.(); }, {once: true});
       return track(socket, id);
     },
     leave(id) {

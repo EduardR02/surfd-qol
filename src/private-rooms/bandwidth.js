@@ -5,10 +5,10 @@ export function estimateBandwidth(players) {
   if (!Number.isInteger(players) || players < 0 || players > MAX_ROOM_PLAYERS) throw new RangeError('Invalid player count');
   const guests = Math.max(0, players - 1);
   if (!guests) return {upload: 0, download: 0};
-  // Two samples every 98ms, 50ms snapshots, 93B IP/UDP/DTLS/SCTP overhead per 1100B fragment,
+  // Two samples every 98ms, 50ms snapshots, 97B IP/UDP/TURN ChannelData/DTLS/SCTP overhead per 1100B fragment,
   // and one 30Hz spectator stream per guest in each direction; host loopback uses no network.
   const batchSeconds = 2 * 49 / 1000, tickSeconds = SNAPSHOT_INTERVAL_MS / 1000;
-  const overhead = 28 + 37 + 28, fragmentBytes = 1100;
+  const overhead = 28 + 4 + 37 + 28, fragmentBytes = 1100;
   const poseBytes = POSE_HEADER_BYTES + 2 * POSE_SAMPLE_BYTES;
   const blockBytes = SNAPSHOT_BLOCK_BYTES + 2 * POSE_SAMPLE_BYTES;
   const blocksPerTick = guests * tickSeconds / batchSeconds;

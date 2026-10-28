@@ -23,9 +23,18 @@ Hosting needs a surfd.net account, as the game's moderators always have one: a g
 The host connects to the meeting point with `role=host` and sends `{type: "auth", key}`, with a key from `newHostKey()`, as its first message; the key never goes in the URL. A guest's `role=guest` connection carries its `room-info` request and WebRTC offer/answer/ICE exchange, then closes when the peer connection opens. Leaving the meeting point does not leave the room.
 The host reconnects with its key after any unexpected meeting point close. Existing peer connections stay open. Hosts answer `room-info` at most once per peer every 5 seconds and accept at most 3 offers per peer per minute. At most 32 negotiations may be unfinished; a new one replaces the oldest. Unfinished negotiations expire after 15 seconds.
 
+Every peer connection goes through Cloudflare's TURN relay, so no player sees another's IP address: `RTCPeerConnection` gets only the meeting point's TURN servers, with `iceTransportPolicy: "relay"`, and there is no direct fallback. The host asks for credentials with `ice-servers` once it has sent its key; a guest asks on its `role=guest` connection before it makes its offer. When the meeting point can't issue them (an error `no-relay`, or no answer within 10 seconds), hosting fails and a joining socket closes with 4000, both with "Couldn't reach the room service. Try again in a moment."; the game retries 4000. Credentials last `ttl` seconds (4 hours) and are renewed 15 minutes before they expire, retried every minute if that fails: a guest asks on a meeting point connection of its own, closed straight after, and the host on its own connection. New credentials restart ICE over the open control channel, where the guest always makes the offer:
+
+| Control message | From | Meaning |
+| --- | --- | --- |
+| `{type: "restart"}` | host | the host renewed; the guest restarts ICE (at most 3 a minute, the rest ignored) |
+| `{type: "offer", description}` | guest | an ICE restart offer; a host closes with 4002 past 3 a minute |
+| `{type: "answer", description}` | host | its answer |
+| `{type: "ice", candidate}` | either | a candidate gathered once the socket is open, sent after the description it belongs to |
+
 Public hosts send `listing` with `{name, mapId, players}` when the row changes and at least every 30 seconds; `listing` with `null` makes the room private. `GET /rooms` returns `{rooms:[{id,name,mapId,players,updatedAt}]}`. The directory is fetched only while the server browser is open, at most once every 10 seconds, and rows the browser would refuse are skipped. A room whose name contains "surfd" or "official", in any case, can't be public.
 
-Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; upload stats are sampled only while the host's own room is shown.
+Outside the server browser, hosting and being in a room, private rooms make no requests and run no timers. Invite lookups and directory fetches wait for the server browser and stop when it closes. A public host renews its listing every 30 seconds; relay credentials are renewed only while hosting or in a room; upload stats are sampled only while the host's own room is shown.
 
 Names follow the site's username rules: 3–24 letters, digits, `_` or `-`. Guest names are `Guest_` plus five lowercase hex characters, kept in localStorage. Signed-in players use their username. The host's room name is `<name>'s room`. Guests refuse other player, chat and room names.
 

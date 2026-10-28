@@ -6,6 +6,8 @@ const OTHER = 'p-nmkjhgfedcba';
 const CLOSED = 'This private room has closed.';
 const ACCOUNT = '00000000-0000-4000-8000-000000000001';
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
+const RELAY = {iceServers: [{urls: ['turn:turn.example:3478?transport=udp'], username: 'user', credential: 'secret'}], ttl: 4 * 60 * 60};
+const RELAY_CONFIG = {iceServers: RELAY.iceServers, iceTransportPolicy: 'relay'};
 const row = (id = ROOM) => ({id, name: "Guest's room", mapId: 'map', mapTitle: 'Map', players: 2, epoch: 1, updatedAt: 100});
 
 class Signal {
@@ -14,6 +16,9 @@ class Signal {
   host = null;
   sent = [];
   handlers = new Map();
+  // The meeting point's answer to a request for relay credentials; null refuses, 'hold' never answers.
+  relay = RELAY;
+  relayRequests = 0;
   constructor(options) { this.options = options; }
   on(type, callback) {
     if (!this.handlers.has(type)) this.handlers.set(type, new Set());
@@ -29,6 +34,12 @@ class Signal {
   }
   send(to, type, data) {
     if (this.state !== 'open') return false;
+    if (type === 'ice-servers') {
+      this.relayRequests++;
+      const answer = this.relay;
+      if (answer !== 'hold') queueMicrotask(() => answer ? this.emit('ice-servers', answer) : this.emit('error', {code: 'no-relay'}));
+      return true;
+    }
     this.sent.push({to, type, data});
     return true;
   }
@@ -39,6 +50,9 @@ class Signal {
 class Socket extends EventTarget {
   readyState = 0;
   sent = [];
+  renewals = [];
+  relayConfig = RELAY_CONFIG;
+  renewRelay(config) { this.renewals.push(config); this.relayConfig = config; }
   statsCalls = 0;
   stats = new Map();
   send(data) { this.sent.push(data); }
@@ -201,11 +215,11 @@ describe('private room runtime', () => {
     } finally { globalThis.location = previous; f.runtime.destroy(); }
   });
 
-  test('leaving or failing hosting releases its heartbeat', async () => {
+  test('leaving or failing hosting releases its heartbeat and relay renewal', async () => {
     const f = fixture();
     try {
       await f.host({visibility: 'public'});
-      expect(f.timers.pending()).toBe(1);
+      expect(f.timers.pending()).toBe(2);
       f.runtime.leave();
       expect(f.timers.pending()).toBe(0);
       const pending = f.runtime.host();
@@ -301,6 +315,93 @@ describe('private room runtime', () => {
       f.timers.advance(1);
       signal.message('room-info', null, 'visitor');
       expect(signal.sent).toHaveLength(count + 2);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('hosting needs relay credentials and fails with the service copy without them', async () => {
+    for (const relay of [null, {...RELAY, iceServers: [{urls: ['stun:stun.example:3478']}]}, 'hold']) {
+      const f = fixture();
+      try {
+        const pending = f.runtime.host({visibility: 'public'});
+        f.signals[0].relay = relay;
+        f.signals[0].ready();
+        await flush();
+        f.timers.advance(10000);
+        await expect(pending).rejects.toThrow(SERVICE);
+        expect(f.signals[0].relayRequests).toBe(1);
+        expect(f.signals[0].sent.filter(message => message.data !== null)).toEqual([]);
+        expect(f.runtime.hosting()).toBeNull();
+        expect(f.joined).toEqual([]);
+        expect(f.timers.pending()).toBe(0);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+
+  test('guests connect through the host relay credentials, renewed before they expire', async () => {
+    const f = fixture();
+    try {
+      await f.host();
+      const signal = f.signals[0], rtcConfig = f.listeners[0].rtcConfig;
+      expect(signal.relayRequests).toBe(1);
+      expect(rtcConfig()).toEqual(RELAY_CONFIG);
+      const peer = new Socket(); peer.open();
+      peer.relayConfig = rtcConfig();
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}, browserId: crypto.randomUUID()});
+      expect(peer.renewals).toEqual([]);
+      const fresh = {...RELAY, iceServers: [{...RELAY.iceServers[0], username: 'fresh'}]};
+      signal.relay = null;
+      f.timers.advance(RELAY.ttl * 1000 - 15 * 60 * 1000); await flush();
+      expect(signal.relayRequests).toBe(2);
+      expect(peer.renewals).toEqual([]);
+      // A failed renewal is tried again a minute later.
+      signal.relay = fresh;
+      f.timers.advance(60000); await flush();
+      expect(signal.relayRequests).toBe(3);
+      expect(peer.renewals).toEqual([{iceServers: fresh.iceServers, iceTransportPolicy: 'relay'}]);
+      expect(rtcConfig()).toEqual(peer.renewals[0]);
+      // A guest that connected on the old credentials catches up when it opens.
+      const late = new Socket(); late.open();
+      f.listeners[0].onSocket(late, {name: 'Late', guest: true, appearance: {}, browserId: crypto.randomUUID()});
+      expect(late.renewals).toEqual([rtcConfig()]);
+      f.runtime.leave();
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('a guest connects only with relay credentials and renews them while in the room', async () => {
+    const f = fixture();
+    try {
+      const session = await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      const config = await socket.options.rtcConfig();
+      expect(config).toEqual(RELAY_CONFIG);
+      expect(session.relayRequests).toBe(1);
+      socket.open();
+      expect(session.state).toBe('closed');
+      expect(f.timers.pending()).toBe(1);
+      f.timers.advance(RELAY.ttl * 1000 - 15 * 60 * 1000);
+      // Renewing takes a meeting point connection of the guest's own, closed after.
+      const renewal = f.signals.at(-1);
+      expect(renewal).not.toBe(session);
+      expect(renewal.options).toMatchObject({roomId: ROOM, role: 'guest'});
+      renewal.ready(); await flush();
+      expect(renewal.relayRequests).toBe(1);
+      expect(renewal.state).toBe('closed');
+      expect(socket.renewals).toEqual([RELAY_CONFIG]);
+      expect(f.timers.pending()).toBe(1);
+      socket.close();
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('joining fails with the service copy when the meeting point refuses credentials', async () => {
+    const f = fixture();
+    try {
+      const session = await f.join();
+      session.relay = null;
+      const socket = f.runtime.roomSocket(ROOM);
+      await expect(socket.options.rtcConfig()).rejects.toThrow(SERVICE);
+      expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 
@@ -424,7 +525,8 @@ describe('private room runtime', () => {
       next.runtime.destroy();
       f.runtime.setVisibility('private');
       expect(signal.sent.at(-1)).toEqual({to: null, type: 'listing', data: null});
-      expect(f.timers.pending()).toBe(0);
+      // Only the relay renewal is left.
+      expect(f.timers.pending()).toBe(1);
     } finally { f.runtime.destroy(); }
   });
 
@@ -706,7 +808,8 @@ describe('private room runtime', () => {
       f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}, browserId: crypto.randomUUID()});
       f.timers.advance(30000); await flush();
       expect(peer.statsCalls).toBe(0);
-      expect(f.timers.pending()).toBe(0);
+      // Only the relay renewal waits while the room isn't shown.
+      expect(f.timers.pending()).toBe(1);
       f.open(true);
       f.adapter.rooms.selected = () => id;
       f.runtime.showHostDetails(true);
@@ -720,7 +823,7 @@ describe('private room runtime', () => {
       const calls = peer.statsCalls;
       f.timers.advance(30000); await flush();
       expect(peer.statsCalls).toBe(calls);
-      expect(f.timers.pending()).toBe(0);
+      expect(f.timers.pending()).toBe(1);
     } finally { f.runtime.destroy(); }
   });
 

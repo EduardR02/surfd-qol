@@ -22,7 +22,7 @@ export const ROOM_ID = new RegExp(`^p-[${ALPHABET}]{12}$`);
 export const HOST_KEY = /^[0-9a-f]{32,128}$/;
 // How long a host has to send its key, its first message, after connecting.
 export const AUTH_MS = 5000;
-// Guests connected at once. They leave once their direct connection to the
+// Guests connected at once. They leave once their connection to the
 // host is up, so this bounds joins in flight (and abuse), not a room's size.
 export const MAX_GUESTS = 100;
 // So that one client can't take a room's guest places by itself.

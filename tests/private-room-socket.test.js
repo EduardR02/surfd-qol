@@ -8,7 +8,8 @@ const once = (target, type) => new Promise(resolve => target.addEventListener(ty
 const originalRTC = globalThis.RTCPeerConnection;
 const originalBroadcast = globalThis.BroadcastChannel;
 const cleanups = [];
-const directFailure = "Couldn't connect to the host. Their network or yours may block direct connections.";
+const directFailure = "Couldn't connect to the host.";
+const RELAY_SERVER = {urls: ['turn:turn.example:3478?transport=udp'], username: 'user', credential: 'secret'};
 const pose = {time: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: 0, flags: 0, seconds: 0};
 const batch = (sequence, slot = 0) => ({sequence, slot, epoch: 1, samples: [pose]});
 const spectator = (sequence, slot) => ({
@@ -114,9 +115,13 @@ function fakeRTC({holdHostBinary = false, holdClientBinary = false, rejectRemote
       // ICE deliberately races ahead of offer/answer publication.
       this.onicecandidate?.({candidate: {toJSON: () => ({candidate: 'candidate-' + this.id})}});
     }
+    setConfiguration(config) { this.config = config; }
+    restartIce() { this.restarts = (this.restarts ?? 0) + 1; }
     async setRemoteDescription(description) {
       if (rejectRemote) throw new Error('Rejected remote description');
       this.remoteDescription = description;
+      // An ICE restart renegotiates over the open channels.
+      if (description.type === 'offer' && this.client) return;
       if (description.type === 'offer') {
         this.client = connections[Number(description.sdp)];
         this.client.host = this;
@@ -398,7 +403,7 @@ describe('private room WebRTC socket', () => {
     expect(accepted[0].hello).toEqual({name: 'Guest', appearance: {color: 'blue'}, guest: true});
     expect(accepted[0].socket.readyState).toBe(client.OPEN);
     expect(events).toEqual(['accept', 'open', JSON.stringify(welcome())]);
-    expect(connections[0].config).toEqual({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+    expect(connections[0].config).toEqual({iceServers: [], iceTransportPolicy: 'relay'});
     expect(connections[0].channels[0]).toMatchObject({ordered: true, protocol: 'surfd-v1'});
     expect(connections[0].channels[1]).toMatchObject({ordered: false, maxRetransmits: 0, protocol: 'surfd-v1'});
     expect(connections[0].candidates).toEqual([{candidate: 'candidate-1'}]);
@@ -493,9 +498,9 @@ describe('private room WebRTC socket', () => {
     expect(messages).toEqual([]);
   });
 
-  test('isolates room and peer signalling and honors supplied RTC configuration', async () => {
+  test('isolates room and peer signalling and connects only through the supplied relay', async () => {
     const connections = fakeRTC(), signalling = signalBus(), accepted = new Map();
-    const rtcConfig = {iceServers: []};
+    const rtcConfig = {iceServers: [RELAY_SERVER, {urls: 'stun:stun.example:3478'}], iceTransportPolicy: 'all', bundlePolicy: 'balanced'};
     const stop = listenRoom({roomId: 'a', signalling, rtcConfig, onSocket(socket, hello) {
       accepted.set(hello.name, socket);
     }});
@@ -508,7 +513,9 @@ describe('private room WebRTC socket', () => {
     cleanups.push(() => { for (const client of clients) client.close(); });
     await nextTask();
     expect(connections).toHaveLength(4);
-    expect(connections.every(connection => connection.config === rtcConfig)).toBe(true);
+    for (const connection of connections) {
+      expect(connection.config).toEqual({iceServers: rtcConfig.iceServers, iceTransportPolicy: 'relay'});
+    }
     expect(accepted.size).toBe(2);
     const messages = [];
     clients.forEach((client, index) => { client.onmessage = event => messages.push([index, event.data]); });
@@ -541,6 +548,91 @@ describe('private room WebRTC socket', () => {
     expect(connections[0].connectionState).toBe('closed');
     resolve({code: 4004, reason: 'The host closed the private room.'});
     expect(await closed).toMatchObject({code: 4004, reason: 'The host closed the private room.'});
+  });
+
+  test('waits for relay credentials before connecting', async () => {
+    const connections = fakeRTC(), signalling = signalBus();
+    let resolve;
+    const client = createPeerSocket({roomId: 'a', peerId: 'p', signalling, hello: {guest: true},
+      rtcConfig: () => new Promise(done => { resolve = done; })});
+    cleanups.push(() => client.close());
+    await nextTask();
+    expect(connections).toEqual([]);
+    expect(signalling.messages).toEqual([]);
+    const relay = {iceServers: [RELAY_SERVER], iceTransportPolicy: 'relay'};
+    resolve(relay);
+    await nextTask();
+    expect(connections[0].config).toEqual(relay);
+    expect(client.relayConfig).toBe(relay);
+    expect(signalling.messages.map(message => message.type)).toEqual(['ice', 'offer']);
+  });
+
+  test('without relay credentials the socket closes with the reason for a retry', async () => {
+    const connections = fakeRTC(), signalling = signalBus();
+    const client = createPeerSocket({roomId: 'a', peerId: 'p', signalling, hello: {guest: true},
+      rtcConfig: async () => { throw new Error("Couldn't reach the room service. Try again in a moment."); }});
+    let error;
+    client.onerror = event => { error = event.error; };
+    expect(await once(client, 'close')).toMatchObject({code: 4000, reason: "Couldn't reach the room service. Try again in a moment.", wasClean: false});
+    expect(error.message).toBe("Couldn't reach the room service. Try again in a moment.");
+    expect(connections).toEqual([]);
+    expect(signalling.subscribers).toBe(0);
+  });
+
+  test('renewed credentials restart ICE over the control channel and keep the room open', async () => {
+    const {client, connections, accepted, signalling} = rtcPair();
+    await nextTask();
+    const [guest, host] = connections, before = signalling.messages.length;
+    const controls = channel => channel.sent.filter(text => typeof text === 'string').map(JSON.parse);
+    const fresh = {iceServers: [{...RELAY_SERVER, username: 'fresh'}], iceTransportPolicy: 'relay'};
+    client.renewRelay(fresh);
+    await nextTask();
+    expect(guest.config).toEqual(fresh);
+    expect(guest.restarts).toBe(1);
+    expect(client.relayConfig).toBe(fresh);
+    // The meeting point is gone by now; the offer, the answer and their candidates use the room's own channel.
+    expect(signalling.messages).toHaveLength(before);
+    expect(controls(guest.channels[0]).map(message => message.type)).toEqual(['hello', 'offer', 'ice']);
+    expect(controls(host.channels[0]).map(message => message.type)).toEqual(['ready', 'data', 'answer', 'ice']);
+    expect(host.candidates.at(-1)).toEqual({candidate: 'candidate-0'});
+    expect(guest.candidates.at(-1)).toEqual({candidate: 'candidate-1'});
+    expect([client.readyState, accepted[0].socket.readyState]).toEqual([client.OPEN, client.OPEN]);
+
+    // The host renews its own and asks its guest to restart.
+    const hostFresh = {iceServers: [{...RELAY_SERVER, username: 'host-fresh'}], iceTransportPolicy: 'relay'};
+    accepted[0].socket.renewRelay(hostFresh);
+    await nextTask();
+    expect(host.config).toEqual(hostFresh);
+    expect(guest.restarts).toBe(2);
+    expect(controls(host.channels[0]).map(message => message.type)).toEqual(['ready', 'data', 'answer', 'ice', 'restart', 'answer', 'ice']);
+    expect([client.readyState, accepted[0].socket.readyState]).toEqual([client.OPEN, client.OPEN]);
+  });
+
+  test('a guest restarts at most three times a minute for its host, and a host takes at most three offers', async () => {
+    const {client, connections, accepted} = rtcPair();
+    await nextTask();
+    const [guest, host] = connections;
+    for (let i = 0; i < 4; i++) {
+      accepted[0].socket.renewRelay({iceServers: [RELAY_SERVER]});
+      await nextTask();
+    }
+    expect(guest.restarts).toBe(3);
+    expect(client.readyState).toBe(client.OPEN);
+    const closed = once(accepted[0].socket, 'close');
+    guest.channels[0].send(JSON.stringify({type: 'offer', description: {type: 'offer', sdp: '0'}}));
+    expect(await closed).toMatchObject({code: CLOSE.invalid});
+    expect(host.connectionState).toBe('closed');
+  });
+
+  test('renegotiation messages out of turn close the socket as invalid', async () => {
+    for (const message of [{type: 'answer', description: {type: 'answer', sdp: '1'}}, {type: 'ice', candidate: 'x'},
+      {type: 'offer', description: {type: 'offer', sdp: '1'}}]) {
+      const {client, connections} = rtcPair();
+      await nextTask();
+      const closed = once(client, 'close');
+      connections[1].channels[0].send(JSON.stringify(message));
+      expect(await closed).toMatchObject({code: CLOSE.invalid});
+    }
   });
 
   test('surfaces unavailable RTC asynchronously so callers can attach error handlers', async () => {

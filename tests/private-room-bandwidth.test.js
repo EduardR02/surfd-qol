@@ -16,6 +16,12 @@ describe('private room bandwidth', () => {
     expect(thirtyTwo.download / sixteen.download).toBeCloseTo(31 / 15, 10);
   });
 
+  test('counts IP, UDP, TURN ChannelData, DTLS and SCTP headers on every packet', () => {
+    const overhead = 20 + 8 + 4 + 37 + 28;
+    // One guest: a 76-byte pose batch every 98 ms and a 56-byte spectator frame 30 times a second.
+    expect(estimateBandwidth(2).download).toBeCloseTo(((76 + overhead) / 0.098 + (56 + overhead) * 30) * 8 / 1e6, 10);
+  });
+
   test('accepts a full room and rejects invalid counts', () => {
     expect(Number.isFinite(estimateBandwidth(MAX_ROOM_PLAYERS).upload)).toBe(true);
     for (const value of [-1, 1.5, NaN, Infinity, MAX_ROOM_PLAYERS + 1, '8', null]) expect(() => estimateBandwidth(value)).toThrow();

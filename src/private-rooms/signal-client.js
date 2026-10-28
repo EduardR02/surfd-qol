@@ -4,7 +4,8 @@
 // a guest sends with to = null, as it only ever talks to the host, and send()
 // returns false while not connected. Events: 'ready' {id, host} on each
 // (re)connection, 'message' {from, type, data}, 'peer-joined' and 'peer-left'
-// (host only, with a guest's id), 'reconnecting', 'error' {code, to} for a
+// (host only, with a guest's id), 'reconnecting', 'ice-servers' with the TURN
+// credentials sent for an 'ice-servers' request, 'error' {code, to} for a
 // message the relay refused, and 'closed' with a reason (REASONS, 'closed',
 // 'unreachable' or 'lost'), once and last. A host whose socket drops
 // reconnects with its key; existing peer connections do not depend on the relay.
@@ -40,6 +41,23 @@ function randomString(length) {
 export const newRoomId = () => `p-${randomString(12)}`;
 // 128 random bits, as hex: what lets a host, and only it, reclaim its room.
 export const newHostKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+
+// The meeting point's TURN credentials as {config, ttl}: an RTCConfiguration
+// that only ever connects through the relay, and how many seconds it lasts.
+// Null for anything else.
+export function relayServers(data) {
+  const servers = data?.iceServers, ttl = data?.ttl;
+  if (!Array.isArray(servers) || !servers.length || servers.length > 8 || !Number.isSafeInteger(ttl) || ttl < 60) return null;
+  const iceServers = [];
+  for (const server of servers) {
+    const urls = server?.urls;
+    if (!Array.isArray(urls) || !urls.length || urls.length > 16 ||
+        !urls.every(url => typeof url === 'string' && url.length <= 256 && /^turns?:/.test(url)) ||
+        typeof server.username !== 'string' || typeof server.credential !== 'string') return null;
+    iceServers.push({urls: [...urls], username: server.username, credential: server.credential});
+  }
+  return {config: {iceServers, iceTransportPolicy: 'relay'}, ttl};
+}
 
 const after = (callback, ms) => {
   const id = setTimeout(callback, ms);
@@ -115,7 +133,8 @@ export function connectSignal({url = SIGNAL_URL, roomId, role, key = null, WebSo
       if (role === 'host' && !peers.has(from)) { peers.add(from); emit('peer-joined', from); }
     } else if (type === 'peer-left') {
       if (peers.delete(from)) emit('peer-left', from);
-    } else if (type === 'error') emit('error', data);
+    } else if (type === 'ice-servers') emit('ice-servers', data);
+    else if (type === 'error') emit('error', data);
     else emit('message', {from, type, data});
   }
   function welcome(data) {

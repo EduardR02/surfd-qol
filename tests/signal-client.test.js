@@ -1,9 +1,10 @@
 import {expect, test} from 'bun:test';
-import {GRACE_MS, REASONS, ROOM_ID, connectSignal, newHostKey, newRoomId} from '../src/private-rooms/signal-client.js';
+import {GRACE_MS, REASONS, ROOM_ID, connectSignal, newHostKey, newRoomId, relayServers} from '../src/private-rooms/signal-client.js';
 import {createRoom, parseRequest} from '../signal/src/room.js';
 
 const ROOM = 'p-abcdefghjkmn', KEY = 'a'.repeat(32), AUTH = JSON.stringify({type: 'auth', key: KEY});
-const EVENTS = ['ready', 'message', 'peer-joined', 'peer-left', 'reconnecting', 'error', 'closed'];
+const EVENTS = ['ready', 'message', 'peer-joined', 'peer-left', 'reconnecting', 'ice-servers', 'error', 'closed'];
+const TURN = {urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c'};
 
 // A socket the test plays the relay for.
 class FakeSocket {
@@ -123,6 +124,24 @@ test('a guest talks only to the host, which is implied', () => {
   expect([client.id, client.host]).toEqual(['g1', 'h1']);
   expect(client.send(null, 'answer', {sdp: 'a'})).toBe(true);
   expect(room.socket.last).toEqual({type: 'answer', data: {sdp: 'a'}});
+});
+
+test('relay credentials arrive as their own event and become a relay-only configuration', () => {
+  const room = rig();
+  const client = room.connect({role: 'guest'});
+  room.socket.accept({id: 'g1', host: 'h1'});
+  room.heard();
+  expect(client.send(null, 'ice-servers', null)).toBe(true);
+  expect(room.socket.last).toEqual({type: 'ice-servers', data: null});
+  room.socket.deliver({type: 'ice-servers', data: {iceServers: [TURN], ttl: 14400}});
+  room.socket.deliver({type: 'error', data: {code: 'no-relay'}});
+  expect(room.heard()).toEqual([['ice-servers', {iceServers: [TURN], ttl: 14400}], ['error', {code: 'no-relay'}]]);
+  expect(relayServers({iceServers: [TURN], ttl: 14400})).toEqual({config: {iceServers: [TURN], iceTransportPolicy: 'relay'}, ttl: 14400});
+  for (const data of [null, {iceServers: [], ttl: 14400}, {iceServers: [TURN]}, {iceServers: [TURN], ttl: 30},
+    {iceServers: [{...TURN, urls: ['stun:stun.cloudflare.com:3478']}], ttl: 14400}, {iceServers: [{...TURN, urls: 'turn:x'}], ttl: 14400},
+    {iceServers: [{...TURN, credential: 1}], ttl: 14400}, {iceServers: Array(9).fill(TURN), ttl: 14400}]) {
+    expect(relayServers(data)).toBeNull();
+  }
 });
 
 test('relay refusals end guest connections without retrying', () => {

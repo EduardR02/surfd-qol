@@ -3,8 +3,16 @@ import {CLOSE, MAX_CONTROL_BYTES, ROOM_TEXTS, createRoomControlReader, createRoo
 
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 const PROTOCOL = 'surfd-v1';
-const RTC_CONFIG = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
-const DIRECT_FAILURE = "Couldn't connect to the host. Their network or yours may block direct connections.";
+const CONNECT_FAILURE = "Couldn't connect to the host.";
+// Closes a socket whose relay credentials couldn't be had; the game retries it.
+const NO_RELAY = 4000;
+// Peers connect only through the TURN relay the meeting point issues, so no
+// player ever sees another's IP address. Without relay servers nothing connects.
+const relayOnly = config => ({iceServers: config?.iceServers ?? [], iceTransportPolicy: 'relay'});
+// ICE restarts one peer may ask of the other, per minute.
+const RESTARTS = 3;
+const description = value => value && typeof value === 'object' && ['offer', 'answer'].includes(value.type) && typeof value.sdp === 'string';
+const plain = value => value.toJSON ? value.toJSON() : value;
 const encoder = new TextEncoder();
 
 class RoomSocket extends EventTarget {
@@ -219,6 +227,11 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
   let negotiationTimer, queuedNegotiations = 0, remoteReceived = false;
+  // used: the relay credentials the peer connection runs on. Local candidates
+  // wait in held while a renegotiation's description is on its way, so the
+  // other side never gets a candidate before the description it belongs to.
+  let used = null, describing = false, restarting = false, restartAgain = false;
+  const held = [], restarts = [];
   const incoming = createRoomControlReader(host ? null : createRoomFilter({roomId, maps}));
   let negotiation = Promise.resolve();
   const candidates = [];
@@ -250,9 +263,9 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
     dispose();
     if (wasOpen && onFailure) {
       Promise.resolve().then(onFailure).then(info => {
-        socket._finish(info?.code ?? 1006, info?.reason ?? DIRECT_FAILURE, false);
-      }, () => socket._finish(1006, DIRECT_FAILURE, false));
-    } else socket._finish(1006, DIRECT_FAILURE, false);
+        socket._finish(info?.code ?? 1006, info?.reason ?? CONNECT_FAILURE, false);
+      }, () => socket._finish(1006, CONNECT_FAILURE, false));
+    } else socket._finish(1006, CONNECT_FAILURE, false);
   };
   const invalid = error => {
     if (disposed) return;
@@ -327,6 +340,38 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
           if (!closeInfo || socket.readyState !== CLOSING) throw new Error('Unexpected room close acknowledgement');
           drainClose();
           break;
+        // Renewing relay credentials restarts ICE, negotiated over this channel.
+        case 'restart':
+          if (host) throw new Error('Unexpected room restart');
+          if (socket.readyState === OPEN && recent(restarts)) restart();
+          break;
+        case 'offer':
+          if (!host || !description(message.description) || message.description.type !== 'offer') throw new Error('Unexpected room offer');
+          if (socket.readyState !== OPEN) break;
+          if (!recent(restarts)) throw new Error('Too many room restarts');
+          enqueue(async () => {
+            await pc.setRemoteDescription(message.description);
+            describing = true;
+            await pc.setLocalDescription(await pc.createAnswer());
+            sendLocal('answer');
+          });
+          break;
+        case 'answer':
+          if (host || !restarting || !description(message.description) || message.description.type !== 'answer') throw new Error('Unexpected room answer');
+          enqueue(async () => {
+            await pc.setRemoteDescription(message.description);
+            restarting = false;
+            if (restartAgain) { restartAgain = false; restart(); }
+          });
+          break;
+        case 'ice':
+          if (!message.candidate || typeof message.candidate !== 'object' || typeof message.candidate.candidate !== 'string') throw new Error('Invalid room ICE');
+          if (socket.readyState !== OPEN) break;
+          enqueue(async () => {
+            // A stray candidate from before a restart isn't worth closing the room over.
+            try { await pc.addIceCandidate(message.candidate); } catch { /* ignored */ }
+          });
+          break;
         default:
           throw new Error('Unknown room control message');
       }
@@ -399,6 +444,46 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
     negotiation = negotiation.then(() => { if (!disposed) return callback(); }).catch(fail)
       .finally(() => { queuedNegotiations--; });
   };
+  // True while fewer than RESTARTS happened in the last minute, counting this one.
+  const recent = times => {
+    const time = Date.now();
+    while (times.length && time - times[0] >= 60000) times.shift();
+    if (times.length >= RESTARTS) return false;
+    times.push(time);
+    return true;
+  };
+  const sendLocal = type => {
+    describing = false;
+    if (disposed) return;
+    sendControl({type, description: plain(pc.localDescription)});
+    for (const candidate of held.splice(0)) sendControl({type: 'ice', candidate});
+  };
+  // Only the guest offers, so restarts never collide; a restart asked for
+  // during another one follows it.
+  const restart = () => {
+    if (host || disposed || socket.readyState !== OPEN) return;
+    if (restarting) { restartAgain = true; return; }
+    restarting = true;
+    enqueue(async () => {
+      pc.restartIce();
+      describing = true;
+      await pc.setLocalDescription(await pc.createOffer());
+      sendLocal('offer');
+    });
+  };
+  // Fresh relay credentials: the guest restarts ICE with them, and the host
+  // asks its guest to restart so that it gathers with its own.
+  socket.renewRelay = config => {
+    if (disposed || !pc) return;
+    used = config;
+    try {
+      pc.setConfiguration(relayOnly(config));
+      if (socket.readyState !== OPEN) return;
+      if (host) sendControl({type: 'restart'});
+      else restart();
+    } catch (error) { fail(error); }
+  };
+  Object.defineProperty(socket, 'relayConfig', {get: () => used});
   const setRemote = async description => {
     await pc.setRemoteDescription(description);
     if (disposed) return;
@@ -421,7 +506,7 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
         await setRemote(message.payload);
         if (disposed) return;
         await pc.setLocalDescription(await pc.createAnswer());
-        if (!disposed) signal('answer', pc.localDescription.toJSON ? pc.localDescription.toJSON() : pc.localDescription);
+        if (!disposed) signal('answer', plain(pc.localDescription));
       });
     } else if (!host && message.type === 'answer') {
       if (remoteReceived) { invalid(new Error('Repeated room answer')); return; }
@@ -429,13 +514,17 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
       enqueue(() => setRemote(message.payload));
     }
   };
-  try {
-    negotiationTimer = setTimeout(() => fail(new Error('Room negotiation timed out')), 15000);
-    pc = new RTCPeerConnection(rtcConfig ?? RTC_CONFIG);
+  const start = config => {
+    used = config;
+    pc = new RTCPeerConnection(relayOnly(config));
     pc.onicecandidate = event => {
       if (disposed || !event.candidate) return;
       try {
-        signal('ice', {from: host ? 'host' : 'client', candidate: event.candidate.toJSON()});
+        const candidate = event.candidate.toJSON();
+        // Once open, the meeting point may be gone; the control channel carries it.
+        if (socket.readyState !== OPEN) signal('ice', {from: host ? 'host' : 'client', candidate});
+        else if (describing) held.push(candidate);
+        else sendControl({type: 'ice', candidate});
       } catch (error) { fail(error); }
     };
     pc.onconnectionstatechange = () => {
@@ -448,9 +537,24 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
       attach(pc.createDataChannel('binary', {ordered: false, maxRetransmits: 0, protocol: PROTOCOL}));
       enqueue(async () => {
         await pc.setLocalDescription(await pc.createOffer());
-        if (!disposed) signal('offer', pc.localDescription.toJSON ? pc.localDescription.toJSON() : pc.localDescription);
+        if (!disposed) signal('offer', plain(pc.localDescription));
       });
     }
+  };
+  try {
+    negotiationTimer = setTimeout(() => fail(new Error('Room negotiation timed out')), 15000);
+    if (typeof rtcConfig !== 'function') start(rtcConfig);
+    else enqueue(async () => {
+      let config;
+      try { config = await rtcConfig(); } catch (error) {
+        if (disposed) return;
+        socket._state = CLOSING;
+        socket._emit('error', {error});
+        finish(NO_RELAY, error.message, false);
+        return;
+      }
+      if (!disposed) start(config);
+    });
   } catch (error) { queueMicrotask(() => fail(error)); }
   return {socket, accept};
 }
