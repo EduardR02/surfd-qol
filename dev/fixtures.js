@@ -100,9 +100,9 @@ for (const [key, map] of Object.entries(maps)) {
 
 // Per-touch stats in the shape history.touchStats gives: reach falls along the
 // route, speed grows, and the PB and WR touch a little flatter than your mean.
-// touch=collecting leaves the map short of 50 runs; touch=none has no records.
+// touch=few has 23 runs recorded; touch=none has none.
 function touchStatsFor(map, mode) {
-  const runs = mode === 'collecting' ? 23 : mode === 'none' ? 0 : Math.min(200, map.totals.attempts);
+  const runs = mode === 'few' ? 23 : mode === 'none' ? 0 : Math.min(200, map.totals.attempts);
   const touches = map.ramps.map((ramp, n) => {
     const reach = runs ? round(Math.max(0.18, 1 - n * 0.07 - noise(n + 40) * 0.05), 3) : null;
     const speed = 1900 + n * 120 + noise(n + 7) * 90, angle = ramp.clean ? 14.2 : 2.2 + noise(n + 21) * 3.4;
@@ -116,7 +116,7 @@ function touchStatsFor(map, mode) {
       angle: runs ? {best: round(angle), last10: round(angle + 0.9 + noise(n + 3) * 0.6), avg: round(angle + 1.2 + noise(n + 5) * 0.5)} : {best: null, last10: null, avg: null},
       pb: n === 4 || n === 8 ? null : reference(1), wr: n === 8 ? null : reference(2.2)};
   });
-  return {runs, collecting: runs < 50, touches};
+  return {runs, touches};
 }
 
 export function createHistory({settings, empty = false, current = 'utopia:3', touch = null} = {}) {
@@ -156,7 +156,7 @@ export function createHistory({settings, empty = false, current = 'utopia:3', to
       return {key, name: map.name, kind: map.kind, totals: map.totals, pb: map.pb, latest: map.runs[0] ?? null, recent: recentOf(map),
         recentBest: highlights.get(key), start: map.start, splits: map.splits.map((split, index) => ({...split, index})), ramps};
     },
-    touchStats: key => shown[key] ? touchStatsFor(shown[key], key === 'mesa:2' ? 'collecting' : touch) : null,
+    touchStats: key => shown[key] ? touchStatsFor(shown[key], key === 'mesa:2' ? 'few' : touch) : null,
     run: id => Object.values(shown).flatMap(map => [map.pb, ...map.runs]).find(run => run?.id === id) ?? null,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async resetRampAverages(key) { resetMaps.add(key); for (const listener of listeners) listener(); },

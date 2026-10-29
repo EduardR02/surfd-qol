@@ -116,8 +116,6 @@ export function compareRamp(value, reference, tolerance = 0) {
 
 // The statistic a touch value shows for each of the Ramps view's modes.
 const TOUCH_STAT = {best: 'best', recent: 'last10', average: 'avg'};
-// Touch stats are firm once a map has this many runs; they show from the first.
-export const TOUCH_MIN_RUNS = 50;
 // How much steeper than the reference an angle can be and still count as near.
 export const ANGLE_NEAR = 0.5;
 // Reach rounds down, so 100% means every run got there.
@@ -479,12 +477,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         <span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
         open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="${escape(`${ramp.label}: details and other replays`)}" title="Details and other replays">${CHEVRON}</button></span></div>${open ? detail(ramp) : ''}`;
     };
-    const runCount = Math.max(0, Math.min(TOUCH_MIN_RUNS, touchData?.runs ?? 0)), filled = Math.floor(runCount / TOUCH_MIN_RUNS * 10);
-    const collecting = touchData?.collecting ? `<p class="rn-caption rn-collect"><span class="rn-meter" aria-hidden="true">${
-      Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs. Reach firms up as runs come in.</span></p>` : '';
-    return rampControls(compare, metric) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
+    return rampControls(compare, metric) + `${note ? `<p class="rn-note">${note}</p>` : legend}
       <div class="rn-ramps" role="table" aria-label="Ramp measurements">
-        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${touches ? 'reach' : ''}</span><span class="rn-metric-head" role="columnheader">${metricLabel}${ready ? ` vs ${escape(picked.label)}` : ''}</span><span role="columnheader"></span></div>
+        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${[...touches?.values() ?? []].some(touch => Number.isFinite(touch.reach)) ? 'reach' : ''}</span><span class="rn-metric-head" role="columnheader">${metricLabel}${ready ? ` vs ${escape(picked.label)}` : ''}</span><span role="columnheader"></span></div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>
           ${section.ramps.map(rampRow).join('')}`).join('')}
       </div>`;

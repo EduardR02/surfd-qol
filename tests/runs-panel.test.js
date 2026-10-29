@@ -116,25 +116,25 @@ describe('runs panel', () => {
     const reference = {sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: 'KSF WR'}], version: () => 1,
       createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
     const stat = value => ({best: value, last10: value + 1, avg: value + 2});
-    let stats = {runs: 12, collecting: true, touches: []};
+    let stats = {runs: 12, touches: []};
     const settings = {}, saved = [];
     const rig = panelRig({reference, data, settings, onSettings: patch => { saved.push(patch); Object.assign(settings, patch); }});
     rig.history.touchStats = key => key === 'utopia:3' ? stats : null;
     const html = () => rig.body.innerHTML;
     try {
       rig.panel.show(); rig.panel.showView('ramps');
-      expect(html()).toContain('Collecting touch stats: 12 of 50 runs.');
       // One graded number per ramp, the whole ramp against the PB; Ramp 2 isn't on the PB's route.
       expect(html()).toContain('<span class="rn-hero loss" role="cell" title="The whole ramp, touch included: −30.0. PB: −24.0">−6.0</span>');
       expect(html()).toContain('not in PB');
       expect(html()).toContain('Surf vs PB');
       expect(html()).not.toContain('class="rn-detail"');
-      stats = {runs: 64, collecting: false, touches: [
+      expect(html()).not.toContain('>reach<');
+      stats = {runs: 64, touches: [
         {key: 'a', index: 0, checkpoint: 0, reach: 0.43, speedIn: stat(2400), speedOut: stat(2390), angle: stat(2),
           pb: {speedIn: 2410, speedOut: 2380, angle: 3}, wr: {speedIn: 2500, speedOut: 2490, angle: 1}},
       ]};
       rig.panel.showView('ramps');
-      expect(html()).not.toContain('Collecting');
+      expect(html()).toContain('>reach<');
       expect(html()).toContain('>43%</span>');
       // Clicking anywhere on the row opens it, as its chevron does.
       rig.body.emit('click', {target: {closest: selector => selector === 'button' ? null : {dataset: {ramp: 'a'}}}});
@@ -165,16 +165,16 @@ describe('runs panel', () => {
     } finally { rig.panel.destroy(); }
   });
 
-  test('touch values show from the first run while collecting, and Angle names its own near band', () => {
+  test('touch values show from the first runs, and Angle names its own near band', () => {
     const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'a', label: 'Ramp 1', checkpoint: 0, surf: 30}]};
     const slot = {status: 'ready', label: 'PB', ramps: new Map([['a', {surf: 24}]])};
     const reference = {sources: () => [{name: 'pb', label: 'PB'}], version: () => 1, createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
     const rig = panelRig({reference, data, settings: {rampMetric: 'angle', referenceLossTolerance: 2}});
-    rig.history.touchStats = () => ({runs: 23, collecting: true, touches: [{key: 'a', reach: 0.61,
+    rig.history.touchStats = () => ({runs: 3, touches: [{key: 'a', reach: 0.61,
       speedIn: {best: 2400}, speedOut: {best: 2390}, angle: {best: 3.1}, pb: {speedIn: 2410, speedOut: 2380, angle: 2.8}}]});
     try {
       rig.panel.show(); rig.panel.showView('ramps');
-      expect(rig.body.innerHTML).toContain('Collecting touch stats: 23 of 50 runs. Reach firms up as runs come in.');
+      expect(rig.body.innerHTML).not.toContain('50');
       expect(rig.body.innerHTML).toContain('>61%</span>');
       expect(rig.body.innerHTML).toContain('<span class="rn-hero warn"');
       expect(rig.body.innerHTML).toContain('>+0.3°</span>');

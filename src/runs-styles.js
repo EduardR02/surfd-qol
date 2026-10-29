@@ -223,10 +223,6 @@ export const runsStyles = `
 .rn-xr>b.good{color:var(--good)}.rn-xr>b.warn{color:var(--warn)}.rn-xr>b.loss{color:var(--bad)}.rn-xr>b.muted{color:var(--text-3)}
 .rn-xh>*{padding:6px 0 4px;font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3)!important}
 .rn-x-note{margin:8px 0 0;font-size:12px;color:var(--text-3)}
-.rn-collect{align-items:center}
-.rn-collect .rn-meter{flex:none;padding:0}
-.rn-collect .rn-meter i{flex:none;width:9px}
-.rn-collect span:last-child{text-wrap:balance}
 
 /* Empty and off states: what to do next. */
 .rn-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:22px 22px 26px}

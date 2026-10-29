@@ -34,7 +34,7 @@ const shots = [
   ['runs-off-with-runs', 'runs&set.keepHistory=false'], ['runs-official-pb', 'runs&pb=official'],
   ['ramps', 'runs&view=ramps'], ['ramps-last-10', 'runs&view=ramps&stat=recent'], ['ramps-average', 'runs&view=ramps&stat=average'],
   ['ramps-expanded', 'runs&view=ramps&expand=1'], ['ramps-reset', 'runs&view=ramps&stat=average&reset'], ['ramps-net-pb', 'runs&view=ramps&set.rampResult=total&ref=pb'], ['ramps-loading', 'runs&view=ramps&ref=loading'],
-  ['ramps-no-reference', 'runs&view=ramps&ref=none'], ['ramps-touch-collecting', 'runs&view=ramps&touch=collecting'], ['ramps-other-map', 'runs=kitsune:1&view=ramps'], ['ramps-540x600', 'runs&view=ramps', 540, 600],
+  ['ramps-no-reference', 'runs&view=ramps&ref=none'], ['ramps-touch-none', 'runs&view=ramps&touch=none'], ['ramps-other-map', 'runs=kitsune:1&view=ramps'], ['ramps-540x600', 'runs&view=ramps', 540, 600],
   ['watching', 'state=watching&bg=snow'], ['watching-paused', 'state=watching&bg=warm&play=paused'],
   ['watching-ended', 'state=watching&bg=fog&play=ended&locs=4&binds=custom'], ['watching-notice', 'state=watching&bg=neon&notice=saved'],
   ['watching-keys', 'state=watching&bg=neon&play=paused&pop=keys&binds=custom'], ['watching-speed', 'state=watching&bg=warm&play=paused&pop=speed&speed=0.5'],

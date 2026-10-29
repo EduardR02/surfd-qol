@@ -29,7 +29,7 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `maps`, `view=ramps` | With `runs`: opens the map list, or the Ramps view |
 | `stat=recent\|average`, `expand=<n>`, `reset` | With `view=ramps`: the Last 10 or Average statistic, the nth ramp opened, or the Reset averages confirmation |
 | `bail=none` | With `view=ramps`: Utopia's Ramp 6 without its bail, so no ramp runs past the bar scale |
-| `touch=collecting\|none` | With `view=ramps`: touch stats short of 50 runs, or with no runs recorded yet (`mesa:2` is always collecting) |
+| `touch=few\|none` | With `view=ramps`: touch stats from 23 runs, or with no runs recorded yet (`mesa:2` always has few) |
 | `pb=official\|partial` | A leaderboard PB on the current map (`partial`: only its first split) |
 | `ref=loading\|missing\|pb\|none` | The Ramps view's PB and WR references on the current map (default: both ready) |
 | `history=empty` | No runs on any map; add `set.keepHistory=false` for the recording-off empty state |
