@@ -8,6 +8,8 @@ import {visitKey} from './replay-store.js';
 const MAX_MAPS = 50;
 const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
+const MAX_TOUCH_RUNS = 200;
+export const TOUCH_STORAGE_KEY = 'surfd-qol-touch-attempts-v1';
 const RAMP_FIELDS = ['board', 'down', 'up', 'surf'];
 const RECENT_BEST_MS = 24 * 60 * 60 * 1000;
 const endEvents = new Set(['restart', 'start-return', 'practice-restore']);
@@ -36,6 +38,93 @@ const validRun = run => run && typeof run.id === 'string' && typeof run.map === 
 const validBests = record => record && typeof record.id === 'string' && Array.isArray(record.splits) &&
   record.ramps && typeof record.ramps === 'object' && record.start && typeof record.start === 'object';
 const lower = (value, best) => Number.isFinite(value) && (best == null || value < best);
+
+const touchValue = (value, angle = false) => Number.isFinite(value) && value >= 0 && (!angle || value <= 90) ? value : null;
+
+function cleanTouchRun(run) {
+  if (!run || typeof run.id !== 'string' || typeof run.map !== 'string' || !run.map ||
+    !Number.isFinite(run.at) || !Number.isFinite(run.time) || run.time < 0 ||
+    !Number.isSafeInteger(run.checkpoints) || run.checkpoints < 0 || run.checkpoints > 64 ||
+    (run.outcome !== 'finished' && run.outcome !== 'reset') || !Array.isArray(run.touches)) return null;
+  const touches = [], keys = new Set();
+  for (const touch of run.touches.slice(0, MAX_RAMPS)) {
+    if (!touch || typeof touch.key !== 'string') continue;
+    let parts;
+    try { parts = JSON.parse(touch.key); } catch { continue; }
+    if (!Array.isArray(parts) || parts.length !== 3 ||
+      visitKey({surfaceId: parts[0], checkpoint: parts[1], visit: parts[2]}) !== touch.key ||
+      touch.checkpoint !== parts[1] || keys.has(touch.key)) continue;
+    keys.add(touch.key);
+    touches.push({key: touch.key, checkpoint: touch.checkpoint, speedBefore: touchValue(touch.speedBefore),
+      speedAfter: touchValue(touch.speedAfter), angle: touchValue(touch.angle, true)});
+  }
+  return {id: run.id, map: run.map, at: run.at, time: run.time, outcome: run.outcome, checkpoints: run.checkpoints, touches};
+}
+
+// Loading is synchronous, so an attempt ending before history.ready cannot
+// overwrite older touch records. This store never reads or changes history's keys.
+export function createTouchStore({storage, key = TOUCH_STORAGE_KEY} = {}) {
+  if (storage === undefined) {
+    try { storage = globalThis.localStorage; } catch { storage = null; }
+  }
+  const maps = new Map();
+  function retain(run) {
+    let records = maps.get(run.map);
+    if (!records) records = [];
+    const duplicate = records.findIndex(record => record.id === run.id);
+    if (duplicate >= 0) records.splice(duplicate, 1);
+    records.push(run);
+    if (records.length > MAX_TOUCH_RUNS) records.splice(0, records.length - MAX_TOUCH_RUNS);
+    maps.delete(run.map);
+    maps.set(run.map, records);
+    if (maps.size > MAX_MAPS) maps.delete(maps.keys().next().value);
+  }
+  try {
+    const saved = JSON.parse(storage?.getItem(key) ?? 'null');
+    if (saved?.version === 1 && Array.isArray(saved.runs)) {
+      const runs = saved.runs.map(cleanTouchRun).filter(Boolean).sort((a, b) => a.at - b.at);
+      for (const run of runs) retain(run);
+    }
+  } catch { /* Private storage and damaged records must not interrupt a run. */ }
+  return {
+    records(map) { return maps.get(map) ?? []; },
+    append(record) {
+      const run = cleanTouchRun(record);
+      if (!run) return;
+      retain(run);
+      try {
+        storage?.setItem(key, JSON.stringify({version: 1, runs: [...maps.values()].flat()}));
+      } catch { /* Keep this session's measurements when storage is unavailable or full. */ }
+    },
+  };
+}
+
+// A field's last ten are its last ten known measurements, not ten attempts.
+function touchSummary(values, angle = false) {
+  if (!values.length) return {best: null, last10: null, avg: null};
+  let sum = 0, recent = 0, best = values[0];
+  for (let index = 0; index < values.length; index++) {
+    const value = values[index];
+    sum += value;
+    if (index >= values.length - 10) recent += value;
+    best = angle ? Math.min(best, value) : Math.max(best, value);
+  }
+  return {best, last10: recent / Math.min(10, values.length), avg: sum / values.length};
+}
+
+function touchRoute(records) {
+  let selected = null, best = null, reach = -1;
+  for (const run of records) {
+    const distance = run.checkpoints * 1000 + run.touches.length;
+    const pb = run.outcome === 'finished' && (best === null || run.time < best);
+    if (run.touches.length && (pb || (best === null && distance > reach))) {
+      selected = run.touches;
+      reach = distance;
+    }
+    if (pb) best = run.time;
+  }
+  return selected ?? [];
+}
 
 // Newest first: qualifying runs on each of the MAX_MAPS most recently played
 // maps. A short latest attempt is an extra slot; it never evicts useful runs.
@@ -176,7 +265,8 @@ function copyState(state, template) {
 
 // getMap() is the map the game has loaded, so the Runs panel opens on it before any run starts.
 export function createRunHistory({metrics, start, getState = () => null, getMap = () => null, getMapName = () => null, onReplay = null,
-  limits = () => ({}), onPrune = null, store = null, archive = null, clock = () => Date.now()} = {}) {
+  limits = () => ({}), onPrune = null, store = null, archive = null, clock = () => Date.now(),
+  touchStore = createTouchStore(), getTouchReferences = () => null} = {}) {
   const session = clock();
   let runs = [];
   let runSequence = 0;
@@ -205,6 +295,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   const listeners = new Set();
   let current = null, owner = null, startTick = null, lastMap = '', lastMapName = '';
   let boardRevision = -1, board = null, boardSequence = 0, boardMark = null, surfSequence = 0;
+  let touchEligible = false, touchTimer = null;
   // The session's own command log and spawn state. A restart swaps in a new
   // array, so this reference still holds the whole run when it ends.
   let commands = null, initialState = null, commandCount = 0;
@@ -291,6 +382,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       checkpoints: [], ramps: [],
       rampEntries: new Map(),
     };
+    touchEligible = !current.practice && live.config?.unrestrictedStart !== true && live.config?.autoBhop !== false;
+    // Restart replaces this object; keep invalidations made between ticks.
+    touchTimer = live.timer.state;
     commands = Array.isArray(live.commands) ? live.commands : null;
     initialState = live.initialState ?? null;
     commandCount = commands?.length ?? 0;
@@ -332,6 +426,13 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     delete run.clip;
     delete run.rampEntries;
     run.time = round(run.time, 3);
+    if (touchEligible && !run.invalid && !touchTimer?.invalidReason && touchStore) {
+      try {
+        touchStore.append({id: run.id, map: run.map, at: run.at, time: run.time, outcome,
+          checkpoints: run.checkpoints.length, touches: ramps.flatMap(ramp => ramp.touch ? [ramp.touch] : [])});
+      } catch (error) { console.warn('[Surfd QoL] Could not save touch attempts:', error); }
+    }
+    touchTimer = null;
     if (!clearing) runs.push(run);
     saveReplay(run, owner, clip);
     owner = startTick = null;
@@ -375,6 +476,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     if (Number.isFinite(timer.elapsed)) run.time = timer.elapsed;
     if (commands) commandCount = commands.length;
     if (timer.invalidReason) run.invalid = String(timer.invalidReason);
+    touchTimer = timer;
+    if (live.practice || live.config?.unrestrictedStart === true || live.config?.autoBhop === false) touchEligible = false;
     const speeds = live.checkpointSpeeds;
     // Splits are copied as they happen: a restart clears them before the reset hook runs.
     while (Array.isArray(speeds) && run.checkpoints.length < speeds.length && run.checkpoints.length < 64) {
@@ -389,6 +492,12 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       if (board?.sequence > 0) {
         const entry = rampEntry(run, board);
         if (entry && board.available && Number.isFinite(board.loss)) entry.board = round(board.loss);
+        if (entry) {
+          const touch = entry.touch ??= {key: entry.key, checkpoint: entry.checkpoint};
+          touch.speedBefore = board.available ? touchValue(board.speedBefore) : null;
+          touch.speedAfter = board.available ? touchValue(board.speedAfter) : null;
+          touch.angle = board.available ? touchValue(board.angle, true) : null;
+        }
       }
       // Sequence numbers restart at zero on teleport or analysis reset. Only
       // positive equal sequences revise a mark from this observation epoch.
@@ -474,7 +583,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     // Restart, practice restore, replay load or station visit.
     reset() { if (current) end('reset', owner); },
     // Drops the run in progress without recording it (recording turned off).
-    discard() { current = board = commands = initialState = owner = startTick = null; clearSnapshots(); },
+    discard() { current = board = commands = initialState = owner = startTick = touchTimer = null; clearSnapshots(); },
     // Resolves once the saved history has loaded.
     ready,
     get currentMap() {
@@ -502,6 +611,35 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
             (best === null || run.time < best)) best = run.time;
       }
       return new Promise(resolve => pendingBestReads.push({key, best, resolve}));
+    },
+    touchStats(key = lastMap) {
+      const records = touchStore?.records(key) ?? [];
+      let route = routeOf(bests.get(key)).map(([key, ramp]) => ({key, checkpoint: ramp.checkpoint}));
+      if (!route.length) route = touchRoute(records);
+      const measurements = new Map(route.map(touch => [touch.key, {reached: 0, speedIn: [], speedOut: [], angle: []}]));
+      for (const run of records) for (const touch of run.touches) {
+        const entry = measurements.get(touch.key);
+        if (!entry) continue;
+        entry.reached++;
+        if (touch.speedBefore !== null) entry.speedIn.push(touch.speedBefore);
+        if (touch.speedAfter !== null) entry.speedOut.push(touch.speedAfter);
+        if (touch.angle !== null) entry.angle.push(touch.angle);
+      }
+      let references = null;
+      try { references = getTouchReferences?.(key); } catch { /* Optional cached comparisons. */ }
+      const reference = (source, key) => {
+        const slot = references?.[source];
+        const touch = slot?.status === 'ready' ? slot.ramps?.get(key) : null;
+        return touch ? {speedIn: touchValue(touch.speedBefore), speedOut: touchValue(touch.speedAfter),
+          angle: touchValue(touch.angle, true)} : null;
+      };
+      return {runs: records.length, collecting: records.length < 50, touches: route.map((touch, index) => {
+        const entry = measurements.get(touch.key);
+        return {key: touch.key, index, checkpoint: touch.checkpoint,
+          reach: records.length ? entry.reached / records.length : null,
+          speedIn: touchSummary(entry.speedIn), speedOut: touchSummary(entry.speedOut), angle: touchSummary(entry.angle, true),
+          pb: reference('pb', touch.key), wr: reference('wr', touch.key)};
+      })};
     },
     // Maps with history, most recently played first.
     maps() {
