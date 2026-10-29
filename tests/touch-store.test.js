@@ -22,6 +22,7 @@ function rig({storage = storageRig(), touchStore = createTouchStore({storage}), 
   let now = 1000, revision = 0;
   const state = {playback: false, spectator: {target: null}};
   const board = {sequence: 0, available: false};
+  const surf = {sequence: 0};
   const live = {
     map: {id: 'utopia', version: 3, stages: []}, practice: false,
     config: {dt: 0.015, unrestrictedStart: false, autoBhop: true},
@@ -30,7 +31,8 @@ function rig({storage = storageRig(), touchStore = createTouchStore({storage}), 
   };
   const history = createRunHistory({store, touchStore, getTouchReferences, getState: () => state,
     getMap: () => live.map, clock: () => now,
-    metrics: {boardRevision: () => revision, boardSnapshot: () => ({...board})},
+    metrics: {boardRevision: () => revision, boardSnapshot: () => ({...board}),
+      surfSnapshot: sequence => sequence === surf.sequence ? null : {...surf}},
   });
   const tick = (events = []) => {
     now += 15;
@@ -51,6 +53,11 @@ function rig({storage = storageRig(), touchStore = createTouchStore({storage}), 
       tick();
     },
     revise(values) { Object.assign(board, values); revision++; tick(); },
+    exit(values = {}) {
+      Object.assign(surf, {sequence: surf.sequence + 1, surfaceId: board.surfaceId, checkpoint: board.checkpoint,
+        visit: board.visit, available: true, exitSpeed: 750}, values);
+      tick();
+    },
     finish() { live.timer.state.phase = 'finished'; tick(['finish']); },
     reset(event = 'restart') {
       live.timer.state = {phase: 'ready', elapsed: 0, startTick: null, invalidReason: null, splits: []};
@@ -70,6 +77,7 @@ describe('touch attempt store', () => {
     r.go();
     r.touch();
     r.revise({speedAfter: 980});
+    r.exit({exitSpeed: 700});
     r.tick();
     expect(r.storage.writes).toEqual([]);
     expect(stats(r).runs).toBe(0);
@@ -77,9 +85,9 @@ describe('touch attempt store', () => {
     expect(r.storage.writes).toEqual([TOUCH_STORAGE_KEY]);
     expect(r.storage.values.get('legacy-history')).toBe('untouched');
     expect(r.touchStore.records('utopia:3')).toEqual([{
-      id: expect.any(String), map: 'utopia:3', at: expect.any(Number), time: 0.06,
+      id: expect.any(String), map: 'utopia:3', at: expect.any(Number), time: 0.075,
       outcome: 'reset', checkpoints: 0,
-      touches: [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 980, angle: 8}],
+      touches: [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 700, angle: 8}],
     }]);
     const next = rig({storage: r.storage});
     await next.history.ready;
@@ -167,7 +175,7 @@ describe('per-touch statistics', () => {
     r.go(); r.touch({available: false}); r.reset();
     expect(stats(r)).toEqual({runs: 3, touches: [{key: KEY, index: 0, checkpoint: 0,
       reach: 1 / 3, speedIn: emptyMetric, speedOut: emptyMetric, angle: emptyMetric, pb: null, wr: null}]});
-    r.go(); r.touch({speedBefore: 0, speedAfter: 0, angle: 0}); r.finish();
+    r.go(); r.touch({speedBefore: 0, speedAfter: 0, angle: 0}); r.exit({exitSpeed: 0}); r.finish();
     expect(stats(r)).toMatchObject({runs: 4, touches: [{reach: 0.5, speedIn: {best: 0, last10: 0, avg: 0},
       speedOut: {best: 0, last10: 0, avg: 0}, angle: {best: 0, last10: 0, avg: 0}}]});
     expect(r.touchStore.records('utopia:3').at(-1).outcome).toBe('finished');
@@ -178,7 +186,7 @@ describe('per-touch statistics', () => {
     await r.history.ready;
     for (let index = 1; index <= 24; index++) {
       const speedBefore = index * 100, speedAfter = index % 2 ? null : index * 90, angle = index % 3 ? index : null;
-      r.go(); r.touch({speedBefore, speedAfter, angle}); r.reset();
+      r.go(); r.touch({speedBefore, speedAfter, angle}); r.exit({exitSpeed: speedAfter}); r.reset();
       known.speedIn.push(speedBefore);
       if (speedAfter !== null) known.speedOut.push(speedAfter);
       if (angle !== null) known.angle.push(angle);
@@ -194,20 +202,32 @@ describe('per-touch statistics', () => {
     }
   });
 
-  test('revisions replace a measurement once and repeated surface visits remain separate', async () => {
+  test('keeps first entry speed and uses the final exit after a re-touch, not the landing clip', async () => {
     const r = rig();
     await r.history.ready;
     r.go();
     r.touch();
-    r.revise({speedAfter: 970, angle: 8});
-    r.revise({speedAfter: 950, angle: 8});
+    r.revise({speedBefore: 980, speedAfter: 970, angle: 8});
+    r.exit({exitSpeed: 700});
+    r.revise({speedBefore: 800, speedAfter: 790, angle: 8});
+    r.exit({exitSpeed: 600});
     r.touch({visit: 2, speedBefore: 800, speedAfter: 790, angle: 4});
+    r.exit({exitSpeed: 500});
     r.finish();
     expect(stats(r).touches.map(touch => ({key: touch.key, index: touch.index, reach: touch.reach,
       speedOut: touch.speedOut, angle: touch.angle}))).toEqual([
-      {key: KEY, index: 0, reach: 1, speedOut: {best: 950, last10: 950, avg: 950}, angle: {best: 8, last10: 8, avg: 8}},
-      {key: '[1,0,2]', index: 1, reach: 1, speedOut: {best: 790, last10: 790, avg: 790}, angle: {best: 4, last10: 4, avg: 4}},
+      {key: KEY, index: 0, reach: 1, speedOut: {best: 600, last10: 600, avg: 600}, angle: {best: 8, last10: 8, avg: 8}},
+      {key: '[1,0,2]', index: 1, reach: 1, speedOut: {best: 500, last10: 500, avg: 500}, angle: {best: 4, last10: 4, avg: 4}},
     ]);
+    expect(stats(r).touches[0].speedIn).toEqual({best: 1000, last10: 1000, avg: 1000});
+  });
+
+  test('unfinished and unsupported visits never substitute a landing clip or a stale exit', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.touch(); r.reset();
+    r.go(); r.touch(); r.exit({available: false, reason: 'unsupported-contact-or-endpoint', exitSpeed: 900}); r.reset();
+    expect(stats(r).touches[0]).toMatchObject({speedIn: {avg: 1000}, speedOut: emptyMetric});
   });
 
   test('uses the existing route before new measurements, without importing old samples', async () => {

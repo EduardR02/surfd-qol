@@ -74,7 +74,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
         for (const [rampKey, index] of route?.indices ?? []) {
           const visit = index == null ? null : route.boards[index];
           if (visit?.valid) current.ramps.set(rampKey, {board: visit.loss, down: visit.downLoss, up: visit.upLoss, surf: visit.surfLoss,
-            speedBefore: visit.speedBefore ?? null, speedAfter: visit.speedAfter ?? null, angle: visit.angle ?? null,
+            speedBefore: visit.speedBefore ?? null, speedAfter: visit.exitSpeed ?? null, angle: visit.angle ?? null,
             ...(Number.isInteger(visit.tick) ? {tick: visit.tick} : {})});
         }
         current.dt = result?.feedback?.dt;

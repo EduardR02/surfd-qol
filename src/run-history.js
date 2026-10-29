@@ -493,9 +493,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         const entry = rampEntry(run, board);
         if (entry && board.available && Number.isFinite(board.loss)) entry.board = round(board.loss);
         if (entry) {
-          const touch = entry.touch ??= {key: entry.key, checkpoint: entry.checkpoint};
-          touch.speedBefore = board.available ? touchValue(board.speedBefore) : null;
-          touch.speedAfter = board.available ? touchValue(board.speedAfter) : null;
+          const touch = entry.touch ??= {key: entry.key, checkpoint: entry.checkpoint,
+            speedBefore: board.available ? touchValue(board.speedBefore) : null, speedAfter: null};
           touch.angle = board.available ? touchValue(board.angle, true) : null;
         }
       }
@@ -524,6 +523,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         entry.up = round(surf.upLoss);
         entry.surf = round(surf.loss);
       }
+      if (entry?.touch) entry.touch.speedAfter = surf.available || surf.reason === 'short-contact' ? touchValue(surf.exitSpeed) : null;
     }
   }
   // Keeps recent pre-start states so a replay can start LEAD_SECONDS before its run.

@@ -1392,8 +1392,11 @@ describe('Raw KSF route cache identity', () => {
 });
 
 describe('touch reference measurements', () => {
-  test.each(['pb', 'wr'])('propagates %s entry speeds and angle through saved analysis and idle snapshots', async source => {
-    const saved = savedAnalysis(), commands = [contact('a', 10), {}, {...contact('a', 5), speed: 120}, finish];
+  test.each(['pb', 'wr'])('propagates %s first-contact and final surf-endpoint speeds through saved analysis', async source => {
+    const saved = savedAnalysis(), commands = [
+      contact('a', 10), {}, {...contact('a', 5), speed: 120},
+      {...contact('a', 0), speed: 400}, {...contact('a', 0), speed: 700}, ...Array(17).fill({}), finish
+    ];
     const first = fixture({source, saved, commands, wrSource: 'leaderboard'});
     const key = visitKey(first.step(contact()));
     const read = f => {
@@ -1407,10 +1410,10 @@ describe('touch reference measurements', () => {
     await flush();
     expect(current.slot.status).toBe('ready');
     expect(current.reference.peek('surf_test:map-1', source)).toBe(current.slot);
-    expect(current.slot.ramps.get(key)).toMatchObject({board: 15, speedBefore: 100, speedAfter: 115, angle: 0});
+    expect(current.slot.ramps.get(key)).toMatchObject({board: 15, speedBefore: 100, speedAfter: 700, angle: 0});
     expect(saved.data.size).toBe(1);
     const stored = [...saved.data.values()][0].result.feedback.route;
-    expect(stored.boards[stored.indices.get(key)]).toMatchObject({key, speedBefore: 100, speedAfter: 115, angle: 0});
+    expect(stored.boards[stored.indices.get(key)]).toMatchObject({key, speedBefore: 100, speedAfter: 115, exitSpeed: 700, angle: 0});
     current.reference.destroy();
     const next = fixture({source, saved, commands, wrSource: 'leaderboard'}), cached = read(next);
     await flush();
@@ -1419,11 +1422,12 @@ describe('touch reference measurements', () => {
     expect(next.native()).toEqual({loads: 0, steps: 0});
   });
 
-  test('native clip angles survive per-visit reference collection, including recontacts and unknown direction', async () => {
+  test('native clip angles and final surf endpoints survive per-visit collection, including recontacts and unknown direction', async () => {
     const f = fixture(), before = {x: 1000, y: 0, z: -300};
     const commands = [
       {brush: 'a', before}, {}, {brush: 'a', before: {x: 1200, y: -100, z: -200}},
-      {brush: 'b', before: {x: 0, y: 0, z: 0}}, {finish: true},
+      {brush: 'a', before: {x: 2500, y: 0, z: 0}}, {brush: 'a', before: {x: 3000, y: 0, z: 0}},
+      ...Array(4).fill({brush: 'b', before: {x: 0, y: 0, z: 0}}), ...Array(17).fill({}), {finish: true},
     ];
     class Movement {
       constructor(config) { this.config = config; }
@@ -1462,29 +1466,28 @@ describe('touch reference measurements', () => {
     expect(boards[0].angle).toBeCloseTo(Math.asin(180 / Math.hypot(1000, 300)) * 180 / Math.PI, 10);
     expect(boards[0].speedBefore).toBeCloseTo(Math.hypot(1000, 300), 10);
     expect(boards[0].speedAfter).toBeCloseTo(Math.hypot(1200, 60, -80), 10);
-    expect(boards[1]).toMatchObject({speedBefore: 0, speedAfter: 0, angle: null});
-    for (let index = 0; index < boards.length; index++) expect(data.feedback.route.indices.get(boards[index].key)).toBe(index);
+    expect(boards[0].exitSpeed).toBeCloseTo(3000, 10);
+    expect(boards[1]).toMatchObject({speedBefore: 0, speedAfter: 0, exitSpeed: 0, angle: null});
   });
 });
 
-test('pre-angle development summaries are reanalysed rather than reused without touch values', async () => {
-  const saved = savedAnalysis(), first = fixture({saved});
+test('pre-exit development summaries are reanalysed rather than reused without exit speeds', async () => {
+  const commands = [...Array(4).fill(contact()), ...Array(17).fill({}), finish];
+  const saved = savedAnalysis(), first = fixture({saved, commands});
   first.update(first.step(contact()));
   await flush();
   const [id, cached] = [...saved.data][0];
   for (const board of cached.result.feedback.route.boards) {
-    delete board.speedBefore;
-    delete board.speedAfter;
-    delete board.angle;
+    delete board.exitSpeed;
   }
   saved.data.clear();
-  saved.data.set(`dev${id.slice(id.indexOf('|'))}`, cached);
+  saved.data.set(`dev-touch-angle${id.slice(id.indexOf('|'))}`, cached);
   first.controller.destroy();
-  const next = fixture({saved}), board = next.step(contact());
+  const next = fixture({saved, commands}), board = next.step(contact());
   next.update(board);
   await flush();
   expect(next.calls().replay).toEqual(['official-pb']);
   expect(next.native().loads).toBe(1);
-  const updated = [...saved.data].find(([key]) => key !== `dev${id.slice(id.indexOf('|'))}`)[1];
-  expect(updated.result.feedback.route.boards[0]).toMatchObject({speedBefore: 100, speedAfter: 95, angle: 0});
+  const updated = [...saved.data].find(([key]) => key !== `dev-touch-angle${id.slice(id.indexOf('|'))}`)[1];
+  expect(updated.result.feedback.route.boards[0]).toMatchObject({speedBefore: 100, speedAfter: 95, exitSpeed: 95, angle: 0});
 });

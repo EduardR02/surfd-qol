@@ -479,15 +479,15 @@ describe('touch reference snapshots', () => {
     expect(f.acquired).toHaveLength(0);
     const slot = f.consumer.get('utopia:3', 'pb');
     expect(f.reference.peek('utopia:3', 'pb')).toBeNull();
-    const values = {speedBefore: 1000, speedAfter: 985, angle: 9.936};
+    const values = {speedBefore: 1000, speedAfter: 985, exitSpeed: 720, angle: 9.936};
     f.finish(0, {config: {dt: .015}, feedback: {route: {
       indices: new Map([['[7,0,1]', 0], ['[7,0,2]', 1]]),
       boards: [{valid: true, loss: 15, ...values}, {valid: true, loss: 0, speedBefore: 0, speedAfter: 0, angle: null}],
     }}});
     await Promise.resolve();
     expect(f.reference.peek('utopia:3', 'pb')).toBe(slot);
-    expect(slot.ramps.get('[7,0,1]')).toMatchObject(values);
-    expect(slot.ramps.get('[7,0,2]')).toMatchObject({speedBefore: 0, speedAfter: 0, angle: null});
+    expect(slot.ramps.get('[7,0,1]')).toMatchObject({speedBefore: 1000, speedAfter: 720, angle: 9.936});
+    expect(slot.ramps.get('[7,0,2]')).toMatchObject({speedBefore: 0, speedAfter: null, angle: null});
     expect(f.reference.peek('utopia:3', 'wr')).toBeNull();
     expect(f.reference.peek('other:3', 'pb')).toBeNull();
     expect(f.acquired).toHaveLength(1);
