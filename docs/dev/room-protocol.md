@@ -62,7 +62,7 @@ Community command replies are local and fixed: votes explain that the host picks
 | `saveloc-delete` (extension only) | `mapId`, `epoch`, `id` | current map and epoch; removes only the sender's own save |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
 | `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; starts and target changes allow 2 per second with bursts of 4, beyond which they are dropped; Stop always applies, and repeated Stop/current-target requests only retain the latest request id |
-| `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
+| `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}`; without a token the game submits finished runs like solo runs, and the site verifies each replay |
 | `refresh`, `ack`, `activity` | ticket refresh, `check` reply, activity tracking | ignored |
 | `rtv`, `nominate`, `vote`, `extend` | map votes | ignored |
 | `moderate` | `playerId`, `action` (`"kick"` or `"ban"`), `minutes` (the game sends 60) | host only, not on itself: closes the player with 4008 "You were kicked from this room." or "You were banned from this room for 1 hour." and sends everyone a `notice` "<name> was kicked." or "<name> was banned for 1 hour.". A ban refuses that `browserId` for an hour with 4008 "You're banned from this room for now." |

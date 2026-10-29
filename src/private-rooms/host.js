@@ -346,7 +346,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           spectate(client, message);
           break;
         case 'context':
-          // The game waits for this when a map starts; no token means no ranked runs.
+          // The game waits for this when a map starts. Without a token it submits runs like solo runs, which the site still verifies.
           send(client, {type: 'context', epoch: state.epoch, token: null});
           break;
         case 'moderate':

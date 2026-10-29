@@ -126,7 +126,7 @@ Surf with friends in a room of your own: no time limit, no map votes, and the ho
 
 - **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Private** (room code or invite link only) or **Public** (listed under **Community** for everyone with the extension). Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open; the room view shows the upload your player limit needs.
 - **Join:** pick a room in the **Community** tab, type its code next to the filters, or open an invite link.
-- **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs in rooms aren't ranked.
+- **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs count for the leaderboard as they do in solo play: Surfd checks each replay itself.
 - **Shared savelocs:** a location anyone saves shows up in everyone's saveloc list (Settings → Gameplay), labelled with its owner. Everyone keeps up to 20 per map, as in the game.
 
 ### Optional extras
