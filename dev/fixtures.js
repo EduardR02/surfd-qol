@@ -210,6 +210,41 @@ export function createRampReference({params, settings, current = 'utopia:3'}) {
   };
 }
 
+// The strafe preview as src/strafe-preview.js drives it, minus the camera:
+// strokes alternate every 0.3 s while the speed grows. ?preview=error makes
+// it refuse to start, as away from the start zone; any input stops it.
+export function createStrafePreview(params) {
+  const listeners = new Set(), inputs = ['keydown', 'mousedown', 'mousemove', 'wheel'];
+  let run = null;
+  const emit = value => { for (const listener of listeners) listener(value); };
+  function stop() {
+    if (!run) return;
+    cancelAnimationFrame(run.frame);
+    run = null;
+    for (const type of inputs) removeEventListener(type, stop, true);
+    emit({active: false});
+  }
+  function frame(now) {
+    const seconds = (now - run.started) / 1000;
+    const speed = run.mode === 'air' ? run.units + seconds * 120 : Math.min(run.units + seconds * 60, Math.max(run.units, 347));
+    emit({active: true, key: Math.floor(seconds / 0.3) % 2 ? 'D' : 'A', speed, turnRate: (run.mode === 'air' ? 30000 : 48000) / Math.max(100, speed)});
+    run.frame = requestAnimationFrame(frame);
+  }
+  return {
+    get active() { return !!run; },
+    async start({units, mode}) {
+      if (params.get('preview') === 'error') throw new Error('Stand still in the start zone first.');
+      if (!Number.isFinite(units) || units < 1 || units > 5000) throw new Error('Enter a speed from 1 to 5000 units.');
+      stop();
+      run = {units, mode, started: performance.now(), frame: 0};
+      for (const type of inputs) addEventListener(type, stop, true);
+      run.frame = requestAnimationFrame(frame);
+    },
+    stop,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+  };
+}
+
 // The game's saveloc binds: ?binds=custom puts extras on the mouse and wheel.
 export function createBinds(params) {
   if (params.get('binds') === 'custom') return {save: ['F5', 'Mouse4'], load: ['F9', 'Mouse3'], previousSave: ['WheelUp'], nextSave: ['WheelDown']};

@@ -24,3 +24,12 @@ test('history cutoff accepts zero and clamps saved numeric values to a usable ra
   applySettings(settings, {historyMinSeconds: 1000});
   expect(settings.historyMinSeconds).toBe(300);
 });
+
+test('the strafe preview keeps a speed from 1 to 5000 units and a ground or air mode', () => {
+  const settings = {...defaults};
+  expect([settings.strafePreviewUnits, settings.strafePreviewMode]).toEqual([300, 'ground']);
+  applySettings(settings, {strafePreviewUnits: 9000, strafePreviewMode: 'air'});
+  expect([settings.strafePreviewUnits, settings.strafePreviewMode]).toEqual([5000, 'air']);
+  applySettings(settings, {strafePreviewUnits: 0, strafePreviewMode: 'water'});
+  expect([settings.strafePreviewUnits, settings.strafePreviewMode]).toEqual([1, 'ground']);
+});

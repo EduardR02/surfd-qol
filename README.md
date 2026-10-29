@@ -85,6 +85,10 @@ At each checkpoint you get time and speed deltas against your PB, the WR, or bot
 
 Both work inside the game's own input sampling, so the commands it records are exactly what you'd get from a keyboard that did this in hardware. Your binds on disk aren't changed.
 
+### Strafe preview
+
+Not sure how fast to turn? Stand still in the start zone, open **QoL → Controls**, enter a speed in u/s, pick **Ground** (the prestrafe) or **Air**, and press **Start**. Your view turns the way a good strafe would: alternating strokes at the best turn rate for your speed, while the speed grows as perfect strafing would grow it. The HUD shows which of A or D you'd hold, the speed and the turn rate. Any key, mouse button or mouse movement stops it and puts your view back. It only moves the camera: no keys are pressed and you don't move.
+
 ### Run history
 
 **Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
@@ -170,6 +174,7 @@ Source layout:
 - `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
 - `src/observer.js`: wraps the game's movement methods without changing their results.
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
+- `src/strafe-preview.js`, `src/strafe-preview-ui.js`: the strafe preview and its indicator.
 - `src/energy.js`: the speed tint's energy trend.
 - `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
 - `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.

@@ -7,7 +7,8 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
-import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds} from './fixtures.js';
+import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds, createStrafePreview} from './fixtures.js';
+import {startStrafePreview} from '../src/strafe-preview-ui.js';
 import {mountNativeTransport} from './native-transport.js';
 
 const params = new URLSearchParams(location.search);
@@ -83,6 +84,7 @@ const replayControl = createReplayControl({params, active: () => scenario.watchi
 const rampReference = createRampReference({params, settings});
 const leaderboardReferences = createLeaderboardReferences(params);
 const binds = createBinds(params);
+const strafePreview = createStrafePreview(params);
 const nativeTransport = mountNativeTransport(replayControl, params);
 const inMenu = scenario.menu || panelPage !== null || (runsMap !== null && !scenario.watching);
 const bg = params.get('bg') ?? (inMenu ? 'menu' : 'snow');
@@ -124,6 +126,7 @@ const hud = mountHud({
   replays,
   replayControl,
   rampReference,
+  strafePreview,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -136,6 +139,9 @@ const hud = mountHud({
   },
 });
 if (panelPage !== null) hud.showSettings(panelPage || 'display');
+// ?preview=running starts the strafe preview from the settings; ?preview=error with ?panel=controls presses Start and shows why it can't.
+if (params.get('preview') === 'running') startStrafePreview(strafePreview, settings);
+if (params.get('preview') === 'error' && panelPage === 'controls') document.getElementById('surfd-qol').shadowRoot.getElementById('preview-start').click();
 // With ?state=watching: ?pop=keys|speed opens that popover; ?runs opens the Runs panel over the bar.
 if (params.has('pop')) setTimeout(() => {
   if (!settings.customReplayUi && params.get('pop') === 'speed') nativeTransport.root.querySelector('[data-rt="speed"]').click();

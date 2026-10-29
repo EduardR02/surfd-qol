@@ -44,6 +44,13 @@ describe('settings preview', () => {
     expect(previewModel(defaults).feedback.board.label).toBe('TOUCH');
   });
 
+  test('the strafe preview takes a speed and a mode, then starts from its own button', () => {
+    expect(panelMarkup).toContain('data-setting="strafePreviewUnits"');
+    expect(panelMarkup).toContain('value="ground" data-setting="strafePreviewMode"><span>Ground</span>');
+    expect(panelMarkup).toContain('value="air" data-setting="strafePreviewMode"><span>Air</span>');
+    expect(panelMarkup).toContain('id="preview-start"');
+  });
+
   test('the Zen pill is a named toggle button', () => {
     expect(zenMarkup).toContain('aria-pressed="false"');
     expect(zenMarkup).toContain('aria-label="Zen mode"');

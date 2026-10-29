@@ -25,6 +25,8 @@ const shots = [
   ...['display', 'feedback', 'compare', 'controls', 'history'].flatMap(page => [
     [`panel-${page}`, `panel=${page}`], [`panel-${page}-540x600`, `panel=${page}`, 540, 600],
   ]),
+  ['panel-controls-preview-error', 'panel=controls&preview=error'], ['strafe-preview', 'state=menu&bg=menu&preview=running'],
+  ['strafe-preview-air', 'state=menu&bg=ice&preview=running&set.strafePreviewMode=air&set.strafePreviewUnits=1000'],
   ['panel-custom-palette', 'panel=display&palette=custom'], ['panel-display-zen', 'panel=display&set.zen=true'],
   ['panel-history-720', 'panel=history', 1280, 720], ['panel-display-720', 'panel=display', 1280, 720],
   ['runs', 'runs'], ['runs-540x600', 'runs', 540, 600], ['runs-maps', 'runs&maps'], ['runs-stages', 'runs=kitsune:1'],

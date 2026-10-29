@@ -2,6 +2,7 @@
 // menus; every change is saved through onSettings immediately.
 import {hudMarkup, createHudView} from './hud-view.js';
 import {buildMeter} from './hud-model.js';
+import {startStrafePreview} from './strafe-preview-ui.js';
 
 const swatch = tone => `<i class="sw ${tone}" aria-hidden="true"></i>`;
 const hint = text => text ? `<span class="hint">${text}</span>` : '';
@@ -154,6 +155,14 @@ export const panelMarkup = `
         ${toggle('nullAD', 'Left / Right', 'Uses your movement bindings in Surfd’s settings.')}
         ${toggle('nullWSpace', 'Forward / Jump', 'Uses your bindings, including extra keys. Latest press wins; release it to resume the other action.')}
       </div>
+      <div id="strafe-preview-settings">
+        <h3>Strafe preview</h3>
+        <div class="group">
+          ${number('strafePreviewUnits', 'Speed', 1, 5000, 1, 'u/s')}
+          ${choice('strafePreviewMode', 'Strafe', [['ground', 'Ground'], ['air', 'Air']], 'Ground is the prestrafe in the start zone.')}
+          <div class="row"><span class="row-text"><span class="row-label" id="preview-label">Preview</span><span class="hint" id="preview-help" role="status"></span></span><button id="preview-start" class="ghost" type="button" aria-labelledby="preview-start preview-label" aria-describedby="preview-help">Start</button></div>
+        </div>
+      </div>
     </section>
 
     <section id="page-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
@@ -184,6 +193,7 @@ const AIR_EXPLAIN = {
   combined: 'Missed gain plus braking. Tight turns can need some braking.',
 };
 const KEY_HELP = 'Click, then press the new key. Esc cancels.';
+const PREVIEW_HELP = 'Turns your view like a good strafe at that speed, with the key to hold. Stand still in the start zone; any key or mouse movement stops it.';
 
 // A fixed, illustrative HUD for the preview: it follows the palette and the
 // feedback options, never real measurements.
@@ -249,7 +259,7 @@ export function historyRule(settings) {
     short > 0 ? ` Resets under ${short} s are skipped, except your latest run.` : ''} Best checkpoint, ramp and start-speed values stay for good.`;
 }
 
-export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage}) {
+export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage, strafePreview = null}) {
   const node = id => root.getElementById(id);
   const panel = node('panel'), opener = node('open'), close = node('close'), keyButton = node('key'), keyHelp = node('key-help');
   const body = panel.querySelector('.body');
@@ -348,8 +358,29 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     const value = code || 'Space';
     return value.replace(/^Key(?=[A-Z]$)/, '').replace(/^Digit(?=\d$)/, '').replace(/^Arrow/, '').replace(/(Left|Right)$/, ' $1');
   }
+  // Strafe preview: hidden without one. Why it can't start replaces the help until the next change, like the jump key's.
+  const previewHelp = node('preview-help');
+  node('strafe-preview-settings').hidden = !strafePreview;
+  const previewNote = (problem = '') => write(previewHelp, problem || PREVIEW_HELP);
+  previewNote();
+  // Keys held when Start is pressed from the keyboard; the preview waits for
+  // their release, which would otherwise stop it at once.
+  const held = new Set();
+  let previewQueued = false;
+  async function startPreview() {
+    previewQueued = false;
+    const problem = await startStrafePreview(strafePreview, settings);
+    previewNote(problem);
+    if (!problem) closePanel(true);
+  }
+  node('preview-start').addEventListener('click', event => {
+    if (!strafePreview) return;
+    if (event.detail === 0 && held.size) previewQueued = true;
+    else startPreview();
+  });
   function patch(value) {
     onSettings(value);
+    previewNote();
     sync();
     onChange?.();
   }
@@ -374,6 +405,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   }
   function selectPage(tab) {
     cancelCapture();
+    previewNote();
     if (clearState !== 'clearing') setClear('idle');
     for (const item of tabs) {
       const selected = item === tab;
@@ -386,6 +418,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   for (const tab of tabs) tab.addEventListener('click', () => selectPage(tab));
   function closePanel(focus = false) {
     cancelCapture();
+    held.clear(); previewQueued = false;
     if (clearState !== 'clearing') clearState = 'idle';
     panel.hidden = true;
     opener.setAttribute('aria-expanded', 'false');
@@ -415,6 +448,8 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
 
   function handleKey(event) {
     if (panel.hidden || !available) return;
+    if (event.type === 'keydown') held.add(event.code);
+    else if (event.type === 'keyup' && held.delete(event.code) && !held.size && previewQueued) startPreview();
     const inside = event.composedPath().includes(host);
     if (capturing) {
       event.preventDefault(); event.stopImmediatePropagation();

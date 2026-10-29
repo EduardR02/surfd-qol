@@ -32,6 +32,7 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `pb=official\|partial` | A leaderboard PB on the current map (`partial`: only its first split) |
 | `ref=loading\|missing\|pb\|none` | The Ramps view's PB and WR references on the current map (default: both ready) |
 | `history=empty` | No runs on any map; add `set.keepHistory=false` for the recording-off empty state |
+| `preview=running\|error` | Starts the strafe preview, so its indicator shows; `error` with `panel=controls` presses Start and shows why it can't start |
 | `set.<key>=<value>` | Any other setting, e.g. `set.showBoard=false` |
 | `css=<rules>` | Extra CSS in the HUD's shadow root, for A/B experiments |
 | `shot` | Hides the picker for screenshots |

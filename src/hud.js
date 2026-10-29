@@ -13,19 +13,20 @@ import {runsStyles} from './runs-styles.js';
 import {replayBarMarkup, replayBarStyles} from './replay-bar.js';
 import {createReplayUi, nativeExtrasMarkup, nativeExtrasStyles} from './native-replay-ui.js';
 import {defaults} from './settings.js';
+import {strafePreviewMarkup, strafePreviewStyles, createStrafePreviewIndicator} from './strafe-preview-ui.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback;
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, strafePreview = null, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}</style>
-    <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}${strafePreviewStyles}</style>
+    <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>${strafePreviewMarkup}
     ${replayBarMarkup}${nativeExtrasMarkup}
     <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
@@ -34,6 +35,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const releaseNotice = root.getElementById('release-notice');
   let releaseVersion = null;
   const hud = createHudView(overlay);
+  const previewIndicator = createStrafePreviewIndicator(root.getElementById('strafe-preview'), strafePreview);
 
   const nativeStyle = document.createElement('style');
   nativeStyle.textContent = '#telemetry,#center-speed-hud,#split-comparison{display:none!important}';
@@ -72,6 +74,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     overlay.classList.toggle('flip', anchor < 250 * scale);
     overlay.style.setProperty('--scale', scale);
     overlay.style.setProperty('--opacity', clamp(settings.opacity, .25, 1));
+    previewIndicator.place({'--y': overlay.style.getPropertyValue('--y'), '--scale': scale, '--opacity': clamp(settings.opacity, .25, 1)});
     const nextSpeedMs = 1000 / settings.speedFps, nextTimerMs = 1000 / settings.timerFps;
     if (nextSpeedMs !== speedUpdateMs) { speedUpdateMs = nextSpeedMs; speedSample = -1; }
     if (nextTimerMs !== timerUpdateMs) { timerUpdateMs = nextTimerMs; timerSample = -1; }
@@ -83,7 +86,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
   }
   const panel = createSettingsPanel({
-    root, host, settings, bindings, onSettings,
+    root, host, settings, bindings, onSettings, strafePreview,
     onResetColors,
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },
@@ -283,6 +286,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       references.destroy();
       runReferences.destroy();
       runs.destroy();
+      previewIndicator.destroy();
       replayBar?.destroy();
       replayStore.destroy?.();
       menuObserver.disconnect();
