@@ -1,10 +1,10 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isListedName, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isListedName, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
 const detailed = {...pose, eyeHeight: 128, phase: 'finished', untimed: true, checkpoints: 1024, stage: 1024, inputs: 63, inputPresses: 63};
-const packet = {sequence: 0xffffffff, epoch: 0xffffffff, slot: 65535, pose: detailed};
+const packet = {sequence: 0xffffffff, epoch: 0xffffffff, slot: MAX_ROOM_PLAYERS - 1, pose: detailed};
 function changed(buffer, offset, value, method = 'setUint8') {
   const copy = buffer.slice(0);
   new DataView(copy)[method](offset, value, true);
@@ -84,17 +84,18 @@ describe('private room binary protocol', () => {
 
   test('snapshots have native 14-byte blocks, support empty/max batches, and reject duplicate slots', () => {
     expect(decodeSnapshot(encodeSnapshot([]))).toEqual([]);
-    const blocks = Array.from({length: 100}, (_, slot) => ({...batch, slot, samples: [pose, pose]}));
+    const blocks = Array.from({length: MAX_SNAPSHOT_BLOCKS}, (_, slot) => ({...batch, slot, samples: [pose, pose]}));
     const encoded = encodeSnapshot(blocks);
-    expect(encoded.byteLength).toBe(7804);
-    expect(decodeSnapshot(encoded)).toHaveLength(100);
+    expect(encoded.byteLength).toBe(4996);
+    expect(decodeSnapshot(encoded)).toHaveLength(64);
     expect(() => encodeSnapshot([...blocks, blocks[0]])).toThrow();
     expect(() => encodeSnapshot([{...batch, slot: 0}, {...batch, slot: 0}])).toThrow();
-    expect(() => encodeSnapshot([{...batch, slot: 65536}])).toThrow();
+    for (const slot of [-1, MAX_ROOM_PLAYERS, 65535, 65536, 1.5]) expect(() => encodeSnapshot([{...batch, slot}])).toThrow();
     const two = encodeSnapshot([{...batch, slot: 0}, {...batch, slot: 1}]);
     expect(() => decodeSnapshot(changed(two, 50, 0, 'setUint16'))).toThrow();
     const one = encodeSnapshot([{...batch, slot: 0}]);
-    for (const [offset, value] of [[0, 0], [1, 1], [2, 101], [14, 0], [14, 3], [15, 1], [16, 1], [17, 1]]) expect(() => decodeSnapshot(changed(one, offset, value))).toThrow();
+    expect(() => decodeSnapshot(changed(one, 4, MAX_ROOM_PLAYERS, 'setUint16'))).toThrow('Invalid block');
+    for (const [offset, value] of [[0, 0], [1, 1], [2, MAX_SNAPSHOT_BLOCKS + 1], [14, 0], [14, 3], [15, 1], [16, 1], [17, 1]]) expect(() => decodeSnapshot(changed(one, offset, value))).toThrow();
     expect(() => decodeSnapshot(one.slice(0, 17))).toThrow();
     expect(() => decodeSnapshot(one.slice(0, -1))).toThrow();
     const trailing = new Uint8Array(one.byteLength + 1);
@@ -105,9 +106,9 @@ describe('private room binary protocol', () => {
   test('spectator layout includes uint16 slot, timer detail and optional input bits', () => {
     const encoded = encodeSpectator(packet);
     expect(encoded.byteLength).toBe(56);
-    expect([...new Uint8Array(encoded, 0, 4)]).toEqual([1, 3, 255, 255]);
+    expect([...new Uint8Array(encoded, 0, 4)]).toEqual([1, 3, 63, 0]);
     expect([...new Uint8Array(encoded, 48)]).toEqual([2, 1, 0, 4, 0, 4, 191, 63]);
-    expect(decodeSpectator(encoded)).toMatchObject({slot: 65535, sequence: 0xffffffff, epoch: 0xffffffff, pose: {eyeHeight: 128, phase: 'finished', untimed: true, checkpoints: 1024, stage: 1024, inputs: 63, inputPresses: 63}});
+    expect(decodeSpectator(encoded)).toMatchObject({slot: 63, sequence: 0xffffffff, epoch: 0xffffffff, pose: {eyeHeight: 128, phase: 'finished', untimed: true, checkpoints: 1024, stage: 1024, inputs: 63, inputPresses: 63}});
     const noInputs = encodeSpectator({...packet, pose: {...detailed, inputs: undefined, inputPresses: undefined}}, true);
     expect(decodeSpectator(noInputs, true).pose.inputs).toBeUndefined();
     expect(new Uint8Array(noInputs)[54]).toBe(0);
@@ -123,7 +124,8 @@ describe('private room binary protocol', () => {
     expect(() => decodeSpectator(encoded.slice(0, 55))).toThrow();
     expect(() => decodeSpectator(new ArrayBuffer(57))).toThrow();
     for (const invalid of [{eyeHeight: -1}, {phase: 'invalid'}, {untimed: 1}, {checkpoints: -1}, {stage: 1025}, {inputs: 64}, {inputPresses: 64}, {inputs: undefined}]) expect(() => encodeSpectator({...packet, pose: {...detailed, ...invalid}})).toThrow();
-    expect(() => encodeSpectator({...packet, slot: -1})).toThrow();
+    for (const slot of [-1, MAX_ROOM_PLAYERS, 65535, 65536, 1.5]) expect(() => encodeSpectator({...packet, slot})).toThrow();
+    expect(() => decodeSpectator(changed(encoded, 2, MAX_ROOM_PLAYERS, 'setUint16'))).toThrow('Invalid spectator state');
   });
 
   test('relay assigns trusted slots without mutating or requantizing source bytes', () => {
@@ -135,8 +137,10 @@ describe('private room binary protocol', () => {
     expect(decodeSpectator(forwarded.buffer, true).slot).toBe(8);
     expect(new Uint8Array(spectator)[1]).toBe(3);
     expect([...new Uint8Array(forwarded.buffer, 4)]).toEqual([...new Uint8Array(spectator, 4)]);
-    expect(() => relayPose(source, -1)).toThrow();
-    expect(() => relaySpectator(spectator, 65536)).toThrow();
+    for (const slot of [-1, MAX_ROOM_PLAYERS, 65535, 65536, 1.5]) {
+      expect(() => relayPose(source, slot)).toThrow();
+      expect(() => relaySpectator(spectator, slot)).toThrow();
+    }
   });
 });
 
@@ -176,9 +180,7 @@ describe('private room control boundaries', () => {
   test('chunks escaped and Unicode controls losslessly', () => {
     const encoder = new TextEncoder();
     for (const type of ['welcome', 'roster']) {
-      const message = {type, players: Array.from({length: 1100}, (_, slot) => ({
-        slot, name: '名😀\"\\\\\\n\\t'.repeat(4), id: 'player-' + slot, connectionId: 'connection-' + slot,
-      }))};
+      const message = {type, text: '名😀\"\\\\\\n\\t'.repeat(12000)};
       const frames = encodeControlFrames(message);
       expect(frames.length).toBeGreaterThan(1);
       for (const frame of frames) {
@@ -197,7 +199,7 @@ describe('private room control boundaries', () => {
     expect(normalizeAppearance(appearance)).toEqual(appearance);
     for (const invalid of [{title: 'x'.repeat(25)}, {title: '<b>'}, {title: ' padded'}, {titleColor: 'red'}, {nameColor: undefined}, {revision: -1}, {revision: 0.5}]) expect(normalizeAppearance({...appearance, ...invalid}).title).toBe('');
   });
-  test('validates a full 256-player roster through bounded chunk frames', () => {
+  test('validates a full 64-player roster through bounded control frames', () => {
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
       id: 'private-' + uuid(slot), connectionId: uuid(slot), slot,
       name: 'Player_' + slot, rank: 'Guest', points: 0, guest: false,
@@ -217,27 +219,60 @@ describe('private room control boundaries', () => {
     expect(received).toEqual(message);
   });
 
-  test('refuses rosters over 256 players', () => {
+  test('refuses rosters over 64 players and slots outside the room limit', () => {
     const player = slot => ({id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest', rank: 'Guest',
       points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE});
     const roster = length => ({type: 'roster', players: Array.from({length}, (_, slot) => player(slot))});
     expect(() => filter()(roster(MAX_ROOM_PLAYERS))).not.toThrow();
     expect(() => filter()(roster(MAX_ROOM_PLAYERS + 1))).toThrow('Invalid room roster');
+    for (const slot of [-1, MAX_ROOM_PLAYERS, 65535, 65536, 1.5]) {
+      expect(() => filter()({type: 'roster', players: [player(slot)]})).toThrow('Invalid room player');
+    }
   });
 
-  test('a host cannot make a guest assemble more than about 1 MB', () => {
-    const players = Array.from({length: 8000}, (_, slot) => ({id: 'private-' + slot, connectionId: 'c' + slot, slot,
-      name: 'N'.repeat(24), rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false,
-      appearance: {title: 'T'.repeat(24), titleColor: '#ffffff', nameColor: '#ffffff', revision: 1}}));
+  test('a host cannot make a guest assemble more than 256 KiB', () => {
+    const message = {type: 'notice', text: 'x'.repeat(MAX_ROOM_MESSAGE_CHARS)};
     const reader = createRoomControlReader(filter());
     let assembled = 0;
     expect(() => {
-      for (const frame of encodeControlFrames({type: 'roster', players})) {
+      for (const frame of encodeControlFrames(message)) {
         reader.read(frame);
         assembled += JSON.parse(frame).data.length;
       }
     }).toThrow('Invalid room chunk');
     expect(assembled).toBeLessThanOrEqual(MAX_ROOM_MESSAGE_CHARS);
+  });
+
+  test('shares exact room, message and capacity bounds', () => {
+    expect(MAX_ROOM_PLAYERS).toBe(64);
+    expect(DEFAULT_MAX_PLAYERS).toBe(16);
+    expect(MAX_SNAPSHOT_BLOCKS).toBe(64);
+    expect(MAX_ROOM_MESSAGE_CHARS).toBe(262144);
+    expect(MAX_ROOM_CHUNKS).toBe(66);
+    for (const value of [2, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS]) expect(isMaxPlayers(value)).toBe(true);
+    for (const value of [undefined, null, 0, 1, 65, 2.5, NaN, Infinity, '16']) expect(isMaxPlayers(value)).toBe(false);
+  });
+
+  test('requires and rebuilds state capacity without restricting an existing roster to it', () => {
+    const state = {roomId: 'room', name: 'My room', visibility: 'private', maxPlayers: DEFAULT_MAX_PLAYERS,
+      mapId: 'one', mapTitle: 'One', epoch: 1, startedAt: 1, endsAt: 0, untimed: true,
+      recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
+    const read = createRoomFilter({roomId: 'room', maps: [{id: 'one', title: 'One'}]});
+    for (const maxPlayers of [2, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS]) {
+      expect(read({type: 'state', state: {...state, maxPlayers, ignored: true}, serverTime: 1}))
+        .toEqual({type: 'state', state: {...state, maxPlayers}, serverTime: 1});
+    }
+    for (const maxPlayers of [undefined, null, 1, 65, 2.5, '16']) {
+      expect(() => read({type: 'state', state: {...state, maxPlayers}, serverTime: 1})).toThrow('Invalid room state');
+    }
+    read({type: 'state', state: {...state, maxPlayers: 2}, serverTime: 1});
+    const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
+      id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Player_' + slot,
+      rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+    }));
+    expect(read({type: 'roster', players}).players).toHaveLength(MAX_ROOM_PLAYERS);
+    expect(() => read({type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS})).not.toThrow();
+    expect(() => read({type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS + 1})).toThrow();
   });
 
   test('bounds unfinished chunk memory and clears it on disposal', () => {

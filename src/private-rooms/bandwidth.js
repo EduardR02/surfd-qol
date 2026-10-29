@@ -1,4 +1,4 @@
-import {MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, POSE_HEADER_BYTES, POSE_SAMPLE_BYTES, SNAPSHOT_HEADER_BYTES,
+import {MAX_ROOM_PLAYERS, POSE_HEADER_BYTES, POSE_SAMPLE_BYTES, SNAPSHOT_HEADER_BYTES,
   SNAPSHOT_BLOCK_BYTES, SPECTATOR_BYTES} from './protocol.js';
 
 const BATCH_SECONDS = 98 / 1000;
@@ -20,15 +20,11 @@ export function estimateBandwidth(players, {spectatorViewers = Math.max(0, playe
   }
   if (!guests) return {upload: 0, download: 0};
 
-  // Each complete native packet is fragmented into at most 1100 data bytes;
+  // A room's at most 63 guests fit in one native snapshot, fragmented into 1100 data bytes;
   // every fragment carries 97 bytes of IP/UDP/TURN/DTLS/SCTP headers.
   const poseBytes = POSE_HEADER_BYTES + 2 * POSE_SAMPLE_BYTES;
   const blockBytes = SNAPSHOT_BLOCK_BYTES + 2 * POSE_SAMPLE_BYTES;
-  let snapshotBytes = 0;
-  for (let remaining = guests; remaining > 0; remaining -= MAX_SNAPSHOT_BLOCKS) {
-    const payload = SNAPSHOT_HEADER_BYTES + Math.min(remaining, MAX_SNAPSHOT_BLOCKS) * blockBytes;
-    snapshotBytes += packetBytes(payload);
-  }
+  const snapshotBytes = packetBytes(SNAPSHOT_HEADER_BYTES + guests * blockBytes);
   const spectatorBytesPerSecond = packetBytes(SPECTATOR_BYTES) * 30;
   return {
     upload: (guests * snapshotBytes / BATCH_SECONDS + spectatorViewers * spectatorBytesPerSecond) * 8 / 1e6,

@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
-import {MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {MAX_ROOM_PLAYERS, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const BATCH_SECONDS = 98 / 1000;
 const FRAGMENT_BYTES = 1100, FRAGMENT_OVERHEAD = 20 + 8 + 4 + 37 + 28;
@@ -18,10 +18,7 @@ function synchronizedMovement(players) {
   const destination = guests, sources = Array.from({length: players}, (_, slot) => ({
     slot, sequence: 1, epoch: 1, samples: [pose, pose],
   })).filter(({slot}) => slot !== destination);
-  const packets = [];
-  for (let offset = 0; offset < sources.length; offset += MAX_SNAPSHOT_BLOCKS) {
-    packets.push(encodeSnapshot(sources.slice(offset, offset + MAX_SNAPSHOT_BLOCKS)));
-  }
+  const packets = [encodeSnapshot(sources)];
   const upload = guests * packets.reduce((sum, packet) => sum + wireBytes(packet), 0) / BATCH_SECONDS * 8 / 1e6;
   const download = guests * wireBytes(pairedPose) / BATCH_SECONDS * 8 / 1e6;
   return {packets, upload, download};
@@ -39,14 +36,13 @@ describe('private room bandwidth', () => {
     expect(actual.download).toBeCloseTo(expected.download, 10);
   });
 
-  test('sends complete snapshots at and across the 100-block chunk boundary', () => {
-    const exactlyFull = synchronizedMovement(101);
-    expect(estimateBandwidth(101, {spectatorViewers: 0, spectatorSenders: 0}).upload)
-      .toBeCloseTo(exactlyFull.upload, 10);
-
-    const oneOver = synchronizedMovement(102);
-    expect(estimateBandwidth(102, {spectatorViewers: 0, spectatorSenders: 0}).upload)
-      .toBeCloseTo(oneOver.upload, 10);
+  test('keeps full-room movement in one snapshot at the 64-player limit', () => {
+    for (const players of [MAX_ROOM_PLAYERS - 1, MAX_ROOM_PLAYERS]) {
+      const expected = synchronizedMovement(players);
+      expect(expected.packets).toHaveLength(1);
+      expect(estimateBandwidth(players, {spectatorViewers: 0, spectatorSenders: 0}).upload)
+        .toBeCloseTo(expected.upload, 10);
+    }
   });
 
   test('charges one or two MTU fragments on either side of a generated packet boundary', () => {
@@ -59,7 +55,7 @@ describe('private room bandwidth', () => {
       .toBeCloseTo(above.upload, 10);
   });
 
-  test('accounts for every full-room snapshot chunk and its MTU fragments', () => {
+  test('accounts for the full-room snapshot and all its MTU fragments', () => {
     const expected = synchronizedMovement(MAX_ROOM_PLAYERS);
     const actual = estimateBandwidth(MAX_ROOM_PLAYERS, {spectatorViewers: 0, spectatorSenders: 0});
     expect(actual.upload).toBeCloseTo(expected.upload, 10);

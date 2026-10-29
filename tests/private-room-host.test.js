@@ -22,7 +22,7 @@ const guestHello = {...hello, name: 'Guest_0a1b2', guest: true};
 const pose = {time: 100, x: 1, y: 2, z: 3, vx: 4, vy: 5, vz: 6, yaw: 90, pitch: -30, flags: 1, seconds: 2};
 const detailed = {...pose, eyeHeight: 64, phase: 'running', untimed: true, checkpoints: 1, stage: 2, inputs: 1, inputPresses: 16};
 function fixture(options = {}) {
-  const room = createRoomHost({roomId: createRoomId(), mapId: 'one', maps: [{id: 'one', title: 'One'}, {id: 'two', title: 'Two'}], ...options});
+  const room = createRoomHost({roomId: createRoomId(), mapId: 'one', maxPlayers: MAX_ROOM_PLAYERS, maps: [{id: 'one', title: 'One'}, {id: 'two', title: 'Two'}], ...options});
   const connect = (host = false, identity = hello, open = true) => {
     const socket = new Socket();
     room.addClient(socket, identity, {host});
@@ -69,7 +69,6 @@ describe('private room host', () => {
     expect(welcome).toMatchObject({type: 'welcome', spectatorStream: true, playtime: false, activityTracking: false, recentResults: [], chatMute: null});
     expect(welcome.player).toMatchObject({name: 'Surfer', guest: false, moderator: true, points: 0, rank: 'Guest', spectating: false, slot: 0, appearance: DEFAULT_APPEARANCE});
     expect(welcome.state).toMatchObject({epoch: 1, mapId: 'one', endsAt: 0, untimed: true, vote: null, nextMap: null, nominations: {}, recent: []});
-    expect(welcome.state.capacity).toBeUndefined();
     const peer = connect();
     expect(peer.messages('welcome')[0].players).toHaveLength(2);
     await rosterTick();
@@ -89,12 +88,12 @@ describe('private room host', () => {
     expect(socket.messages('welcome')).toHaveLength(1);
   });
 
-  test('reserves unique slots beyond one hundred and reuses departures', () => {
+  test('reserves unique slots for connecting players and reuses departures', () => {
     const {room, connect} = fixture();
-    const peers = Array.from({length: 105}, () => connect(false, hello, false));
+    const peers = Array.from({length: MAX_ROOM_PLAYERS - 1}, () => connect(false, hello, false));
     peers.forEach(peer => peer.open());
-    expect(room.players).toHaveLength(105);
-    expect(new Set(room.players.map(player => player.slot)).size).toBe(105);
+    expect(room.players).toHaveLength(MAX_ROOM_PLAYERS - 1);
+    expect(new Set(room.players.map(player => player.slot)).size).toBe(MAX_ROOM_PLAYERS - 1);
     peers[4].close(1000, 'Left');
     expect(connect().messages('welcome')[0].player.slot).toBe(4);
     room.close();
@@ -200,7 +199,7 @@ describe('private room host', () => {
     expect(target.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: true, count: 1});
     await rosterTick();
     expect(host.messages('roster').at(-1).players[2].spectating).toBe(true);
-    target.receive(encodeSpectator({slot: 65535, sequence: 0, epoch: 1, pose: detailed}));
+    target.receive(encodeSpectator({slot: MAX_ROOM_PLAYERS - 1, sequence: 0, epoch: 1, pose: detailed}));
     expect(decodeSpectator(watcher.sent.find(value => value instanceof ArrayBuffer), true).slot).toBe(1);
     expect(bystander.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(0);
     host.receive({type: 'change-map', mapId: 'two'});
@@ -382,7 +381,7 @@ describe('private room host', () => {
     expect(waiting.messages('welcome')).toEqual([]);
   });
 
-  test('refuses joins beyond 256 players but keeps a place for the host', () => {
+  test('refuses joins beyond 64 players but keeps a place for the host', () => {
     const {room, connect} = fixture();
     const peers = Array.from({length: MAX_ROOM_PLAYERS - 1}, () => connect());
     expect(connect().closed).toEqual({code: CLOSE.refused, reason: 'This room is full.'});
@@ -393,6 +392,36 @@ describe('private room host', () => {
     peers[0].close(1000, 'Left');
     expect(controls(connect()).find(message => message.type === 'welcome').player.slot).toBe(0);
     room.close();
+  });
+
+  test('lowering capacity keeps players and stops admissions until a place opens', () => {
+    const {room, connect} = fixture({maxPlayers: 4}), host = connect(true), peers = [connect(), connect(), connect()];
+    try {
+      room.setMaxPlayers(2);
+      expect(room.players).toHaveLength(4);
+      expect(peers.every(peer => peer.closed === null)).toBe(true);
+      expect(host.messages('state').at(-1).state).toMatchObject({maxPlayers: 2, epoch: 1});
+      expect(connect().closed).toEqual({code: CLOSE.refused, reason: 'This room is full.'});
+      peers[0].close(1000, 'Left');
+      peers[1].close(1000, 'Left');
+      expect(connect().closed).toEqual({code: CLOSE.refused, reason: 'This room is full.'});
+      peers[2].close(1000, 'Left');
+      expect(connect().closed).toBeNull();
+      for (const value of [1, 65, 2.5, '4', null]) expect(() => room.setMaxPlayers(value)).toThrow();
+      expect(room.state.maxPlayers).toBe(2);
+    } finally { room.close(); }
+  });
+
+  test('defaults to sixteen players and counts connecting guests toward admission', () => {
+    const {room, connect} = fixture({maxPlayers: undefined});
+    try {
+      const peers = Array.from({length: 15}, () => connect(false, hello, false));
+      expect(connect(false, hello, false).closed).toEqual({code: CLOSE.refused, reason: 'This room is full.'});
+      expect(connect(true).closed).toBeNull();
+      peers.forEach(peer => peer.open());
+      expect(room.players).toHaveLength(16);
+      expect(room.state.maxPlayers).toBe(16);
+    } finally { room.close(); }
   });
 
   test('replaces live and connecting host registrations', () => {
@@ -538,15 +567,15 @@ describe('private room host', () => {
     } finally { room.close(); }
   });
 
-  test('splits snapshots at one hundred blocks and preserves samples', async () => {
+  test('preserves every sender and sample in a full-room snapshot', async () => {
     const {room, connect} = fixture(), host = connect(true);
-    const peers = Array.from({length: 102}, () => connect());
+    const peers = Array.from({length: MAX_ROOM_PLAYERS - 1}, () => connect());
     const source = encodePoseBatch({sequence: 1, epoch: 1, samples: [pose, {...pose, yaw: 1.25, pitch: 35.5}]});
     peers.forEach(peer => peer.receive(source));
     await tick();
-    expect(snapshots(host).map(blocks => blocks.length)).toEqual([100, 2]);
-    expect(new Set(snapshots(host).flat().map(block => block.slot)).size).toBe(102);
-    expect(snapshots(peers[0]).map(blocks => blocks.length)).toEqual([100, 1]);
+    expect(snapshots(host).map(blocks => blocks.length)).toEqual([MAX_ROOM_PLAYERS - 1]);
+    expect(new Set(snapshots(host).flat().map(block => block.slot)).size).toBe(MAX_ROOM_PLAYERS - 1);
+    expect(snapshots(peers[0]).map(blocks => blocks.length)).toEqual([MAX_ROOM_PLAYERS - 2]);
     expect(snapshots(peers[0]).flat().some(block => block.slot === 1)).toBe(false);
     const packet = host.sent.find(value => value instanceof ArrayBuffer);
     expect(new Uint8Array(packet, 18, 64)).toEqual(new Uint8Array(source, 12));
@@ -580,7 +609,7 @@ describe('private room host', () => {
     const expected = [];
     for (let sequence = 0; sequence < 600; sequence++) {
       time = sequence * (1000 / 30 - 1);
-      const packet = {slot: 65535, sequence, epoch: 1, pose: {...detailed, time: sequence, x: sequence / 7}};
+      const packet = {slot: MAX_ROOM_PLAYERS - 1, sequence, epoch: 1, pose: {...detailed, time: sequence, x: sequence / 7}};
       const source = encodeSpectator(packet), forwarded = source.slice(0), view = new DataView(forwarded);
       view.setUint8(1, 4);
       view.setUint16(2, 0, true);
@@ -716,10 +745,10 @@ test('a congested player skips poses but keeps reliable messages', async () => {
   room.close();
 });
 
-test('snapshot chunks stop when a recipient backs up while healthy recipients continue and drained players resume', async () => {
+test('congested recipients skip snapshots while healthy recipients continue and drained players resume', async () => {
   const {room, connect} = fixture(), growing = connect(true), backlogged = connect(), notReady = connect();
   const pending = connect(false, hello, false), healthy = connect();
-  const senders = Array.from({length: 102}, () => connect());
+  const senders = Array.from({length: MAX_ROOM_PLAYERS - 5}, () => connect());
   const slots = senders.map(sender => sender.messages('welcome')[0].player.slot);
   const source = encodePoseBatch({sequence: 1, epoch: 1, samples: [pose, {...pose, time: 101}]});
   const send = growing.send.bind(growing);
@@ -735,11 +764,11 @@ test('snapshot chunks stop when a recipient backs up while healthy recipients co
   notReady.readyState = 2;
   for (const sender of senders) sender.receive(source);
   await tick();
-  expect(snapshots(growing).map(blocks => blocks.length)).toEqual([100]);
+  expect(snapshots(growing).map(blocks => blocks.length)).toEqual([senders.length]);
   expect(snapshots(backlogged)).toEqual([]);
   expect(snapshots(notReady)).toEqual([]);
   expect(pending.sent).toEqual([]);
-  expect(snapshots(healthy).map(blocks => blocks.length)).toEqual([100, 2]);
+  expect(snapshots(healthy).map(blocks => blocks.length)).toEqual([senders.length]);
   expect(snapshots(healthy).flat().map(block => block.slot)).toEqual(slots);
   expect(snapshots(healthy)[0][0].samples.map(sample => sample.time)).toEqual([100, 101]);
   expect(snapshots(senders[0]).flat().map(block => block.slot)).toEqual(slots.slice(1));
@@ -852,7 +881,7 @@ test('real loopback host receives binary as ArrayBuffer and relays native packet
     watcher.send(JSON.stringify({type: 'spectate', connectionId: welcome.player.connectionId, request: 1}));
     expect((await demand).count).toBe(1);
     const spectator = next(watcher, data => data instanceof ArrayBuffer);
-    sender.send(encodeSpectator({slot: 65535, sequence: 1, epoch: 1, pose: detailed}));
+    sender.send(encodeSpectator({slot: MAX_ROOM_PLAYERS - 1, sequence: 1, epoch: 1, pose: detailed}));
     expect(decodeSpectator(await spectator, true).slot).toBe(welcome.player.slot);
   } finally {
     room.close();

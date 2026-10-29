@@ -1,6 +1,6 @@
 import {isPrivateRoomId} from './ids.js';
-import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUuid, kickedNotice,
+import {CLOSE, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
+  bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isUuid, kickedNotice,
   normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
@@ -12,8 +12,9 @@ const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRA
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', onChange = () => {}, now = Date.now}) {
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
+  if (!isMaxPlayers(maxPlayers)) throw new Error('Choose a player limit from 2 to 64.');
   name = normalizeRoomName(name);
   const problem = roomNameProblem(name);
   if (problem) throw new Error(problem);
@@ -25,7 +26,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   if (!catalog.has(mapId)) throw new Error('Map is not in the catalog');
   let state = {
-    roomId, name, visibility, mapId, mapTitle: catalog.get(mapId).title,
+    roomId, name, visibility, maxPlayers, mapId, mapTitle: catalog.get(mapId).title,
     epoch: 1, startedAt: Date.now(), endsAt: 0, untimed: true,
     recent: [], nominations: {}, rtv: [], vote: null, nextMap: null,
   };
@@ -95,33 +96,25 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     pending.clear();
     for (const recipient of clients) {
       if (!recipient.open || recipient.socket.readyState !== 1 || recipient.socket.bufferedAmount > LOSSY_BACKLOG) continue;
-      let blocks = [], length = SNAPSHOT_HEADER_BYTES;
-      const flush = () => {
-        if (!blocks.length) return;
-        const buffer = new ArrayBuffer(length), view = new DataView(buffer);
-        view.setUint8(0, VERSION);
-        view.setUint8(1, 2);
-        view.setUint16(2, blocks.length, true);
-        let offset = SNAPSHOT_HEADER_BYTES;
-        for (const block of blocks) {
-          const bytes = new Uint8Array(block, SNAPSHOT_HEADER_BYTES);
-          new Uint8Array(buffer, offset, bytes.length).set(bytes);
-          offset += bytes.length;
-        }
-        send(recipient, buffer);
-        blocks = [];
-        length = SNAPSHOT_HEADER_BYTES;
-      };
+      const blocks = [];
+      let length = SNAPSHOT_HEADER_BYTES;
       for (const [sender, packet] of batches) {
         if (sender === recipient || !sender.open || packet.epoch !== state.epoch) continue;
         blocks.push(packet.buffer);
         length += packet.buffer.byteLength - SNAPSHOT_HEADER_BYTES;
-        if (blocks.length === MAX_SNAPSHOT_BLOCKS) {
-          flush();
-          if (!recipient.open || recipient.socket.readyState !== 1 || recipient.socket.bufferedAmount > LOSSY_BACKLOG) break;
-        }
       }
-      flush();
+      if (!blocks.length) continue;
+      const buffer = new ArrayBuffer(length), view = new DataView(buffer);
+      view.setUint8(0, VERSION);
+      view.setUint8(1, 2);
+      view.setUint16(2, blocks.length, true);
+      let offset = SNAPSHOT_HEADER_BYTES;
+      for (const block of blocks) {
+        const bytes = new Uint8Array(block, SNAPSHOT_HEADER_BYTES);
+        new Uint8Array(buffer, offset, bytes.length).set(bytes);
+        offset += bytes.length;
+      }
+      send(recipient, buffer);
     }
   }
   function demand(client) {
@@ -316,7 +309,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       return;
     }
     // One place stays free for the host's own connection.
-    if (!host && [...clients].filter(client => !client.host).length >= MAX_ROOM_PLAYERS - 1) {
+    if (!host && [...clients].filter(client => !client.host).length >= state.maxPlayers - 1) {
       socket.close(CLOSE.refused, ROOM_TEXTS.full);
       return;
     }
@@ -376,5 +369,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     broadcast({type: 'state', state, serverTime: Date.now()});
     onChange();
   }
-  return {addClient, close, setVisibility, setName, get state() { return state; }, get players() { return players(); }};
+  function setMaxPlayers(value) {
+    if (!isMaxPlayers(value)) throw new Error('Choose a player limit from 2 to 64.');
+    if (closed || state.maxPlayers === value) return;
+    state = {...state, maxPlayers: value};
+    broadcast({type: 'state', state, serverTime: Date.now()});
+    onChange();
+  }
+  return {addClient, close, setVisibility, setName, setMaxPlayers, get state() { return state; }, get players() { return players(); }};
 }

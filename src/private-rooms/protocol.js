@@ -29,17 +29,20 @@ export function roomCloseReason(code, reason) {
   return code === CLOSE.gone ? ROOM_TEXTS.closed : code === CLOSE.invalid ? ROOM_TEXTS.invalidData : '';
 }
 export const MAX_CONTROL_BYTES = 65536;
-export const MAX_ROOM_PLAYERS = 256;
+export const MAX_ROOM_PLAYERS = 64;
+export const DEFAULT_MAX_PLAYERS = 16;
+export const isMaxPlayers = value => Number.isInteger(value) && value >= 2 && value <= MAX_ROOM_PLAYERS;
 // A player's JSON stays under 512 characters; the rest leaves room for the map catalog.
 export const MAX_ROOM_MESSAGE_CHARS = MAX_ROOM_PLAYERS * 4096;
 export const ROOM_CHUNK_CHARS = 4000;
 export const MAX_ROOM_CHUNKS = Math.ceil(MAX_ROOM_MESSAGE_CHARS / ROOM_CHUNK_CHARS);
-export const MAX_SNAPSHOT_BLOCKS = 100;
+export const MAX_SNAPSHOT_BLOCKS = Math.min(100, MAX_ROOM_PLAYERS);
 export const POSE_HEADER_BYTES = 12;
 export const POSE_SAMPLE_BYTES = 32;
 export const SNAPSHOT_HEADER_BYTES = 4;
 export const SNAPSHOT_BLOCK_BYTES = 14;
 export const SPECTATOR_BYTES = 56;
+const MAX_SNAPSHOT_BYTES = SNAPSHOT_HEADER_BYTES + MAX_SNAPSHOT_BLOCKS * (SNAPSHOT_BLOCK_BYTES + 2 * POSE_SAMPLE_BYTES);
 export const SNAPSHOT_INTERVAL_MS = 50;
 const encoder = new TextEncoder();
 export const FLAGS = Object.freeze({grounded: 1, crouched: 2, teleport: 4, practice: 8, idle: 16, finished: 32});
@@ -139,7 +142,7 @@ export function encodeSnapshot(blocks) {
   const slots = new Set();
   for (const block of blocks) {
     validateBatch(block);
-    requireValid(uint(block.slot, 65535) && !slots.has(block.slot), 'Invalid snapshot slot');
+    requireValid(uint(block.slot, MAX_ROOM_PLAYERS - 1) && !slots.has(block.slot), 'Invalid snapshot slot');
     slots.add(block.slot);
     length += SNAPSHOT_BLOCK_BYTES + block.samples.length * POSE_SAMPLE_BYTES;
   }
@@ -163,16 +166,16 @@ export function encodeSnapshot(blocks) {
 }
 
 export function decodeSnapshot(buffer) {
-  const view = dataView(buffer, 4, 7804), count = view.getUint16(2, true);
-  requireValid(view.getUint8(0) === VERSION && view.getUint8(1) === 2 && count <= 100, 'Invalid snapshot header');
+  const view = dataView(buffer, SNAPSHOT_HEADER_BYTES, MAX_SNAPSHOT_BYTES), count = view.getUint16(2, true);
+  requireValid(view.getUint8(0) === VERSION && view.getUint8(1) === 2 && count <= MAX_SNAPSHOT_BLOCKS, 'Invalid snapshot header');
   const blocks = [], slots = new Set();
   let offset = 4;
   for (let index = 0; index < count; index++) {
     requireValid(offset + 14 <= buffer.byteLength, 'Truncated block');
     const slot = view.getUint16(offset, true), sequence = view.getUint32(offset + 2, true);
     const epoch = view.getUint32(offset + 6, true), size = view.getUint8(offset + 10);
-    requireValid(!slots.has(slot) && size >= 1 && size <= 2 && view.getUint8(offset + 11) === 0
-      && view.getUint16(offset + 12, true) === 0, 'Invalid block');
+    requireValid(uint(slot, MAX_ROOM_PLAYERS - 1) && !slots.has(slot) && size >= 1 && size <= 2
+      && view.getUint8(offset + 11) === 0 && view.getUint16(offset + 12, true) === 0, 'Invalid block');
     slots.add(slot);
     offset += 14;
     requireValid(offset + size * 32 <= buffer.byteLength, 'Truncated samples');
@@ -187,7 +190,7 @@ export function decodeSnapshot(buffer) {
 
 function validSpectator(packet) {
   const pose = packet?.pose;
-  return pose && uint(packet.slot, 65535) && uint(packet.sequence) && uint(packet.epoch) && validPose(pose)
+  return pose && uint(packet.slot, MAX_ROOM_PLAYERS - 1) && uint(packet.sequence) && uint(packet.epoch) && validPose(pose)
     && Number.isFinite(pose.eyeHeight) && pose.eyeHeight >= 0 && pose.eyeHeight <= 128
     && (pose.inputs === undefined || uint(pose.inputs, 63))
     && (pose.inputPresses === undefined || pose.inputs !== undefined && uint(pose.inputPresses, 63))
@@ -234,7 +237,7 @@ export function decodeSpectator(buffer, forwarded = false) {
 // The sender's bytes go on unchanged (no second rounding); only the slot is the host's.
 export function relayPose(buffer, slot) {
   const batch = decodePoseBatch(buffer);
-  requireValid(uint(slot, 65535), 'Invalid slot');
+  requireValid(uint(slot, MAX_ROOM_PLAYERS - 1), 'Invalid slot');
   const output = new ArrayBuffer(buffer.byteLength + 6), view = new DataView(output);
   view.setUint8(0, VERSION);
   view.setUint8(1, 2);
@@ -249,7 +252,7 @@ export function relayPose(buffer, slot) {
 
 export function relaySpectator(buffer, slot) {
   const packet = decodeSpectator(buffer);
-  requireValid(uint(slot, 65535), 'Invalid slot');
+  requireValid(uint(slot, MAX_ROOM_PLAYERS - 1), 'Invalid slot');
   const output = buffer.slice(0), view = new DataView(output);
   view.setUint8(1, 4);
   view.setUint16(2, slot, true);
@@ -322,7 +325,7 @@ export function catalogEntry(map) {
 
 function readPlayer(player) {
   requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
-    && player.id === 'private-' + player.connectionId && uint(player.slot, 65535) && isPlayerName(player.name)
+    && player.id === 'private-' + player.connectionId && uint(player.slot, MAX_ROOM_PLAYERS - 1) && isPlayerName(player.name)
     && player.rank === 'Guest' && player.points === 0
     && (player.guest === true ? isGuestName(player.name) && player.userId === undefined
       : player.guest === false && (player.userId === undefined || isUuid(player.userId)))
@@ -356,14 +359,15 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
   }
   function readState(state) {
     requireValid(record(state) && state.roomId === roomId && isRoomName(state.name)
-      && ['private', 'public'].includes(state.visibility) && catalog.has(state.mapId)
+      && ['private', 'public'].includes(state.visibility) && isMaxPlayers(state.maxPlayers) && catalog.has(state.mapId)
       && uint(state.epoch) && state.epoch > 0 && timestamp(state.startedAt)
       && state.endsAt === 0 && state.untimed === true
       && Array.isArray(state.recent) && state.recent.length <= 8 && state.recent.every(identifier)
       && record(state.nominations) && Object.keys(state.nominations).length === 0
       && Array.isArray(state.rtv) && state.rtv.length === 0
       && state.vote === null && state.nextMap === null, 'Invalid room state');
-    return {roomId, name: state.name, visibility: state.visibility, mapId: state.mapId, mapTitle: catalog.get(state.mapId).title,
+    return {roomId, name: state.name, visibility: state.visibility, maxPlayers: state.maxPlayers,
+      mapId: state.mapId, mapTitle: catalog.get(state.mapId).title,
       epoch: state.epoch, startedAt: state.startedAt, endsAt: 0, untimed: true,
       recent: state.recent.filter(id => catalog.has(id)), nominations: {}, rtv: [], vote: null, nextMap: null};
   }
@@ -452,7 +456,7 @@ export function createRoomControlReader(filter = null) {
 }
 
 export function validateRoomBinary(buffer) {
-  const view = dataView(buffer, 4, 7804);
+  const view = dataView(buffer, SNAPSHOT_HEADER_BYTES, MAX_SNAPSHOT_BYTES);
   if (view.getUint8(1) === 4) decodeSpectator(buffer, true);
   else decodeSnapshot(buffer);
 }

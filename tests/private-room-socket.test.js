@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
 import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
-import {CLOSE, DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_PLAYERS, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {CLOSE, DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, ROOM_CHUNK_CHARS, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, {once: true}));
@@ -22,7 +22,7 @@ const roomPlayer = (slot = 0) => ({
   rank: 'Guest', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
 });
 const maps = [{id: 'one', title: 'One', tier: 1}];
-const roomState = {roomId: 'room-a', name: "Host's room", visibility: 'private', mapId: 'one', mapTitle: 'One',
+const roomState = {roomId: 'room-a', name: "Host's room", visibility: 'private', maxPlayers: DEFAULT_MAX_PLAYERS, mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
   maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
@@ -310,21 +310,39 @@ describe('private room loopback socket', () => {
     await once(client, 'open');
     const received = [];
     host.onmessage = event => received.push(decodeSnapshot(event.data));
-    client.send(encodeSnapshot(Array.from({length: 100}, (_, slot) => batch(1, slot))));
-    client.send(encodeSnapshot([batch(1, 100), batch(1, 65535)]));
-    client.send(encodeSnapshot([batch(2, 2), batch(2, 65535)]));
-    expect(client.bufferedAmount).toBe(3 * 4 + 102 * 46);
+    client.send(encodeSnapshot(Array.from({length: MAX_ROOM_PLAYERS - 2}, (_, slot) => batch(1, slot))));
+    client.send(encodeSnapshot([batch(1, 62), batch(1, 63)]));
+    client.send(encodeSnapshot([batch(2, 2), batch(2, 63)]));
+    expect(client.bufferedAmount).toBe(3 * 4 + MAX_ROOM_PLAYERS * 46);
     const closed = once(host, 'close');
     client.close();
     await closed;
-    expect(received.map(blocks => blocks.length)).toEqual([99, 1, 2]);
+    expect(received.map(blocks => blocks.length)).toEqual([61, 1, 2]);
     const blocks = received.flat(), slots = new Map(blocks.map(block => [block.slot, block.sequence]));
-    expect(blocks).toHaveLength(102);
-    expect(slots.size).toBe(102);
+    expect(blocks).toHaveLength(MAX_ROOM_PLAYERS);
+    expect(slots.size).toBe(MAX_ROOM_PLAYERS);
     expect(slots.get(2)).toBe(2);
-    expect(slots.get(65535)).toBe(2);
-    expect(slots.get(100)).toBe(1);
+    expect(slots.get(63)).toBe(2);
+    expect(slots.get(62)).toBe(1);
     expect(client.bufferedAmount).toBe(0);
+  });
+
+  test('coalesces complete snapshots at the private-room block limit', async () => {
+    const [client, host] = createLoopbackPair();
+    cleanups.push(() => client.close());
+    host.binaryType = 'arraybuffer';
+    await once(client, 'open');
+    const received = [];
+    host.onmessage = event => received.push(decodeSnapshot(event.data));
+    const blocks = Array.from({length: MAX_SNAPSHOT_BLOCKS}, (_, slot) => batch(1, slot));
+    client.send(encodeSnapshot(blocks));
+    client.send(encodeSnapshot(blocks.map(block => ({...block, sequence: 2}))));
+    expect(client.bufferedAmount).toBe(4 + MAX_SNAPSHOT_BLOCKS * 46);
+    const closed = once(host, 'close');
+    client.close();
+    await closed;
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual(blocks.map(block => ({...block, sequence: 2})));
   });
 
   test('keeps spectator senders and directions independent', async () => {
@@ -511,10 +529,10 @@ describe('private room WebRTC socket', () => {
     client.onmessage = event => downloads.push(event.data);
     const detailed = {...pose, time: 0xffffffff, x: 131072, y: -131072, vx: 32767, vy: -32767,
       yaw: 173.123, pitch: -45.123, flags: 63, seconds: 86400};
-    const moving = {sequence: 0xffffffff, epoch: 0xffffffff, slot: 65535, samples: [pose, detailed]};
+    const moving = {sequence: 0xffffffff, epoch: 0xffffffff, slot: MAX_ROOM_PLAYERS - 1, samples: [pose, detailed]};
     const up = [encodePoseBatch(moving)], down = [encodeSnapshot([moving])];
     for (let sequence = 0; sequence < 30; sequence++) {
-      const frame = {...spectator(sequence, 65535), epoch: 0xffffffff};
+      const frame = {...spectator(sequence, MAX_ROOM_PLAYERS - 1), epoch: 0xffffffff};
       up.push(encodeSpectator(frame));
       down.push(encodeSpectator(frame, true));
     }
@@ -884,14 +902,14 @@ describe('private room WebRTC socket', () => {
       {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
       {type: 'notice', text: 'This room is full.'},
       {type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: 12},
-      {type: 'spectator-demand', active: true, count: 255},
+      {type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS},
       {type: 'spectator-demand', active: false, count: 0},
       {type: 'context', epoch: 2, token: null},
     ];
     for (const control of controls) host.send(JSON.stringify(control));
-    const blocks = Array.from({length: 102}, (_, slot) => batch(1, slot));
-    host.send(encodeSnapshot(blocks.slice(0, 100)));
-    host.send(encodeSnapshot(blocks.slice(100)));
+    const blocks = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => batch(1, slot));
+    host.send(encodeSnapshot(blocks.slice(0, 32)));
+    host.send(encodeSnapshot(blocks.slice(32)));
     host.send(encodeSpectator(spectator(1, 1), true));
     await nextTask();
     expect(messages.slice(0, controls.length).map(JSON.parse)).toEqual(controls);
@@ -907,7 +925,7 @@ describe('private room WebRTC socket', () => {
       {...welcome(), player: {...roomPlayer(), moderator: true}, players: [{...roomPlayer(), moderator: true}]},
       {type: 'roster', players: [{...roomPlayer(1), moderator: true}, {...roomPlayer(2), moderator: true}]},
       {type: 'roster', players: [{...roomPlayer(), moderator: true}]},
-      {...welcome(), player: {...roomPlayer(), slot: 65536}},
+      {...welcome(), player: {...roomPlayer(), slot: MAX_ROOM_PLAYERS}},
       {...welcome(), player: {...roomPlayer(), appearance: {...DEFAULT_APPEARANCE, nameColor: 'red;position:fixed'}}},
       {type: 'roster', players: [roomPlayer(), roomPlayer()]},
       {type: 'roster', players: [{...roomPlayer(), points: '<img src=x>'}]},
@@ -923,8 +941,11 @@ describe('private room WebRTC socket', () => {
       {type: 'roster', players: [{...roomPlayer(), userId: 'account-1'}]},
       {type: 'state', state: {...roomState, name: 'Official Surfd server'}, serverTime: 1},
       {type: 'state', state: {...roomState, visibility: 'listed'}, serverTime: 1},
+      ...[undefined, null, 1, MAX_ROOM_PLAYERS + 1, 2.5, '16'].map(maxPlayers =>
+        ({type: 'state', state: {...roomState, maxPlayers}, serverTime: 1})),
       {type: 'notice', text: {}}, {type: 'error', text: 'bad', spectatorRequest: -1},
       {type: 'spectator-demand', active: true, count: 0},
+      {type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS + 1},
       {type: 'context', epoch: 1, token: 'host-supplied-ranked-token'},
       {type: 'result', result: {}},
     ];
@@ -983,7 +1004,14 @@ describe('private room WebRTC socket', () => {
     new DataView(snapshot).setFloat32(22, NaN, true);
     const detailed = encodeSpectator(spectator(1, 1), true);
     new DataView(detailed).setUint8(55, 64);
-    for (const data of [snapshot, detailed, encodePoseBatch(batch(1)), new ArrayBuffer(65537), 'binary text']) {
+    const excessBlocks = encodeSnapshot([batch(1, 1)]);
+    new DataView(excessBlocks).setUint16(2, MAX_SNAPSHOT_BLOCKS + 1, true);
+    const excessSlot = encodeSnapshot([batch(1, 1)]);
+    new DataView(excessSlot).setUint16(4, MAX_ROOM_PLAYERS, true);
+    const spectatorSlot = encodeSpectator(spectator(1, 1), true);
+    new DataView(spectatorSlot).setUint16(2, MAX_ROOM_PLAYERS, true);
+    for (const data of [snapshot, detailed, excessBlocks, excessSlot, spectatorSlot,
+      encodePoseBatch(batch(1)), new ArrayBuffer(65537), 'binary text']) {
       const {client, connections} = rtcPair();
       await nextTask();
       const messages = [], closed = once(client, 'close');
@@ -994,21 +1022,24 @@ describe('private room WebRTC socket', () => {
     }
   });
 
-  test('buffers and validates complete large rosters before emitting bounded game frames', async () => {
+  test('buffers chunked full rosters before emitting rebuilt bounded game frames', async () => {
     const {client, accepted, connections} = rtcPair();
     await nextTask();
     const appearance = {title: 'T'.repeat(24), titleColor: '#ffffff', nameColor: '#ffffff', revision: 1};
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({...roomPlayer(slot), appearance}));
-    const frames = encodeControlFrames({type: 'roster', players}), messages = [];
+    const text = JSON.stringify({type: 'roster', players}), frames = [], messages = [];
+    for (let offset = 0; offset < text.length; offset += ROOM_CHUNK_CHARS) {
+      frames.push(JSON.stringify({type: 'room-chunk', data: text.slice(offset, offset + ROOM_CHUNK_CHARS),
+        final: offset + ROOM_CHUNK_CHARS >= text.length}));
+    }
     client.onmessage = event => messages.push(event.data);
     for (const frame of frames.slice(0, -1)) accepted[0].socket.send(frame);
     await nextTask();
     expect(messages).toEqual([]);
     accepted[0].socket.send(frames.at(-1));
     await nextTask();
-    expect(messages.length).toBeGreaterThan(1);
+    expect(messages).toEqual([JSON.stringify({type: 'roster', players})]);
     expect(messages.every(frame => frame.length <= MAX_CONTROL_BYTES)).toBe(true);
-    expect(JSON.parse(messages.map(frame => JSON.parse(frame).data).join(''))).toEqual({type: 'roster', players});
     expect(connections[1].channels[0].sent.every(frame => new TextEncoder().encode(frame).length <= MAX_CONTROL_BYTES)).toBe(true);
     const bad = encodeControlFrames({type: 'roster', players: [...players, players[0]]});
     messages.length = 0;

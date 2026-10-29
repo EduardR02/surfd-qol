@@ -1,4 +1,4 @@
-import {CLOSE, MAX_CONTROL_BYTES, ROOM_TEXTS, controlWireSize, createRoomControlReader, createRoomFilter, encodeControlFrames,
+import {CLOSE, MAX_CONTROL_BYTES, MAX_SNAPSHOT_BLOCKS, ROOM_TEXTS, controlWireSize, createRoomControlReader, createRoomFilter, encodeControlFrames,
   roomCloseReason, validateRoomBinary} from './protocol.js';
 
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
@@ -101,7 +101,7 @@ function frameParts(data) {
   }
   if (type !== 2) return [];
   const count = view.getUint16(2, true), parts = [], slots = new Set();
-  if (count > 100) return [];
+  if (count > MAX_SNAPSHOT_BLOCKS) return [];
   let offset = 4;
   for (let index = 0; index < count; index++) {
     if (offset + 14 > data.byteLength) return [];
