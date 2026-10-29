@@ -85,7 +85,7 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
     refresh();
   }
   const handlers = {
-    entries: session => list(session).map(({save, snapshot}) => ({id: save.id, name: save.name,
+    entries: session => list(session).map(({save, snapshot}) => ({id: save.id, name: save.name, own: save.ownerId === ownerId,
       time: snapshot.timer.state.elapsed, stage: snapshot.state.stage ?? 1, checkpoints: snapshot.timer.state.splits.length})),
     selected,
     saveSnapshot,

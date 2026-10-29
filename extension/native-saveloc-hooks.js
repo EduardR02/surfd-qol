@@ -9,8 +9,8 @@ function unique(source, pattern, label) {
 }
 
 // In a community room the saveloc store's methods come from the room. The game's
-// panel gains owner names, a count and help text; native Save leaves its message
-// to the room. Load still runs the game's whole restore sequence.
+// panel gains owner names and help text; native Save leaves its message to the
+// room. Load still runs the game's whole restore sequence.
 export function nativeSavelocHooks(source, store) {
   const panel = unique(source, new RegExp(`function (${identifier})\\((${identifier}),${identifier},${identifier}\\)\\{const ${identifier}=document\\.getElementById\\("save"\\),`, 'g'), 'saveloc panel');
   const selector = unique(source, new RegExp(`const (${identifier})=${literal(panel[1])}\\(${literal(store)},`, 'g'), 'saveloc selector')[1];
@@ -19,7 +19,9 @@ export function nativeSavelocHooks(source, store) {
   const count = unique(source, new RegExp('(' + identifier + ')\\.textContent=`\\$\\{(' + identifier + ')\\.length\\} / \\$\\{' + identifier + '\\}`', 'g'), 'saveloc count');
   source = source.replace(label[0], () => `${label[1]}.textContent=\`\${${label[2]}.name ? ${label[2]}.name + " #" + ${label[2]}.id : "#" + ${label[2]}.id} · `);
   source = source.replace(save[0], () => `if(__qolSharedPractice){${store}.save(${save[1]});${selector}.refresh();return}${save[0]}`);
-  source = source.replace(count[0], () => `${count[1]}.textContent=__qolSharedPractice?${count[2]}.length+" shared":${count[0].slice(count[0].indexOf('=') + 1)}`);
+  // The game's "N / 20" stays, counting your own saves against your own 20.
+  const rows = count[2];
+  source = source.replace(count[0], () => count[0].replace(`\${${rows}.length}`, `\${__qolSharedPractice?${rows}.filter(row=>row.own).length:${rows}.length}`));
   return {source, setup: `
 var __qolSharedPractice=null;
 const __qolPracticeMethods=${JSON.stringify(methods)};
