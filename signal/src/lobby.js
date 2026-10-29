@@ -21,6 +21,7 @@ export const IMPERSONATION = /surfd|official/i;
 export const MAX_LISTING_ROSTER = 24;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PLAYER_NAME = /^[A-Za-z0-9_-]{3,24}$/;
+const GUEST_NAME = /^Guest_[0-9a-f]{5}$/;
 
 // A roster preview exposes player names and only their guest/account identity.
 // Bound the number of source rows before reading or copying any of them.
@@ -34,7 +35,7 @@ function rosterFrom(value) {
     if (!player || typeof player !== 'object' || Array.isArray(player)
       || typeof player.name !== 'string' || !PLAYER_NAME.test(player.name)
       || typeof player.guest !== 'boolean'
-      || (player.guest ? player.userId !== undefined
+      || (player.guest ? !GUEST_NAME.test(player.name) || player.userId !== undefined
         : player.userId !== undefined && (typeof player.userId !== 'string' || !UUID.test(player.userId)))) continue;
     const entry = {name: player.name, guest: player.guest};
     if (!player.guest && player.userId !== undefined) entry.userId = player.userId;

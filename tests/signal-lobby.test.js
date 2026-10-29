@@ -49,12 +49,33 @@ test('roster previews are bounded and expose only names and validated identity',
   ]});
 
   const oversized = Array.from({length: MAX_LISTING_ROSTER + 1}, (_, i) => ({
-    name: `Player_${i}`, guest: i % 2 === 0, ...(i % 2 ? {userId: USER_ID} : {}), points: i, rank: 'Admin',
+    name: i % 2 ? `Player_${i}` : `Guest_${i.toString(16).padStart(5, '0')}`,
+    guest: i % 2 === 0, ...(i % 2 ? {userId: USER_ID} : {}), points: i, rank: 'Admin',
   }));
   expect(listingFrom({...listing(25), roster: oversized}).roster)
     .toEqual(oversized.slice(0, MAX_LISTING_ROSTER).map(({name, guest, userId}) => ({name, guest, ...(userId ? {userId} : {})})));
   expect(listingFrom(listing(1)).roster).toEqual([]);
   expect(listingFrom({...listing(1), roster: {}}).roster).toEqual([]);
+});
+
+test('public guest previews enforce the same names as room rosters', () => {
+  const roster = [
+    {name: 'MemberName', guest: true},
+    {name: 'Guest_ABCDE', guest: true},
+    {name: 'Guest_abcde', guest: true, userId: USER_ID},
+    {name: 'Guest_123ab', guest: true, you: true, connectionId: USER_ID},
+    {name: 'MemberName', guest: false, userId: USER_ID, you: true},
+  ];
+  const expected = [
+    {name: 'Guest_123ab', guest: true},
+    {name: 'MemberName', guest: false, userId: USER_ID},
+  ];
+  expect(listingFrom({...listing(5), roster}).roster).toEqual(expected);
+  const entries = new Map([['p-stored', {...listing(5), roster, updatedAt: 100}]]);
+  const lobby = createLobby({entries, now: () => 100});
+  expect(lobby.rooms()[0].roster).toEqual(expected);
+  expect(lobby.put('p-fresh', {...listing(5), roster}, 'host')).toBe(true);
+  expect(lobby.rooms().find(room => room.id === 'p-fresh').roster).toEqual(expected);
 });
 
 test('names that could pass for the site are not listed', () => {

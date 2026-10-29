@@ -119,3 +119,21 @@ test('a private transition unlists after a rename and capacity flood', async () 
   await Promise.all(fixture.pending);
   expect(await (await lobby.fetch(new Request('https://lobby/rooms'))).json()).toEqual({rooms: []});
 });
+
+test('Worker publication drops malformed guest claims and local-only roster fields', async () => {
+  const fixture = await roomHarness();
+  const userId = '123e4567-e89b-12d3-a456-426614174000';
+  fixture.publish({...listing, roster: [
+    {name: 'MemberName', guest: true, you: true},
+    {name: 'Guest_abcde', guest: true, userId},
+    {name: 'Guest_123ab', guest: true, you: true},
+    {name: 'MemberName', guest: false, userId, you: true, connectionId: userId},
+  ]});
+  await Promise.resolve();
+  expect(JSON.parse(fixture.requests[0].body).listing.roster).toEqual([
+    {name: 'Guest_123ab', guest: true},
+    {name: 'MemberName', guest: false, userId},
+  ]);
+  fixture.requests[0].resolve(new Response(null, {status: 204}));
+  await Promise.all(fixture.pending);
+});
