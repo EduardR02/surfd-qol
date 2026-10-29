@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {createRoomUi, uploadEstimate} from '../src/private-rooms/ui.js';
+import {ROOM_CLASS, createRoomUi, uploadEstimate} from '../src/private-rooms/ui.js';
 import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
 import {parseRoomCode} from '../src/private-rooms/ids.js';
 
@@ -385,6 +385,32 @@ describe('server browser', () => {
     f.select('eu'); f.ui.refresh();
     expect(f.info.textContent).not.toContain('Surfd QoL');
     f.ui.destroy();
+  });
+
+  test('one CSS rule keyed on a class on <html> hides votes and official moderation in community rooms', () => {
+    const f = fixture();
+    const html = f.document.documentElement, style = f.document.children.find(node => node.tag === 'style');
+    const [rule] = style.textContent.trim().split('\n');
+    expect(rule).toStartWith(`html.${ROOM_CLASS} :is(`);
+    for (const selector of ['#menu-server [data-act="nominate"]', '#menu-server [data-act="rtv"]', '#menu-server [data-act="extend"]',
+      '#players-actions [data-act="reports"]', '#players-actions [data-act="panel"]', '.more-menu [data-act="moderate"]']) {
+      expect(rule).toContain(selector);
+    }
+    expect(rule).toEndWith('{ display: none !important; }');
+    expect(style.textContent).not.toContain('#players-actions [data-act="change"]');
+    f.root.hidden = true; f.ui.refresh();
+    const observer = [...Observer.instances].at(-1);
+    f.current('eu'); f.ui.refresh();
+    expect(html.classList.contains(ROOM_CLASS)).toBe(false);
+    f.current(ROOM); f.ui.refresh();
+    expect(html.classList.contains(ROOM_CLASS)).toBe(true);
+    expect(observer.targets.size).toBe(0);
+    f.current(null); f.ui.refresh();
+    expect(html.classList.contains(ROOM_CLASS)).toBe(false);
+    f.current(ROOM); f.ui.refresh();
+    f.ui.destroy();
+    expect(html.classList.contains(ROOM_CLASS)).toBe(false);
+    expect(f.document.children.includes(style)).toBe(false);
   });
 
   test('a closed browser is not observed', () => {

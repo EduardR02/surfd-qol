@@ -10,7 +10,11 @@ const CHOICES = [
   ['public', 'Public', 'Listed in Community for everyone with Surfd QoL'],
 ];
 
+export const ROOM_CLASS = 'qol-room';
+// The first rule hides map votes and official-server moderation while in a community room.
 export const ROOM_STYLE = `
+html.${ROOM_CLASS} :is(#menu-server [data-act="nominate"], #menu-server [data-act="rtv"], #menu-server [data-act="extend"], #players-actions [data-act="reports"], #players-actions [data-act="panel"], .more-menu [data-act="moderate"]) { display: none !important; }
+html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 .qol-code-join { display: inline-flex; align-items: center; gap: 6px; }
 .qol-code-join .field input { width: 150px; }
 .qol-host-view { flex: 1; min-height: 0; overflow: auto; }
@@ -344,6 +348,8 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   function refresh() {
     if (destroyed || !doc) return;
     const adapter = getAdapter()?.rooms;
+    const inRoom = isPrivateRoomId(rooms.currentRoom?.()), html = doc.documentElement;
+    if (html && html.classList.contains(ROOM_CLASS) !== inRoom) html.classList.toggle(ROOM_CLASS, inRoom);
     const next = adapter?.root?.() ?? null;
     if (next !== root) mount(next);
     const open = !!root && (adapter?.browserOpen?.() ?? !root.hidden);
@@ -378,6 +384,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       observer?.disconnect();
       unmount();
       style?.remove();
+      doc?.documentElement?.classList.remove(ROOM_CLASS);
       picker?.close?.();
       picker?.dialog?.remove?.();
       picker = null;

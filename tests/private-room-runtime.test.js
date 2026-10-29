@@ -158,6 +158,23 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('entering and leaving a room refresh the UI once each, without timers', async () => {
+    const f = fixture();
+    try {
+      f.runtime.attach();
+      await f.join();
+      const before = f.ui.refreshes;
+      const socket = f.runtime.roomSocket(ROOM);
+      expect(f.ui.refreshes).toBe(before + 1);
+      expect(f.runtime.currentRoom()).toBe(ROOM);
+      socket.open();
+      socket.close(1000, '');
+      expect(f.runtime.currentRoom()).toBeNull();
+      expect(f.ui.refreshes).toBe(before + 3);
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('room traffic leaves the hidden browser untouched', async () => {
     const f = fixture();
     try {

@@ -317,6 +317,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       }
       ui?.refresh();
     }, {once: true});
+    // Entering a room marks the page for the room's CSS before the game connects.
+    ui?.refresh();
     return socket;
   }
   function recentDrops(id) {
