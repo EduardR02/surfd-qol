@@ -8,7 +8,7 @@ const ACCOUNT = '00000000-0000-4000-8000-000000000001';
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
 const RELAY = {iceServers: [{urls: ['turn:turn.example:3478?transport=udp'], username: 'user', credential: 'secret'}], ttl: 4 * 60 * 60};
 const RELAY_CONFIG = {iceServers: RELAY.iceServers, iceTransportPolicy: 'relay'};
-const row = (id = ROOM) => ({id, name: "Guest's room", mapId: 'map', mapTitle: 'Map', players: 2, epoch: 1, updatedAt: 100});
+const row = (id = ROOM) => ({id, name: "Guest's room", mapId: 'map', mapTitle: 'Map', players: 2, capacity: 16, epoch: 1, updatedAt: 100});
 
 class Signal {
   state = 'connecting';
@@ -135,6 +135,13 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
   };
 }
 const opened = socket => socket.readyState === 1 ? Promise.resolve() : new Promise(resolve => socket.addEventListener('open', resolve, {once: true}));
+const welcomed = socket => new Promise(resolve => socket.addEventListener('message', function receive(event) {
+  if (typeof event.data !== 'string') return;
+  const message = JSON.parse(event.data);
+  if (message.type !== 'welcome') return;
+  socket.removeEventListener('message', receive);
+  resolve(message);
+}));
 const closed = socket => new Promise(resolve => socket.addEventListener('close', resolve, {once: true}));
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
@@ -315,7 +322,7 @@ describe('private room runtime', () => {
       f.signals[0].ready();
       const id = await pending;
       expect(f.joined[0]).toMatchObject({id, row: {id, name: "Surfer's room", visibility: 'private'}});
-      expect(f.runtime.hosting()).toEqual({id, visibility: 'private', name: "Surfer's room", mapId: 'map', players: 0, uploadMbps: null});
+      expect(f.runtime.hosting()).toEqual({id, visibility: 'private', name: "Surfer's room", mapId: 'map', maxPlayers: 16, players: 0, uploadMbps: null});
       expect(f.signals[0].sent).toEqual([{to: null, type: 'listing', data: null}]);
     } finally { f.runtime.destroy(); }
   });
@@ -611,8 +618,7 @@ describe('private room runtime', () => {
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
       await f.runtime.refreshDirectory({open: true});
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
-      // The room's real safety limit, so the game draws its own "2 / 256" and bar.
-      expect(f.rows().slice(1).map(value => value.capacity)).toEqual([256, 256]);
+      expect(f.rows().slice(1).map(value => value.capacity)).toEqual([16, 16]);
       f.timers.advance(10000);
       f.response({ok: true, json: async () => ({rooms: []})});
       await f.runtime.refreshDirectory({open: true});
@@ -644,12 +650,127 @@ describe('private room runtime', () => {
     try {
       f.open(true);
       const bad = [null, 'x', {...row('p-aaaaaaaaaaaa'), name: 'x'.repeat(41)}, {...row('p-bbbbbbbbbbbb'), mapId: 'unknown'},
-        {...row('p-cccccccccccc'), players: 257}, {...row('p-dddddddddddd'), name: "Surfd's room"},
+        {...row('p-cccccccccccc'), players: 65}, {...row('p-dddddddddddd'), name: "Surfd's room"},
         {...row('p-eeeeeeeeeeee'), name: "Official_eu's room"}, {...row(), id: 'eu'}];
       f.response({ok: true, json: async () => ({rooms: [...bad, row(OTHER), ...Array.from({length: 200}, () => row())]})});
       await f.runtime.refreshDirectory();
       expect(f.notices).toEqual([]);
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('capacity defaults to 16 and remembers valid settings without starting background work', async () => {
+    const storage = new Map(), f = fixture({storage});
+    try {
+      expect(f.runtime.maxPlayers()).toBe(16);
+      for (const value of [2, 64, 23]) {
+        await f.runtime.setMaxPlayers(value);
+        expect(f.runtime.maxPlayers()).toBe(value);
+        const next = fixture({storage});
+        expect(next.runtime.maxPlayers()).toBe(value);
+        next.runtime.destroy();
+      }
+      expect(storage.get('surfd-qol-room-max-players')).toBe('23');
+      expect(f.signals).toEqual([]);
+      expect(f.requests).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      const id = await f.host();
+      expect(f.runtime.hosting()).toMatchObject({id, maxPlayers: 23});
+      expect(f.runtime.roomInfo(id).capacity).toBe(23);
+    } finally { f.runtime.destroy(); }
+    for (const saved of ['', 'garbage', '1', '65', '16.5', 'Infinity']) {
+      const next = fixture({storage: new Map([['surfd-qol-room-max-players', saved]])});
+      try { expect(next.runtime.maxPlayers()).toBe(16); }
+      finally { next.runtime.destroy(); }
+    }
+  });
+
+  test('invalid capacity rejects before storage, signals, timers or an existing host change', async () => {
+    const storage = new Map(), f = fixture({storage});
+    const invalid = [undefined, null, '16', 1, 65, 2.5, NaN, Infinity];
+    try {
+      for (const value of invalid) await expect(f.runtime.setMaxPlayers(value)).rejects.toThrow('integer from 2 to 64');
+      for (const value of invalid.slice(1)) await expect(f.runtime.host({maxPlayers: value})).rejects.toThrow('integer from 2 to 64');
+      expect(storage.size).toBe(0);
+      expect(f.signals).toEqual([]);
+      expect(f.listeners).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      const id = await f.host({visibility: 'public', maxPlayers: 64});
+      const saved = [...storage], sent = f.signals[0].sent.length, timers = f.timers.pending();
+      for (const value of invalid.slice(1)) {
+        await expect(f.runtime.host({maxPlayers: value})).rejects.toThrow('integer from 2 to 64');
+        await expect(f.runtime.setMaxPlayers(value)).rejects.toThrow('integer from 2 to 64');
+      }
+      expect(f.runtime.hosting()).toMatchObject({id, maxPlayers: 64});
+      expect(f.runtime.maxPlayers()).toBe(64);
+      expect([...storage]).toEqual(saved);
+      expect(f.signals).toHaveLength(1);
+      expect(f.signals[0].sent).toHaveLength(sent);
+      expect(f.timers.pending()).toBe(timers);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('lowering capacity keeps current players and publishes the new limit to peers and listings', async () => {
+    const storage = new Map(), f = fixture({storage});
+    try {
+      const id = await f.host({visibility: 'public', maxPlayers: 64});
+      const own = f.runtime.roomSocket(id); await welcomed(own);
+      const peers = Array.from({length: 2}, (_, index) => {
+        const socket = new Socket(); socket.open();
+        f.listeners[0].onSocket(socket, {name: `Player_${index}`, guest: false, appearance: {}, browserId: crypto.randomUUID()});
+        return socket;
+      });
+      await f.runtime.setMaxPlayers(2);
+      expect(f.runtime.hosting()).toMatchObject({id, maxPlayers: 2, players: 3});
+      expect(f.runtime.roomInfo(id)).toMatchObject({capacity: 2, players: 3});
+      expect(f.runtime.maxPlayers()).toBe(2);
+      expect(storage.get('surfd-qol-room-max-players')).toBe('2');
+      expect(f.signals[0].sent.at(-1).data).toMatchObject({capacity: 2, players: 3});
+      for (const peer of peers) {
+        expect(peer.readyState).toBe(1);
+        const state = peer.sent.map(value => JSON.parse(value)).findLast(message => message.type === 'state').state;
+        expect(state).toMatchObject({maxPlayers: 2, epoch: 1});
+      }
+      const refused = new Socket(); refused.open();
+      f.listeners[0].onSocket(refused, {name: 'Visitor', guest: false, appearance: {}, browserId: crypto.randomUUID()});
+      expect(refused.closed).toEqual({code: 4008, reason: 'This room is full.'});
+      await f.runtime.setMaxPlayers(4);
+      expect(f.runtime.roomInfo(id)).toMatchObject({capacity: 4, players: 3});
+      const admitted = new Socket(); admitted.open();
+      f.listeners[0].onSocket(admitted, {name: 'Visitor', guest: false, appearance: {}, browserId: crypto.randomUUID()});
+      expect(admitted.readyState).toBe(1);
+      expect(f.runtime.hosting().players).toBe(4);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('discovery and directory validate capacity independently of bounded player counts', async () => {
+    const invalid = [
+      {capacity: undefined}, {capacity: null}, {capacity: 1}, {capacity: 65}, {capacity: 2.5}, {capacity: '16'},
+      {players: -1}, {players: 65}, {players: 0.5}, {players: '2'},
+    ];
+    const f = fixture();
+    try {
+      const joining = f.runtime.join(ROOM), signal = f.signals[0]; signal.ready();
+      for (const fields of invalid) {
+        signal.message('room-info', {...row(), ...fields});
+        expect(f.runtime.roomInfo(ROOM)).toBeNull();
+      }
+      signal.message('room-info', {...row(), capacity: 2, players: 64});
+      await joining;
+      expect(f.runtime.roomInfo(ROOM)).toMatchObject({capacity: 2, players: 64});
+      f.open(true);
+      f.response({ok: true, json: async () => ({rooms: [
+        ...invalid.map(fields => ({...row(OTHER), ...fields})),
+        {...row('p-aaaaaaaaaaaa'), capacity: 64, players: 0},
+      ]})});
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.roomInfo(OTHER)).toBeNull();
+      expect(f.runtime.roomInfo('p-aaaaaaaaaaaa')).toMatchObject({capacity: 64, players: 0});
+      const socket = f.runtime.roomSocket(ROOM); socket.open();
+      socket.message(JSON.stringify({type: 'state', state: {maxPlayers: 3}}));
+      expect(f.runtime.roomInfo(ROOM)).toMatchObject({capacity: 3, players: 64});
+      socket.message(JSON.stringify({type: 'state', state: {maxPlayers: 65}}));
+      expect(f.runtime.roomInfo(ROOM).capacity).toBe(3);
     } finally { f.runtime.destroy(); }
   });
 
@@ -965,7 +1086,7 @@ describe('private room runtime', () => {
         socket.removeEventListener('message', receive);
         resolve();
       }));
-      expect(f.signals[0].sent.at(-1).data).toEqual({name: "Surfer's room", mapId: 'other', players: 1,
+      expect(f.signals[0].sent.at(-1).data).toEqual({name: "Surfer's room", mapId: 'other', players: 1, capacity: 16,
         roster: [{name: 'Surfer', points: 0}]});
       socket.close(); await closed(socket);
       expect(f.signals[0].sent.at(-1).data.players).toBe(0);

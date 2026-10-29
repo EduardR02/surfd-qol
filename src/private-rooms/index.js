@@ -1,7 +1,7 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
-import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
+import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -18,6 +18,7 @@ const DIRECTORY_SIZE = 200;
 const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
 const VISIBILITY_KEY = 'surfd-qol-room-visibility';
+const MAX_PLAYERS_KEY = 'surfd-qol-room-max-players';
 const NAME_KEY = 'surfd-qol-room-guest-name';
 const BROWSER_KEY = 'surfd-qol-room-browser';
 
@@ -36,6 +37,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
   let visibility = stored(VISIBILITY_KEY) === 'public' ? 'public' : 'private';
   let name = stored(NAME_KEY);
+  const savedMaxPlayers = Number(stored(MAX_PLAYERS_KEY));
+  let maxPlayers = isMaxPlayers(savedMaxPlayers) ? savedMaxPlayers : DEFAULT_MAX_PLAYERS;
 
   function guestName() {
     if (!/^Guest_[0-9a-f]{5}$/.test(name ?? '')) {
@@ -85,10 +88,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   function normalize(row, publicRoom = false) {
     const map = row && getAdapter()?.rooms?.maps().find(entry => entry.id === row.mapId);
     if (!map || !isPrivateRoomId(row.id) || !isRoomName(row.name) ||
-        !Number.isSafeInteger(row.players) || row.players < 0 || row.players > MAX_ROOM_PLAYERS) return null;
+        !isMaxPlayers(row.capacity) || !Number.isSafeInteger(row.players) ||
+        row.players < 0 || row.players > MAX_ROOM_PLAYERS) return null;
     const publicVisibility = publicRoom || row.visibility === 'public';
     return {id: row.id, name: row.name, mapId: map.id, mapTitle: catalogEntry(map).title,
-      players: row.players, capacity: MAX_ROOM_PLAYERS, visibility: publicVisibility ? 'public' : 'private',
+      players: row.players, capacity: row.capacity, visibility: publicVisibility ? 'public' : 'private',
       region: publicVisibility ? 'Public' : 'Private', endsAt: 0, untimed: true,
       online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
       ping: known.get(row.id)?.ping ?? directory.get(row.id)?.ping ?? null,
@@ -99,7 +103,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   function hostRow() {
     const {state, players} = hosted.room;
     return {id: state.roomId, name: state.name, mapId: state.mapId, mapTitle: state.mapTitle.slice(0, 64),
-      epoch: state.epoch, players: players.length, visibility: hosted.visibility,
+      epoch: state.epoch, players: players.length, capacity: state.maxPlayers, visibility: hosted.visibility,
       roster: players.map(player => ({name: player.name, points: player.points}))};
   }
   function publish(force = false) {
@@ -108,7 +112,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const row = hostRow();
     known.set(row.id, normalize(row));
     const data = hosted.visibility === 'public'
-      ? {name: row.name, mapId: row.mapId, players: row.players, roster: row.roster.slice(0, 24)} : null;
+      ? {name: row.name, mapId: row.mapId, players: row.players, capacity: row.capacity, roster: row.roster.slice(0, 24)} : null;
     const serialized = JSON.stringify(data);
     if ((force || serialized !== hosted.listing) && hosted.signal?.send(null, 'listing', data)) {
       hosted.listing = serialized;
@@ -299,7 +303,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       const players = message.players;
       const row = normalize({...previous,
         ...(state ? {name: state.name ?? previous.name, mapId: state.mapId ?? previous.mapId,
-          epoch: state.epoch ?? previous.epoch, visibility: state.visibility ?? previous.visibility} : {}),
+          epoch: state.epoch ?? previous.epoch, visibility: state.visibility ?? previous.visibility,
+          capacity: state.maxPlayers ?? previous.capacity} : {}),
         ...(Array.isArray(players) ? {players: players.length, roster: players} : {})});
       if (row) { known.set(id, row); updateLobby(); }
     });
@@ -478,10 +483,12 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     });
   }
   const api = {
-    async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id, name} = {}) {
+    async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id,
+      name, maxPlayers: limit = maxPlayers} = {}) {
       const adapter = rooms();
       if (adapter.guest()) throw new Error(SIGN_IN);
       if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
+      if (!isMaxPlayers(limit)) throw new Error('Room capacity must be an integer from 2 to 64.');
       const maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
       name = normalizeRoomName(name === undefined ? api.roomName() : name);
@@ -491,9 +498,11 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       closeHost();
       visibility = choice;
       store(VISIBILITY_KEY, visibility);
+      maxPlayers = limit;
+      store(MAX_PLAYERS_KEY, String(limit));
       const id = createRoomId();
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
-      current.room = createRoomHost({roomId: id, mapId, maps, visibility,
+      current.room = createRoomHost({roomId: id, mapId, maps, visibility, maxPlayers: limit,
         name,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
@@ -569,8 +578,17 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       chosenName = value;
       hosted?.room.setName(value);
     },
+    maxPlayers: () => maxPlayers,
+    async setMaxPlayers(value) {
+      if (!isMaxPlayers(value)) throw new Error('Room capacity must be an integer from 2 to 64.');
+      maxPlayers = value;
+      store(MAX_PLAYERS_KEY, String(value));
+      if (hosted) hosted.room.setMaxPlayers(value);
+      else ui?.refresh();
+    },
     hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility, name: hosted.room.state.name,
-      mapId: hosted.room.state.mapId, players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
+      mapId: hosted.room.state.mapId, maxPlayers: hosted.room.state.maxPlayers,
+      players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
     ownRoom: () => !!hosted && api.currentRoom() === hosted.id,
     openRoom: () => ui?.openRoom?.(),
     // Ends the room through the game's own Leave when the host is in it, so the game returns to solo.
