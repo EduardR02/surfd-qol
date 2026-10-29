@@ -204,14 +204,25 @@ function nativeBrowser(options){let entries=[],status="Checking servers…",sele
     return rows=rows.sort((a,b)=>Number(b.online)-Number(a.online)||comparators[order](a,b)),rows}
   function groups(){return [...new Set(entries.map(row=>row.region))].map(key=>[key,visible().filter(row=>row.region===key)]).filter(([,rows])=>rows.length).sort((a,b)=>(ping(a[1][0])??9999)-(ping(b[1][0])??9999))}
   const roomCode=id=>id.toUpperCase(),joinButton={textContent:""};
+  const escapeHtml=value=>String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"),rankClass=value=>value==="Guest"?"rank-guest":"rank-earned",points=value=>String(value);
+  const rosterBody={innerHTML:"",onclick:null},rosterEmpty={},rosterTable={hidden:false},rosterWrap={};
+  const query=(selector,root)=>selector==="tbody"?rosterBody:selector==="table"?rosterTable:rosterEmpty;
+  const insert=(node,html)=>{node.innerHTML=html},friends=new Set(["Friend"]);
+  function rosterView(row){
+    const people=[...row.roster??[]].sort((a,b)=>Number(friends.has(b.name))-Number(friends.has(a.name))||b.points-a.points);
+    query("table",rosterWrap).hidden=!people.length;
+    insert(query("tbody",rosterWrap),people.map(person=>\`<tr class="\${friends.has(person.name)?"friend-row-hl":""}"><td><span class="who"><span>\${escapeHtml(person.name)}</span>\${friends.has(person.name)?'<span class="friend-tag">friend</span>':""}\${person.spectating?'<small class="quiet">spectating</small>':""}</span></td><td class="c-min"><span class="rank-name \${rankClass(person.guest?"Guest":person.rank)}">\${escapeHtml(person.guest?"Guest":person.rank)}</span></td><td class="c-num">\${person.guest?"":points(person.points)}</td></tr>\`).join("")+(people.length&&row.players>people.length?\`<tr><td colspan="3" class="quiet">+\${row.players-people.length} more</td></tr>\`:""));
+    const empty=query("p.empty",rosterWrap);empty.hidden=!!people.length;
+    return {body:rosterBody,table:rosterTable,empty};
+  }
   function detail(row,connecting=null){const full=row.players>=row.capacity;joinButton.textContent=connecting===row.id?"Connecting…":full?"Server full":row.preview?"Preview only":\`Join \${roomCode(row.id)}\`;return joinButton}
   function render(){const regions=[...new Set(entries.map(row=>row.region))];regionNodes.hidden=regions.length<2,regionNodes.innerHTML=regions.length<2?"":"tabs";for(const node of nodes("[data-region]",regionNodes))node.onclick=()=>{region=node.dataset.region,render()}}
   let browserTimer;
   const view={el:{hidden:true},open(value){typeof value=="string"&&(selection=value);options.refresh()},close(){clearInterval(browserTimer)}};
   return{view:view,update(rows,note){const now=Date.now();entries=rows.map(row=>({...row,...row.endsAt===undefined?{}:{endsAt:row.endsAt+(row.serverTime===undefined?0:now-row.serverTime)}}));status=note},
-    rows:()=>entries,best:recommended,visible,groups,detail,filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
-function lobbyFactory(){const servers=nativeBrowser({refresh:()=>{}});return {
-  servers,sync:nativeSync,selected:()=>catalog[0],tab(value){this.tabbed=value},
+    rows:()=>entries,best:recommended,visible,groups,detail,rosterView,setOpenHandler(fn){this.requestOpen=fn},filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
+function lobbyFactory(){const windows={opened:[],open(view,value){this.opened.push({view,value})}},servers=nativeBrowser({refresh:()=>{}});servers.setOpenHandler(()=>windows.open("servers"));return {
+  servers,windows,sync:nativeSync,selected:()=>catalog[0],tab(value){this.tabbed=value},
   updateServers(rows,status){servers.update(rows,status);listed=servers.rows()},
   bindServers(connect,refresh){joinCallback=connect,refreshCallback=refresh,refresh()},
   refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}
@@ -459,6 +470,68 @@ describe('optional native private room instrumentation', () => {
     expect(runtime.browser.detail(row, row.id).textContent).toBe('Connecting…');
     expect(runtime.browser.detail({...row, players: 16}).textContent).toBe('Server full');
     expect(runtime.browser.detail({...row, preview: true}).textContent).toBe('Preview only');
+  });
+
+  test('community roster reads only names and guest identity, not host rank or friend claims', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const names = ['<Surfer & "one">', 'Friend'];
+    const roster = names.map((name, index) => {
+      const player = {name, guest: index === 1};
+      for (const field of ['points', 'rank', 'spectating']) Object.defineProperty(player, field, {get() { throw new Error('Read untrusted ' + field); }});
+      return player;
+    });
+    const {body, table, empty} = runtime.browser.rosterView({id: 'p-aaaaaaaaaaaa', players: 5, roster});
+    expect(body.innerHTML).toContain('&lt;Surfer &amp; &quot;one&quot;&gt;');
+    expect(body.innerHTML.indexOf('Surfer')).toBeLessThan(body.innerHTML.indexOf('Friend'));
+    expect(body.innerHTML).toContain('rank-guest">Guest');
+    expect(body.innerHTML).not.toContain('friend-tag');
+    expect(body.innerHTML).not.toContain('<button');
+    expect(body.innerHTML).toContain('+3 more');
+    expect(table.hidden).toBe(false);
+    expect(empty.hidden).toBe(true);
+    runtime.browser.rosterView({id: 'p-aaaaaaaaaaaa', players: 0});
+    expect(body.innerHTML).toBe('');
+    expect(table.hidden).toBe(true);
+    expect(empty.hidden).toBe(false);
+  });
+
+  test('only non-guest UUIDs make community profile buttons and navigation uses that exact ID', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const userId = 'ABCDEF01-2345-6789-abcd-0123456789ab';
+    const roster = [
+      {name: 'Friend', guest: false, userId},
+      {name: 'Guest', guest: true, userId},
+      {name: 'Anonymous', guest: false},
+      {name: 'Bad ID', guest: false, userId: 'private-1'},
+      {name: 'Injection', guest: false, userId: userId + '" onclick="bad'},
+      {name: 'Unknown guest flag', userId}
+    ];
+    const {body} = runtime.browser.rosterView({id: 'p-aaaaaaaaaaaa', players: roster.length, roster});
+    const buttons = [...body.innerHTML.matchAll(/<button[^>]*data-qol-user="([^"]+)" data-qol-name="([^"]+)"[^>]*>/g)];
+    expect(buttons.map(match => [match[1], match[2]])).toEqual([[userId, 'Friend']]);
+    body.onclick({target: {closest: () => null}});
+    expect(runtime.ui.lobby.windows.opened).toEqual([]);
+    const button = {dataset: {qolUser: buttons[0][1], qolName: buttons[0][2]}};
+    body.onclick({target: {closest: () => button}});
+    expect(runtime.ui.lobby.windows.opened).toEqual([{view: 'profile', value: {userId, name: 'Friend'}}]);
+    runtime.browser.rosterView({id: 'eu', players: 0, roster: []});
+    expect(body.onclick).toBeNull();
+  });
+
+  test('official roster keeps native rank, points, guest display, friend ordering and no new profile action', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const {body} = runtime.browser.rosterView({id: 'eu', players: 3, roster: [
+      {name: 'Leader', guest: false, rank: 'Champion', points: 900, spectating: true},
+      {name: 'Friend', guest: false, rank: 'Surfer', points: 100},
+      {name: 'Visitor', guest: true, points: 0}
+    ]});
+    expect(body.innerHTML.indexOf('Friend')).toBeLessThan(body.innerHTML.indexOf('Leader'));
+    expect(body.innerHTML).toContain('friend-tag');
+    expect(body.innerHTML).toContain('Champion');
+    expect(body.innerHTML).toContain('>900</td>');
+    expect(body.innerHTML).toContain('spectating');
+    expect(body.innerHTML).toContain('rank-guest">Guest');
+    expect(body.onclick).toBeNull();
   });
 
   test('community never wins official recommendation', () => {

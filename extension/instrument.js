@@ -86,6 +86,28 @@ function noticeHook(source) {
   }
 }
 
+// Directory rosters are host claims, not verified rank or friend information.
+// Keep the native official renderer intact and use only public community fields.
+function roomRosterHooks(body, options) {
+  const roster = unique(body, new RegExp(`(${identifier})=\\[\\.\\.\\.(${identifier})\\.roster\\?\\?\\[\\]\\]\\.sort\\(\\((${identifier}),(${identifier})\\)=>Number\\((${identifier})\\.has\\(\\4\\.name\\)\\)-Number\\(\\5\\.has\\(\\3\\.name\\)\\)\\|\\|\\4\\.points-\\3\\.points\\)`, 'g'), 'browser roster order');
+  const row = roster[2], players = roster[1];
+  const render = unique(body, new RegExp(`${literal(players)}\\.map\\((${identifier})=>\`([\\s\\S]*?)\`\\)\\.join\\(""\\)`, 'g'), 'browser roster rows');
+  const escape = unique(render[2], new RegExp(`\\$\\{(${identifier})\\(${literal(render[1])}\\.name\\)\\}`, 'g'), 'browser roster name escaping')[1];
+  const rank = unique(render[2], new RegExp(`(${identifier})\\(${literal(render[1])}\\.guest\\?"Guest":${literal(render[1])}\\.rank\\)`, 'g'), 'browser guest style')[1];
+  const empty = unique(body, new RegExp(`const (${identifier})=(${identifier})\\("p.empty",(${identifier})\\);`, 'g'), 'browser roster container');
+  body = body.replace(roster[0], () => `${players}=__qolCommunity(${row})?(${row}.roster??[]):${roster[0].slice(players.length + 1)}`);
+  body = body.replace(render[0], () => `(__qolCommunity(${row})?${players}.map(__qolRosterPlayer).join(""):${render[0]})`);
+  // Bind after each native render so reused DOM cannot keep an old room's action.
+  body = body.replace(empty[0], () => `${empty[2]}("tbody",${empty[3]}).onclick=__qolCommunity(${row})?event=>{const button=event.target.closest("button[data-qol-user]");if(button)${options}.__qolProfile(button.dataset.qolUser,button.dataset.qolName)}:null;${empty[0]}`);
+  return {body, helpers: `
+    const __qolPublicUser=player=>player.guest===false&&typeof player.userId==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(player.userId);
+    function __qolRosterPlayer(player){
+      const name=${escape}(player.name),who=__qolPublicUser(player)?'<button type="button" class="who" data-qol-user="'+player.userId+'" data-qol-name="'+name+'">'+name+'</button>':'<span class="who">'+name+'</span>';
+      return '<tr><td>'+who+'</td><td class="c-min">'+(player.guest?'<span class="rank-name '+${rank}("Guest")+'">Guest</span>':'')+'</td><td></td></tr>';
+    }
+  `};
+}
+
 function roomBrowserHooks(source, hook) {
   const start = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{let (${identifier})=\\[\\],(${identifier})="Checking servers…"`, 'g'), 'server browser');
   const end = unique(source.slice(start.index), new RegExp(`mapTitle:(${identifier})\\}\\}`, 'g'), 'server browser end');
@@ -119,8 +141,14 @@ function roomBrowserHooks(source, hook) {
   replace(new RegExp(`close\\(\\)\\{clearInterval\\((${identifier})\\)\\}`, 'g'),
     m => `close(){clearInterval(${m[1]});queueMicrotask(()=>${hook}?.browserVisibility?.(!${view}.el.hidden))}`, 'browser close lifecycle');
   body = body.replaceAll(`${start[2]}.refresh()`, () => `(${hook}?.refreshDirectory({open:!${view}.el.hidden}),${start[2]}.refresh())`);
-  body = body.replace(start[0], () => start[0].replace('{let ', () => '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;let '));
-  return source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
+  const roster = roomRosterHooks(body, start[2]);
+  body = roster.body.replace(start[0], () => start[0].replace('{let ', () => '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;' + roster.helpers + 'let '));
+  source = source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
+  // The ordinary profile callback also resolves friends by display name. Open
+  // directly by the advertised UUID instead, never by a possibly spoofed name.
+  const window = unique(source, new RegExp(`(${identifier})\\.setOpenHandler\\(\\(\\)=>(${identifier})\\.open\\("servers"\\)\\)`, 'g'), 'browser profile window')[2];
+  const create = unique(source, new RegExp(`${literal(start[1])}\\(\\{`, 'g'), 'browser creation');
+  return source.replace(create[0], () => `${create[0]}__qolProfile:(userId,name)=>${window}.open("profile",{userId,name}),`);
 }
 
 // Optional parts of the host's room UI, each on its own: the game's map change
