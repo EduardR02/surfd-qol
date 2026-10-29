@@ -1,6 +1,6 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v14:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v15:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -108,6 +108,8 @@ function roomBrowserHooks(source, hook) {
     m => `.sort((${m[1]},${m[2]})=>Number(${m[1]}[0]==="Community")-Number(${m[2]}[0]==="Community")||(${m[3]}(${m[1]}[1][0])??9999)-(${m[3]}(${m[2]}[1][0])??9999))`, 'official group order');
   const tabs = unique(body, new RegExp(`(${identifier})\\.hidden=(${identifier})\\.length<2,\\1\\.innerHTML=\\2\\.length<2\\?"":`, 'g'), 'community tab visibility');
   body = body.replace(tabs[0], () => `${tabs[1]}.hidden=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community"),${tabs[1]}.innerHTML=${tabs[2]}.length<2&&!${tabs[2]}.includes("Community")?"":`);
+  replace(new RegExp('`Join \\$\\{(' + identifier + ')\\((' + identifier + ')\\.id\\)\\}`', 'g'),
+    m => '`Join ${__qolCommunity(' + m[2] + ')?' + m[2] + '.name:' + m[1] + '(' + m[2] + '.id)}`', 'community join label');
   const render = unique(body, new RegExp(`for\\(const (${identifier}) of ${identifier}\\("\\[data-region\\]",${identifier}\\)\\)\\1\\.onclick=\\(\\)=>\\{(${identifier})=\\1\\.dataset\\.region,(${identifier})\\(\\)\\}`, 'g'), 'region selection');
   const selected = unique(body, new RegExp(`typeof (${identifier})=="string"&&\\((${identifier})=\\1\\)`, 'g'), 'selected server');
   const view = replace(new RegExp(`return\\{view:(${identifier}),update\\(`, 'g'),

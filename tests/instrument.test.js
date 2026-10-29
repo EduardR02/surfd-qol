@@ -203,11 +203,13 @@ function nativeBrowser(options){let entries=[],status="Checking servers…",sele
   function visible(){let rows=all().filter(row=>(region==="all"||row.region===region)&&(!hideFull||row.players<row.capacity)&&(!hideEmpty||row.players>0));
     return rows=rows.sort((a,b)=>Number(b.online)-Number(a.online)||comparators[order](a,b)),rows}
   function groups(){return [...new Set(entries.map(row=>row.region))].map(key=>[key,visible().filter(row=>row.region===key)]).filter(([,rows])=>rows.length).sort((a,b)=>(ping(a[1][0])??9999)-(ping(b[1][0])??9999))}
+  const roomCode=id=>id.toUpperCase(),joinButton={textContent:""};
+  function detail(row,connecting=null){const full=row.players>=row.capacity;joinButton.textContent=connecting===row.id?"Connecting…":full?"Server full":row.preview?"Preview only":\`Join \${roomCode(row.id)}\`;return joinButton}
   function render(){const regions=[...new Set(entries.map(row=>row.region))];regionNodes.hidden=regions.length<2,regionNodes.innerHTML=regions.length<2?"":"tabs";for(const node of nodes("[data-region]",regionNodes))node.onclick=()=>{region=node.dataset.region,render()}}
   let browserTimer;
   const view={el:{hidden:true},open(value){typeof value=="string"&&(selection=value);options.refresh()},close(){clearInterval(browserTimer)}};
   return{view:view,update(rows,note){const now=Date.now();entries=rows.map(row=>({...row,...row.endsAt===undefined?{}:{endsAt:row.endsAt+(row.serverTime===undefined?0:now-row.serverTime)}}));status=note},
-    rows:()=>entries,best:recommended,visible,groups,filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
+    rows:()=>entries,best:recommended,visible,groups,detail,filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
 function lobbyFactory(){const servers=nativeBrowser({refresh:()=>{}});return {
   servers,sync:nativeSync,selected:()=>catalog[0],tab(value){this.tabbed=value},
   updateServers(rows,status){servers.update(rows,status);listed=servers.rows()},
@@ -447,6 +449,16 @@ describe('optional native private room instrumentation', () => {
   test('old adapters require fresh source', () => {
     expect(isCurrentInstrumented(instrumentGame(nativeSource))).toBe(true);
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
+  });
+
+  test('community Join uses the selected room name while official labels and join states stay native', () => {
+    const {runtime} = roomFixture(privateFixtureHooks());
+    const row = {id: 'p-aaaaaaaaaaaa', name: "Friends' & family", players: 2, capacity: 16};
+    expect(runtime.browser.detail(row).textContent).toBe("Join Friends' & family");
+    expect(runtime.browser.detail({...row, id: 'eu', name: 'Surfd EU'}).textContent).toBe('Join EU');
+    expect(runtime.browser.detail(row, row.id).textContent).toBe('Connecting…');
+    expect(runtime.browser.detail({...row, players: 16}).textContent).toBe('Server full');
+    expect(runtime.browser.detail({...row, preview: true}).textContent).toBe('Preview only');
   });
 
   test('community never wins official recommendation', () => {
