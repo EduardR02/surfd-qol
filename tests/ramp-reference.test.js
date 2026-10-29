@@ -197,7 +197,8 @@ describe('ramp reference', () => {
     finish();
     await Promise.resolve();
     expect(consumer.get('utopia:3', 'pb')).toMatchObject({status: 'ready'});
-    expect([...slot.ramps]).toEqual([['[7,0,1]', {board: 3, down: 9, up: 2, surf: 11}]]);
+    expect([...slot.ramps]).toEqual([['[7,0,1]', {board: 3, down: 9, up: 2, surf: 11,
+      speedBefore: null, speedAfter: null, angle: null}]]);
     expect(heard).toBe(1);
     expect(acquired).toHaveLength(1);
     expect(acquired[0].released).toBe(true);
@@ -467,5 +468,70 @@ describe('imported native replay adoption', () => {
     expect(n.starts).toBe(2);
     expect(control.status()).toMatchObject({index: 5, playing: false});
     control.destroy(); f.reference.destroy();
+  });
+});
+
+describe('touch reference snapshots', () => {
+  test('peek returns only ready owned summaries without acquiring work', async () => {
+    const f = rig();
+    expect(f.reference.peek('utopia:3', 'pb')).toBeNull();
+    expect(f.reference.peek('utopia:3', 'wr')).toBeNull();
+    expect(f.acquired).toHaveLength(0);
+    const slot = f.consumer.get('utopia:3', 'pb');
+    expect(f.reference.peek('utopia:3', 'pb')).toBeNull();
+    const values = {speedBefore: 1000, speedAfter: 985, angle: 9.936};
+    f.finish(0, {config: {dt: .015}, feedback: {route: {
+      indices: new Map([['[7,0,1]', 0], ['[7,0,2]', 1]]),
+      boards: [{valid: true, loss: 15, ...values}, {valid: true, loss: 0, speedBefore: 0, speedAfter: 0, angle: null}],
+    }}});
+    await Promise.resolve();
+    expect(f.reference.peek('utopia:3', 'pb')).toBe(slot);
+    expect(slot.ramps.get('[7,0,1]')).toMatchObject(values);
+    expect(slot.ramps.get('[7,0,2]')).toMatchObject({speedBefore: 0, speedAfter: 0, angle: null});
+    expect(f.reference.peek('utopia:3', 'wr')).toBeNull();
+    expect(f.reference.peek('other:3', 'pb')).toBeNull();
+    expect(f.acquired).toHaveLength(1);
+    f.consumer.release();
+    expect(f.reference.peek('utopia:3', 'pb')).toBeNull();
+    expect(f.acquired).toHaveLength(1);
+    f.reference.destroy();
+  });
+
+  test.each(['owner', 'adapter', 'identity', 'board', 'map', 'version', 'config', 'source', 'destroy'])(
+    'peek rejects stale %s contexts without fetching or changing the consumer', async change => {
+      const f = rig();
+      f.refs.record = {...f.refs.own, runId: 'wr1'};
+      const slot = f.consumer.get('utopia:3', 'wr');
+      f.finish();
+      await Promise.resolve();
+      expect(f.reference.peek('utopia:3', 'wr')).toBe(slot);
+      if (change === 'owner') f.refs.ownerKey = 'other';
+      if (change === 'adapter') f.adapter = {...f.adapter};
+      if (change === 'identity') { f.settings.wrSource = 'leaderboard'; f.refs.record.runId = 'wr2'; }
+      if (change === 'board') f.refs.boardId = 'other';
+      if (change === 'map') f.session.map.id = 'other';
+      if (change === 'version') f.session.map.version++;
+      if (change === 'config') f.session.config = {dt: .02};
+      if (change === 'source') f.settings.wrSource = 'leaderboard';
+      if (change === 'destroy') f.reference.destroy();
+      expect(f.reference.peek('utopia:3', 'wr')).toBeNull();
+      expect(slot.status).toBe('ready');
+      expect(f.acquired).toHaveLength(1);
+      f.reference.destroy();
+    });
+
+  test('peek finds another live consumer and permits replay-only session labels', async () => {
+    const f = rig(), second = f.reference.createConsumer();
+    f.consumer.get('utopia:3', 'pb');
+    f.finish();
+    await Promise.resolve();
+    const slot = second.get('utopia:3', 'pb');
+    f.consumer.destroy();
+    f.session = {...f.session, config: {...f.session.config, version: 99, unrestrictedStart: true}};
+    expect(f.reference.peek('utopia:3', 'pb')).toBe(slot);
+    expect(f.acquired).toHaveLength(2);
+    f.reference.destroy();
+    expect(f.reference.peek('utopia:3', 'pb')).toBeNull();
+    expect(f.acquired).toHaveLength(2);
   });
 });

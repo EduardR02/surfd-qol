@@ -141,6 +141,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let tickBoardAmbiguous = false;
   let tickBoardSpeedBefore = 0;
   let tickBoardSpeedAfter = 0;
+  let tickBoardAngleSine = null;
   let episodeActive = false;
   let episodeSeconds = 0;
   let airborneGapSeconds = 0;
@@ -171,7 +172,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   // Each sequence counts accepted summaries since reset; invalidating a board
   // clears its values/tick but does not pretend another board was measured.
   const board = {
-    available: false, loss: 0, speedBefore: 0, speedAfter: 0, tick: null, sequence: 0,
+    available: false, loss: 0, speedBefore: 0, speedAfter: 0, angle: null, tick: null, sequence: 0,
     entryContacts: 0, entryWindowSeconds: BOARD_ENTRY_WINDOW_SECONDS,
     surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
   };
@@ -208,6 +209,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     if (board.available) boardVersion++;
     board.available = false;
     board.loss = board.speedBefore = board.speedAfter = 0;
+    board.angle = null;
     board.tick = null;
     board.entryContacts = 0;
     board.surfaceId = board.visit = board.checkpoint = board.routePrefix = null;
@@ -314,6 +316,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     eventKind = '';
     tickAirBoundary = tickBoardAmbiguous = episodeActive = false;
     tickBoardSpeedBefore = tickBoardSpeedAfter = 0;
+    tickBoardAngleSine = null;
     episodeSeconds = airborneGapSeconds = 0;
     clearBoard();
     board.sequence = 0;
@@ -498,6 +501,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tickGravity = session.config?.gravity;
     tickAirBoundary = tickBoardAmbiguous = false;
     tickBoardSpeedBefore = tickBoardSpeedAfter = 0;
+    tickBoardAngleSine = null;
     tickGround = session.state?.grounded === true;
     tickGroundContact = false;
     tickAirGated = false;
@@ -638,6 +642,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       // native vectors must not change the entry observation.
       tickBoardSpeedBefore = speedBefore;
       tickBoardSpeedAfter = speedAfter;
+      tickBoardAngleSine = speedBefore > 0 ? Math.abs(
+        before.x * tickPlane.x + before.y * tickPlane.y + before.z * tickPlane.z
+      ) / (speedBefore * Math.hypot(tickPlane.x, tickPlane.y, tickPlane.z)) : null;
     }
     // slide excludes acceleration and both gravity half-steps. Full 3D speed
     // ignores harmless horizontal-to-vertical conversion on a slope.
@@ -757,6 +764,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
           board.available = true;
           board.speedBefore = tickBoardSpeedBefore;
           board.speedAfter = tickBoardSpeedAfter;
+          // Native clipping removes v·n along the normal, leaving speed × cos α; α is the error because parallel contact loses nothing.
+          board.angle = tickBoardAngleSine === null ? null : Math.asin(Math.min(1, tickBoardAngleSine)) * 180 / Math.PI;
           board.loss = Math.max(0, tickBoardSpeedBefore - tickBoardSpeedAfter);
           board.tick = session.state.tick;
           board.sequence++;

@@ -3,7 +3,7 @@ import {createRunReferences} from '../src/run-references.js';
 import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
 import {createCheckpointReferences} from '../src/references.js';
-import {createReferenceReplayStore, routeBoards} from '../src/replay-store.js';
+import {createReferenceReplayStore, reconstructReferenceReplay, routeBoards} from '../src/replay-store.js';
 import {selectFeedbackType} from '../src/hud-model.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {visitKey} from '../src/replay-store.js';
@@ -1389,4 +1389,102 @@ describe('Raw KSF route cache identity', () => {
     expect(cached.calls().route).toBe(1);
     expect(cached.native()).toEqual({loads: 0, steps: 0});
   });
+});
+
+describe('touch reference measurements', () => {
+  test.each(['pb', 'wr'])('propagates %s entry speeds and angle through saved analysis and idle snapshots', async source => {
+    const saved = savedAnalysis(), commands = [contact('a', 10), {}, {...contact('a', 5), speed: 120}, finish];
+    const first = fixture({source, saved, commands, wrSource: 'leaderboard'});
+    const key = visitKey(first.step(contact()));
+    const read = f => {
+      const reference = createRampReference({getSession: () => f.session, getReferences: f.getReferences,
+        getAdapter: () => f.adapter, replayStore: f.replayStore, settings: f.settings});
+      cleanups.push(() => reference.destroy());
+      const slot = reference.createConsumer().get('surf_test:map-1', source);
+      return {reference, slot};
+    };
+    const current = read(first);
+    await flush();
+    expect(current.slot.status).toBe('ready');
+    expect(current.reference.peek('surf_test:map-1', source)).toBe(current.slot);
+    expect(current.slot.ramps.get(key)).toMatchObject({board: 15, speedBefore: 100, speedAfter: 115, angle: 0});
+    expect(saved.data.size).toBe(1);
+    const stored = [...saved.data.values()][0].result.feedback.route;
+    expect(stored.boards[stored.indices.get(key)]).toMatchObject({key, speedBefore: 100, speedAfter: 115, angle: 0});
+    current.reference.destroy();
+    const next = fixture({source, saved, commands, wrSource: 'leaderboard'}), cached = read(next);
+    await flush();
+    expect(cached.slot.ramps.get(key)).toEqual(current.slot.ramps.get(key));
+    expect(next.calls().replay).toEqual([]);
+    expect(next.native()).toEqual({loads: 0, steps: 0});
+  });
+
+  test('native clip angles survive per-visit reference collection, including recontacts and unknown direction', async () => {
+    const f = fixture(), before = {x: 1000, y: 0, z: -300};
+    const commands = [
+      {brush: 'a', before}, {}, {brush: 'a', before: {x: 1200, y: -100, z: -200}},
+      {brush: 'b', before: {x: 0, y: 0, z: 0}}, {finish: true},
+    ];
+    class Movement {
+      constructor(config) { this.config = config; }
+      accelerate() {}
+      slide(state, result) {
+        if (!this.command.brush) return;
+        result.contacts.push({brushId: this.command.brush, normal});
+        const v = state.velocity, projection = v.x * normal.x + v.y * normal.y + v.z * normal.z;
+        state.velocity = {x: v.x - normal.x * projection, y: v.y - normal.y * projection, z: v.z - normal.z * projection};
+      }
+    }
+    class Session {
+      constructor(map, config, replayFormat) {
+        Object.assign(this, {map, config, replayFormat, checkpointSpeeds: []});
+        this.state = {tick: 0, grounded: false, position: {x: 0, y: 0, z: 100}, velocity: {...before}};
+        this.timer = {state: {phase: 'running', startTick: 0, elapsed: 0, splits: []}};
+        this.movement = new Movement(config);
+      }
+      loadReplay() {}
+      restart() {}
+      restorePractice() {}
+      visitStation() {}
+      step(command) {
+        if (command.before) this.state.velocity = {...command.before};
+        this.movement.command = command;
+        this.movement.slide(this.state, {contacts: [], blocked: false});
+        this.state.tick++;
+        if (command.finish) Object.assign(this.timer.state, {phase: 'finished', elapsed: 10});
+        return [];
+      }
+    }
+    const data = await reconstructReferenceReplay({adapter: {Session, Movement}, session: f.session,
+      replay: {...f.replay(), commands}, yieldTask: async () => {}});
+    const boards = data.feedback.route.boards;
+    expect(boards).toHaveLength(2);
+    expect(boards[0].angle).toBeCloseTo(Math.asin(180 / Math.hypot(1000, 300)) * 180 / Math.PI, 10);
+    expect(boards[0].speedBefore).toBeCloseTo(Math.hypot(1000, 300), 10);
+    expect(boards[0].speedAfter).toBeCloseTo(Math.hypot(1200, 60, -80), 10);
+    expect(boards[1]).toMatchObject({speedBefore: 0, speedAfter: 0, angle: null});
+    for (let index = 0; index < boards.length; index++) expect(data.feedback.route.indices.get(boards[index].key)).toBe(index);
+  });
+});
+
+test('pre-angle development summaries are reanalysed rather than reused without touch values', async () => {
+  const saved = savedAnalysis(), first = fixture({saved});
+  first.update(first.step(contact()));
+  await flush();
+  const [id, cached] = [...saved.data][0];
+  for (const board of cached.result.feedback.route.boards) {
+    delete board.speedBefore;
+    delete board.speedAfter;
+    delete board.angle;
+  }
+  saved.data.clear();
+  saved.data.set(`dev${id.slice(id.indexOf('|'))}`, cached);
+  first.controller.destroy();
+  const next = fixture({saved}), board = next.step(contact());
+  next.update(board);
+  await flush();
+  expect(next.calls().replay).toEqual(['official-pb']);
+  expect(next.native().loads).toBe(1);
+  const updated = [...saved.data].find(([key]) => key !== `dev${id.slice(id.indexOf('|'))}`)[1];
+  expect(updated.result.feedback.route.boards[0]).toMatchObject({speedBefore: 100, speedAfter: 95, angle: 0});
 });

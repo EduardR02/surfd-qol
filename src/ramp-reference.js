@@ -35,6 +35,12 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
       pending = null; slot = null; slotAdapter = null; slotOwnerKey = null; navigation = null;
       work?.handle?.release();
     }
+    function peek(key, source) {
+      if (closed || slot?.status !== 'ready') return null;
+      const info = describe(key, source);
+      return info && slot.key === info.key && slot.source === source && slotAdapter === getAdapter?.() &&
+        slotOwnerKey === info.ownerKey && sameMovementConfig(slot.config, info.session.config) ? slot : null;
+    }
     function get(key, source, owns = () => true) {
       const info = closed ? null : describe(key, source);
       if (!info) { release(); return null; }
@@ -68,6 +74,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
         for (const [rampKey, index] of route?.indices ?? []) {
           const visit = index == null ? null : route.boards[index];
           if (visit?.valid) current.ramps.set(rampKey, {board: visit.loss, down: visit.downLoss, up: visit.upLoss, surf: visit.surfLoss,
+            speedBefore: visit.speedBefore ?? null, speedAfter: visit.speedAfter ?? null, angle: visit.angle ?? null,
             ...(Number.isInteger(visit.tick) ? {tick: visit.tick} : {})});
         }
         current.dt = result?.feedback?.dt;
@@ -84,6 +91,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
     }
     const consumer = {
       get,
+      peek,
       async watchRamp(key, source, rampKey, replayControl, {leadSeconds = 0.5, paused = true} = {}) {
         const info = closed ? null : describe(key, source), adapter = getAdapter?.();
         if (!info || typeof rampKey !== 'string' || typeof replayControl?.watchLoaded !== 'function' ||
@@ -143,6 +151,13 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
 
   return {
     createConsumer,
+    peek(key, source) {
+      for (const consumer of consumers) {
+        const slot = consumer.peek(key, source);
+        if (slot) return slot;
+      }
+      return null;
+    },
     sources(key) {
       return ['pb', 'wr'].flatMap(name => {
         const info = describe(key, name);

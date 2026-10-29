@@ -20,7 +20,7 @@ const micros = seconds => Math.round(seconds * 1e6);
 const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && speeds.every(speed => Number.isFinite(speed) && speed >= 0 && speed <= 100000);
 // Saved analysis outlives the page. Its key carries a hash of the extension's
 // source (set by build.js), so changed analysis code never reuses old results.
-const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev';
+const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev-touch-angle';
 // The KSF record route has no ID, so a saved analysis of it is matched by
 // a fingerprint of the downloaded route.
 export function routeFingerprint(replay) {
@@ -53,11 +53,15 @@ function routeCollector() {
       const key = visitKey(board);
       if (!key || typeof board.routePrefix !== 'string' || !board.routePrefix || indices.has(key)) complete = false;
       if (key) indices.set(key, indices.has(key) ? null : boards.length);
-      pending = {key, tick, loss: null, surfLoss: null, downLoss: null, upLoss: null, valid: complete};
+      pending = {key, tick, loss: null, speedBefore: null, speedAfter: null, angle: null,
+        surfLoss: null, downLoss: null, upLoss: null, valid: complete};
     }
     if (pending.key !== visitKey(board)) complete = false;
     pending.valid &&= complete;
     pending.loss = board.available && Number.isFinite(board.loss) && board.loss >= 0 ? board.loss : null;
+    pending.speedBefore = board.available && Number.isFinite(board.speedBefore) && board.speedBefore >= 0 ? board.speedBefore : null;
+    pending.speedAfter = board.available && Number.isFinite(board.speedAfter) && board.speedAfter >= 0 ? board.speedAfter : null;
+    pending.angle = board.available && Number.isFinite(board.angle) && board.angle >= 0 && board.angle <= 90 ? board.angle : null;
   }
   function observeSurf(surf) {
     const key = visitKey(surf);

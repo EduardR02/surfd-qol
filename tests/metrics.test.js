@@ -2237,3 +2237,114 @@ test('a real surface transition after a cold replay seek opens a complete subseq
   assert.equal(complete.available, true);
   assert.equal(complete.routePrefix, null);
 });
+
+function nativeTouchClip(before, normal, float32 = false) {
+  const round = float32 ? Math.fround : value => value;
+  const projection = round(before.x * normal.x + before.y * normal.y + before.z * normal.z);
+  const after = vector(round(before.x - normal.x * projection),
+    round(before.y - normal.y * projection), round(before.z - normal.z * projection));
+  const residual = after.x * normal.x + after.y * normal.y + after.z * normal.z;
+  if (residual < 0) {
+    after.x -= normal.x * residual;
+    after.y -= normal.y * residual;
+    after.z -= normal.z * residual;
+  }
+  return after;
+}
+
+test('touch angle agrees with the native single-plane clip and its cosine speed loss', () => {
+  for (const float32 of [false, true]) {
+    const physics = {...config, float32};
+    const normal = float32 ? vector(0, Math.fround(.8), Math.fround(.6)) : rampNormal;
+    for (const degrees of [0, 1, 15, 45, 89]) {
+      const radians = degrees * Math.PI / 180, speed = 1000;
+      const before = vector(speed * Math.cos(radians), -normal.y * speed * Math.sin(radians),
+        -normal.z * speed * Math.sin(radians));
+      const after = nativeTouchClip(before, normal, float32);
+      const result = tick(createMetrics(), session(physics), undefined,
+        {before, after, contacts: [{normal}], config: physics}).board;
+      assert.equal(result.available, true);
+      close(result.angle, degrees, float32 ? 1e-5 : 1e-10);
+      close(result.angle, Math.acos(Math.min(1, result.speedAfter / result.speedBefore)) * 180 / Math.PI, 1e-4);
+      close(result.loss, result.speedBefore * (1 - Math.cos(result.angle * Math.PI / 180)), 1e-4);
+    }
+  }
+});
+
+test('touch angle uses the first facet and incoming velocity, not the whole curved slide speed ratio', () => {
+  const metrics = createMetrics(), game = mappedSession(), before = vector(700, -400, -200);
+  const firstAfter = nativeTouchClip(before, rampNormal);
+  const after = nativeTouchClip(firstAfter, curveNormal);
+  const result = coastContact(metrics, game, {before, after, contacts: [rampContact, curveContact]}).board;
+  const expected = Math.asin(Math.abs(before.y * rampNormal.y + before.z * rampNormal.z) /
+    Math.hypot(before.x, before.y, before.z)) * 180 / Math.PI;
+  assert.equal(result.available, true);
+  close(result.angle, expected);
+  assert.ok(Math.abs(result.angle - Math.acos(result.speedAfter / result.speedBefore) * 180 / Math.PI) > .01);
+});
+
+test('touch angle ignores old contacts and later slide calls in the landing tick', () => {
+  const metrics = createMetrics(), game = mappedSession(), before = vector(1000, 0, -300);
+  const after = nativeTouchClip(before, rampNormal);
+  metrics.begin(game);
+  metrics.collision({...clip(before, after, [curveContact, rampContact]), firstContact: 1});
+  metrics.collision(clip(vector(500, -100, -100), vector(10)));
+  game.state.tick++;
+  metrics.end(game);
+  const result = metrics.boardSnapshot();
+  close(result.angle, Math.asin(180 / Math.hypot(1000, 300)) * 180 / Math.PI);
+  close(result.speedBefore, Math.hypot(1000, 300));
+  close(result.speedAfter, Math.hypot(after.x, after.y, after.z));
+});
+
+test('recontacts revise touch loss and speed out without replacing the first landing angle', () => {
+  const metrics = createMetrics(), game = mappedSession(), before = vector(1000, 0, -300);
+  const first = coastContact(metrics, game, {before, after: nativeTouchClip(before, rampNormal)}).board;
+  tick(metrics, game);
+  const nextBefore = vector(1200, -100, -200), nextAfter = nativeTouchClip(nextBefore, rampNormal);
+  const result = coastContact(metrics, game, {before: nextBefore, after: nextAfter}).board;
+  assert.equal(result.entryContacts, 2);
+  assert.equal(result.angle, first.angle);
+  assert.equal(result.speedBefore, first.speedBefore);
+  close(result.speedAfter, Math.hypot(nextAfter.x, nextAfter.y, nextAfter.z));
+  close(result.loss, first.loss + Math.hypot(nextBefore.x, nextBefore.y, nextBefore.z) - result.speedAfter);
+  metrics.reset();
+  assert.equal(metrics.boardSnapshot().angle, null);
+});
+
+test('zero-speed and unknown touches expose null angles, while normal incidence is ninety degrees', () => {
+  assert.equal(createMetrics().boardSnapshot().angle, null);
+  const zero = tick(createMetrics(), session(), undefined, clip(vector(), vector())).board;
+  assert.equal(zero.available, true);
+  assert.equal(zero.angle, null);
+  const perpendicular = vector(0, -800, -600);
+  close(tick(createMetrics(), session(), undefined,
+    clip(perpendicular, nativeTouchClip(perpendicular, rampNormal))).board.angle, 90);
+  const blocked = tick(createMetrics(), session(), undefined,
+    {...clip(vector(1000), vector(900)), blocked: true}).board;
+  assert.equal(blocked.available, false);
+  assert.equal(blocked.angle, null);
+  const partial = createMetrics();
+  partial.reset({partial: true});
+  assert.equal(coastContact(partial, mappedSession()).board.angle, null);
+});
+
+test('saved metrics preserve first-contact angle through restoration and recontact', () => {
+  const metrics = createMetrics(), game = mappedSession(), before = vector(1000, 0, -300);
+  const first = coastContact(metrics, game, {before, after: nativeTouchClip(before, rampNormal)}).board;
+  const saved = metrics.saveState();
+  metrics.reset();
+  metrics.restoreState(saved);
+  tick(metrics, game);
+  const result = coastContact(metrics, game).board;
+  assert.equal(result.entryContacts, 2);
+  assert.equal(result.angle, first.angle);
+});
+
+test('hidden metrics do not inspect contact data or create touch angles', () => {
+  const metrics = createMetrics({hud: false});
+  metrics.begin({get state() { throw new Error('idle state inspected'); }});
+  metrics.collision({before: {get x() { throw new Error('idle contact inspected'); }}});
+  metrics.end({});
+  assert.equal(metrics.boardSnapshot().angle, null);
+});
