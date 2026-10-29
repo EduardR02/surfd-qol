@@ -952,6 +952,10 @@ describe('private room WebRTC socket', () => {
       {type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS + 1},
       {type: 'context', epoch: 1, token: 'host-supplied-ranked-token'},
       {type: 'result', result: {}},
+      ...[{verified: true, pointsDelta: -1}, {verified: true, leaderboardRank: 5, leaderboardTotal: 4}, {verified: true, promoted: 'yes'},
+        {promoted: true}, {pointsDelta: 10}, {rank: 'Admin'}, {verified: 'true'}].map(forged => ({type: 'result', result: {
+        id: uuid(1), userId: uuid(2), name: 'Surfer', rank: 'Skilled', mapId: 'one', mapTitle: 'One', timeUs: 1000, record: false,
+        personalBest: false, previousBestUs: null, pointsDelta: 0, promoted: false, ...forged}})),
     ];
     for (const message of invalidMessages) {
       let probes = 0;

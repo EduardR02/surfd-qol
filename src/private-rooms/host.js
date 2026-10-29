@@ -12,6 +12,8 @@ const SAVELOC_LIMIT = {rate: 1, burst: 3};
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
 const RESULT_INTERVAL_MS = 3000, VERIFIED_LIMIT = {rate: 1 / 3, burst: 3};
+// Board reads for the whole room, so many players can't make the host flood the site.
+const BOARD_LIMIT = {rate: 1 / 2, burst: 5};
 // Earlier epochs a late claim may name, and verified runs remembered so none is announced twice.
 const EPOCH_HISTORY = 9, ANNOUNCED_RUNS = 256;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
@@ -46,6 +48,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   const clients = new Set();
   const slots = new Set(), pending = new Map(), bans = new Map();
   const records = new Map(), epochs = new Map([[1, mapId]]), announced = new Set();
+  const boardReads = {tokens: BOARD_LIMIT.burst, at: now()};
   const owners = new Map(), savelocs = new Map();
   let nextSavelocId = 1;
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
@@ -290,7 +293,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       announce(client, claim, {});
       return;
     }
-    Promise.resolve().then(() => lookupBoard?.(claim.mapId)).catch(() => null).then(board => {
+    const read = take(boardReads, BOARD_LIMIT) ? () => lookupBoard?.(claim.mapId) : () => null;
+    Promise.resolve().then(read).catch(() => null).then(board => {
       if (closed || !clients.has(client)) return;
       const place = standing(board, claim, player.userId);
       if (best && !place) announce(client, claim);

@@ -335,6 +335,46 @@ describe('verified runs', () => {
     } finally { f.room.close(); }
   });
 
+  test('board reads share a room-wide budget; a best past it reads as unverified', async () => {
+    const f = room(() => board([], 50));
+    try {
+      const peers = Array.from({length: 6}, (_, index) => {
+        const identity = {...hello('Surfer_' + index)};
+        return {identity, socket: f.connect(false, identity)};
+      });
+      for (const {socket} of peers) socket.receive({...verified, id: crypto.randomUUID(), leaderboardRank: 40, leaderboardTotal: 50});
+      await settle();
+      expect(f.lookups).toHaveLength(5);
+      expect(f.host.results().map(result => result.verified)).toEqual([true, true, true, true, true, false]);
+      f.at(2000);
+      peers[0].socket.receive({...verified, id: crypto.randomUUID(), leaderboardRank: 41, leaderboardTotal: 50});
+      await settle();
+      expect(f.lookups).toHaveLength(6);
+      expect(f.host.results().at(-1)).toMatchObject({verified: true, leaderboardRank: 41, leaderboardTotal: 50});
+    } finally { f.room.close(); }
+  });
+
+  test('a modified client\u2019s best reaches guests through their filter as the host announced it', async () => {
+    const f = room(() => null);
+    const [client, server] = createLoopbackPair();
+    const read = createRoomFilter({roomId, maps}), received = [];
+    try {
+      const welcomed = new Promise(resolve => client.addEventListener('message', event => {
+        const message = read(JSON.parse(event.data));
+        if (message.type === 'welcome') resolve();
+        if (message.type === 'result') received.push(message.result);
+      }));
+      f.room.addClient(server, hello('Watcher'));
+      await welcomed;
+      f.peer.receive({...verified, pointsDelta: 1000000, promoted: true, rank: 'Legend', record: true});
+      for (let wait = 0; wait < 20 && !received.length; wait++) await new Promise(resolve => setTimeout(resolve, 5));
+      expect(received).toEqual([expect.objectContaining({verified: false, record: true, roomRecord: true, pointsDelta: 0,
+        promoted: false, rank: 'Rookie'})]);
+      expect(received[0].leaderboardRank).toBeUndefined();
+      expect(f.room.players[1]).toMatchObject({rank: 'Rookie', points: 450});
+    } finally { f.room.close(); }
+  });
+
   test('malformed verified claims close only their sender', () => {
     const f = room();
     try {
