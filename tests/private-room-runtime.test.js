@@ -137,18 +137,20 @@ function fixture({storage = new Map(), displayName = 'Surfer', getState = () => 
   };
 }
 const opened = socket => socket.readyState === 1 ? Promise.resolve() : new Promise(resolve => socket.addEventListener('open', resolve, {once: true}));
-const welcomed = socket => {
+// Resolves once the runtime, which listens first, has handled the next room message of this type.
+const arrival = (socket, type) => {
   const incoming = createRoomControlReader();
   return new Promise(resolve => socket.addEventListener('message', function receive(event) {
     if (typeof event.data !== 'string') return;
     const text = incoming.read(event.data);
     if (text === null) return;
     const message = JSON.parse(text);
-    if (message.type !== 'welcome') return;
+    if (message.type !== type) return;
     socket.removeEventListener('message', receive);
     resolve(message);
   }));
 };
+const welcomed = socket => arrival(socket, 'welcome');
 const closed = socket => new Promise(resolve => socket.addEventListener('close', resolve, {once: true}));
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
@@ -1509,6 +1511,49 @@ describe('private room runtime', () => {
       await expect(f.runtime.rename("Official's room")).rejects.toThrow("Room names can't include Surfd or official.");
       expect(f.runtime.visibility()).toBe('private');
       expect(f.signals[0].sent.at(-1).data).toBeNull();
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('native saves traverse the host loopback, load captured time, clear on map change and detach on leave', async () => {
+    const f = fixture();
+    const map = {id: 'map', version: 'v1', zones: [], spawn: {position: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0}};
+    const key = JSON.stringify(['map', 'v1', JSON.stringify({dt: 0.015}), 8]);
+    const snapshot = {key, state: {position: {x: 1, y: 2, z: 3}, velocity: {x: 40, y: 0, z: 0},
+      grounded: false, groundId: null, ducked: false, duckFraction: 0, eyeHeight: 64, jumpHeld: false,
+      surfaceFriction: 1, yaw: 0, pitch: 0, tick: 100},
+    timer: {state: {phase: 'running', startTick: 1, endTick: null, splits: [], invalidReason: null, elapsed: 1.25}, armed: false, prehops: 0},
+    checkpointSpeeds: [], startPosition: null, startJumps: 0, startGroundTime: 0,
+    startHopWarned: false, startRegion: '', rawJumpHeld: false, stageStartRecovery: false};
+    let handlers = null;
+    const notices = [], start = {position: {x: 9, y: 9, z: 9}, yaw: 0, pitch: 0};
+    const live = {map, practiceKey: () => key, capturePractice: () => snapshot,
+      restorePractice(value) { Object.assign(this, {practice: true, restored: value}); return true; }};
+    f.adapter.notice = text => notices.push(text);
+    f.adapter.practice = {shared(value) { handlers = value; return () => { handlers = null; }; }, refresh() {},
+      destination: () => ({mapId: map.id, mapVersion: map.version, map, key, startPosition: start})};
+    try {
+      expect(f.timers.pending()).toBe(0);
+      const id = await f.host();
+      const socket = f.runtime.roomSocket(id), init = arrival(socket, 'saveloc-init');
+      await welcomed(socket);
+      await init;
+      const added = arrival(socket, 'saveloc-add');
+      handlers.save(live);
+      await added;
+      expect(handlers.entries(live)).toEqual([{id: 1, name: 'Surfer', time: 1.25, stage: 1, checkpoints: 0}]);
+      expect(notices).toEqual(['Saved location #1 · 00:01.250.']);
+      expect(handlers.restore(live)).toBe(true);
+      expect(live.practice).toBe(true);
+      expect(live.restored.timer.state.elapsed).toBe(1.25);
+      expect(live.restored.startPosition).toEqual(start);
+      const changed = arrival(socket, 'saveloc-init');
+      socket.send(JSON.stringify({type: 'change-map', mapId: 'other'}));
+      await changed;
+      expect(handlers.entries({...live, map: {...map, id: 'other'}})).toEqual([]);
+      expect(handlers.selected(live)).toBe(null);
+      f.runtime.leave(id);
+      expect(handlers).toBe(null);
+      expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
 });

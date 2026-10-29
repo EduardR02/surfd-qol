@@ -5,6 +5,7 @@ import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry,
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
+import { createSharedSavelocs } from './shared-savelocs.js';
 
 const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
@@ -30,6 +31,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   const sockets = new Map(), latestSockets = new Map();
   const roomStates = new WeakMap();
   let currentSocket = null;
+  let sharedSaves = null;
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
@@ -293,6 +295,15 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
     latestSockets.set(id, socket);
+    sharedSaves?.close();
+    const practice = getAdapter()?.practice;
+    const shared = typeof practice?.shared === 'function' ? createSharedSavelocs({
+      practice, now,
+      send: message => { if (socket === currentSocket && socket.readyState === 1) socket.send(JSON.stringify(message)); },
+      invalid: () => socket.close(CLOSE.invalid, ROOM_TEXTS.invalidData),
+      notice: text => getAdapter()?.notice?.(text),
+    }) : null;
+    sharedSaves = shared;
     currentSocket = socket;
     let pingAt = null, opened = false, ownConnectionId = null;
     const incoming = createRoomControlReader();
@@ -318,7 +329,12 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         if (text === null) return;
         message = JSON.parse(text);
       } catch { return; }
-      if (!message || !['welcome', 'state', 'roster'].includes(message.type)) return;
+      if (typeof message?.type !== 'string') return;
+      if (message.type.startsWith('saveloc-')) {
+        if (socket === currentSocket) shared?.receive(message);
+        return;
+      }
+      if (!['welcome', 'state', 'roster'].includes(message.type)) return;
       if (message.type === 'welcome' && ownConnectionId === null && isUuid(message.player?.connectionId)) {
         ownConnectionId = message.player.connectionId;
         if (ownHost && id === hosted?.id) {
@@ -332,6 +348,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
             getAdapter()?.rooms?.maps().some(map => map.id === state.mapId) &&
             (!accepted || state.epoch > accepted.epoch || state.epoch === accepted.epoch && state.mapId === accepted.mapId)) {
           roomStates.set(socket, {mapId: state.mapId, epoch: state.epoch});
+          if (socket === currentSocket) shared?.state(state);
         }
       }
       if (ownHost || !previous) return;
@@ -351,7 +368,11 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     socket.addEventListener('close', event => {
       incoming.clear();
       sockets.delete(socket);
-      if (currentSocket === socket) currentSocket = null;
+      if (currentSocket === socket) {
+        currentSocket = null;
+        shared?.close();
+        if (sharedSaves === shared) sharedSaves = null;
+      }
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
       if (opened && !ownHost) drops.set(id, [...recentDrops(id), now()]);
@@ -568,6 +589,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
       current.room = createRoomHost({roomId: id, mapId, maps, visibility, maxPlayers: limit,
         name,
+        getMap: () => getAdapter()?.practice?.destination?.()?.map ?? null,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
       // Hosting needs an account, so signing out ends the room for everyone.
@@ -733,6 +755,10 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     },
     leave(id) {
       cancelJoin(id);
+      if (id == null || sockets.get(currentSocket) === id) {
+        sharedSaves?.close();
+        sharedSaves = null;
+      }
       if (hosted && (id == null || id === hosted.id)) closeHost();
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
       for (const [socket, roomId] of sockets) if (id == null || id === roomId) {
@@ -758,6 +784,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       if (destroyed) return;
       cancelJoin();
       closeHost();
+      sharedSaves?.close();
+      sharedSaves = null;
       destroyed = true;
       directoryAbort?.abort();
       timers.clearInterval(heartbeat);
