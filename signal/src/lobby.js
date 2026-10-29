@@ -19,10 +19,11 @@ const normalizeRoomName = value => typeof value === 'string' ? value.trim().repl
 // Names that could pass for the site's own servers.
 export const IMPERSONATION = /surfd|official/i;
 export const MAX_LISTING_ROSTER = 24;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PLAYER_NAME = /^[A-Za-z0-9_-]{3,24}$/;
 
-// A roster preview contains only the fields the directory can expose. Bound
-// the number of source rows before reading or copying any of them.
+// A roster preview exposes player names and only their guest/account identity.
+// Bound the number of source rows before reading or copying any of them.
 // Missing rosters from older hosts become empty previews.
 function rosterFrom(value) {
   const roster = [];
@@ -30,11 +31,14 @@ function rosterFrom(value) {
   const length = Math.min(value.length, MAX_LISTING_ROSTER);
   for (let i = 0; i < length; i++) {
     const player = value[i];
-    if (player && typeof player === 'object' && !Array.isArray(player)
-      && typeof player.name === 'string' && PLAYER_NAME.test(player.name)
-      && Number.isSafeInteger(player.points)) {
-      roster.push({name: player.name, points: player.points});
-    }
+    if (!player || typeof player !== 'object' || Array.isArray(player)
+      || typeof player.name !== 'string' || !PLAYER_NAME.test(player.name)
+      || typeof player.guest !== 'boolean'
+      || (player.guest ? player.userId !== undefined
+        : player.userId !== undefined && (typeof player.userId !== 'string' || !UUID.test(player.userId)))) continue;
+    const entry = {name: player.name, guest: player.guest};
+    if (!player.guest && player.userId !== undefined) entry.userId = player.userId;
+    roster.push(entry);
   }
   return roster;
 }

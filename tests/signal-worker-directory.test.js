@@ -3,7 +3,8 @@ import worker from '../signal/src/worker.js';
 import {ORIGIN} from '../signal/src/room.js';
 
 const ROOM = 'p-abcdefghjkmn';
-const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, capacity: 16, roster: [{name: 'Host_1', points: 0}]};
+const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, capacity: 16,
+  roster: [{name: 'Host_1', guest: false, userId: '123e4567-e89b-12d3-a456-426614174000'}]};
 
 test('directory refreshes share requests, reject failures and expire', async () => {
   let now = Date.now() + 100000;

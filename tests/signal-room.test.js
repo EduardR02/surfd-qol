@@ -4,6 +4,7 @@ import worker from '../signal/src/worker.js';
 import {CONNECTIONS, MESSAGES, createLimiter} from '../signal/src/limits.js';
 
 const KEY = 'a'.repeat(32), OTHER = 'b'.repeat(32), ROOM = 'p-abcdefghjkmn';
+const USER_ID = '123e4567-e89b-12d3-a456-426614174000';
 const HASH = await hashKey(KEY), OTHER_HASH = await hashKey(OTHER);
 const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', method = 'GET'} = {}) =>
   new Request(`https://signal.example${path}`, {method, headers: {...origin ? {Origin: origin} : {}, ...upgrade ? {Upgrade: upgrade} : {}}});
@@ -416,12 +417,14 @@ test('a room woken from hibernation carries on from its record and sockets', asy
 
 test('a host publishes a sanitized public roster, updates and unlists it; guests cannot', async () => {
   const room = await claimed(1);
-  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3, capacity: 16,
-    roster: [{name: 'Nebula_1', points: 3, userId: 'private'}, {name: '<b>bad</b>', points: 9}, {name: 'Nebula_3', points: 1.5}]}});
+  room.say(room.host, {type: 'listing', data: {name: "  Nebula's   room  ", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3, capacity: 16,
+    roster: [{name: 'Nebula_1', guest: false, userId: USER_ID, points: 3, rank: 'Admin'},
+      {name: '<b>bad</b>', guest: true, points: 9}, {name: 'Nebula_3', guest: true, userId: 'private', points: 1.5}]}});
   room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16}});
   room.say(room.host, {type: 'listing', data: null});
   expect(room.world.published).toEqual([
-    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16, roster: [{name: 'Nebula_1', points: 3}]}, room.host.peer.client],
+    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16,
+      roster: [{name: 'Nebula_1', guest: false, userId: USER_ID}]}, room.host.peer.client],
     [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16, roster: []}, room.host.peer.client],
     [ROOM, null],
   ]);

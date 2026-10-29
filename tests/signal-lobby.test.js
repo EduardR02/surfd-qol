@@ -4,6 +4,7 @@ import {isPlayerName, MAX_ROOM_PLAYERS as CLIENT_MAX_ROOM_PLAYERS} from '../src/
 import {createPrivateRooms} from '../src/private-rooms/index.js';
 
 const listing = (players, name = "Host's room") => ({name, mapId: 'surf_utopia', players, capacity: 16});
+const USER_ID = '123e4567-e89b-12d3-a456-426614174000';
 
 test('listings validate and normalize their names, capacity, map and player count', () => {
   expect(MAX_ROOM_PLAYERS).toBe(CLIENT_MAX_ROOM_PLAYERS);
@@ -23,30 +24,35 @@ test('listings validate and normalize their names, capacity, map and player coun
   }
 });
 
-test('roster previews are bounded and contain only extension-safe player details', () => {
+test('roster previews are bounded and expose only names and validated identity', () => {
   for (const name of ['Host_1', 'Player-2', 'Guest_abcde', 'ab', 'x'.repeat(25), 'Name.1', 'Name one', 'ééé']) {
-    expect(listingFrom({...listing(1), roster: [{name, points: 0}]}).roster.length).toBe(isPlayerName(name) ? 1 : 0);
+    expect(listingFrom({...listing(1), roster: [{name, guest: false}]}).roster.length).toBe(isPlayerName(name) ? 1 : 0);
   }
   const data = {...listing(3), roster: [
-    {name: 'Host_1', points: 0, private: 'not listed'},
-    {name: 'ab', points: 2},
-    {name: 'Host-3', points: 1.5},
-    {name: 'Host_4', points: Number.MAX_SAFE_INTEGER + 1},
-    {name: 'Host_5', points: Number.MAX_SAFE_INTEGER},
-    {name: 'Guest_abcde', points: Number.MIN_SAFE_INTEGER},
+    {name: 'Host_1', guest: false, userId: USER_ID, points: 0, rank: 'Admin', private: 'not listed'},
+    {name: 'ab', guest: true},
+    {name: 'Host-3', guest: false, userId: 'not-a-uuid'},
+    {name: 'Host_4', guest: true, userId: USER_ID},
+    {name: 'Host_5', guest: false},
+    {name: 'Guest_abcde', guest: true, points: 5, rank: 'not public'},
     null,
-    ['Host_6', 6],
-    {name: '<b>x</b>', points: 0},
+    ['Host_6', true],
+    {name: '<b>x</b>', guest: true},
+    {name: 'Host_7'},
+    {name: 'Host_8', guest: 'false'},
+    {name: 'Host_9', guest: false, userId: null},
   ]};
   expect(listingFrom(data)).toEqual({...listing(3), roster: [
-    {name: 'Host_1', points: 0},
-    {name: 'Host_5', points: Number.MAX_SAFE_INTEGER},
-    {name: 'Guest_abcde', points: Number.MIN_SAFE_INTEGER},
+    {name: 'Host_1', guest: false, userId: USER_ID},
+    {name: 'Host_5', guest: false},
+    {name: 'Guest_abcde', guest: true},
   ]});
 
-  const oversized = Array.from({length: MAX_LISTING_ROSTER + 1}, (_, i) => ({name: `Player_${i}`, points: i}));
+  const oversized = Array.from({length: MAX_LISTING_ROSTER + 1}, (_, i) => ({
+    name: `Player_${i}`, guest: i % 2 === 0, ...(i % 2 ? {userId: USER_ID} : {}), points: i, rank: 'Admin',
+  }));
   expect(listingFrom({...listing(25), roster: oversized}).roster)
-    .toEqual(oversized.slice(0, MAX_LISTING_ROSTER).map(({name, points}) => ({name, points})));
+    .toEqual(oversized.slice(0, MAX_LISTING_ROSTER).map(({name, guest, userId}) => ({name, guest, ...(userId ? {userId} : {})})));
   expect(listingFrom(listing(1)).roster).toEqual([]);
   expect(listingFrom({...listing(1), roster: {}}).roster).toEqual([]);
 });
