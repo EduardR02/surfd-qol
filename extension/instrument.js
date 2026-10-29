@@ -5,7 +5,7 @@ export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
 // Copies of MAX_ROOM_MESSAGE_CHARS and MAX_ROOM_CHUNKS in src/private-rooms/protocol.js, which extension/ cannot import.
-export const ROOM_MESSAGE_CHARS = 1048576, ROOM_CHUNKS = 263;
+export const ROOM_MESSAGE_CHARS = 262144, ROOM_CHUNKS = 66;
 // A captured identifier, matched literally inside another pattern.
 const literal = name => name.replace(/\$/g, () => '\\$');
 
