@@ -502,6 +502,27 @@ describe('private room host', () => {
     room.close();
   });
 
+  test('incoming poses flush an overdue batch without waiting for a hidden-tab timer', () => {
+    let time = 0;
+    const {room, connect} = fixture({now: () => time}), host = connect(true), guest = connect();
+    const upload = sequence => guest.receive(encodePoseBatch({sequence, epoch: 1, samples: [{...pose, x: sequence}]}));
+    try {
+      upload(1);
+      time = 49;
+      upload(2);
+      expect(snapshots(host)).toEqual([]);
+      time = 98;
+      upload(3);
+      expect(snapshots(host).flat().map(block => [block.sequence, block.samples[0].x])).toEqual([[3, 3]]);
+      expect(snapshots(guest)).toEqual([]);
+      time = 196;
+      upload(4);
+      time = 294;
+      upload(5);
+      expect(snapshots(host).flat().map(block => block.sequence)).toEqual([3, 5]);
+    } finally { room.close(); }
+  });
+
   test('splits snapshots at one hundred blocks and preserves samples', async () => {
     const {room, connect} = fixture(), host = connect(true);
     const peers = Array.from({length: 102}, () => connect());

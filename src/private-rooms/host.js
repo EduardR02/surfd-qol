@@ -31,6 +31,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   const clients = new Set();
   const slots = new Set(), pending = new Map(), bans = new Map();
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
+  let flushAt = 0;
   let closed = false;
 
   const players = () => [...clients].filter(client => client.open).map(client => client.player);
@@ -87,6 +88,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     pending.clear();
   }
   function flushPoses() {
+    clearTimeout(flushTimer);
     flushTimer = null;
     const batches = [...pending];
     pending.clear();
@@ -224,7 +226,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           }
           client.sequence = packet.sequence;
           pending.set(client, packet);
-          if (flushTimer === null) flushTimer = setTimeout(flushPoses, SNAPSHOT_INTERVAL_MS);
+          // Hidden tabs delay timers to a second; uploads still arrive on the data channel.
+          if (flushTimer !== null && now() >= flushAt) flushPoses();
+          if (flushTimer === null && pending.size) {
+            flushAt = now() + SNAPSHOT_INTERVAL_MS;
+            flushTimer = setTimeout(flushPoses, SNAPSHOT_INTERVAL_MS);
+          }
         } else if (type === 3) {
           const packet = relaySpectator(data, client.player.slot);
           if (packet.epoch !== state.epoch) return;
