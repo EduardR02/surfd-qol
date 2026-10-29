@@ -4,7 +4,7 @@
 
 *The compact HUD you surf with, just after a checkpoint. Replays and spectating show everything, and each part can be shown or hidden on its own.*
 
-A Chrome extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay controls, a crouch-jump bind and nullbinds.
+A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay controls, a crouch-jump bind and nullbinds.
 
 Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It never changes physics, maps or your runs: it watches the game's own movement code and reports what happened.
 
@@ -12,18 +12,18 @@ Everything on the HUD can be configured or turned off. The code is plain JavaScr
 
 ## Install
 
-You need desktop Chrome 118 or newer. The extension isn't on the Chrome Web Store, so you load it yourself:
+You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (Firefox isn't supported). The extension isn't on the Chrome Web Store, so you load it yourself:
 
-1. Download [surfd-qol.zip](https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip) and unzip it somewhere it can stay. Chrome loads the extension from that folder every time.
-2. Open `chrome://extensions` and switch on **Developer mode** (top right).
+1. Download [surfd-qol.zip](https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip) and unzip it somewhere it can stay. Your browser loads the extension from that folder every time.
+2. Open your browser's extensions page (`chrome://extensions`, `edge://extensions`, `brave://extensions` or `opera://extensions`) and switch on **Developer mode**.
 3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension in `chrome://extensions` and reload Surfd. Your settings stay.
+**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension on your browser's extensions page and reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 
-Chrome shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and only touches `assets/game-*.js`.
+Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and only touches `assets/game-*.js`.
 
 You can close the bar with × or **Cancel**. Everything already loaded keeps working, including the binds, until you reload the page. The toolbar badge shows **ON** when the extension is active on the page and **!** if setup failed or the bar was closed before setup finished. Click the toolbar button to reconnect; that reloads the tab, so do it between runs. The bar comes back after each reload.
 
@@ -120,6 +120,14 @@ Everything is stored in this browser. The same page shows storage use and has **
 
 Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback. Energy tint is also unavailable while spectating: interpolated network poses can look like gains or losses even during a physically neutral arc. The setting still applies to your own runs and locally simulated replays.
 
+### Private rooms
+
+Surf with friends in a room of your own: no time limit, no map votes, and the host picks the map. Everyone in the room needs Surfd QoL.
+
+- **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Private** (room code or invite link only) or **Public** (listed under **Community** for everyone with the extension). Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open; the room view shows the upload your player limit needs.
+- **Join:** pick a room in the **Community** tab, type its code next to the filters, or open an invite link.
+- **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs in rooms aren't ranked.
+
 ### Optional extras
 
 - **Live feedback** (off by default): a row of values that update continuously instead of the ramp bar. Meant for watching replays, not for runs.
@@ -134,6 +142,7 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 - Hidden feedback skips its analysis. PB/WR comparisons share saved results rather than analysing the same replay repeatedly.
 - The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
 - No telemetry. Settings and recordings stay in your browser. The extension downloads reference replays from surfd.net and checks GitHub for updates at most once a day, without sending your runs or settings.
+- Private rooms use a small room service on Cloudflare to list rooms and connect players, only while the main menu or Find a server is open, you host, or you are in a room. Game traffic between players goes through Cloudflare's relay, not directly between computers.
 
 ## Troubleshooting
 

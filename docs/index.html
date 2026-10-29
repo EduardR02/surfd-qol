@@ -139,22 +139,35 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
   <section id="install">
     <div class="wrap">
       <h2>Install</h2>
-      <p class="lede measure">It isn't on the Chrome Web Store, so you load it into Chrome yourself.</p>
+      <p class="lede measure">It isn't on the Chrome Web Store, so you load it into <span data-browser>Chrome</span> yourself. It works in Chrome, Edge, Brave and Opera.</p>
+      <p class="note measure" id="firefox" hidden>Surfd QoL needs a Chromium browser: Chrome, Edge, Brave or Opera. Firefox isn't supported yet.</p>
       <ol class="steps">
-        <li><b>Download the zip and unzip it.</b><span>Keep the unzipped folder somewhere it can stay; Chrome loads the extension from it.</span></li>
-        <li><b>Open <code>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions">Copy</button></b><span>Paste it into the address bar, then switch on <b>Developer mode</b> in the top right.</span></li>
+        <li><b>Download the zip and unzip it.</b><span>Keep the unzipped folder somewhere it can stay; your browser loads the extension from it.</span></li>
+        <li><b>Open <code data-extensions>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions" data-extensions-copy>Copy</button></b><span>Paste it into the address bar, then switch on <b>Developer mode</b> in the top right.</span></li>
         <li><b>Click Load unpacked and pick the unzipped folder.</b><span>It's the folder that contains <code>manifest.json</code>.</span></li>
         <li><b>Open surfd.net.</b><span>The tab reloads once while the extension hooks in. Settings are under <b>QoL</b>, bottom right of the game menu.</span></li>
       </ol>
-      <p class="note measure">Chrome will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only attaches to surfd.net. You can close the bar; everything keeps working until you reload.</p>
+      <p class="note measure"><span data-browser>Chrome</span> will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only attaches to surfd.net. You can close the bar; everything keeps working until you reload.</p>
       <div class="update-guide" id="update">
         <h3>Updating</h3>
-        <p class="lede measure">A link above Runs and QoL in the game menu lets you know when a new version is available. Chrome won't install it automatically.</p>
+        <p class="lede measure">A link above Runs and QoL in the game menu lets you know when a new version is available. <span data-browser>Chrome</span> won't install it automatically.</p>
         <ol class="steps">
-          <li><b><a href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">Download the latest zip</a> and unzip it.</b><span>Replace the contents of the extension folder you already loaded into Chrome.</span></li>
-          <li><b>Reload the extension, then refresh Surfd.</b><span>Open <code>chrome://extensions</code> and click the reload icon on Surfd QoL. Your settings and saved runs stay in this browser.</span></li>
+          <li><b><a href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">Download the latest zip</a> and unzip it.</b><span>Replace the contents of the extension folder you already loaded.</span></li>
+          <li><b>Reload the extension, then refresh Surfd.</b><span>Open <code data-extensions>chrome://extensions</code> and click the reload icon on Surfd QoL. Your settings and saved runs stay in this browser.</span></li>
         </ol>
       </div>
+    </div>
+  </section>
+
+  <section id="rooms">
+    <div class="wrap">
+      <h2>Private rooms</h2>
+      <p class="lede measure">Surf with friends in a room of your own: no time limit, no map votes, and the host picks the map. Everyone in the room needs Surfd QoL.</p>
+      <dl class="defs">
+        <div><dt>Host a room</dt><dd>Open Find a server and click Host a room. Pick a map, a name, a player limit, and Private (code or link) or Public (listed under Community). Hosting needs a surfd.net account, and your browser runs the room, so keep the tab open.</dd></div>
+        <div><dt>Join</dt><dd>Pick a room in Find a server's Community tab, type its code next to the filters, or open an invite link.</dd></div>
+        <div><dt>In the room</dt><dd>Chat, spectating, map changes and finished runs work like on Surfd's servers. Runs in rooms aren't ranked.</dd></div>
+      </dl>
     </div>
   </section>
 
@@ -234,6 +247,18 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
   </div>
 </footer>
 <script>
+// Each browser has its own extensions page; Brave only identifies itself through navigator.brave.
+const agent = navigator.userAgent;
+const browser = agent.includes('Edg/') ? ['Edge', 'edge://extensions'] : agent.includes('OPR/') ? ['Opera', 'opera://extensions']
+  : agent.includes('Firefox/') ? null : ['Chrome', 'chrome://extensions'];
+function useBrowser([name, page]) {
+  for (const node of document.querySelectorAll('[data-browser]')) node.textContent = name;
+  for (const node of document.querySelectorAll('[data-extensions]')) node.textContent = page;
+  for (const node of document.querySelectorAll('[data-extensions-copy]')) node.dataset.copy = page;
+}
+if (browser) useBrowser(browser);
+else document.getElementById('firefox').hidden = false;
+navigator.brave?.isBrave?.().then(brave => { if (brave) useBrowser(['Brave', 'brave://extensions']); }, () => {});
 for (const button of document.querySelectorAll('[data-copy]')) {
   button.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = 'Copied'; }
