@@ -1287,26 +1287,26 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('the main menu discovers public rooms without polling during play', async () => {
+  test('the main menu stays idle until the server browser opens', async () => {
     const f = fixture();
     try {
       f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.menu(true);
       f.runtime.attach();
-      f.menu(true); f.runtime.menuVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      f.open(true); f.runtime.browserVisibility(true);
       await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
-      f.open(true); f.runtime.browserVisibility(true);
-      f.menu(false); f.runtime.menuVisibility(false);
-      await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(1);
       f.open(false); f.runtime.browserVisibility(false);
       f.timers.advance(60000);
-      await f.runtime.refreshDirectory({open: true});
+      f.runtime.menuVisibility(false);
+      f.runtime.menuVisibility(true);
+      await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(1);
       expect(f.timers.pending()).toBe(0);
-      f.menu(true); f.runtime.menuVisibility(true);
-      await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(2);
     } finally { f.runtime.destroy(); }
   });
 

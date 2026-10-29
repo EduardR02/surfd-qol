@@ -63,8 +63,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     return adapter;
   }
   function directoryVisible() {
-    const adapter = getAdapter()?.rooms;
-    return !!(adapter?.browserOpen?.() || adapter?.menuOpen?.());
+    return !!getAdapter()?.rooms?.browserOpen?.();
   }
   function mergeRooms(rows) {
     const community = new Map(directory);
