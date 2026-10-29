@@ -93,7 +93,7 @@ function roomRosterHooks(body, options) {
   const row = roster[2], players = roster[1];
   const render = unique(body, new RegExp(`${literal(players)}\\.map\\((${identifier})=>\`([\\s\\S]*?)\`\\)\\.join\\(""\\)`, 'g'), 'browser roster rows');
   const escape = unique(render[2], new RegExp(`\\$\\{(${identifier})\\(${literal(render[1])}\\.name\\)\\}`, 'g'), 'browser roster name escaping')[1];
-  const rank = unique(render[2], new RegExp(`(${identifier})\\(${literal(render[1])}\\.guest\\?"Guest":${literal(render[1])}\\.rank\\)`, 'g'), 'browser guest style')[1];
+  const rank = unique(render[2], new RegExp(`class="rank-name \\$\\{(${identifier})\\(${literal(render[1])}\\.guest\\?"Guest":${literal(render[1])}\\.rank\\)\\}`, 'g'), 'browser guest style')[1];
   const empty = unique(body, new RegExp(`const (${identifier})=(${identifier})\\("p.empty",(${identifier})\\);`, 'g'), 'browser roster container');
   body = body.replace(roster[0], () => `${players}=__qolCommunity(${row})?(${row}.roster??[]):${roster[0].slice(players.length + 1)}`);
   body = body.replace(render[0], () => `(__qolCommunity(${row})?${players}.map(__qolRosterPlayer).join(""):${render[0]})`);
