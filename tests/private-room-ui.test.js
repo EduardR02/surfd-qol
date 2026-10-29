@@ -518,6 +518,15 @@ describe('Your room', () => {
     f.ui.destroy();
   });
 
+  test('uses guest status rather than a guest-shaped account name', async () => {
+    const f = fixture({roster: [{name: 'Guest_abcde', guest: false}, {name: 'Guest_12345', guest: true}]});
+    await f.hostNow();
+    f.ui.openRoom();
+    const rows = f.view().querySelectorAll('.roster-list tr');
+    expect(rows.map(row => !!row.querySelector('.rank-guest'))).toEqual([false, true]);
+    f.ui.destroy();
+  });
+
   test('a failed copy says so', async () => {
     const f = fixture();
     await f.hostNow();

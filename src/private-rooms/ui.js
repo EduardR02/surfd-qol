@@ -1,5 +1,5 @@
 import {formatRoomCode, inviteLink, isPrivateRoomId} from './ids.js';
-import {isGuestName, roomNameProblem} from './protocol.js';
+import {roomNameProblem} from './protocol.js';
 import {CHOICES, NAME_HINT, attribute, buildRoomView, clampLimit, classes, courseText, hidden, normalizeName, rosterRows, text,
   uploadEstimate} from './ui-room.js';
 
@@ -307,7 +307,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   }
   function renderPlayers(view, hosting, limit) {
     const roster = hosting ? rooms.roomInfo?.(hosting.id)?.roster ?? [] : [];
-    const players = roster.map(player => ({name: player.name, guest: player.guest === true || isGuestName(player.name), you: player.you === true}));
+    const players = roster.map(player => ({name: player.name, guest: player.guest === true, you: player.you === true}));
     const count = hosting?.players ?? 0;
     text(view.count, `${count} / ${limit}${count >= limit ? ' · full' : ''}`);
     const key = JSON.stringify([players, count]);
