@@ -239,6 +239,11 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       await wait(50);
     }
   }
+  // In a community room a loc goes to the room's shared list instead of the local bank.
+  function share(entry, native, destination) {
+    return entry.mapId === destination?.mapId && entry.mapVersion === destination.mapVersion
+      && native?.shareSnapshot?.(entry.snapshot) === true;
+  }
   // File once into native Restart's authoritative practice bank, even if Exit
   // retains a legacy replay Session. Rebase only the key and the start
   // position: loading a saveloc restores its start position, and a replay's
@@ -246,11 +251,13 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   function file() {
     if (!pending.length) return;
     const native = practice(), store = native?.store?.(), destination = native?.destination?.();
-    if (!(store?.banks instanceof Map) || typeof destination?.key !== 'string') return;
+    if (typeof destination?.key !== 'string') return;
     const {key, mapId, mapVersion} = destination;
     const start = destination.startPosition !== undefined ? {startPosition: destination.startPosition} : {};
     pending = pending.filter(entry => {
       if (entry.mapId !== mapId || entry.mapVersion !== mapVersion) return true;
+      if (share(entry, native, destination)) return false;
+      if (!(store?.banks instanceof Map)) return true;
       const bank = store.banks.get(key) ?? {entries: [], selected: null};
       if (bank.entries.length >= BANK_SIZE) bank.entries.shift();
       const id = store.nextId++;
@@ -277,7 +284,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     if (!snapshot) return 'finished';
     // One loc per moment: saving the same tick again replaces it.
     const entry = {mapId, mapVersion, snapshot, watch: watched.id, tick};
-    pending = [...pending.filter(other => other.watch !== watched.id || other.tick !== tick), entry].slice(-BANK_SIZE);
+    pending = pending.filter(other => other.watch !== watched.id || other.tick !== tick);
+    if (share(entry, practice(), destination)) entry.shared = true;
+    else pending = [...pending, entry].slice(-BANK_SIZE);
     return entry;
   }
   function persist(watched) {
@@ -465,6 +474,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       }
       const saved = `Saved location #${watched.spots.indexOf(tick) + 1} · ${formatTime(watched.session.timer?.state?.elapsed ?? 0)}.`;
       const captured = practice()?.store ? capture(watched, tick) : null;
+      watched.lastSpot = tick;
+      // The room reports a shared save with its room-wide number.
+      if (captured?.shared) return true;
       if (!captured) say(saved);
       else if (captured === 'finished') say(`${saved} The run has finished here, so it can’t be practiced.`);
       else if (captured === 'outdated') say(`${saved} This replay is from an older version of the map, so it can’t be practiced.`);
@@ -473,7 +485,6 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         say(`${saved} It’s added to your practice locations when you leave the replay${keys ? `; ${keys} loads it` : ''}.`);
         try { teach?.done?.(); } catch { /* shown again next time */ }
       } else say(saved);
-      watched.lastSpot = tick;
       return true;
     },
     // Jumps to a spot (the last one saved or used when none is given), keeping play or pause.

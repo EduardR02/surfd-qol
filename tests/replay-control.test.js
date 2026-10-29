@@ -1200,3 +1200,83 @@ describe('replay locs under current native practice rules', () => {
     } finally { control.destroy(); }
   });
 });
+
+describe('shared replay practice saves', () => {
+  test('a capture in a room goes to the room at once, unchanged, and is never filed locally', async () => {
+    const {world, run, control} = game();
+    const store = {banks: new Map(), nextId: 1, revision: 0}, shared = [];
+    const map = {id: 'utopia', version: 3}, startPosition = {position: {x: 1, y: 2, z: 3}, yaw: 90, pitch: 0};
+    let active = true;
+    world.practice = {store: () => store,
+      destination: () => ({map, mapId: map.id, mapVersion: map.version, key: 'live', startPosition}),
+      shareSnapshot(snapshot) {
+        if (!active) return false;
+        shared.push(snapshot);
+        return true;
+      }};
+    try {
+      await control.watch(run);
+      Object.assign(world.session, {map, capturePractice() {
+        return {key: 'replay-native-key', state: {...this.state}, startPosition: null};
+      }});
+      world.notices.length = 0;
+      control.seek(180);
+      expect(control.saveSpot()).toBe(true);
+      expect(control.active).toBe(true);
+      expect(shared).toEqual([{key: 'replay-native-key', state: {tick: 180, x: 180}, startPosition: null}]);
+      expect(control.status()).toMatchObject({spots: [180], lastSpot: 180});
+      expect(world.savedSpots).toEqual(['r1', [180]]);
+      // The room confirms the save with its own number.
+      expect(world.notices).toEqual([]);
+      expect(store.banks.size).toBe(0);
+      active = false;
+      control.exit();
+      control.status();
+      control.status();
+      expect(shared).toHaveLength(1);
+      expect(store.banks.size).toBe(0);
+    } finally { control.destroy(); }
+  });
+
+  test('a capture left pending goes to the room when one is active on exit', async () => {
+    const {world, run, control} = game();
+    const store = {banks: new Map(), nextId: 1, revision: 0}, shared = [];
+    const map = {id: 'utopia', version: 1};
+    let active = false;
+    world.practice = {store: () => store, destination: () => ({mapId: map.id, mapVersion: 1, key: 'live', startPosition: null}),
+      shareSnapshot(snapshot) { if (!active) return false; shared.push(snapshot); return true; }};
+    try {
+      await control.watch(run);
+      Object.assign(world.session, {map, capturePractice: () => ({key: 'replay', state: {tick: 120}})});
+      control.seek(120);
+      control.saveSpot();
+      expect(shared).toEqual([]);
+      active = true;
+      control.exit();
+      control.status();
+      control.status();
+      expect(shared).toEqual([{key: 'replay', state: {tick: 120}}]);
+      expect(store.banks.size).toBe(0);
+    } finally { control.destroy(); }
+  });
+
+  test('another destination map or version never receives a replay capture', async () => {
+    for (const destination of [{mapId: 'other', mapVersion: 1, key: 'other'}, {mapId: 'utopia', mapVersion: 2, key: 'new'}]) {
+      const {world, run, control} = game();
+      const store = {banks: new Map(), nextId: 1, revision: 0}, shared = [];
+      world.practice = {store: () => store, destination: () => destination,
+        shareSnapshot(snapshot) { shared.push(snapshot); return true; }};
+      try {
+        await control.watch(run);
+        Object.assign(world.session, {map: {id: 'utopia', version: 1},
+          capturePractice: () => ({key: 'old', state: {tick: 0}})});
+        control.saveSpot();
+        control.exit();
+        control.status();
+        expect(shared).toEqual([]);
+        expect(store.banks.size).toBe(0);
+        if (destination.mapId === 'utopia') expect(world.notices.at(-1)).toContain('older version');
+      } finally { control.destroy(); }
+    }
+  });
+});
