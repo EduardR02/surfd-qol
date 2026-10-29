@@ -11,7 +11,7 @@ const request = (path, {origin = 'https://surfd.net', upgrade = 'websocket', met
 // A Durable Object's worth of runtime: stored record, alarm, open sockets
 // with their attachments, and a clock. restart() is a wake from hibernation.
 // Each socket is its own client unless told otherwise.
-function harness({allowClient} = {}) {
+function harness({allowClient, hash} = {}) {
   const world = {time: 1000, record: null, alarm: null, open: new Set(), published: []};
   let room, clients = 0;
   const restart = () => room = createRoom({
@@ -23,7 +23,7 @@ function harness({allowClient} = {}) {
     accept(socket, peer) { socket.peer = structuredClone(peer); world.open.add(socket); },
     attach(socket, peer) { socket.peer = structuredClone(peer); },
     refuse(socket, code, reason) { socket.closed = {code, reason}; },
-    allowClient,
+    allowClient, hash,
     publish(...args) { world.published.push(args); },
     now: () => world.time,
   });
@@ -153,6 +153,30 @@ test('a host has AUTH_MS to send its key, and what it sends while the key is che
   expect(room.heard(host)).toEqual([{type: 'welcome', data: {id: expect.any(String), peers: []}}]);
   expect(room.world.record.key).toBe(HASH);
   expect(room.world.alarm).toBeNull();
+});
+
+test('authentication finishing after disconnect cannot replace a live host', async () => {
+  let finishHash, calls = 0;
+  const room = harness({hash: () => ++calls === 1
+    ? new Promise(resolve => { finishHash = resolve; })
+    : Promise.resolve(HASH)});
+  const departed = room.connect('host');
+  const pending = room.say(departed, {type: 'auth', key: KEY});
+  room.leave(departed);
+  const live = await room.claim();
+  const liveConnection = room.world.record.conn;
+  room.heard(live);
+  finishHash(HASH);
+  await pending;
+  room.leave(departed);
+  await room.say(departed, {type: 'auth', key: KEY});
+  expect(room.world.record.conn).toBe(liveConnection);
+  expect(room.world.record.goneAt).toBeNull();
+  expect(live.closed).toBeNull();
+  expect(room.heard(departed)).toEqual([]);
+  expect(room.heard(live)).toEqual([]);
+  const guest = room.connect('guest');
+  expect(room.heard(guest)[0].data.host).toBe(room.world.record.host);
 });
 
 test('a guest before any host is told there is no room and closed', () => {

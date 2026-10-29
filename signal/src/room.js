@@ -115,7 +115,8 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   else record = stored;
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
-  const rates = new Map(), departed = new Set(), hashing = new Set(), issuing = new Set();
+  // Keep late-operation guards only while their socket is still reachable.
+  const rates = new Map(), departed = new WeakSet(), hashing = new Set(), issuing = new Set();
   const post = (socket, message) => { try { socket.send(JSON.stringify(message)); } catch { /* closing */ } };
   const shut = (socket, reason) => { try { socket.close(CLOSE[reason], reason); } catch { /* closed */ } };
   const fail = (socket, code, to) => post(socket, {type: 'error', data: to === undefined ? {code} : {code, to}});
@@ -126,7 +127,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     const list = [];
     for (const socket of sockets()) {
       const peer = peerOf(socket);
-      if (!peer || departed.has(peer.conn)) continue;
+      if (!peer || departed.has(socket)) continue;
       if (peer.role === 'guest' || peer.role === 'host' && peer.conn === record?.conn) list.push({socket, peer});
     }
     return list;
@@ -138,7 +139,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     const list = [];
     for (const socket of sockets()) {
       const peer = peerOf(socket);
-      if (peer?.authBy != null && !departed.has(peer.conn)) list.push({socket, peer});
+      if (peer?.authBy != null && !departed.has(socket)) list.push({socket, peer});
     }
     return list;
   }
@@ -202,7 +203,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     hashing.add(peer.conn);
     return hash(value.key).then(key => {
       hashing.delete(peer.conn);
-      if (!departed.has(peer.conn)) claim(socket, peer, key);
+      if (!departed.has(socket)) claim(socket, peer, key);
     });
   }
   function claim(socket, peer, key) {
@@ -227,7 +228,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     issuing.add(peer.conn);
     return relay(peer.client).catch(() => null).then(servers => {
       issuing.delete(peer.conn);
-      if (departed.has(peer.conn)) return;
+      if (departed.has(socket)) return;
       post(socket, servers ? {type: RELAY, data: servers} : {type: 'error', data: {code: 'no-relay'}});
     });
   }
@@ -242,7 +243,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
 
   function message(socket, raw) {
     const peer = peerOf(socket);
-    if (!peer || departed.has(peer.conn) || hashing.has(peer.conn)) return;
+    if (!peer || departed.has(socket) || hashing.has(peer.conn)) return;
     if (peer.authBy != null) return authenticate(socket, peer, raw);
     if (!record || peer.role === 'host' && peer.conn !== record.conn) return;
     if (tooLarge(raw)) return kick(socket, 'too-large');
@@ -289,8 +290,8 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   // runtime may report one twice, as an error and a close.
   function disconnect(socket, code) {
     const peer = peerOf(socket);
-    if (!peer || departed.has(peer.conn)) return;
-    departed.add(peer.conn);
+    if (!peer || departed.has(socket)) return;
+    departed.add(socket);
     issuing.delete(peer.conn);
     rates.delete(`send:${peer.conn}`);
     rates.delete(`reply:${peer.conn}`);
