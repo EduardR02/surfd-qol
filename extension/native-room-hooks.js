@@ -33,7 +33,22 @@ export function nativeRoomHooks(source, hook, lobby) {
   } catch (error) {
     console.warn('[Surfd QoL] Native community commands unavailable:', error.message);
   }
+  try {
+    source = resultHooks(source, lobby);
+  } catch (error) {
+    console.warn('[Surfd QoL] Native community results unavailable:', error.message);
+  }
   return {source, adapter};
+}
+
+function resultHooks(source, lobby) {
+  const native = unique(source, new RegExp(`${literal(lobby)}\\.sync\\(\\{joined:${identifier},visible:!${identifier}\\.hidden,roomId:(${identifier})\\?\\.roomId\\(\\)\\?\\?null\\}\\)`, 'g'), 'native result room')[1];
+  const formatter = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=\\2\\.record\\?"New Surfd record!":`, 'g'), 'native result text');
+  const first = unique(source, /"First verified completion\."/g, 'native first completion');
+  const call = unique(source, new RegExp(`${literal(formatter[1])}\\((${identifier})\\),"result",\\1\\.name,\\1\\.rank`, 'g'), 'native result notification');
+  source = source.replace(formatter[0], () => `function ${formatter[1]}(${formatter[2]},__qolCommunity=false){const ${formatter[3]}=${formatter[2]}.record?(__qolCommunity?"New room record!":"New Surfd record!"):`);
+  source = source.replace(first[0], () => '(__qolCommunity?"First completion.":"First verified completion.")');
+  return source.replace(call[0], () => `${formatter[1]}(${call[1]},${community(`${native}?.roomId()`)}),"result",${call[1]}.name,${call[1]}.rank`);
 }
 
 function friendHooks(source, hook, lobby) {

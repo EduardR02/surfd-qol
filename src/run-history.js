@@ -188,6 +188,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   // `loaded` only when it was read: deleting anything needs the full picture.
   let settled = false, loaded = false;
   const pending = [];
+  const pendingBestReads = [];
   let clearing = null, clearTail = Promise.resolve();
   const sizes = new WeakMap();
   const sizeOf = record => {
@@ -259,6 +260,10 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     }
     loaded = !store || Array.isArray(saved?.runs);
     settled = true;
+    for (const {key, best, resolve} of pendingBestReads.splice(0)) {
+      const savedBest = bests.get(key)?.best?.time ?? null;
+      resolve(best === null ? savedBest : savedBest === null ? best : Math.min(best, savedBest));
+    }
     // Bests from runs that ended while loading apply on top of the saved ones.
     const touched = new Set(pending.splice(0).map(([run, ramps]) => addRun(run, ramps)));
     commit([], loaded ? [...touched] : []);
@@ -487,6 +492,17 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     get running() { return !!current; },
     runs() { return runs; },
     run: id => runs.find(run => run.id === id) ?? null,
+    // Capture the best before this finish is recorded, even while storage is loading.
+    bestTime(map) {
+      const key = mapKey(map);
+      if (settled) return bests.get(key)?.best?.time ?? null;
+      let best = null;
+      for (const [run] of pending) {
+        if (run.map === key && run.outcome === 'finished' && !run.practice && !run.invalid &&
+            (best === null || run.time < best)) best = run.time;
+      }
+      return new Promise(resolve => pendingBestReads.push({key, best, resolve}));
+    },
     // Maps with history, most recently played first.
     maps() {
       const entries = new Map();

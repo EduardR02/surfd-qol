@@ -281,6 +281,13 @@ export function decodeControl(text) {
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');
       return {type: 'chat', text: message.text.trim().slice(0, 240)};
+    case 'finish':
+      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
+        && runTime(message.timeUs) && typeof message.personalBest === 'boolean'
+        && (message.previousBestUs === null || message.personalBest && runTime(message.previousBestUs)
+          && message.previousBestUs > message.timeUs), 'Invalid room finish');
+      return {type: 'finish', mapId: message.mapId, epoch: message.epoch, timeUs: message.timeUs,
+        personalBest: message.personalBest, previousBestUs: message.previousBestUs};
     case 'change-map':
       requireValid(typeof message.mapId === 'string' && message.mapId.length > 0, 'Invalid map');
       return {type: 'change-map', mapId: message.mapId};
@@ -303,6 +310,7 @@ const record = value => value !== null && typeof value === 'object' && !Array.is
 const textValue = (value, max, empty = false) => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0);
 const identifier = value => textValue(value, 256);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
+const runTime = value => Number.isSafeInteger(value) && value > 0 && value <= 86400000000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The site's username rules, which Guest_ names also meet.
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
@@ -400,6 +408,19 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
         return {type: 'chat', playerId: message.playerId, name: message.name, text: message.text,
           ...(message.rank === undefined ? {} : {rank: 'Guest'}),
           ...(message.appearance === undefined ? {} : {appearance: normalizeAppearance(message.appearance)})};
+      case 'result': {
+        const result = message.result;
+        requireValid(record(result) && isUuid(result.id) && (isUuid(result.userId) || playerId(result.userId))
+          && isPlayerName(result.name) && result.rank === 'Guest' && catalog.has(result.mapId)
+          && runTime(result.timeUs) && typeof result.record === 'boolean' && typeof result.personalBest === 'boolean'
+          && (result.previousBestUs === null || (result.record || result.personalBest)
+            && runTime(result.previousBestUs) && result.previousBestUs > result.timeUs)
+          && result.pointsDelta === 0 && result.promoted === false, 'Invalid room result');
+        return {type: 'result', result: {id: result.id, userId: result.userId, name: result.name, rank: 'Guest',
+          mapId: result.mapId, mapTitle: catalog.get(result.mapId).title, timeUs: result.timeUs,
+          record: result.record, personalBest: result.personalBest, previousBestUs: result.previousBestUs,
+          pointsDelta: 0, promoted: false}};
+      }
       case 'notice':
       case 'error': {
         requireValid(textValue(message.text, 4096)

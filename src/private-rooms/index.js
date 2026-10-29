@@ -22,12 +22,14 @@ const MAX_PLAYERS_KEY = 'surfd-qol-room-max-players';
 const NAME_KEY = 'surfd-qol-room-guest-name';
 const BROWSER_KEY = 'surfd-qol-room-browser';
 
-export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
+export function createPrivateRooms({ getAdapter, getState = () => globalThis.__SURF__?.snapshot?.() ?? null, signalFactory = connectSignal,
   fetch: fetchRooms = (...args) => globalThis.fetch(...args), now = Date.now,
   timers = globalThis, events = globalThis, storage,
   socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
   const known = new Map(), directory = new Map(), guests = new Map(), gone = new Set(), drops = new Map();
   const sockets = new Map(), latestSockets = new Map();
+  const roomStates = new WeakMap();
+  let currentSocket = null;
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
@@ -291,6 +293,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
     latestSockets.set(id, socket);
+    currentSocket = socket;
     let pingAt = null, opened = false, ownConnectionId = null;
     const incoming = createRoomControlReader();
     socket.addEventListener('open', () => { opened = true; ui?.refresh(); }, {once: true});
@@ -323,6 +326,14 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
           publish();
         }
       }
+      if (message.type === 'welcome' || message.type === 'state') {
+        const state = message.state, accepted = roomStates.get(socket);
+        if (state?.roomId === id && Number.isInteger(state.epoch) && state.epoch > 0 && state.epoch <= 0xffffffff &&
+            getAdapter()?.rooms?.maps().some(map => map.id === state.mapId) &&
+            (!accepted || state.epoch > accepted.epoch || state.epoch === accepted.epoch && state.mapId === accepted.mapId)) {
+          roomStates.set(socket, {mapId: state.mapId, epoch: state.epoch});
+        }
+      }
       if (ownHost || !previous) return;
       const state = message.state;
       const players = message.players;
@@ -340,6 +351,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     socket.addEventListener('close', event => {
       incoming.clear();
       sockets.delete(socket);
+      if (currentSocket === socket) currentSocket = null;
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
       if (opened && !ownHost) drops.set(id, [...recentDrops(id), now()]);
@@ -513,6 +525,28 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     });
   }
   const api = {
+    async observeFinish(live, history) {
+      const socket = currentSocket, id = sockets.get(socket), state = roomStates.get(socket);
+      if (destroyed || !id || latestSockets.get(id) !== socket || socket.readyState !== 1 || !state) return false;
+      const adapter = getAdapter(), timer = live?.timer?.state;
+      if (adapter?.getSession?.() !== live || !live?.state || live.practice || !timer ||
+          timer.phase !== 'finished' || timer.untimed || timer.invalidReason || !Number.isFinite(timer.elapsed) ||
+          live.map?.id !== state.mapId) return false;
+      const snapshot = getState();
+      if (snapshot?.playback || snapshot?.spectator?.target != null || adapter.getView?.()?.target != null) return false;
+      const timeUs = Math.round(timer.elapsed * 1e6);
+      if (!Number.isSafeInteger(timeUs) || timeUs <= 0 || timeUs > 86400000000) return false;
+      const best = await history.bestTime(live.map);
+      if (destroyed || currentSocket !== socket || latestSockets.get(id) !== socket || socket.readyState !== 1 ||
+          roomStates.get(socket)?.epoch !== state.epoch || roomStates.get(socket)?.mapId !== state.mapId ||
+          adapter.getSession() !== live || live.map?.id !== state.mapId) return false;
+      const bestUs = best === null ? null : Math.round(best * 1e6);
+      if (bestUs !== null && (!Number.isSafeInteger(bestUs) || bestUs <= 0 || bestUs > 86400000000)) return false;
+      const personalBest = bestUs === null || timeUs < bestUs;
+      socket.send(JSON.stringify({type: 'finish', mapId: state.mapId, epoch: state.epoch, timeUs,
+        personalBest, previousBestUs: personalBest ? bestUs : null}));
+      return true;
+    },
     async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id,
       name, maxPlayers: limit = maxPlayers} = {}) {
       const adapter = rooms();

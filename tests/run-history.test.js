@@ -126,6 +126,71 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
 const attempts = view => [view.latest, ...view.recent].filter(Boolean);
 
 describe('run history', () => {
+  test('bestTime reads retained browser bests after their run and replay are gone', async () => {
+    const first = rig();
+    await first.history.ready;
+    first.run({ticks: 100});
+    await flush();
+    const best = first.history.runs()[0].time;
+    first.store.data.runs.clear();
+    const next = rig({store: first.store});
+    await next.history.ready;
+    expect(next.history.runs()).toEqual([]);
+    expect(next.history.view('utopia:3').pb).toBeNull();
+    expect(next.history.bestTime(next.live.map)).toBe(best);
+    expect(next.history.bestTime({...next.live.map, version: 4})).toBeNull();
+    expect(next.history.bestTime({id: 'other', version: 3})).toBeNull();
+  });
+
+  test('bestTime excludes practice and invalid finishes and captures the pre-finish best', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.run({ticks: 1, practice: true});
+    r.run({ticks: 1, invalid: 'Teleported'});
+    expect(r.history.bestTime(r.live.map)).toBeNull();
+    r.run({ticks: 100});
+    const best = r.history.bestTime(r.live.map);
+    r.go();
+    r.tick();
+    const beforeFinish = r.history.bestTime(r.live.map);
+    r.finish();
+    expect(beforeFinish).toBe(best);
+    expect(r.history.bestTime(r.live.map)).toBeLessThan(best);
+  });
+
+  test('bestTime during hydration merges only finishes that precede its read', async () => {
+    const first = rig();
+    await first.history.ready;
+    first.run({ticks: 100});
+    await flush();
+    const saved = await first.store.load();
+    let resolve;
+    const store = memoryStore();
+    store.load = () => new Promise(done => { resolve = done; });
+    const r = rig({store});
+    const beforeAny = r.history.bestTime(r.live.map);
+    r.run({ticks: 50});
+    const earlier = r.history.runs()[0].time;
+    const beforeLatest = r.history.bestTime(r.live.map);
+    r.run({ticks: 10});
+    resolve(saved);
+    expect(await beforeAny).toBe(first.history.bestTime(first.live.map));
+    expect(await beforeLatest).toBe(earlier);
+    expect(r.history.bestTime(r.live.map)).toBeLessThan(earlier);
+  });
+
+  test('a first finish captured during empty hydration remains a first finish', async () => {
+    let resolve;
+    const store = memoryStore();
+    store.load = () => new Promise(done => { resolve = done; });
+    const r = rig({store});
+    const before = r.history.bestTime(r.live.map);
+    r.run();
+    resolve({runs: [], bests: []});
+    expect(await before).toBeNull();
+    expect(r.history.bestTime(r.live.map)).toBe(r.history.runs()[0].time);
+  });
+
   test('records a run compactly and saves it as one record', async () => {
     const r = rig();
     await r.history.ready;

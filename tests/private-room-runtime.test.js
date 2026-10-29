@@ -1,6 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
 import {createRoomControlReader, encodeControlFrames} from '../src/private-rooms/protocol.js';
+import {createRunHistory} from '../src/run-history.js';
 
 const ROOM = 'p-abcdefghjkmn';
 const OTHER = 'p-nmkjhgfedcba';
@@ -90,7 +91,7 @@ function clock() {
     }
   };
 }
-function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
+function fixture({storage = new Map(), displayName = 'Surfer', getState = () => null} = {}) {
   const accountListeners = new Set();
   const signals = [], peers = [], listeners = [], notices = [], requests = [], requestOptions = [];
   const events = new EventTarget(), timers = clock();
@@ -106,7 +107,7 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
     onAccountChange: listener => { accountListeners.add(listener); return () => accountListeners.delete(listener); },
     browserOpen: () => open, menuOpen: () => menu, join: id => joined.push({id, row: rows.find(value => value.id === id)})
   }};
-  const runtime = createPrivateRooms({getAdapter: () => adapter, events, timers, now: timers.now,
+  const runtime = createPrivateRooms({getAdapter: () => adapter, getState, events, timers, now: timers.now,
     storage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value)},
     signalFactory: options => { const signal = new Signal(options); signals.push(signal); return signal; },
     socketFactory: options => {
@@ -150,6 +151,174 @@ const welcomed = socket => {
 };
 const closed = socket => new Promise(resolve => socket.addEventListener('close', resolve, {once: true}));
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+
+function finishFixture({best = null, load = null} = {}) {
+  const snapshot = {playback: false, spectator: {target: null}};
+  const f = fixture({getState: () => snapshot});
+  const live = {map: {id: 'map', version: 3}, practice: false,
+    state: {tick: 100, velocity: {x: 0, y: 0, z: 0}},
+    timer: {state: {phase: 'finished', elapsed: 12.3456784, invalidReason: '', untimed: false}}};
+  f.adapter.getSession = () => live;
+  const saved = {runs: [], bests: best === null ? [] : [{
+    id: 'map:3', name: 'Map', kind: 'CP', at: 1, best: {runId: 'pruned', time: best, at: 1, splits: []},
+    splits: [], ramps: {}, start: {}, attempts: 1, finishes: 1
+  }]};
+  const history = createRunHistory({store: {load: load ?? (async () => saved), put: async () => {},
+    putBests: async () => {}, remove: async () => {}}});
+  return {...f, snapshot, live, history, saved,
+    async guest() {
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      socket.message(JSON.stringify({type: 'welcome', state: {roomId: ROOM, mapId: 'map', epoch: 1}}));
+      return socket;
+    }};
+}
+
+describe('community room finish claims', () => {
+  test('guest claims preserve microseconds and browser bests even with history recording off', async () => {
+    for (const [best, elapsed, personalBest, previousBestUs] of [
+      [null, 12.3456784, true, null],
+      [null, 86400, true, null],
+      [13.456, 12.3456786, true, 13456000],
+      [12.345, 12.346, false, null],
+      [12.345, 12.345, false, null],
+      [12.345, 12.344999, true, 12345000]
+    ]) {
+      const f = finishFixture({best});
+      try {
+        const socket = await f.guest();
+        await f.history.ready;
+        f.live.timer.state.elapsed = elapsed;
+        expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
+        expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 1,
+          timeUs: Math.round(elapsed * 1e6), personalBest, previousBestUs}]);
+        expect(f.history.runs()).toEqual([]);
+        expect(f.history.bestTime(f.live.map)).toBe(best);
+        expect(f.requests).toEqual([]);
+        expect(f.timers.pending()).toBe(0);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+
+  test('host sends the identical claim through its tracked loopback socket', async () => {
+    const f = finishFixture({best: 20});
+    try {
+      const id = await f.host();
+      const socket = f.runtime.roomSocket(id);
+      await welcomed(socket);
+      const sent = [], send = socket.send.bind(socket);
+      socket.send = data => { sent.push(JSON.parse(data)); return send(data); };
+      expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
+      expect(sent).toEqual([{type: 'finish', mapId: 'map', epoch: 1,
+        timeUs: 12345678, personalBest: true, previousBestUs: 20000000}]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('practice, invalid, untimed, replay, spectator, foreign sessions and invalid times never claim', async () => {
+    const changes = [
+      f => { f.live.practice = true; },
+      f => { f.live.timer.state.invalidReason = 'Teleported'; },
+      f => { f.live.timer.state.untimed = true; },
+      f => { f.live.timer.state.phase = 'running'; },
+      f => { f.snapshot.playback = true; },
+      f => { f.snapshot.spectator.target = 0; },
+      f => { f.adapter.getView = () => ({target: 0}); },
+      f => { f.adapter.getSession = () => ({...f.live}); },
+      ...[0, -1, NaN, Infinity, 86400.000001, 0.0000001].map(elapsed =>
+        f => { f.live.timer.state.elapsed = elapsed; })
+    ];
+    for (const change of changes) {
+      const f = finishFixture();
+      try {
+        const socket = await f.guest();
+        change(f);
+        expect(await f.runtime.observeFinish(f.live, f.history)).toBe(false);
+        expect(socket.sent).toEqual([]);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+
+  test('outside a room, before welcome and after leaving do not read history or snapshot', async () => {
+    const f = fixture({getState: () => { throw new Error('Unexpected snapshot'); }});
+    const history = {bestTime: () => { throw new Error('Unexpected history read'); }};
+    try {
+      expect(await f.runtime.observeFinish({}, history)).toBe(false);
+      expect(f.signals).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      expect(await f.runtime.observeFinish({}, history)).toBe(false);
+      socket.open();
+      expect(await f.runtime.observeFinish({}, history)).toBe(false);
+      f.runtime.leave();
+      expect(await f.runtime.observeFinish({}, history)).toBe(false);
+      expect(socket.sent).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('only accepted current socket map and epoch can label a finish', async () => {
+    const f = finishFixture();
+    try {
+      const old = await f.guest();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      old.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'map', epoch: 50}}));
+      expect(await f.runtime.observeFinish(f.live, f.history)).toBe(false);
+      socket.message(JSON.stringify({type: 'welcome', state: {roomId: OTHER, mapId: 'map', epoch: 1}}));
+      expect(await f.runtime.observeFinish(f.live, f.history)).toBe(false);
+      socket.message(JSON.stringify({type: 'welcome', state: {roomId: ROOM, mapId: 'other', epoch: 2}}));
+      expect(await f.runtime.observeFinish(f.live, f.history)).toBe(false);
+      socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'map', epoch: 3}}));
+      socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'other', epoch: 2}}));
+      socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'other', epoch: 3}}));
+      expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
+      expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 3,
+        timeUs: 12345678, personalBest: true, previousBestUs: null}]);
+      expect(old.sent).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('a finish waits for saved bests without comparing against its own history entry', async () => {
+    let resolve;
+    const f = finishFixture({best: 15, load: () => new Promise(done => { resolve = done; })});
+    try {
+      const socket = await f.guest();
+      f.live.timer.state.phase = 'running';
+      f.history.observe(f.live, ['start']);
+      f.live.timer.state.phase = 'finished';
+      const sending = f.runtime.observeFinish(f.live, f.history);
+      f.history.observe(f.live, ['finish']);
+      expect(socket.sent).toEqual([]);
+      resolve(f.saved);
+      expect(await sending).toBe(true);
+      expect(JSON.parse(socket.sent[0])).toMatchObject({timeUs: 12345678, personalBest: true, previousBestUs: 15000000});
+      expect(f.history.bestTime(f.live.map)).toBe(12.346);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('loading history never sends an old finish after epoch, map, socket or room changes', async () => {
+    for (const change of [
+      (f, socket) => socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'map', epoch: 2}})),
+      (f, socket) => socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'other', epoch: 2}})),
+      f => f.runtime.roomSocket(ROOM).open(),
+      f => f.runtime.roomSocket(OTHER).open(),
+      f => f.runtime.leave(),
+      f => { f.adapter.getSession = () => ({...f.live}); }
+    ]) {
+      let resolve;
+      const f = finishFixture({load: () => new Promise(done => { resolve = done; })});
+      try {
+        const socket = await f.guest();
+        const sending = f.runtime.observeFinish(f.live, f.history);
+        change(f, socket);
+        resolve(f.saved);
+        expect(await sending).toBe(false);
+        expect(socket.sent).toEqual([]);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+});
 
 describe('private room runtime', () => {
   test('closed browser holds no room requests or timers', async () => {

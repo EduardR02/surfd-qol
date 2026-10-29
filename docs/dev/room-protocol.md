@@ -57,6 +57,7 @@ Community command replies are local and fixed: votes explain that the host picks
 | --- | --- | --- |
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
 | `chat` | `text`, trimmed and limited to 240 characters by the host | refuses guests with an `error` "Sign in to send chat messages. You can still read chat."; otherwise broadcasts to everyone, sender included, with the sender's fields; 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
+| `finish` (extension only) | `mapId`, `epoch`, `timeUs`, `personalBest`, `previousBestUs` | current map and epoch only; integer time from 1 to 86,400,000,000 µs; at most one accepted claim per player every 3 seconds, excess dropped. `previousBestUs` is the browser's earlier map best when beaten, otherwise `null`; a non-null best must exceed the finish time. |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
 | `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; starts and target changes allow 2 per second with bursts of 4, beyond which they are dropped; Stop always applies, and repeated Stop/current-target requests only retain the latest request id |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
@@ -77,10 +78,12 @@ Community command replies are local and fixed: votes explain that the host picks
 | `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. Guests keep only the extension's own texts (`ROOM_TEXTS`): they drop other notices and give an `error` with `spectatorRequest` "That player is not available to spectate." |
 | `spectator-demand` | `{active, count}`; `count` is 0–64 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
-| `result` | a finished run (phase 3), below |
+| `result` | a finished run, below |
 | `check`, `afk-warning`, `chat-status`, `reports` | official server features; never sent by a private room |
 
-**Result** (phase 3): `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
+**Result:** `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
+
+Private rooms announce valid timed finishes, including the host's through its loopback. Claims are unverified, like names. The extension compares against this browser's run history before recording the finish; practice, invalid, replay and spectated runs send nothing. The host supplies a fresh result `id`, the room player's `userId` (or player `id` without an account), name and `"Guest"` rank, and catalog map fields. `record` means a strict best on that map since the room started, kept across map changes; `previousBestUs` is the old room record when beaten, otherwise the claimed own best. Points are 0, promotion false, and leaderboard and stage-record fields are omitted and stripped on receipt. Native text says "New room record!" and "First completion." only in community rooms; sounds keep the native record/PB/completion priority.
 
 Reliable native text travels as a one-byte ASCII `d` tag followed by the original text, without another JSON envelope. Extension transport controls remain JSON. The tag and UTF-8 payload together must fit within 65,536 bytes. Larger native JSON messages retain sequential `{type:"room-chunk",data,final}` frames, bounded to 4,000 source characters per chunk. An assembled message stays within 262,144 characters and 66 chunks; nested chunks are refused.
 

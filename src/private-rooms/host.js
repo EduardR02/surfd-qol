@@ -8,6 +8,7 @@ const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
+const RESULT_INTERVAL_MS = 3000;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
@@ -32,6 +33,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   };
   const clients = new Set();
   const slots = new Set(), pending = new Map(), bans = new Map();
+  const records = new Map();
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
   let flushAt = 0;
   let closed = false;
@@ -258,6 +260,21 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           broadcast({type: 'chat', playerId: client.player.id, name: client.player.name,
             rank: client.player.rank, appearance: client.player.appearance, text: message.text});
           break;
+        case 'finish': {
+          if (message.mapId !== state.mapId || message.epoch !== state.epoch || now() < client.nextResultAt) break;
+          client.nextResultAt = now() + RESULT_INTERVAL_MS;
+          const previous = records.get(state.mapId) ?? null;
+          const record = previous === null || message.timeUs < previous;
+          if (record) records.set(state.mapId, message.timeUs);
+          broadcast({type: 'result', result: {
+            id: crypto.randomUUID(), userId: client.player.userId ?? client.player.id,
+            name: client.player.name, rank: client.player.rank,
+            mapId: state.mapId, mapTitle: catalog.get(state.mapId).title, timeUs: message.timeUs,
+            record, personalBest: message.personalBest,
+            previousBestUs: record ? previous : message.previousBestUs, pointsDelta: 0, promoted: false,
+          }});
+          break;
+        }
         case 'change-map':
           if (!client.host) {
             send(client, {type: 'error', text: ROOM_TEXTS.hostChangesMaps});
@@ -328,6 +345,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const client = {socket, host, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       spectatorSequence: null, spectator: {tokens: SPECTATOR_LIMIT.burst, at: now()},
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
+      nextResultAt: -Infinity,
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,
       name: guest ? (isGuestName(hello.name) ? hello.name : guestName()) : hello.name,

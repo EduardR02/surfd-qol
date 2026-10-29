@@ -178,6 +178,10 @@ function nativeFrame(){lobby.sync({joined:joinedState,visible:!nativeMenu.hidden
 let chatRoom=null;
 function localReply(text){nativeReplies.push(text)}
 function nativeCommand(text){const[token,...parts]=text.trim().split(/\\s+/),argument=parts.join(" "),command=token.replace(/^[!/]/,"").toLowerCase();if(command==="played"){if(chatRoom?.status==="connected"&&!chatRoom.playtime){localReply("Playtime unavailable");return}nativeQueries.push(command);return}if(command==="vote"){localReply("Use /vote followed by one of the displayed numbers.");return}if(command==="help"){localReply("Official help");return}localReply("Unknown command")}
+const nativeResults=[];
+function nativeResultText(result){const text=result.record?"New Surfd record!":result.personalBest?result.previousBestUs?"Personal best, "+(result.previousBestUs-result.timeUs)+" faster.":"First verified completion.":"Finished.";return result.mapTitle+" in "+result.timeUs+". "+text}
+function nativeResultChat(text,type,name,rank){nativeResults.push({text,type,name,rank})}
+function announceResult(result){nativeResultChat(nativeResultText(result),"result",result.name,result.rank)}
 `;
 
 // The fixture intentionally preserves only semantic/minified signatures, not
@@ -279,6 +283,7 @@ function roomFixture(privateRooms, source = roomSource) {
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
         notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
+        results:nativeResults,announceResult,
         menu:open=>{nativeMenu.hidden=!open;nativeFrame()},frame:nativeFrame,label:roomLabel},
       ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
       playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
@@ -881,5 +886,24 @@ describe('native community behavior integration', () => {
     native.command('/help');
     expect(commands).toHaveLength(3);
     expect(native.nativeReplies.slice(-2)).toEqual(['Official help', 'Official help']);
+  });
+
+  test('room records and first completions keep native announcements without official record or verification claims', () => {
+    const {runtime} = roomFixture(socialHooks()), native = runtime.native;
+    const result = {mapTitle: 'Fixture map', timeUs: 1000000, name: 'Surfer', rank: 'Guest',
+      record: true, personalBest: true, previousBestUs: null};
+    native.setRoom(communityId);
+    native.announceResult(result);
+    expect(native.results.at(-1)).toEqual({text: 'Fixture map in 1000000. New room record!',
+      type: 'result', name: 'Surfer', rank: 'Guest'});
+    native.announceResult({...result, record: false});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First completion.');
+    native.announceResult({...result, record: false, previousBestUs: 1200000});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. Personal best, 200000 faster.');
+    native.setRoom('eu');
+    native.announceResult(result);
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
+    native.announceResult({...result, record: false});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First verified completion.');
   });
 });

@@ -114,6 +114,7 @@ const api = {
         onTick(session, command, events) {
           // The Start flash costs nothing while hidden; a stale flash ages out.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
+          if (events.includes('finish')) void privateRooms.observeFinish(session, history);
           // Recording off costs nothing per tick.
           if (settings.keepHistory !== false) history.observe(session, events);
           if (events.includes('finish')) hud?.observeFinish();
