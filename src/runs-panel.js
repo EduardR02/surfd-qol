@@ -116,15 +116,16 @@ export function compareRamp(value, reference, tolerance = 0) {
 
 // The statistic a touch value shows for each of the Ramps view's modes.
 const TOUCH_STAT = {best: 'best', recent: 'last10', average: 'avg'};
-// Touch stats appear once a map has this many runs.
+// Touch stats are firm once a map has this many runs; they show from the first.
 export const TOUCH_MIN_RUNS = 50;
+// How much steeper than the reference an angle can be and still count as near.
+export const ANGLE_NEAR = 0.5;
 // Reach rounds down, so 100% means every run got there.
 export const reachText = reach => Number.isFinite(reach) ? `${Math.floor(reach * 100 + 1e-9)}%` : '—';
 
 // One touch's reach, speed in, speed out and angle for a statistic, each
-// against the reference touch when there is one. Speed is better higher, the
-// angle lower. The angle's near band is the panel's u/s margin, as the extra
-// speed that angle would cost at your own speed in.
+// against the reference touch when there is one. Speed is better higher and
+// graded with the u/s margin; the angle is better lower, near within ANGLE_NEAR.
 export function touchCells(touch, mode = 'best', reference = null, tolerance = 0) {
   const stat = TOUCH_STAT[mode] ?? 'best';
   const pick = field => Number.isFinite(touch?.[field]?.[stat]) ? touch[field][stat] : null;
@@ -137,14 +138,12 @@ export function touchCells(touch, mode = 'best', reference = null, tolerance = 0
   };
   const reach = Number.isFinite(touch?.reach) ? touch.reach : null;
   const other = reference?.angle, compared = angle !== null && Number.isFinite(other);
-  const base = speedIn ?? reference?.speedIn;
-  const cost = degrees => base * (1 - Math.cos(degrees * Math.PI / 180));
   return {
     reach: {value: reach, text: reachText(reach), diff: '', tone: plain(reach)},
     speedIn: speed(speedIn, reference?.speedIn),
     speedOut: speed(speedOut, reference?.speedOut),
     angle: {value: angle, text: angle === null ? '—' : `${angle.toFixed(1)}°`, diff: compared ? `${formatDelta(angle - other, 1)}°` : '',
-      tone: !compared ? plain(angle) : Number.isFinite(base) ? referenceTone(cost(angle), cost(other), tolerance) : referenceTone(angle, other)},
+      tone: compared ? referenceTone(angle, other, ANGLE_NEAR) : plain(angle)},
   };
 }
 
@@ -437,7 +436,8 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
           : picked?.status === 'missing' ? `The ${escape(picked.label)} run couldn’t be read, so there’s nothing to compare against.` : '';
     const compare = refs.length ? `<div class="rn-seg" role="radiogroup" aria-label="Compare with">${refs.map(ref =>
       `<button type="button" role="radio" aria-checked="${ref === selected}" tabindex="${ref === selected ? 0 : -1}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
-    const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${fixed(tolerance)} u/s</span><span class="loss">worse</span></p>` : '';
+    const metric = RAMP_METRICS.some(([name]) => name === settings.rampMetric) ? settings.rampMetric : 'surf';
+    const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${metric === 'angle' ? `${ANGLE_NEAR}°` : `${fixed(tolerance)} u/s`}</span><span class="loss">worse</span></p>` : '';
     const counted = rampMode !== 'best';
     const referenceOf = ramp => ready ? picked.ramps.get(ramp.key) ?? null : null;
     // How many runs back a Last 10 or Average row: the most any of its values has.
@@ -445,8 +445,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const choices = destinations(data, refs);
     let touchData = null;
     try { touchData = history.touchStats?.(key) ?? null; } catch { /* unavailable */ }
-    const touches = touchData && !touchData.collecting ? new Map((touchData.touches ?? []).map(touch => [touch.key, touch])) : null;
-    const metric = RAMP_METRICS.some(([name]) => name === settings.rampMetric) ? settings.rampMetric : 'surf';
+    const touches = touchData ? new Map((touchData.touches ?? []).map(touch => [touch.key, touch])) : null;
     const [, metricLabel, metricHelp] = RAMP_METRICS.find(([name]) => name === metric);
     const values = scaleBars((data.ramps ?? []).map(ramp => {
       const touch = touches?.get(ramp.key) ?? null;
@@ -482,7 +481,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     };
     const runCount = Math.max(0, Math.min(TOUCH_MIN_RUNS, touchData?.runs ?? 0)), filled = Math.floor(runCount / TOUCH_MIN_RUNS * 10);
     const collecting = touchData?.collecting ? `<p class="rn-caption rn-collect"><span class="rn-meter" aria-hidden="true">${
-      Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs.</span></p>` : '';
+      Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs. Reach firms up as runs come in.</span></p>` : '';
     return rampControls(compare, metric) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
       <div class="rn-ramps" role="table" aria-label="Ramp measurements">
         <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${touches ? 'reach' : ''}</span><span class="rn-metric-head" role="columnheader">${metricLabel}${ready ? ` vs ${escape(picked.label)}` : ''}</span><span role="columnheader"></span></div>

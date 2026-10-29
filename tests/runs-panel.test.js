@@ -101,10 +101,9 @@ describe('runs panel', () => {
     expect(versus.speedOut).toMatchObject({diff: '−5', tone: 'loss'});
     expect(versus.angle).toMatchObject({diff: '−0.5°', tone: 'good'});
     expect(touchCells(touch, 'best', {speedIn: 2414, speedOut: 2406, angle: 2}, 2).speedIn.tone).toBe('warn');
-    // The angle's near band is the u/s margin: what the steeper touch costs at your speed in.
-    // At 2412 u/s, 2.04° against 1.0° costs about 1.2 u/s more.
-    expect(touchCells(touch, 'best', {angle: 1}, 2).angle.tone).toBe('warn');
-    expect(touchCells(touch, 'best', {angle: 1}, 1).angle.tone).toBe('loss');
+    // The angle is near within half a degree, whatever the u/s margin.
+    expect(touchCells(touch, 'best', {angle: 1.6}, 0).angle.tone).toBe('warn');
+    expect(touchCells(touch, 'best', {angle: 1}, 5).angle.tone).toBe('loss');
     expect(touchCells(null).reach).toMatchObject({text: '—', tone: 'muted'});
     // Reach rounds down so 100% only ever means every run.
     expect([reachText(0.999), reachText(1), reachText(0), reachText(null)]).toEqual(['99%', '100%', '0%', '—']);
@@ -163,6 +162,25 @@ describe('runs panel', () => {
       rig.history.touchStats = () => { throw new Error('unavailable'); };
       rig.panel.showView('ramps');
       expect(html()).not.toContain('Speed in');
+    } finally { rig.panel.destroy(); }
+  });
+
+  test('touch values show from the first run while collecting, and Angle names its own near band', () => {
+    const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'a', label: 'Ramp 1', checkpoint: 0, surf: 30}]};
+    const slot = {status: 'ready', label: 'PB', ramps: new Map([['a', {surf: 24}]])};
+    const reference = {sources: () => [{name: 'pb', label: 'PB'}], version: () => 1, createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
+    const rig = panelRig({reference, data, settings: {rampMetric: 'angle', referenceLossTolerance: 2}});
+    rig.history.touchStats = () => ({runs: 23, collecting: true, touches: [{key: 'a', reach: 0.61,
+      speedIn: {best: 2400}, speedOut: {best: 2390}, angle: {best: 3.1}, pb: {speedIn: 2410, speedOut: 2380, angle: 2.8}}]});
+    try {
+      rig.panel.show(); rig.panel.showView('ramps');
+      expect(rig.body.innerHTML).toContain('Collecting touch stats: 23 of 50 runs. Reach firms up as runs come in.');
+      expect(rig.body.innerHTML).toContain('>61%</span>');
+      expect(rig.body.innerHTML).toContain('<span class="rn-hero warn"');
+      expect(rig.body.innerHTML).toContain('>+0.3°</span>');
+      expect(rig.body.innerHTML).toContain('within 0.5°');
+      rig.action({rampMetric: 'speedIn'});
+      expect(rig.body.innerHTML).toContain('within 2.0 u/s');
     } finally { rig.panel.destroy(); }
   });
 

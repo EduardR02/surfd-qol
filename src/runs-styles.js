@@ -226,6 +226,7 @@ export const runsStyles = `
 .rn-collect{align-items:center}
 .rn-collect .rn-meter{flex:none;padding:0}
 .rn-collect .rn-meter i{flex:none;width:9px}
+.rn-collect span:last-child{text-wrap:balance}
 
 /* Empty and off states: what to do next. */
 .rn-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:22px 22px 26px}
