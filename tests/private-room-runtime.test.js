@@ -611,6 +611,8 @@ describe('private room runtime', () => {
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
       await f.runtime.refreshDirectory({open: true});
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
+      // The room's real safety limit, so the game draws its own "2 / 256" and bar.
+      expect(f.rows().slice(1).map(value => value.capacity)).toEqual([256, 256]);
       f.timers.advance(10000);
       f.response({ok: true, json: async () => ({rooms: []})});
       await f.runtime.refreshDirectory({open: true});

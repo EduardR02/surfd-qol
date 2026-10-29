@@ -466,6 +466,21 @@ describe('optional native private room instrumentation', () => {
     expect(runtime.browser.visible().map(row=>row.id)).toEqual(['p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
   });
 
+  test('community rows with the room capacity keep their place in Play now, Hide full and the order', () => {
+    const {adapter, runtime} = roomFixture(privateFixtureHooks());
+    adapter.rooms.update([
+      {id:'p-aaaaaaaaaaaa',region:'Public',players:256,capacity:256,online:true,ping:1},
+      {id:'eu',region:'Europe',players:64,capacity:64,online:true,ping:90},
+      {id:'na',region:'North America',players:3,capacity:64,online:true,ping:120},
+      {id:'p-bbbbbbbbbbbb',region:'Private',players:2,capacity:256,online:true,ping:2}
+    ]);
+    expect(runtime.browser.best().id).toBe('na');
+    expect(runtime.browser.visible().map(row=>row.id)).toEqual(['eu','na','p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
+    runtime.browser.filters(true,false);
+    expect(runtime.browser.visible().map(row=>row.id)).toEqual(['na','p-aaaaaaaaaaaa','p-bbbbbbbbbbbb']);
+    expect(runtime.browser.groups().map(([region])=>region)).toEqual(['North America','Community']);
+  });
+
   test('identifiers containing $ survive instrumentation', () => {
     const source = roomSource.replaceAll(/(?<!\.)\bstatus\b/g, () => 's$1')
       .replace('receive(data){if(data==="pong")return;if(typeof data!="string"||data.length>65536)throw Error("Invalid room data");const message=JSON.parse(data);this.message=message}',

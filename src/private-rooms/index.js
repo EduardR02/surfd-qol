@@ -88,7 +88,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         !Number.isSafeInteger(row.players) || row.players < 0 || row.players > MAX_ROOM_PLAYERS) return null;
     const publicVisibility = publicRoom || row.visibility === 'public';
     return {id: row.id, name: row.name, mapId: map.id, mapTitle: catalogEntry(map).title,
-      players: row.players, visibility: publicVisibility ? 'public' : 'private',
+      players: row.players, capacity: MAX_ROOM_PLAYERS, visibility: publicVisibility ? 'public' : 'private',
       region: publicVisibility ? 'Public' : 'Private', endsAt: 0, untimed: true,
       online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
       ping: known.get(row.id)?.ping ?? directory.get(row.id)?.ping ?? null,

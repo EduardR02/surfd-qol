@@ -264,9 +264,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     for (const row of rows) {
       const node = isPrivateRoomId(row.id) ? rowNodes.get(row.id) : null;
       if (!node) continue;
-      if (node.classList.contains('full')) node.classList.remove('full');
       text(node.querySelector('.badge'), row.visibility === 'public' ? 'Public' : 'Private');
-      text(node.querySelector('.players-cell'), String(row.players));
       const cells = node.querySelectorAll('td');
       if (cells[3]?.textContent === '—') text(cells[3], '');
     }
@@ -277,7 +275,6 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const info = detail?.querySelector('.srv-info');
     if (!isPrivateRoomId(selected?.id) || !info) { help.remove(); return; }
     text(info.querySelector('.sub'), selected.visibility === 'public' ? 'Public' : 'Private');
-    text(detail.querySelector('.section-head small'), selected.online ? String(selected.players) : 'Offline');
     const ping = info.querySelector('[data-fact="ping"]');
     if (ping?.textContent === '—') text(ping, '');
     text(help, selected.visibility === 'public' ? PUBLIC_ROW : PRIVATE_ROW);

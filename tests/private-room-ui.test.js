@@ -375,6 +375,24 @@ describe('server browser', () => {
     expect(f.toolbar.querySelector('.qol-code-join')).toBeNull();
   });
 
+  test('community rows keep the game’s players cell and count', () => {
+    const f = fixture();
+    const row = new Element('tr'); row.dataset.id = ROOM; f.rowsBody.append(row);
+    const cell = (className, value) => { const node = new Element('td'); node.className = className; node.textContent = value; row.append(node); return node; };
+    const badgeCell = cell('', ''), badge = new Element('span'); badge.className = 'badge'; badge.textContent = 'Community'; badgeCell.append(badge);
+    cell('', 'Loaded map');
+    const players = cell('players-cell', '2 / 256'), bar = new Element('span'); bar.className = 'bar'; players.append(bar);
+    const ping = cell('c-num', '—');
+    f.rows.push({id: ROOM, visibility: 'private', players: 2, capacity: 256, online: true});
+    f.select(ROOM); f.ui.refresh();
+    expect(badge.textContent).toBe('Private');
+    expect(players.children).toEqual([bar]);
+    expect(players.textContent).toBe('2 / 256');
+    expect(ping.textContent).toBe('');
+    expect(f.detail.querySelector('.section-head small').textContent).toBe('2 / 16');
+    f.ui.destroy();
+  });
+
   test('community rows keep one detail line', () => {
     const f = fixture();
     f.rows.push({id: ROOM, visibility: 'private', players: 3, online: true});
