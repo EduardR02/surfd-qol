@@ -1,6 +1,6 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v13:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v14:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -121,6 +121,36 @@ function roomBrowserHooks(source, hook) {
   return source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
 }
 
+// Optional parts of the host's room UI, each on its own: the game's map change
+// dialog for choosing a room's starting map, its Leave and map change, and the
+// host's Your room button in the room menu.
+function roomUiHooks(source, hook) {
+  const adapter = [];
+  const optional = (label, apply) => {
+    try { apply(); } catch (error) { console.warn(`[Surfd QoL] ${label} unavailable:`, error.message); }
+  };
+  optional('Room map choice', () => {
+    const picker = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=document\\.createElement\\("dialog"\\);\\3\\.className="nominate-window map-change-window"`, 'g'), 'map change dialog')[1];
+    // The factory appends its dialog to the page before it returns.
+    adapter.push(`
+      mapPicker: options => { const picker = ${picker}(options); return {open: picker.open, state: picker.state, close: picker.close, dialog: document.body.lastElementChild}; },`);
+  });
+  optional('Room leave and map change', () => {
+    const leave = unique(source, new RegExp(`leave:\\(\\)=>\\{(${identifier})\\?\\.roomId\\(\\)&&\\1\\.leave\\(\\),(${identifier})\\(\\)\\}`, 'g'), 'room leave');
+    adapter.push(`
+      leaveRoom: () => { ${leave[1]}?.roomId() && ${leave[1]}.leave(); ${leave[2]}(); },
+      changeMap: () => ${leave[1]}?.roomView?.changeMap?.(),`);
+  });
+  optional('Your room menu button', () => {
+    const menu = unique(source, new RegExp(`(${identifier})\\.innerHTML=\`\\$\\{(${identifier})\\.guest\\(\\)\\?'<button type="button" class="btn" data-act="signin" `, 'g'), 'room menu');
+    const click = unique(source, new RegExp(`\\{const (${identifier})=(${identifier})\\.dataset\\.act;if\\(\\1==="chat"&&`, 'g'), 'room menu actions');
+    // The menu is rebuilt when the player connects, by which time the host's own room is known.
+    source = source.replace(menu[0], () => `${menu[1]}.innerHTML=\`\${${hook}?.ownRoom?.()?'<button type="button" class="btn" data-act="qol-room">Your room</button>':""}\${${menu[2]}.guest()?'<button type="button" class="btn" data-act="signin" `);
+    source = source.replace(click[0], () => `{const ${click[1]}=${click[2]}.dataset.act;if(${click[1]}==="qol-room"){${hook}?.openRoom?.();return}if(${click[1]}==="chat"&&`);
+  });
+  return {source, adapter: adapter.join('')};
+}
+
 // Room transport hooks are one optional unit: a partial match must never send
 // a private identifier to the site's ticket, ping or WebSocket endpoints.
 function roomHooks(source, client, state) {
@@ -165,8 +195,13 @@ function roomHooks(source, client, state) {
     source = source.replace(clocks, (call, room) => `(${room}.untimed===true?"No time limit":${call})`);
     const native = nativeRoomHooks(source, hook, lobby);
     source = native.source;
+    const ui = roomUiHooks(source, hook);
+    source = ui.source;
     return {source, adapter: `
-    rooms: {
+    rooms: {${ui.adapter}
+      // The server browser's own status line, kept until the game lists servers again.
+      setStatus: text => ${lobby}.updateServers(${lobby}.servers.rows().map(({serverTime,...row})=>row), text),
+      openBrowser: () => ${lobby}.tab?.("servers"),
       // The HUD is hidden while the menu is open.
       notice: text => {${toast[1]}("menu-status").textContent=text;${toast[1]}("toast").textContent=text;${toast[1]}("toast").classList.add("show");${toast[3]}=performance.now()+5e3},
       join: id => ${lobby}.joinServer(id),

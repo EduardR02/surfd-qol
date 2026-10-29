@@ -209,7 +209,7 @@ function nativeBrowser(options){let entries=[],status="Checking servers…",sele
   return{view:view,update(rows,note){const now=Date.now();entries=rows.map(row=>({...row,...row.endsAt===undefined?{}:{endsAt:row.endsAt+(row.serverTime===undefined?0:now-row.serverTime)}}));status=note},
     rows:()=>entries,best:recommended,visible,groups,filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
 function lobbyFactory(){const servers=nativeBrowser({refresh:()=>{}});return {
-  servers,sync:nativeSync,selected:()=>catalog[0],
+  servers,sync:nativeSync,selected:()=>catalog[0],tab(value){this.tabbed=value},
   updateServers(rows,status){servers.update(rows,status);listed=servers.rows()},
   bindServers(connect,refresh){joinCallback=connect,refreshCallback=refresh,refresh()},
   refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}
@@ -232,6 +232,13 @@ const social={available:true,block(){},isBlocked:()=>false},menuActions={opened:
 function playerMenu(_){return \`\${!_.guest&&social.available&&social.block?\`<button data-act="block">Block</button>\`:""}\`}
 function playerAction(H,_){H==="profile"&&menuActions.profile(_.id,_.name)}
 function leaveRoom(){connection?.disconnect(),active=null,connection=null}
+const document={body:{lastElementChild:null,append(node){document.body.lastElementChild=node}},createElement:tag=>({tag,className:""})};
+function mapChangeDialog(n){const e=document.createElement("dialog");e.className="nominate-window map-change-window",document.body.append(e);return{open(){e.opened=n.state()},state(m){e.state=m},error(){},close(){e.closed=!0}}}
+let activeRoom=null,soloResets=0;
+function resetSolo(){soloResets++}
+const gameActions={leave:()=>{activeRoom?.roomId()&&activeRoom.leave(),resetSolo()},room:()=>activeRoom?.roomView??null};
+function serverMenu(e,o){if(e.hidden=!1,o){e.innerHTML=\`\${o.guest()?'<button type="button" class="btn" data-act="signin" title="Sign in to chat">Sign in to chat</button>':'<button type="button" class="btn" data-act="chat">Chat</button>'}\`}return e.innerHTML}
+function serverMenuAction(u,o){u.onclick=()=>{const h=u.dataset.act;if(h==="chat"&&o.openChat(),h==="rtv"&&o.rtv(),0)return};u.onclick()}
 ` + nativeSocialSource;
 
 function roomFixture(privateRooms, source = roomSource) {
@@ -260,6 +267,7 @@ function roomFixture(privateRooms, source = roomSource) {
         notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
         menu:open=>{nativeMenu.hidden=!open;nativeFrame()},frame:nativeFrame,label:roomLabel},
+      ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
       playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
   `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
   return {adapter, runtime, requests, sockets, warnings, instrumented, failList: () => { failList = true; }};
@@ -355,6 +363,53 @@ describe('optional native private room instrumentation', () => {
     expect(runtime.account.opened).toBe(1);
     expect(adapter.rooms.maps()).toEqual([{id: 'map', title: 'Fixture map'}]);
     expect(adapter.rooms.currentMap()).toBe(adapter.getSession().map);
+  });
+
+  test('the host’s room UI reuses the game’s map dialog, Leave, map change, status line and browser', () => {
+    const {adapter, runtime, warnings} = roomFixture(privateFixtureHooks());
+    expect(warnings).toEqual([]);
+    const picker = adapter.rooms.mapPicker({state: () => ({mapId: null, epoch: 1})});
+    expect(picker.dialog).toBe(runtime.ui.page.body.lastElementChild);
+    expect(picker.dialog.className).toBe('nominate-window map-change-window');
+    picker.open();
+    expect(picker.dialog.opened).toEqual({mapId: null, epoch: 1});
+    const calls = [];
+    runtime.ui.enter({roomId: () => 'p-aaaaaaaaaaaa', leave: () => calls.push('leave'), roomView: {changeMap: () => calls.push('change')}});
+    adapter.rooms.changeMap();
+    adapter.rooms.leaveRoom();
+    expect(calls).toEqual(['change', 'leave']);
+    expect(runtime.ui.soloResets()).toBe(1);
+    adapter.rooms.openBrowser();
+    expect(runtime.ui.lobby.tabbed).toBe('servers');
+    runtime.browser.update([{id: 'eu', endsAt: 1000, serverTime: Date.now()}], 'Ready');
+    adapter.rooms.setStatus('This private room has closed.');
+    expect(adapter.rooms.status()).toBe('This private room has closed.');
+    expect(adapter.rooms.rows().map(row => row.id)).toEqual(['eu']);
+  });
+
+  test('only the host in its own room gets Your room in the room menu', () => {
+    const hooks = privateFixtureHooks(), opened = [];
+    let own = false;
+    hooks.ownRoom = () => own;
+    hooks.openRoom = () => opened.push('room');
+    const {runtime} = roomFixture(hooks);
+    const menu = {}, room = {guest: () => false, openChat: () => opened.push('chat')};
+    expect(runtime.ui.serverMenu(menu, room)).not.toContain('qol-room');
+    own = true;
+    expect(runtime.ui.serverMenu(menu, room)).toStartWith('<button type="button" class="btn" data-act="qol-room">Your room</button><button type="button" class="btn" data-act="chat">');
+    runtime.ui.serverMenuAction({dataset: {act: 'qol-room'}}, room);
+    runtime.ui.serverMenuAction({dataset: {act: 'chat'}}, room);
+    expect(opened).toEqual(['room', 'chat']);
+    expect(roomFixture(undefined).runtime.ui.serverMenu({}, room)).not.toContain('qol-room');
+  });
+
+  test('a missing room UI hook warns on its own and leaves the others', () => {
+    const source = roomSource.replace('className="nominate-window map-change-window"', () => 'className="map-change-window"');
+    const {adapter, warnings} = roomFixture(privateFixtureHooks(), source);
+    expect(warnings.map(args => args[0])).toEqual(['[Surfd QoL] Room map choice unavailable:']);
+    expect(adapter.rooms.mapPicker).toBeUndefined();
+    expect(adapter.rooms.leaveRoom).toBeFunction();
+    expect(adapter.rooms.join).toBeFunction();
   });
 
   test('absent runtime hooks leave all native behavior available', async () => {

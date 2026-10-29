@@ -1,148 +1,244 @@
-import {isPrivateRoomId} from './ids.js';
+import {formatRoomCode, inviteLink, isPrivateRoomId} from './ids.js';
 import {estimateBandwidth} from './bandwidth.js';
-import {MAX_ROOM_PLAYERS} from './protocol.js';
 
-const PRIVATE_HELP = 'Only people with this link can join. They need Surfd QoL.';
-const PUBLIC_HELP = 'Listed for everyone with Surfd QoL.';
+const PRIVATE_ROW = 'Join with the room code or link.';
+const PUBLIC_ROW = 'Listed for everyone with Surfd QoL.';
+const PICKER_TITLE = 'Choose the room’s map';
+const PICKER_HELP = 'Pick the map the room starts on.';
+const CHOICES = [
+  ['private', 'Private', 'Only people with the room code or link'],
+  ['public', 'Public', 'Listed in Community for everyone with Surfd QoL'],
+];
+
+export const ROOM_STYLE = `
+.qol-host-view { flex: 1; min-height: 0; overflow: auto; }
+.qol-host-view .field input { width: 220px; }
+.qol-host-view .setting code.qol-room-code { padding: 0; background: none; color: var(--m-ink); font: 700 22px/1.3 Consolas, monospace; letter-spacing: 2px; }
+.qol-host-view .qol-name-error { color: var(--m-behind); }
+`;
+
+export function uploadEstimate() {
+  const up = players => estimateBandwidth(players).upload.toFixed(1);
+  return `8 players need about ${up(8)} Mbps up, 16 about ${up(16)}.`;
+}
+
 const text = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
 const hidden = (node, value) => { if (node && node.hidden !== value) node.hidden = value; };
-const decimal = value => value.toFixed(1);
+const classes = (node, value) => { if (node && node.className !== value) node.className = value; };
 
-export function bandwidthTooltip() {
-  return [8, 16, 32].map(players => {
-    const {upload, download} = estimateBandwidth(players);
-    return `${players} players: about ${decimal(upload)} Mbps up · ${decimal(download)} Mbps down`;
-  }).join('\n');
-}
+export function createRoomUi({rooms, getAdapter, document: doc = globalThis.document,
+  MutationObserver: Observer = globalThis.MutationObserver, clipboard = globalThis.navigator?.clipboard}) {
+  let root = null, nodes = null, picker = null, style = null;
+  // 'list' is the game's server list; 'host' replaces it with Host a room, or Your room while hosting.
+  let mode = 'list', draftMap = null, pickerEpoch = 1, nameError = '', copied = null;
+  let starting = false, destroyed = false, scheduled = false, wasOpen = false;
+  let observedRoot, observedOpen;
 
-export function bandwidthDetail(players, uploadMbps) {
-  const {upload, download} = estimateBandwidth(players);
-  const extra = players < MAX_ROOM_PLAYERS ? estimateBandwidth(players + 1).upload - upload : upload - estimateBandwidth(players - 1).upload;
-  return `${players} players need about ${decimal(upload)} Mbps up and ${decimal(download)} Mbps down. Each extra player adds about ${decimal(extra)} Mbps up.`
-    + (Number.isFinite(uploadMbps) ? ` Now using ${decimal(uploadMbps)} Mbps up.` : '');
-}
-
-export function createRoomUi({rooms, getAdapter, document: doc = globalThis.document, MutationObserver: Observer = globalThis.MutationObserver}) {
-  let root = null, hostButton = null, draft = null, help = null, choices = null, bandwidth = null;
-  let staging = false, pending = false, destroyed = false, scheduled = false;
-  let joinLabel = '', joinDisabled = false;
-  const votes = new Map();
-  // Looked up when needed: the game may build its room menu after the extension attaches.
-  let menu = null;
-  const roomMenu = () => menu?.isConnected ? menu : (menu = doc?.querySelector('.room-menu-actions') ?? null);
-  let observedRoot, observedOpen, observedCommunity, observedMenu;
-  function observe(open, community) {
-    const actions = community ? roomMenu() : null;
-    if (root === observedRoot && open === observedOpen && community === observedCommunity && actions === observedMenu) return;
-    observedRoot = root; observedOpen = open; observedCommunity = community; observedMenu = actions;
-    observer?.disconnect();
-    if (root && open) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
-    if (actions) observer?.observe(actions, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
-  }
-  const button = (label, className = 'btn') => {
-    const node = doc.createElement('button');
-    node.type = 'button'; node.className = className; node.textContent = label;
+  const element = (tag, className = '', value = '') => {
+    const node = doc.createElement(tag);
+    if (className) node.className = className;
+    if (value) node.textContent = value;
     return node;
   };
-  function visibilityChoices() {
-    const group = doc.createElement('div');
-    group.className = 'seg'; group.setAttribute('role', 'group'); group.setAttribute('aria-label', 'Room visibility');
-    for (const [value, label, explanation] of [['private', 'Private', 'Only people with the invite link'], ['public', 'Public', 'Listed for everyone with Surfd QoL']]) {
-      const option = button(label, '');
-      option.dataset.visibility = value; option.title = explanation;
-      option.onclick = () => {
-        Promise.resolve().then(() => rooms.setVisibility(value)).then(refresh, fail);
-      };
-      group.append(option);
-    }
-    return group;
-  }
-  function selectVisibility(group, value) {
-    for (const option of group?.children ?? []) {
-      const pressed = String(option.dataset.visibility === value);
-      if (option.getAttribute('aria-pressed') !== pressed) option.setAttribute('aria-pressed', pressed);
-    }
-  }
-  function fail(error) {
-    text(root?.querySelector('#servers-status'), error?.message ?? String(error));
-  }
-  function cancelDraft() {
-    if (!staging) return;
-    staging = false;
-    for (const child of root?.querySelector('#server-detail')?.children ?? []) hidden(child, child === draft);
-    const join = root?.querySelector('#servers-join');
-    if (join && (join.textContent === 'Start room' || join.textContent === 'Starting…')) {
-      text(join, joinLabel); join.disabled = joinDisabled;
-    }
-  }
-  async function start(event) {
-    if (!staging) return;
-    event.preventDefault(); event.stopImmediatePropagation();
-    if (pending) return;
-    pending = true; refresh();
-    try {
-      await rooms.host({visibility: rooms.visibility()});
-      staging = false;
-    } catch (error) { fail(error); }
-    finally { pending = false; refresh(); }
-  }
-  function mount(next) {
-    cancelDraft();
-    root?.querySelector('#servers-join')?.removeEventListener('click', start, true);
-    hostButton?.remove(); draft?.remove(); help?.remove(); choices?.remove(); bandwidth?.remove();
-    root = next; staging = false;
-    const refreshButton = root?.querySelector('#servers-refresh');
-    if (!refreshButton) return;
-    hostButton = button('Host a room'); hostButton.title = bandwidthTooltip();
-    hostButton.onclick = () => {
-      const adapter = getAdapter()?.rooms;
-      if (!staging && adapter?.guest?.()) { adapter.signIn?.(); return; }
-      if (staging) cancelDraft();
-      else {
-        const join = root.querySelector('#servers-join');
-        joinLabel = join?.textContent ?? 'Join'; joinDisabled = join?.disabled ?? true;
-        staging = true;
-      }
-      refresh();
-    };
-    refreshButton.before(hostButton);
-    root.querySelector('#servers-join')?.addEventListener('click', start, true);
-    draft = doc.createElement('div'); draft.className = 'srv-info'; draft.hidden = true;
-    const title = doc.createElement('h3'); title.textContent = 'Host a room';
-    const map = doc.createElement('p'); map.className = 'sub'; map.dataset.hostMap = '';
-    const group = visibilityChoices();
-    const explanation = doc.createElement('p'); explanation.className = 'lede'; explanation.dataset.visibilityHelp = '';
-    draft.append(title, map, group, explanation);
-    help = doc.createElement('p'); help.className = 'sub';
-    choices = visibilityChoices();
-    bandwidth = doc.createElement('p'); bandwidth.className = 'sub'; bandwidth.title = bandwidthTooltip();
-  }
-  function refresh() {
-    if (destroyed || !doc) return;
+  const button = (label, className = 'btn') => {
+    const node = element('button', className, label);
+    node.type = 'button';
+    return node;
+  };
+  function status(message) {
     const adapter = getAdapter()?.rooms;
-    const next = adapter?.root?.();
-    if (next !== root) mount(next);
-    const community = isPrivateRoomId(rooms.currentRoom?.());
-    const open = adapter?.browserOpen?.() ?? (!!root && !root.hidden);
-    observe(open, community);
-    rooms.browserVisibility?.(open);
-    const hosting = rooms.hosting();
-    rooms.showHostDetails?.(open && hosting?.id === adapter?.selected?.());
-    if (!open && !community && !votes.size) return;
-    for (const node of menu?.querySelectorAll('[data-act="rtv"], [data-act="nominate"], [data-act="extend"], .room-rtv, .room-nominate, .room-extend') ?? []) {
-      if (community) {
-        if (!votes.has(node)) votes.set(node, node.hidden);
-        hidden(node, true);
-      } else if (votes.has(node)) { hidden(node, votes.get(node)); votes.delete(node); }
+    if (adapter?.setStatus) adapter.setStatus(message);
+    else text(root?.querySelector('#servers-status'), message);
+  }
+
+  function buildView() {
+    const view = element('div', 'settings-window qol-host-view');
+    view.hidden = true;
+    const group = title => {
+      const node = element('div', 'group'), heading = element('h4', 'group-title', title);
+      node.append(heading);
+      view.append(node);
+      return {node, heading};
+    };
+    const row = parent => {
+      const setting = element('div', 'setting'), info = element('div', 'setting-text'), control = element('div', 'setting-control');
+      setting.append(info, control);
+      parent.append(setting);
+      return {setting, info, control};
+    };
+    const map = row(group('Map').node);
+    const mapName = element('span'), chip = element('span', 'tier-chip'), chipShort = element('span'), chipLong = element('span', 'visually-hidden');
+    chipShort.setAttribute('aria-hidden', 'true');
+    chip.append(chipShort, chipLong);
+    const mapTitle = element('span', 'setting-label');
+    mapTitle.append(mapName, doc.createTextNode(' '), chip);
+    map.info.append(mapTitle);
+    const change = button('Change');
+    change.onclick = changeMap;
+    map.control.append(change);
+
+    const codeGroup = group('Room code');
+    const codeRow = row(codeGroup.node);
+    const code = element('code', 'qol-room-code');
+    codeRow.info.append(code);
+    const copyCode = button('Copy code'), copyLink = button('Copy link');
+    copyCode.onclick = () => copy('code');
+    copyLink.onclick = () => copy('link');
+    codeRow.control.append(copyCode, copyLink);
+
+    const nameRow = row(group('Room name').node);
+    const field = element('label', 'field'), name = element('input'), nameProblem = element('small', 'qol-name-error');
+    name.type = 'text'; name.maxLength = 31; name.spellcheck = false; name.autocomplete = 'off';
+    name.setAttribute('aria-label', 'Room name');
+    name.onchange = rename;
+    nameProblem.hidden = true;
+    field.append(name);
+    nameRow.info.append(field, nameProblem);
+
+    const access = row(group('Who can join').node);
+    const accessHelp = element('span', 'setting-label');
+    access.info.append(accessHelp);
+    const seg = element('div', 'seg');
+    seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Who can join');
+    for (const [value, label] of CHOICES) {
+      const option = button(label, '');
+      option.dataset.visibility = value;
+      option.onclick = () => choose(value);
+      seg.append(option);
     }
-    if (!open || !root || !hostButton) return;
-    if (hosting) staging = false;
-    hidden(hostButton, !!hosting); hostButton.disabled = pending;
-    const rows = adapter.rows();
+    access.control.append(seg);
+
+    const load = group('Upload');
+    const players = row(load.node);
+    const count = element('span', 'setting-label'), usage = element('small');
+    players.info.append(count, usage);
+    const estimate = element('p', 'setting-note', uploadEstimate());
+    load.node.append(estimate);
+    return {view, mapName, chip, chipShort, chipLong, change, codeGroup: codeGroup.node, code, copyCode, copyLink,
+      name, nameProblem, accessHelp, seg, loadTitle: load.heading, players: players.setting, count, usage, estimate};
+  }
+
+  function mount(next) {
+    unmount();
+    root = next;
+    const refreshButton = root?.querySelector('#servers-refresh'), join = root?.querySelector('#servers-join');
+    if (!refreshButton || !join) return;
+    const hostButton = button('Host a room'), back = button('Back'), start = button('Start room', 'btn btn-primary');
+    back.hidden = true; start.hidden = true;
+    hostButton.onclick = openView;
+    back.onclick = () => { mode = 'list'; refresh(); };
+    start.onclick = () => rooms.hosting() ? end() : startRoom();
+    refreshButton.before(hostButton);
+    join.after(back);
+    back.after(start);
+
+    const view = buildView();
+    root.querySelector('.window-body')?.append(view.view);
+    const title = root.querySelector('.titlebar h2');
+    nodes = {hostButton, back, start, refreshButton, join, view, title, titleText: title?.textContent ?? '',
+      layout: root.querySelector('.servers-layout'), help: element('p', 'sub')};
+  }
+  function unmount() {
+    if (!nodes) return;
+    const {hostButton, back, start, refreshButton, join, view, title, titleText, layout, help} = nodes;
+    for (const node of [hostButton, back, start, view.view, help]) node.remove();
+    hidden(refreshButton, false); hidden(join, false); hidden(layout, false);
+    text(title, titleText);
+    nodes = null;
+  }
+
+  function openView() {
+    const adapter = getAdapter()?.rooms;
+    if (!rooms.hosting() && adapter?.guest?.()) { adapter.signIn?.(); return; }
+    mode = 'host'; nameError = ''; copied = null;
+    if (!rooms.hosting()) draftMap = adapter?.currentMap?.()?.id ?? null;
+    refresh();
+  }
+  // The host's own Your room button in the game's room menu.
+  function openRoom() {
+    if (!rooms.hosting()) return;
+    mode = 'host'; nameError = ''; copied = null;
+    getAdapter()?.rooms?.openBrowser?.();
+    refresh();
+  }
+  async function startRoom() {
+    if (starting) return;
+    starting = true; refresh();
+    try { await rooms.host({visibility: rooms.visibility(), mapId: draftMap, name: rooms.roomName()}); }
+    catch (error) { status(error?.message ?? String(error)); }
+    finally { starting = false; refresh(); }
+  }
+  function end() {
+    rooms.end();
+    mode = 'list';
+    refresh();
+  }
+  function choose(value) {
+    try { rooms.setVisibility(value); }
+    catch (error) { status(error?.message ?? String(error)); }
+    refresh();
+  }
+  function rename() {
+    const input = nodes?.view.name;
+    if (!input) return;
+    try {
+      rooms.rename(input.value.trim());
+      nameError = '';
+    } catch (error) { nameError = error?.message ?? String(error); }
+    input.value = rooms.roomName();
+    refresh();
+  }
+  async function copy(kind) {
+    const id = rooms.hosting()?.id;
+    if (!id) return;
+    let ok = false;
+    try {
+      await clipboard.writeText(kind === 'code' ? formatRoomCode(id) : inviteLink(id));
+      ok = true;
+    } catch { /* The page may not be allowed to write the clipboard. */ }
+    copied = {kind, ok, id};
+    refresh();
+  }
+  const currentMapId = () => getAdapter()?.rooms?.currentMap?.()?.id ?? null;
+  function changeMap() {
+    const adapter = getAdapter()?.rooms;
+    if (rooms.hosting()) { adapter?.changeMap?.(); return; }
+    if (!picker) {
+      picker = adapter?.mapPicker?.({
+        allowed: () => true,
+        maps: () => getAdapter()?.rooms?.maps() ?? [],
+        // The map you're on is marked only while it's the chosen one, so it can be chosen again after another.
+        state: () => ({mapId: draftMap === currentMapId() ? draftMap : null, epoch: pickerEpoch}),
+        change: id => { pick(id); return true; },
+      }) ?? null;
+      const dialog = picker?.dialog;
+      if (!dialog?.classList?.contains('map-change-window')) return;
+      text(dialog.querySelector('.nominate-head h2'), PICKER_TITLE);
+      dialog.setAttribute('aria-label', PICKER_TITLE);
+      hidden(dialog.querySelector('.nominate-foot'), true);
+    }
+    picker?.open();
+    text(picker?.dialog?.querySelector('.map-change-status'), PICKER_HELP);
+  }
+  function pick(id) {
+    draftMap = id;
+    const epoch = ++pickerEpoch;
+    // The game's dialog closes on a new epoch; it must see it after its own click handler returns.
+    queueMicrotask(() => picker?.state({mapId: id, epoch}));
+    refresh();
+  }
+
+  // Only an open browser is observed; the game's open and close callbacks report the rest.
+  function observe(open) {
+    if (root === observedRoot && open === observedOpen) return;
+    observedRoot = root; observedOpen = open;
+    observer?.disconnect();
+    if (root && open) observer?.observe(root, {attributes: true, attributeFilter: ['hidden', 'class'], childList: true, subtree: true});
+  }
+  function patchRows(rows) {
     const rowNodes = new Map([...root.querySelectorAll('#server-rows tr[data-id]')].map(node => [node.dataset.id, node]));
     for (const row of rows) {
-      if (!isPrivateRoomId(row.id)) continue;
-      const node = rowNodes.get(row.id);
+      const node = isPrivateRoomId(row.id) ? rowNodes.get(row.id) : null;
       if (!node) continue;
       if (node.classList.contains('full')) node.classList.remove('full');
       text(node.querySelector('.badge'), row.visibility === 'public' ? 'Public' : 'Private');
@@ -150,57 +246,120 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       const cells = node.querySelectorAll('td');
       if (cells[3]?.textContent === '—') text(cells[3], '');
     }
-    const detail = root.querySelector('#server-detail');
-    const join = root.querySelector('#servers-join');
-    if (!detail || !join) return;
-    if (staging) {
-      if (draft.parentNode !== detail) detail.append(draft);
-      for (const child of detail.children) hidden(child, child !== draft);
-      const map = adapter.currentMap();
-      const metadata = adapter.maps().find(entry => entry.id === map?.id);
-      text(draft.querySelector('[data-host-map]'), metadata?.title ?? map?.title ?? map?.id ?? 'Select a map first.');
-      selectVisibility(draft.querySelector('.seg'), rooms.visibility());
-      text(draft.querySelector('[data-visibility-help]'), rooms.visibility() === 'public' ? 'Listed for everyone with Surfd QoL' : 'Only people with the invite link');
-      text(join, pending ? 'Starting…' : 'Start room'); join.disabled = pending || !map;
-      return;
-    }
-    for (const child of detail.children) hidden(child, child === draft);
-    const selected = rows.find(row => row.id === adapter.selected());
-    const isCommunity = isPrivateRoomId(selected?.id);
-    const info = detail.querySelector('.srv-info:not([hidden])');
-    if (!isCommunity || !info) {
-      help?.remove(); choices?.remove(); bandwidth?.remove();
-      return;
-    }
+  }
+  function patchDetail(rows, selectedId) {
+    const detail = root.querySelector('#server-detail'), help = nodes.help;
+    const selected = rows.find(row => row.id === selectedId);
+    const info = detail?.querySelector('.srv-info');
+    if (!isPrivateRoomId(selected?.id) || !info) { help.remove(); return; }
     text(info.querySelector('.sub'), selected.visibility === 'public' ? 'Public' : 'Private');
     text(detail.querySelector('.section-head small'), selected.online ? String(selected.players) : 'Offline');
     const ping = info.querySelector('[data-fact="ping"]');
     if (ping?.textContent === '—') text(ping, '');
-    text(help, selected.visibility === 'public' ? PUBLIC_HELP : PRIVATE_HELP);
+    text(help, selected.visibility === 'public' ? PUBLIC_ROW : PRIVATE_ROW);
     const invite = info.querySelector('.invite-line');
     if (invite && help.previousElementSibling !== invite) invite.after(help);
-    if (hosting?.id === selected.id) {
-      if (choices.parentNode !== info) info.append(choices);
-      selectVisibility(choices, hosting.visibility);
-      if (bandwidth.parentNode !== info) info.append(bandwidth);
-      text(bandwidth, bandwidthDetail(hosting.players, hosting.uploadMbps));
-    } else { choices.remove(); bandwidth.remove(); }
+  }
+  function renderView(adapter, hosting) {
+    const view = nodes.view;
+    const mapId = hosting ? hosting.mapId : draftMap;
+    const map = adapter.maps().find(entry => entry.id === mapId);
+    text(view.mapName, map?.title ?? mapId ?? 'Select a map first.');
+    const tier = Number.isInteger(map?.tier) && map.tier > 0 ? map.tier : 0;
+    hidden(view.chip, !tier);
+    if (tier) {
+      classes(view.chip, `tier-chip t${tier}`);
+      text(view.chipShort, `T${tier}`);
+      text(view.chipLong, `Tier ${tier}`);
+    }
+    hidden(view.change, hosting ? !adapter.changeMap || rooms.currentRoom?.() !== hosting.id : !adapter.mapPicker);
+
+    hidden(view.codeGroup, !hosting);
+    if (hosting) {
+      text(view.code, formatRoomCode(hosting.id));
+      const label = (kind, idle) => copied?.kind === kind && copied.id === hosting.id ? (copied.ok ? 'Copied' : 'Copy failed') : idle;
+      text(view.copyCode, label('code', 'Copy code'));
+      text(view.copyLink, label('link', 'Copy link'));
+    }
+
+    if (doc.activeElement !== view.name && view.name.value !== rooms.roomName()) view.name.value = rooms.roomName();
+    text(view.nameProblem, nameError);
+    hidden(view.nameProblem, !nameError);
+
+    const visibility = hosting?.visibility ?? rooms.visibility();
+    for (const option of view.seg.children) {
+      const pressed = String(option.dataset.visibility === visibility);
+      if (option.getAttribute('aria-pressed') !== pressed) option.setAttribute('aria-pressed', pressed);
+    }
+    text(view.accessHelp, CHOICES.find(([value]) => value === visibility)[2]);
+
+    text(view.loadTitle, hosting ? 'Players' : 'Upload');
+    hidden(view.players, !hosting);
+    if (hosting) {
+      text(view.count, `${hosting.players} player${hosting.players === 1 ? '' : 's'}`);
+      const measured = Number.isFinite(hosting.uploadMbps);
+      text(view.usage, measured ? `Now using ${hosting.uploadMbps.toFixed(1)} Mbps up` : '');
+      hidden(view.usage, !measured);
+    }
+  }
+  function render(adapter, hosting) {
+    const host = mode === 'host';
+    const {hostButton, back, start, refreshButton, join, view, title, titleText, layout} = nodes;
+    hidden(layout, host); hidden(view.view, !host);
+    text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);
+    text(hostButton, hosting ? 'Your room' : 'Host a room');
+    hidden(hostButton, host); hidden(refreshButton, host); hidden(join, host);
+    hidden(back, !host); hidden(start, !host);
+    hostButton.disabled = starting;
+    if (!host) return;
+    if (hosting) {
+      classes(start, 'btn btn-danger'); text(start, 'End room'); start.disabled = false;
+    } else {
+      classes(start, 'btn btn-primary'); text(start, starting ? 'Starting…' : 'Start room');
+      start.disabled = starting || !draftMap;
+    }
+    renderView(adapter, hosting);
+  }
+  function refresh() {
+    if (destroyed || !doc) return;
+    const adapter = getAdapter()?.rooms;
+    const next = adapter?.root?.() ?? null;
+    if (next !== root) mount(next);
+    const open = !!root && (adapter?.browserOpen?.() ?? !root.hidden);
+    observe(open);
+    rooms.browserVisibility?.(open);
+    // The window opens on the server list again after it closes, as when the game joins a room.
+    if (wasOpen && !open) mode = 'list';
+    wasOpen = open;
+    const hosting = rooms.hosting();
+    rooms.showHostDetails?.(open && mode === 'host' && !!hosting);
+    if (!open || !nodes) return;
+    const rows = adapter.rows();
+    patchRows(rows);
+    patchDetail(rows, adapter.selected?.());
+    render(adapter, hosting);
   }
   const observer = doc && Observer ? new Observer(() => {
     if (scheduled || destroyed) return;
     scheduled = true;
     queueMicrotask(() => { scheduled = false; refresh(); });
   }) : null;
+  if (doc) {
+    style = element('style');
+    style.textContent = ROOM_STYLE;
+    (doc.head ?? doc.documentElement)?.append(style);
+  }
   refresh();
   return {
-    refresh,
+    refresh, openRoom,
     destroy() {
-      destroyed = true; observer?.disconnect();
-      cancelDraft();
-      root?.querySelector('#servers-join')?.removeEventListener('click', start, true);
-      hostButton?.remove(); draft?.remove(); help?.remove(); choices?.remove(); bandwidth?.remove();
-      for (const [node, wasHidden] of votes) hidden(node, wasHidden);
-      votes.clear();
+      destroyed = true;
+      observer?.disconnect();
+      unmount();
+      style?.remove();
+      picker?.close?.();
+      picker?.dialog?.remove?.();
+      picker = null;
     }
   };
 }

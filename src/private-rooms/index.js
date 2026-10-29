@@ -345,8 +345,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
   }
   async function sampleUpload() {
     const current = hosted, samples = uploadSamples;
-    if (!current || sampling || !showingDetails || !getAdapter()?.rooms?.browserOpen?.() ||
-        getAdapter()?.rooms?.selected?.() !== current.id) return;
+    if (!current || sampling || !showingDetails || !getAdapter()?.rooms?.browserOpen?.()) return;
     sampling = true;
     try {
       let total = 0, measured = false;
@@ -566,8 +565,17 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       chosenName = value;
       hosted?.room.setName(value);
     },
-    hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility,
-      players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
+    hosting: () => hosted ? {id: hosted.id, visibility: hosted.visibility, name: hosted.room.state.name,
+      mapId: hosted.room.state.mapId, players: hosted.room.players.length, uploadMbps: hosted.uploadMbps} : null,
+    ownRoom: () => !!hosted && api.currentRoom() === hosted.id,
+    openRoom: () => ui?.openRoom?.(),
+    // Ends the room through the game's own Leave when the host is in it, so the game returns to solo.
+    end() {
+      const id = hosted?.id;
+      if (!id) return;
+      if (api.currentRoom() === id) getAdapter()?.rooms?.leaveRoom?.();
+      if (hosted?.id === id) api.leave(id);
+    },
     showHostDetails(visible) {
       visible = !!visible && !!hosted;
       if (showingDetails === visible) return;

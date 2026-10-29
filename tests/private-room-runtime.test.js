@@ -298,7 +298,7 @@ describe('private room runtime', () => {
       f.signals[0].ready();
       const id = await pending;
       expect(f.joined[0]).toMatchObject({id, row: {id, name: "Surfer's room", visibility: 'private'}});
-      expect(f.runtime.hosting()).toEqual({id, visibility: 'private', players: 0, uploadMbps: null});
+      expect(f.runtime.hosting()).toEqual({id, visibility: 'private', name: "Surfer's room", mapId: 'map', players: 0, uploadMbps: null});
       expect(f.signals[0].sent).toEqual([{to: null, type: 'listing', data: null}]);
     } finally { f.runtime.destroy(); }
   });
@@ -912,6 +912,44 @@ describe('private room runtime', () => {
         roster: [{name: 'Surfer', points: 0}]});
       socket.close(); await closed(socket);
       expect(f.signals[0].sent.at(-1).data.players).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('End room leaves through the game when the host is in the room', async () => {
+    const f = fixture();
+    try {
+      const left = [];
+      f.adapter.rooms.leaveRoom = () => { left.push('game'); f.runtime.leave(f.runtime.hosting()?.id); };
+      const id = await f.host({mapId: 'other', name: "Night_owls's room"});
+      expect(f.runtime.hosting()).toMatchObject({mapId: 'other', name: "Night_owls's room"});
+      expect(f.runtime.ownRoom()).toBe(false);
+      const own = f.runtime.roomSocket(id); await opened(own);
+      expect(f.runtime.ownRoom()).toBe(true);
+      f.runtime.end();
+      expect(left).toEqual(['game']);
+      expect(f.runtime.hosting()).toBeNull();
+      expect(f.runtime.ownRoom()).toBe(false);
+      const second = await f.host();
+      f.runtime.end();
+      expect(left).toEqual(['game']);
+      expect(f.runtime.hosting()).toBeNull();
+      expect(second).not.toBe(id);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('upload is sampled only while Your room is shown', async () => {
+    const f = fixture();
+    try {
+      await f.host();
+      const peer = new Socket(); peer.open();
+      f.listeners[0].onSocket(peer, {name: 'Visitor', guest: true, appearance: {}, browserId: crypto.randomUUID()});
+      f.open(true);
+      f.runtime.showHostDetails(true);
+      f.timers.advance(5000); await flush();
+      expect(peer.statsCalls).toBe(1);
+      f.runtime.showHostDetails(false);
+      f.timers.advance(30000); await flush();
+      expect(peer.statsCalls).toBe(1);
     } finally { f.runtime.destroy(); }
   });
 
