@@ -1,19 +1,24 @@
 import {expect, test} from 'bun:test';
-import {DIRECTORY_SIZE, LISTING_TTL_MS, MAX_LISTINGS, MAX_LISTINGS_PER_CLIENT, MAX_LISTING_ROSTER, MAX_ROOM_PLAYERS, createLobby, listingFrom} from '../signal/src/lobby.js';
+import {DIRECTORY_SIZE, LISTING_TTL_MS, MAX_LISTINGS, MAX_LISTINGS_PER_CLIENT, MAX_LISTING_ROSTER, MAX_ROOM_CAPACITY, MAX_ROOM_PLAYERS, MIN_ROOM_CAPACITY, createLobby, listingFrom} from '../signal/src/lobby.js';
 import {isPlayerName, MAX_ROOM_PLAYERS as CLIENT_MAX_ROOM_PLAYERS} from '../src/private-rooms/protocol.js';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
 
-const listing = (players, name = "Host's room") => ({name, mapId: 'surf_utopia', players});
+const listing = (players, name = "Host's room") => ({name, mapId: 'surf_utopia', players, capacity: 16});
 
-test('listings pass the same checks the extension applies to directory rows', () => {
+test('listings validate and normalize their names, capacity, map and player count', () => {
   expect(MAX_ROOM_PLAYERS).toBe(CLIENT_MAX_ROOM_PLAYERS);
-  expect(listingFrom({name: "Surf-er_1's room", mapId: 'surf_utopia_njv', mapTitle: '<b>x</b>', players: MAX_ROOM_PLAYERS, extra: 1}))
-    .toEqual({name: "Surf-er_1's room", mapId: 'surf_utopia_njv', players: MAX_ROOM_PLAYERS, roster: []});
+  expect(listingFrom({...listing(64, '  My   room#1: (Main)!  '), mapId: 'surf_utopia_njv', mapTitle: '<b>x</b>', extra: 1}))
+    .toEqual({name: 'My room#1: (Main)!', mapId: 'surf_utopia_njv', players: 64, capacity: 16, roster: []});
+  expect(listingFrom({...listing(0), capacity: MIN_ROOM_CAPACITY})).not.toBeNull();
+  expect(listingFrom({...listing(MAX_ROOM_PLAYERS), capacity: MAX_ROOM_CAPACITY})).not.toBeNull();
   for (const data of [null, [], 'x', listing(MAX_ROOM_PLAYERS + 1), listing(100000), listing(-1), listing(1.5), listing('2'),
-    {name: "Host's room", players: 1}, {...listing(1), mapId: 'not-a-map'}, {...listing(1), mapId: 'Surf_Utopia'},
+    {...listing(1), capacity: MIN_ROOM_CAPACITY - 1}, {...listing(1), capacity: MAX_ROOM_CAPACITY + 1},
+    {...listing(1), capacity: 2.5}, {...listing(1), capacity: undefined},
+    {name: "Host's room", mapId: 'surf_utopia', players: 1},
+    {...listing(1), mapId: 'not-a-map'}, {...listing(1), mapId: 'Surf_Utopia'},
     {...listing(1), mapId: 'x'.repeat(65)}, {...listing(1), mapId: ['surf_utopia']},
-    listing(1, 'Room'), listing(1, " Host's room"), listing(1, "Ho's room"), listing(1, `${'x'.repeat(25)}'s room`),
-    listing(1, "Host\u0007's room"), listing(1, "<b>Host</b>'s room"), listing(1, ["Host's room"])]) {
+    listing(1, 'ab'), listing(1, 'Room\tName'), listing(1, 'Room;Name'), listing(1, 'Room<Name>'),
+    listing(1, 'x'.repeat(33)), listing(1, ['Host room'])]) {
     expect(listingFrom(data)).toBeNull();
   }
 });
@@ -58,7 +63,7 @@ test('a listing the extension would refuse is never listed, and a bad row hides 
   // A row that got into the directory some other way.
   const lobby = createLobby({});
   expect(lobby.put('p-zzzzzzzzzzzz', {name: 'poison', mapId: 'nope', players: 100000}, 'a')).toBe(false);
-  lobby.put('p-abcdefghjkmn', {name: "Legit's room", mapId: 'map', players: 3}, 'b');
+  lobby.put('p-abcdefghjkmn', {name: "Legit's room", mapId: 'map', players: 3, capacity: 16}, 'b');
   const body = {rooms: [
     {id: 'p-zzzzzzzzzzzz', name: 'poison', mapId: 'nope', players: 100000, roster: [{name: '<bad>', points: 'x'}]},
     ...lobby.rooms(),
@@ -131,11 +136,11 @@ test('a lobby woken from storage carries on with its stored listings', () => {
 test('malformed stored rows and roster entries do not poison other public rooms', () => {
   const entries = new Map([
     ['p-bad', {id: 'p-bad', name: 'Bad', mapId: 'map', players: 1, client: 'a', updatedAt: 50}],
-    ['p-good', {id: 'p-good', name: "Good's room", mapId: 'map', players: 2,
+    ['p-good', {id: 'p-good', name: "Good's room", mapId: 'map', players: 2, capacity: 16,
       roster: [{name: '<bad>', points: 1}, {name: 'Visitor_1', points: 5}], client: 'b', updatedAt: 51}],
   ]);
   const lobby = createLobby({entries, now: () => 100});
-  expect(lobby.rooms()).toEqual([{id: 'p-good', name: "Good's room", mapId: 'map', players: 2,
+  expect(lobby.rooms()).toEqual([{id: 'p-good', name: "Good's room", mapId: 'map', players: 2, capacity: 16,
     roster: [{name: 'Visitor_1', points: 5}], updatedAt: 51}]);
   expect(entries.has('p-bad')).toBe(false);
 });

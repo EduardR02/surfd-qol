@@ -88,14 +88,15 @@ try {
   const listed = async present => {
     for (let tries = 0; tries < 15; tries++) {
       const {rooms} = await (await fetch(new URL('/rooms', BASE), {headers: {Origin: ORIGIN}})).json();
-      if (rooms.some(entry => entry.id === room) === present) return true;
+      const entry = rooms.find(entry => entry.id === room);
+      if (present ? entry?.capacity === 16 : !entry) return true;
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     return false;
   };
   check('the directory refuses other origins (403)', await status('/rooms', {Origin: 'https://evil.example'}) === 403);
-  host.socket.send(JSON.stringify({type: 'listing', data: {name: "check-live's room", mapId: 'surf_utopia', players: 1}}));
-  check('a listed room shows in the directory', await listed(true));
+  host.socket.send(JSON.stringify({type: 'listing', data: {name: "check-live's room", mapId: 'surf_utopia', players: 1, capacity: 16}}));
+  check('a listed room shows in the directory with capacity 16', await listed(true));
   host.socket.send(JSON.stringify({type: 'listing', data: null}));
   check('an unlisted room leaves the directory', await listed(false));
 

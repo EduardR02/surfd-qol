@@ -8,12 +8,14 @@ export const MAX_LISTINGS = 500;
 // So that one client can't fill the directory by itself.
 export const MAX_LISTINGS_PER_CLIENT = 3;
 export const DIRECTORY_SIZE = 200;
-// Matches MAX_ROOM_PLAYERS in src/private-rooms/protocol.js.
-export const MAX_ROOM_PLAYERS = 256;
-// The extension names a room after its host, under the site's username rules.
-const ROOM_NAME = /^[A-Za-z0-9_-]{3,24}'s room$/;
-// The game's map ids, such as surf_utopia_njv.
+// Private-room listings cap both capacity and player counts at 64.
+export const MAX_ROOM_PLAYERS = 64;
+export const MIN_ROOM_CAPACITY = 2;
+export const MAX_ROOM_CAPACITY = 64;
+// Room names are free text, normalized before this ASCII character check.
+const ROOM_NAME = /^[A-Za-z0-9 '\-_.!?&#:()]+$/;
 const MAP_ID = /^[a-z0-9_]{1,64}$/;
+const normalizeRoomName = value => typeof value === 'string' ? value.trim().replace(/ +/g, ' ') : '';
 // Names that could pass for the site's own servers.
 export const IMPERSONATION = /surfd|official/i;
 export const MAX_LISTING_ROSTER = 24;
@@ -41,11 +43,13 @@ function rosterFrom(value) {
 // extension would show: anything else would hide in the directory.
 export function listingFrom(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
-  const {name, mapId, players} = data;
-  return typeof name === 'string' && ROOM_NAME.test(name) && !IMPERSONATION.test(name)
+  const {mapId, players, capacity} = data;
+  const name = normalizeRoomName(data.name);
+  return name.length >= 3 && name.length <= 32 && ROOM_NAME.test(name) && !IMPERSONATION.test(name)
     && typeof mapId === 'string' && MAP_ID.test(mapId)
     && Number.isSafeInteger(players) && players >= 0 && players <= MAX_ROOM_PLAYERS
-    ? {name, mapId, players, roster: rosterFrom(data.roster)} : null;
+    && Number.isSafeInteger(capacity) && capacity >= MIN_ROOM_CAPACITY && capacity <= MAX_ROOM_CAPACITY
+    ? {name, mapId, players, capacity, roster: rosterFrom(data.roster)} : null;
 }
 
 // entries: the stored listings by room id, each with the client (limits.js)

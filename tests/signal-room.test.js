@@ -416,17 +416,18 @@ test('a room woken from hibernation carries on from its record and sockets', asy
 
 test('a host publishes a sanitized public roster, updates and unlists it; guests cannot', async () => {
   const room = await claimed(1);
-  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3,
+  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', mapTitle: '<b>Utopia</b>', players: 3, capacity: 16,
     roster: [{name: 'Nebula_1', points: 3, userId: 'private'}, {name: '<b>bad</b>', points: 9}, {name: 'Nebula_3', points: 1.5}]}});
-  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', players: 3}});
+  room.say(room.host, {type: 'listing', data: {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16}});
   room.say(room.host, {type: 'listing', data: null});
   expect(room.world.published).toEqual([
-    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, roster: [{name: 'Nebula_1', points: 3}]}, room.host.peer.client],
-    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, roster: []}, room.host.peer.client],
+    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16, roster: [{name: 'Nebula_1', points: 3}]}, room.host.peer.client],
+    [ROOM, {name: "Nebula's room", mapId: 'surf_utopia', players: 3, capacity: 16, roster: []}, room.host.peer.client],
     [ROOM, null],
   ]);
-  for (const data of [{name: "Nebula\u0007's room", mapId: 'surf_utopia', players: 1}, {name: "Nebula's room", mapId: 'x', players: 257},
-    {name: "Official's room", mapId: 'surf_utopia', players: 1}, {name: 'x', players: 1}, 'x', []]) {
+  for (const data of [{name: "Nebula\u0007's room", mapId: 'surf_utopia', players: 1, capacity: 16},
+    {name: "Nebula's room", mapId: 'x', players: 257, capacity: 16}, {name: "Official's room", mapId: 'surf_utopia', players: 1, capacity: 16},
+    {name: 'x', mapId: 'surf_utopia', players: 1, capacity: 16}, 'x', []]) {
     room.say(room.host, {type: 'listing', data});
     expect(room.heard(room.host)).toEqual([{type: 'error', data: {code: 'bad-message'}}]);
   }

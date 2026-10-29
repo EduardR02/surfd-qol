@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {Room} from '../signal/src/worker.js';
 
 const ROOM = 'p-abcdefghjkmn';
-const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1};
+const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, capacity: 16};
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
