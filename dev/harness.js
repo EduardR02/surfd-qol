@@ -77,7 +77,7 @@ const panelPage = params.get('panel');
 // ?maps opens its map list; ?history=empty has no runs at all.
 const runsMap = params.get('runs');
 const emptyHistory = params.get('history') === 'empty';
-const history = createHistory({settings, empty: emptyHistory});
+const history = createHistory({settings, empty: emptyHistory, touch: params.get('touch')});
 const replays = createReplays({empty: emptyHistory});
 const replayControl = createReplayControl({params, active: () => scenario.watching === true});
 const rampReference = createRampReference({params, settings});

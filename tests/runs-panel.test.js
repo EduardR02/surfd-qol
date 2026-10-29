@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { bestFinish, compareRamp, createRunsPanel, paceCells, rampSections, reached, surfBars, versusPb, when } from '../src/runs-panel.js';
+import { bestFinish, compareRamp, createRunsPanel, paceCells, rampSections, reachText, reached, surfBars, touchCells, versusPb, when } from '../src/runs-panel.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {createReplayControl} from '../src/replay-control.js';
 
@@ -84,6 +84,66 @@ describe('runs panel', () => {
     // No reference: the value alone, uncoloured. No value: a dash.
     expect(compareRamp(5.9, null, 2)).toEqual({text: '−5.9', diff: '', tone: 'plain'});
     expect(compareRamp(null, 2.4, 2)).toEqual({text: '—', diff: '', tone: 'muted'});
+  });
+
+  test('touch values follow the statistic; speed counts higher as better, the angle lower', () => {
+    const touch = {reach: 0.29, speedIn: {best: 2412, last10: 2380.4, avg: 2371}, speedOut: {best: 2405, last10: 2366, avg: null},
+      angle: {best: 2.04, last10: 3.5, avg: 4}};
+    const best = touchCells(touch, 'best');
+    expect([best.reach.text, best.speedIn.text, best.speedOut.text, best.angle.text]).toEqual(['29%', '2412', '2405', '2.0°']);
+    expect([best.speedIn.tone, best.angle.tone, best.angle.diff]).toEqual(['plain', 'plain', '']);
+    const recent = touchCells(touch, 'recent');
+    expect([recent.speedIn.text, recent.angle.text]).toEqual(['2380', '3.5°']);
+    expect(touchCells(touch, 'average').speedOut).toEqual({value: null, text: '—', diff: '', tone: 'muted'});
+    // Against a reference: faster is better, and a flatter touch is better.
+    const versus = touchCells(touch, 'best', {speedIn: 2400, speedOut: 2410, angle: 2.5});
+    expect(versus.speedIn).toMatchObject({diff: '+12', tone: 'good'});
+    expect(versus.speedOut).toMatchObject({diff: '−5', tone: 'loss'});
+    expect(versus.angle).toMatchObject({diff: '−0.5°', tone: 'good'});
+    expect(touchCells(touch, 'best', {speedIn: 2414, speedOut: 2406, angle: 2}, 2).speedIn.tone).toBe('warn');
+    // The angle's near band is the u/s margin: what the steeper touch costs at your speed in.
+    // At 2412 u/s, 2.04° against 1.0° costs about 1.2 u/s more.
+    expect(touchCells(touch, 'best', {angle: 1}, 2).angle.tone).toBe('warn');
+    expect(touchCells(touch, 'best', {angle: 1}, 1).angle.tone).toBe('loss');
+    expect(touchCells(null).reach).toMatchObject({text: '—', tone: 'muted'});
+    // Reach rounds down so 100% only ever means every run.
+    expect([reachText(0.999), reachText(1), reachText(0), reachText(null)]).toEqual(['99%', '100%', '0%', '—']);
+  });
+
+  test('the Ramps view adds each touch under its ramp, or says how far collecting has got', () => {
+    const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'a', label: 'Ramp 1', checkpoint: 0, board: 2}, {key: 'b', label: 'Ramp 2', checkpoint: 0, board: 3}]};
+    const slot = {status: 'ready', label: 'PB', ramps: new Map([['a', {board: 2}]])};
+    const reference = {sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: 'KSF WR'}], version: () => 1,
+      createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
+    const stat = value => ({best: value, last10: value + 1, avg: value + 2});
+    let stats = {runs: 12, collecting: true, touches: []};
+    const rig = panelRig({reference, data});
+    rig.history.touchStats = key => key === 'utopia:3' ? stats : null;
+    const lines = () => rig.body.innerHTML.match(/class="rn-tl"/g)?.length ?? 0;
+    try {
+      rig.panel.show(); rig.panel.showView('ramps');
+      expect(rig.body.innerHTML).toContain('Collecting touch stats: 12 of 50 runs.');
+      expect(lines()).toBe(0);
+      stats = {runs: 64, collecting: false, touches: [
+        {key: 'a', index: 0, checkpoint: 0, reach: 1, speedIn: stat(2400), speedOut: stat(2390), angle: stat(2),
+          pb: {speedIn: 2410, speedOut: 2380, angle: 3}, wr: {speedIn: 2500, speedOut: 2490, angle: 1}},
+      ]};
+      rig.panel.showView('ramps');
+      expect(rig.body.innerHTML).not.toContain('Collecting');
+      expect(lines()).toBe(2);
+      // Compared with the selected PB; a ramp the stats don't have shows dashes.
+      expect(rig.body.innerHTML).toContain('<b>2400</b><em>−10</em>');
+      expect(rig.body.innerHTML).toContain('<b>2.0°</b><em>−1.0°</em>');
+      expect(rig.body.innerHTML).toContain('rn-t muted');
+      rig.action({rampMode: 'recent'});
+      expect(rig.body.innerHTML).toContain('<b>2401</b>');
+      slot.status = 'loading';
+      rig.panel.showView('ramps');
+      expect(rig.body.innerHTML).not.toContain('<em>−10</em>');
+      rig.history.touchStats = () => { throw new Error('unavailable'); };
+      rig.panel.showView('ramps');
+      expect(lines()).toBe(0);
+    } finally { rig.panel.destroy(); }
   });
 
   test('surf bars diverge around the reference, or grow with the loss without one', () => {

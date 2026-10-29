@@ -91,6 +91,7 @@ Both work inside the game's own input sampling, so the commands it records are e
 
 - **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each. **Recent best** keeps your fastest retained finish from the last 24 hours.
 - **Ramps:** switch between your best, last 10 measurements and average on each ramp, compared with your PB or the WR. Click a ramp’s name to watch it in the selected reference, paused half a second before the touch; the chevron offers other replays. If that route skips the ramp, it isn’t available. Reset averages separately without losing bests or replays.
+  Under each ramp is its touch: **reach** (how many of your runs got that far), your speed **in** and **out**, and the **angle** you landed at. The angle is how far your path was off the ramp's surface, so 0° is a perfect touch that loses nothing. In, out and angle follow the same best, last 10 or average and compare with the PB or WR. They show once a map has 50 runs; only normal timed attempts count.
 
 Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
 

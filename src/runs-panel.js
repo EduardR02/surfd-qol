@@ -114,6 +114,40 @@ export function compareRamp(value, reference, tolerance = 0) {
   };
 }
 
+// The statistic a touch value shows for each of the Ramps view's modes.
+const TOUCH_STAT = {best: 'best', recent: 'last10', average: 'avg'};
+// Touch stats appear once a map has this many runs.
+export const TOUCH_MIN_RUNS = 50;
+// Reach rounds down, so 100% means every run got there.
+export const reachText = reach => Number.isFinite(reach) ? `${Math.floor(reach * 100 + 1e-9)}%` : '—';
+
+// One touch's reach, speed in, speed out and angle for a statistic, each
+// against the reference touch when there is one. Speed is better higher, the
+// angle lower. The angle's near band is the panel's u/s margin, as the extra
+// speed that angle would cost at your own speed in.
+export function touchCells(touch, mode = 'best', reference = null, tolerance = 0) {
+  const stat = TOUCH_STAT[mode] ?? 'best';
+  const pick = field => Number.isFinite(touch?.[field]?.[stat]) ? touch[field][stat] : null;
+  const speedIn = pick('speedIn'), speedOut = pick('speedOut'), angle = pick('angle');
+  const plain = value => value === null ? 'muted' : 'plain';
+  const speed = (value, other) => {
+    const compared = value !== null && Number.isFinite(other);
+    return {value, text: value === null ? '—' : value.toFixed(0), diff: compared ? formatDelta(value - other, 0) : '',
+      tone: compared ? referenceTone(-value, -other, tolerance) : plain(value)};
+  };
+  const reach = Number.isFinite(touch?.reach) ? touch.reach : null;
+  const other = reference?.angle, compared = angle !== null && Number.isFinite(other);
+  const base = speedIn ?? reference?.speedIn;
+  const cost = degrees => base * (1 - Math.cos(degrees * Math.PI / 180));
+  return {
+    reach: {value: reach, text: reachText(reach), diff: '', tone: plain(reach)},
+    speedIn: speed(speedIn, reference?.speedIn),
+    speedOut: speed(speedOut, reference?.speedOut),
+    angle: {value: angle, text: angle === null ? '—' : `${angle.toFixed(1)}°`, diff: compared ? `${formatDelta(angle - other, 1)}°` : '',
+      tone: !compared ? plain(angle) : Number.isFinite(base) ? referenceTone(cost(angle), cost(other), tolerance) : referenceTone(angle, other)},
+  };
+}
+
 // Each ramp's net Surf loss as a bar. Against a reference the bars diverge
 // from the middle: left for speed lost beyond it, right for speed kept. With
 // no reference they grow from the left with the loss itself.
@@ -382,14 +416,35 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     // How many runs back a Last 10 or Average row: the most any of its values has.
     const samples = ramp => counted ? Math.max(0, ...fields.map(([field]) => ramp.counts?.[field] ?? 0)) : null;
     const choices = destinations(data, refs);
+    let touchData = null;
+    try { touchData = history.touchStats?.(key) ?? null; } catch { /* unavailable */ }
+    const touches = touchData && !touchData.collecting ? new Map((touchData.touches ?? []).map(touch => [touch.key, touch])) : null;
+    const touchLine = ramp => {
+      if (!touches) return '';
+      const touch = touches.get(ramp.key);
+      const reference = ready ? touch?.[selected.name] ?? null : null;
+      const values = touchCells(touch, rampMode, reference, tolerance);
+      const item = (value, label, help, other = '') => {
+        const title = value.diff ? `${help}. ${picked.label}: ${other}` : help;
+        return `<span class="rn-t ${value.tone}" role="cell" title="${escape(title)}"><small>${label}</small><b>${value.text}</b>${value.diff ? `<em>${value.diff}</em>` : ''}</span>`;
+      };
+      return `<div class="rn-tl">${
+        item(values.reach, 'reach', 'Share of your runs that got this far')}${
+        item(values.speedIn, 'in', 'Speed as you touch the ramp', fixed(reference?.speedIn, 0))}${
+        item(values.speedOut, 'out', 'Speed right after the touch', fixed(reference?.speedOut, 0))}${
+        item(values.angle, 'angle', 'How far your path was off the ramp’s surface. 0° loses nothing', `${fixed(reference?.angle)}°`)}</div>`;
+    };
     const rampRow = ramp => {
       const open = expandedRamp === ramp.key, count = samples(ramp);
       const runs = count === null ? '' : `<small class="rn-n">${count ? `${count} run${count === 1 ? '' : 's'}` : 'no runs yet'}</small>`;
-      return `<div class="rn-rr${open ? ' open' : ''}" role="row"><span class="rn-namecell" role="rowheader">${rampName(data, ramp, refs, selected, picked, choices)}${runs}</span>${bar(ramp)}${
+      return `<div class="rn-rr${open ? ' open' : ''}${touches ? ' touched' : ''}" role="row"><span class="rn-namecell" role="rowheader">${rampName(data, ramp, refs, selected, picked, choices)}${runs}</span>${bar(ramp)}${
         fields.map(([field, label]) => cell(ramp, field, label)).join('')}<span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
-        open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="Watch ${escape(ramp.label)} in another replay" title="Other replays">${CHEVRON}</button></span></div>${rampPlayback(data, ramp, refs, selected, picked, choices)}`;
+        open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="Watch ${escape(ramp.label)} in another replay" title="Other replays">${CHEVRON}</button></span>${touchLine(ramp)}</div>${rampPlayback(data, ramp, refs, selected, picked, choices)}`;
     };
-    return rampControls(compare) + `${note ? `<p class="rn-note">${note}</p>` : legend}
+    const runCount = Math.max(0, Math.min(TOUCH_MIN_RUNS, touchData?.runs ?? 0)), filled = Math.floor(runCount / TOUCH_MIN_RUNS * 10);
+    const collecting = touchData?.collecting ? `<p class="rn-caption rn-collect"><span class="rn-meter" aria-hidden="true">${
+      Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs.</span></p>` : '';
+    return rampControls(compare) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
       <div class="rn-ramps${net ? ' net' : ''}" role="table" aria-label="Ramp measurements">
         <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span class="rn-bar-head" role="columnheader">surf${ready ? `<span class="rn-bar-reference"> vs ${escape(picked.label)}</span>` : ''}</span>${fields.map(([, label]) => `<span role="columnheader">${label}</span>`).join('')}<span role="columnheader"></span></div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>

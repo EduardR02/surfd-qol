@@ -90,7 +90,27 @@ for (const [key, map] of Object.entries(maps)) {
     boards: map.ramps.map((ramp, n) => [450 + n * 190, ramp.board, ramp.key])});
 }
 
-export function createHistory({settings, empty = false, current = 'utopia:3'} = {}) {
+// Per-touch stats in the shape history.touchStats gives: reach falls along the
+// route, speed grows, and the PB and WR touch a little flatter than your mean.
+// touch=collecting leaves the map short of 50 runs; touch=none has no records.
+function touchStatsFor(map, mode) {
+  const runs = mode === 'collecting' ? 23 : mode === 'none' ? 0 : Math.min(200, map.totals.attempts);
+  const touches = map.ramps.map((ramp, n) => {
+    const reach = runs ? round(Math.max(0.18, 1 - n * 0.07 - noise(n + 40) * 0.05), 3) : null;
+    const speed = 1900 + n * 120 + noise(n + 7) * 90, angle = 2.2 + noise(n + 21) * 3.4;
+    const stat = (value, spread) => runs ? {best: round(value), last10: round(value + spread), avg: round(value + spread * 1.4)} : {best: null, last10: null, avg: null};
+    const out = (into, a) => into * Math.cos(a * Math.PI / 180) - 2;
+    const reference = factor => ({speedIn: round(speed + 8 * factor - noise(n + factor) * 20), speedOut: round(out(speed + 8 * factor, angle * (1 - 0.15 * factor))),
+      angle: round(angle * (1 - 0.15 * factor) + (noise(n * 3 + factor) - 0.5) * 0.8)});
+    return {key: ramp.key, index: n, checkpoint: ramp.checkpoint, reach,
+      speedIn: stat(speed + 30, -42), speedOut: stat(out(speed + 30, angle), -48),
+      angle: runs ? {best: round(angle), last10: round(angle + 0.9 + noise(n + 3) * 0.6), avg: round(angle + 1.2 + noise(n + 5) * 0.5)} : {best: null, last10: null, avg: null},
+      pb: n === 4 ? null : reference(1), wr: reference(2.2)};
+  });
+  return {runs, collecting: runs < 50, touches};
+}
+
+export function createHistory({settings, empty = false, current = 'utopia:3', touch = null} = {}) {
   const shown = empty ? {} : maps;
   const listeners = new Set();
   const resetMaps = new Set();
@@ -127,6 +147,7 @@ export function createHistory({settings, empty = false, current = 'utopia:3'} = 
       return {key, name: map.name, kind: map.kind, totals: map.totals, pb: map.pb, latest: map.runs[0] ?? null, recent: recentOf(map),
         recentBest: highlights.get(key), start: map.start, splits: map.splits.map((split, index) => ({...split, index})), ramps};
     },
+    touchStats: key => shown[key] ? touchStatsFor(shown[key], key === 'mesa:2' ? 'collecting' : touch) : null,
     run: id => Object.values(shown).flatMap(map => [map.pb, ...map.runs]).find(run => run?.id === id) ?? null,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async resetRampAverages(key) { resetMaps.add(key); for (const listener of listeners) listener(); },

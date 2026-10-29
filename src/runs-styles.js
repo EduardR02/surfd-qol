@@ -207,6 +207,17 @@ export const runsStyles = `
 .rn-v b{font-size:15.5px;line-height:1.15}
 .rn-v em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--text-3)}
 .rn-v.good b{color:var(--good)}.rn-v.warn b{color:var(--warn)}.rn-v.loss b{color:var(--bad)}.rn-v.muted b{color:var(--text-3);font-weight:400}
+/* Touch stats: a quieter second line under each ramp, graded like the values above it. */
+.rn-rr.touched{row-gap:2px;padding-bottom:8px}
+.rn-tl{grid-column:1/-2;display:grid;grid-template-columns:77px repeat(3,minmax(0,1fr));gap:10px;padding-left:15px}
+.rn-t{display:flex;align-items:baseline;gap:6px;min-width:0;white-space:nowrap}
+.rn-t small{font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--text-3)}
+.rn-t b{font-size:13px}
+.rn-t em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--text-3)}
+.rn-t.good b{color:var(--good)}.rn-t.warn b{color:var(--warn)}.rn-t.loss b{color:var(--bad)}.rn-t.muted b{color:var(--text-3);font-weight:400}
+.rn-collect{align-items:center}
+.rn-collect .rn-meter{flex:none;padding:0}
+.rn-collect .rn-meter i{flex:none;width:9px}
 
 /* Empty and off states: what to do next. */
 .rn-empty{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:22px 22px 26px}
@@ -232,6 +243,8 @@ export const runsStyles = `
   .rn-ramps.net .rn-rr{grid-template-columns:78px minmax(20px,1fr) repeat(2,66px) 22px}
   .rn-toolbar{gap:6px}.rn-seg button{padding:5px 9px}
   .rn-bar-reference{display:none}
+  .rn-tl{grid-template-columns:58px repeat(3,minmax(0,1fr));gap:6px;padding-left:0}
+  .rn-t{gap:4px}.rn-t small{letter-spacing:0}.rn-t em{display:none}
 }
 @media (prefers-reduced-motion:reduce){#runs-panel{animation:none}.rn-watch[aria-busy=true]::after{animation-duration:2s}}
 
