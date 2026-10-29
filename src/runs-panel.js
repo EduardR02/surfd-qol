@@ -148,33 +148,47 @@ export function touchCells(touch, mode = 'best', reference = null, tolerance = 0
   };
 }
 
-// Bars share one scale across the map: the largest value within three times
-// the median, never under 5 u/s. A bail far past the rest then runs off the
-// end with a break instead of shrinking every other bar to a sliver.
-const BAR_FLOOR = 5;
-export function barScale(values) {
+// Bars share one scale per metric: the largest value within three times the
+// median, never under a floor (5 u/s, 1°). A bail far past the rest then runs
+// off the end with a break instead of shrinking every other bar to a sliver.
+export function barScale(values, floor = 5) {
   const sizes = values.filter(Number.isFinite).map(Math.abs).sort((a, b) => a - b);
-  if (!sizes.length) return BAR_FLOOR;
+  if (!sizes.length) return floor;
   const cap = 3 * sizes[Math.floor((sizes.length - 1) / 2)];
-  return Math.max(BAR_FLOOR, ...sizes.filter(size => size <= cap));
+  return Math.max(floor, ...sizes.filter(size => size <= cap));
 }
-
-// Each ramp's one number: what the whole ramp (Surf, the touch included) cost
-// beyond the reference, or with no reference the loss itself.
-export function rampHeroes(ramps, reference = null, tolerance = 0) {
-  const entries = ramps.map(ramp => {
-    const own = ramp.surf, other = reference ? reference(ramp) : null;
-    if (!Number.isFinite(own)) return {text: '—', tone: 'muted', value: null};
-    if (!reference) return {text: formatDelta(-own, 1), tone: 'plain', value: own};
-    if (!Number.isFinite(other)) return {text: '', tone: 'muted', value: null, absent: true};
-    const {diff, tone} = compareRamp(own, other, tolerance);
-    return {text: diff, tone, value: other - own};
-  });
-  const scale = barScale(entries.map(entry => entry.value));
+export function scaleBars(entries, floor = 5) {
+  const scale = barScale(entries.map(entry => entry.bar), floor);
   return entries.map(entry => {
-    const size = Math.abs(entry.value ?? 0) / scale;
+    const size = Math.abs(entry.bar ?? 0) / scale;
     return {...entry, size: Math.min(1, size), over: size > 1};
   });
+}
+
+// What the Ramps view's one column can show for every ramp: [key, label, what it is].
+export const RAMP_METRICS = [['surf', 'Surf', 'The whole ramp, touch included'], ['board', 'Touch', 'Speed lost as you touched the ramp'],
+  ['angle', 'Angle', 'How far your path was off the ramp’s surface. 0° loses nothing'], ['down', 'Down', 'The way down, touch included'],
+  ['up', 'Up', 'The way up'], ['speedIn', 'In', 'Speed as you touched the ramp'], ['speedOut', 'Out', 'Speed right after the touch']];
+const TOUCH_METRICS = new Set(['angle', 'speedIn', 'speedOut']);
+
+// One ramp's value for a metric: its difference from the reference when the
+// reference has it, else the value itself. Losses and the angle are better
+// lower, speeds higher. `bar` is what its bar measures.
+export function rampMetric(metric, {ramp = null, reference = null, touch = null, touchReference = null, mode = 'best', tolerance = 0, compared = false} = {}) {
+  let own, value, other, ref;
+  if (TOUCH_METRICS.has(metric)) {
+    const cell = touchCells(touch, mode, compared ? touchReference : null, tolerance)[metric];
+    own = cell.value; other = touchReference?.[metric]; value = cell;
+    ref = Number.isFinite(other) ? metric === 'angle' ? `${other.toFixed(1)}°` : other.toFixed(0) : '';
+  } else {
+    own = Number.isFinite(ramp?.[metric]) ? ramp[metric] : null; other = reference?.[metric];
+    value = compareRamp(own, other, tolerance);
+    ref = Number.isFinite(other) ? formatDelta(-other, 1) : '';
+  }
+  if (own === null) return {text: '—', tone: 'muted', bar: null, you: '', ref: ''};
+  if (!compared) return {text: value.text, tone: 'plain', bar: own, you: value.text, ref: ''};
+  if (!value.diff) return {text: '', tone: 'muted', bar: null, absent: true, you: value.text, ref: ''};
+  return {text: value.diff, tone: value.tone, bar: TOUCH_METRICS.has(metric) ? own - other : other - own, you: value.text, ref};
 }
 
 // The open ramp's measurements against the reference: Touch with its angle,
@@ -212,7 +226,7 @@ function describe(run) {
 const tags = run => `${run.practice ? '<span class="rn-tag practice" title="Practice runs don’t count for your bests">practice</span>' : ''}${
   run.invalid ? `<span class="rn-tag invalid" title="${escape(typeof run.invalid === 'string' && run.invalid ? `Invalid: ${run.invalid}` : 'Invalid run')}">invalid</span>` : ''}`;
 
-export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, getSession = () => null, getReferences = () => null, settings = {}, onOpen, onOpenSettings, now = () => Date.now()}) {
+export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, getSession = () => null, getReferences = () => null, settings = {}, onSettings = null, onOpen, onOpenSettings, now = () => Date.now()}) {
   const node = id => root.getElementById(id);
   const panel = node('runs-panel'), opener = node('runs-open'), close = node('rn-close');
   const mapButton = node('rn-map'), mapName = node('rn-name'), mapList = node('rn-maps'), body = node('rn-body'), status = node('rn-status');
@@ -342,7 +356,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     ['average', 'Average', 'Mean of every valid run since you last reset.']];
   // One toolbar: what to show (left) and what to compare it with (right).
   // Below it, one caption line: what the statistic means, and Reset for the means.
-  function rampControls(compare = '') {
+  function rampControls(compare = '', metric = null) {
     const [, , note] = RAMP_MODES.find(([mode]) => mode === rampMode);
     const asking = confirmReset ? `<div class="rn-reset-confirm" role="group" aria-label="Reset ramp averages">
         <span>Start Last 10 and Average over on this map? <small>Bests and replays stay.</small></span>
@@ -350,7 +364,8 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         <button type="button" class="rn-reset danger" data-reset-averages="confirm"${resetting ? ' disabled' : ''}>${resetting ? 'Resetting…' : 'Reset'}</button></div>` : '';
     return `<div class="rn-toolbar"><div class="rn-seg" role="radiogroup" aria-label="Ramp statistic">${RAMP_MODES.map(([mode, label, title]) =>
       `<button type="button" role="radio" aria-checked="${rampMode === mode}" tabindex="${rampMode === mode ? 0 : -1}" data-ramp-mode="${mode}" title="${title}">${label}</button>`).join('')}</div>
-      ${compare ? `<span class="rn-vs">vs</span>${compare}` : ''}</div>
+      ${compare ? `<span class="rn-vs">vs</span>${compare}` : ''}${metric ? `<div class="rn-seg rn-metric" role="radiogroup" aria-label="Show for each ramp">${RAMP_METRICS.map(([name, label, title]) =>
+        `<button type="button" role="radio" aria-checked="${metric === name}" tabindex="${metric === name ? 0 : -1}" data-ramp-metric="${name}" title="${escape(title)}">${label}</button>`).join('')}</div>` : ''}</div>
       ${asking || (rampMode === 'best' ? '' : `<p class="rn-caption rn-samples"><span>${note}</span><button type="button" class="rn-reset" data-reset-averages="ask"${resetting ? ' disabled' : ''}>Reset</button></p>`)}`;
   }
   function playbackReason(data, rampKey, destination, refs, selected, picked) {
@@ -425,13 +440,19 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${fixed(tolerance)} u/s</span><span class="loss">worse</span></p>` : '';
     const counted = rampMode !== 'best';
     const referenceOf = ramp => ready ? picked.ramps.get(ramp.key) ?? null : null;
-    const heroes = new Map(rampHeroes(data.ramps ?? [], ready ? ramp => referenceOf(ramp)?.surf : null, tolerance).map((hero, index) => [data.ramps[index], hero]));
     // How many runs back a Last 10 or Average row: the most any of its values has.
     const samples = ramp => Math.max(0, ...['board', 'down', 'up', 'surf'].map(field => ramp.counts?.[field] ?? 0));
     const choices = destinations(data, refs);
     let touchData = null;
     try { touchData = history.touchStats?.(key) ?? null; } catch { /* unavailable */ }
     const touches = touchData && !touchData.collecting ? new Map((touchData.touches ?? []).map(touch => [touch.key, touch])) : null;
+    const metric = RAMP_METRICS.some(([name]) => name === settings.rampMetric) ? settings.rampMetric : 'surf';
+    const [, metricLabel, metricHelp] = RAMP_METRICS.find(([name]) => name === metric);
+    const values = scaleBars((data.ramps ?? []).map(ramp => {
+      const touch = touches?.get(ramp.key) ?? null;
+      return rampMetric(metric, {ramp, reference: referenceOf(ramp), touch, touchReference: ready ? touch?.[selected.name] ?? null : null, mode: rampMode, tolerance, compared: ready});
+    }), metric === 'angle' ? 1 : 5);
+    const heroes = new Map(values.map((value, index) => [data.ramps[index], value]));
     const detail = ramp => {
       const touch = touches?.get(ramp.key) ?? null, reach = touch ? reachText(touch.reach) : '—';
       const rows = detailRows({ramp, reference: referenceOf(ramp), touch, touchReference: ready ? touch?.[selected.name] ?? null : null,
@@ -451,9 +472,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const rampRow = ramp => {
       const open = expandedRamp === ramp.key, hero = heroes.get(ramp), touch = touches?.get(ramp.key);
       const reach = touch && Number.isFinite(touch.reach) ? reachText(touch.reach) : '';
-      const reference = referenceOf(ramp)?.surf;
-      const title = !Number.isFinite(ramp.surf) ? 'No measurement yet'
-        : `Whole ramp, touch included: ${formatDelta(-ramp.surf, 1)}${Number.isFinite(reference) ? `. ${picked.label}: ${formatDelta(-reference, 1)}` : ''}`;
+      const title = hero.you ? `${metricHelp}: ${hero.you}${hero.ref ? `. ${picked.label}: ${hero.ref}` : ''}` : 'No measurement yet';
       return `<div class="rn-rr${open ? ' open' : ''}" role="row" data-ramp="${escape(ramp.key)}"><span class="rn-name" role="rowheader">${escape(ramp.label)}</span>
         <span class="rn-rch" role="cell"${reach ? ` title="${escape(`Reached in ${reach} of your runs`)}"` : ''}>${reach}</span>
         <span class="rn-bar" aria-hidden="true">${hero.size ? `<i class="${hero.tone}${hero.over ? ' over' : ''}" style="width:${(hero.size * 100).toFixed(1)}%"></i>` : ''}</span>
@@ -464,9 +483,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const runCount = Math.max(0, Math.min(TOUCH_MIN_RUNS, touchData?.runs ?? 0)), filled = Math.floor(runCount / TOUCH_MIN_RUNS * 10);
     const collecting = touchData?.collecting ? `<p class="rn-caption rn-collect"><span class="rn-meter" aria-hidden="true">${
       Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs.</span></p>` : '';
-    return rampControls(compare) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
+    return rampControls(compare, metric) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
       <div class="rn-ramps" role="table" aria-label="Ramp measurements">
-        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${touches ? 'reach' : ''}</span><span role="columnheader"></span><span role="columnheader">${ready ? `vs ${escape(picked.label)}` : 'lost'}</span><span role="columnheader"></span></div>
+        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${touches ? 'reach' : ''}</span><span class="rn-metric-head" role="columnheader">${metricLabel}${ready ? ` vs ${escape(picked.label)}` : ''}</span><span role="columnheader"></span></div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>
           ${section.ramps.map(rampRow).join('')}`).join('')}
       </div>`;
@@ -660,6 +679,11 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     else if (target.dataset.settings) onOpenSettings?.(target.dataset.settings);
     else if (target.dataset.source) { cancelRampNavigation(); source = target.dataset.source; playbackSource = null; render(); }
     else if (target.dataset.rampMode) { rampMode = target.dataset.rampMode; render(); }
+    else if (target.dataset.rampMetric) {
+      if (onSettings) onSettings({rampMetric: target.dataset.rampMetric});
+      else settings.rampMetric = target.dataset.rampMetric;
+      render();
+    }
     else if (target.dataset.resetAverages) return resetAverages(target.dataset.resetAverages);
     else if (target.dataset.ramp) { cancelRampNavigation(); expandedRamp = expandedRamp === target.dataset.ramp ? null : target.dataset.ramp; playbackSource = null; render(); }
     else if (target.dataset.playSource) { cancelRampNavigation(); playbackSource = target.dataset.playSource; render(); }

@@ -25,6 +25,8 @@ export const defaults = {
   // Replays use Surfd's own player and bar, with the extension's additions on
   // it; this swaps in the extension's bar instead, driving the same player.
   customReplayUi: false,
+  // What the Runs panel's Ramps view shows for every ramp.
+  rampMetric: 'surf',
   // Run history: the newest runs per map (each with its replay) plus every
   // map's bests, which are never pruned.
   keepHistory: true, historyRunsPerMap: 10, historyMinSeconds: 10,
@@ -42,6 +44,7 @@ const choices = {
   startColorReference: ['fixed', 'pb', 'wr'],
   surfColorReference: ['fixed', 'pb', 'wr'],
   strafePreviewMode: ['ground', 'air'],
+  rampMetric: ['surf', 'board', 'angle', 'down', 'up', 'speedIn', 'speedOut'],
 };
 
 // Unknown keys and wrong types are ignored; every accepted value is clamped

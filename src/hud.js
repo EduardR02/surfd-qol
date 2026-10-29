@@ -96,7 +96,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       clear: () => history.clear(),
     } : null,
   });
-  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, now: services.now, onOpen: () => panel.close(),
+  const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, onSettings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
   const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),

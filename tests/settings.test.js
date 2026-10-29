@@ -33,3 +33,12 @@ test('the strafe preview keeps a speed from 1 to 5000 units and a ground or air 
   applySettings(settings, {strafePreviewUnits: 0, strafePreviewMode: 'water'});
   expect([settings.strafePreviewUnits, settings.strafePreviewMode]).toEqual([1, 'ground']);
 });
+
+test('the Ramps view remembers a known metric and falls back to Surf', () => {
+  const settings = {...defaults};
+  expect(settings.rampMetric).toBe('surf');
+  applySettings(settings, {rampMetric: 'speedOut'});
+  expect(settings.rampMetric).toBe('speedOut');
+  applySettings(settings, {rampMetric: 'height'});
+  expect(settings.rampMetric).toBe('surf');
+});

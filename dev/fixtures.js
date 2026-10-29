@@ -114,7 +114,7 @@ function touchStatsFor(map, mode) {
     return {key: ramp.key, index: n, checkpoint: ramp.checkpoint, reach,
       speedIn: stat(speed + 30, -42), speedOut: stat(out(speed + 30, angle), -48),
       angle: runs ? {best: round(angle), last10: round(angle + 0.9 + noise(n + 3) * 0.6), avg: round(angle + 1.2 + noise(n + 5) * 0.5)} : {best: null, last10: null, avg: null},
-      pb: n === 4 ? null : reference(1), wr: reference(2.2)};
+      pb: n === 4 || n === 8 ? null : reference(1), wr: n === 8 ? null : reference(2.2)};
   });
   return {runs, collecting: runs < 50, touches};
 }

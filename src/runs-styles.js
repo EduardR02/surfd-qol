@@ -152,6 +152,10 @@ export const runsStyles = `
 .rn-seg button{padding:5px 12px;border:0;border-radius:7px;background:none;font-size:12.5px;font-weight:700;color:var(--text-3)!important}
 .rn-seg button:hover{color:var(--text)!important}
 .rn-seg button[aria-checked=true]{background:rgba(255,255,255,.13);color:var(--text)!important;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+/* The metric switch: its own line under the statistic, its choices sharing the width. */
+.rn-metric{flex:1 0 100%}
+.rn-metric button{flex:1 1 0;padding-left:4px;padding-right:4px}
+.rn-metric-head{grid-column:3/5}
 .rn-caption{display:flex;align-items:baseline;gap:12px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
 .rn-caption span{flex:1}
 .rn-reset{flex:none;padding:4px 10px;border:0;border-radius:8px;background:rgba(255,255,255,.07);color:var(--text-2)!important;font-size:12px;font-weight:700}

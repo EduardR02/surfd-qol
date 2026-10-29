@@ -1,9 +1,9 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { barScale, bestFinish, compareRamp, createRunsPanel, detailRows, paceCells, rampHeroes, rampSections, reachText, reached, touchCells, versusPb, when } from '../src/runs-panel.js';
+import { barScale, bestFinish, compareRamp, createRunsPanel, detailRows, paceCells, rampMetric, rampSections, scaleBars, reachText, reached, touchCells, versusPb, when } from '../src/runs-panel.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {createReplayControl} from '../src/replay-control.js';
 
-function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', time: 45, outcome: 'finished'}}, control = {}, rampStore = null, reference = null, settings = {}, now} = {}) {
+function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', time: 45, outcome: 'finished'}}, control = {}, rampStore = null, reference = null, settings = {}, onSettings = null, now} = {}) {
   const nodes = new Map();
   const root = {getElementById(id) {
     if (!nodes.has(id)) {
@@ -28,7 +28,7 @@ function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', ti
   const rampReference = reference ?? (rampStore ? createRampReference({getSession: () => session, getReferences: () => refs,
     getAdapter: () => adapter, replayStore: rampStore, settings}) : null);
   const adapter = {Session: function () {}, Movement: function () {}};
-  const panel = createRunsPanel({root, history, rampReference, settings, now, getSession: () => session, getReferences: () => refs,
+  const panel = createRunsPanel({root, history, rampReference, settings, onSettings, now, getSession: () => session, getReferences: () => refs,
     replayControl: Object.defineProperties({watchLoaded: async (load, options) => {
       loaded.push({replay: await load(), options});
       // Native Watch installs a fresh Session for every playback.
@@ -118,16 +118,17 @@ describe('runs panel', () => {
       createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
     const stat = value => ({best: value, last10: value + 1, avg: value + 2});
     let stats = {runs: 12, collecting: true, touches: []};
-    const rig = panelRig({reference, data});
+    const settings = {}, saved = [];
+    const rig = panelRig({reference, data, settings, onSettings: patch => { saved.push(patch); Object.assign(settings, patch); }});
     rig.history.touchStats = key => key === 'utopia:3' ? stats : null;
     const html = () => rig.body.innerHTML;
     try {
       rig.panel.show(); rig.panel.showView('ramps');
       expect(html()).toContain('Collecting touch stats: 12 of 50 runs.');
       // One graded number per ramp, the whole ramp against the PB; Ramp 2 isn't on the PB's route.
-      expect(html()).toContain('<span class="rn-hero loss" role="cell" title="Whole ramp, touch included: −30.0. PB: −24.0">−6.0</span>');
+      expect(html()).toContain('<span class="rn-hero loss" role="cell" title="The whole ramp, touch included: −30.0. PB: −24.0">−6.0</span>');
       expect(html()).toContain('not in PB');
-      expect(html()).toContain('vs PB');
+      expect(html()).toContain('Surf vs PB');
       expect(html()).not.toContain('class="rn-detail"');
       stats = {runs: 64, collecting: false, touches: [
         {key: 'a', index: 0, checkpoint: 0, reach: 0.43, speedIn: stat(2400), speedOut: stat(2390), angle: stat(2),
@@ -147,8 +148,18 @@ describe('runs panel', () => {
       // While the reference loads, the row shows the loss itself and the open table only You.
       slot.status = 'loading';
       rig.panel.showView('ramps');
-      expect(html()).toContain('>lost<');
+      expect(html()).toContain('>Surf<');
       expect(html()).toContain('class="rn-x solo"');
+      slot.status = 'ready';
+      rig.panel.showView('ramps');
+      rig.action({rampMetric: 'speedIn'});
+      expect(saved).toEqual([{rampMetric: 'speedIn'}]);
+      expect(html()).toContain('In vs PB');
+      expect(html()).toContain('aria-checked="true" tabindex="0" data-ramp-metric="speedIn"');
+      expect(html()).toContain('title="Speed as you touched the ramp: 2401. PB: 2410">−9</span>');
+      rig.action({rampMetric: 'angle'});
+      expect(html()).toContain('Angle vs PB');
+      expect(html()).toContain('>±0.0°</span>');
       rig.history.touchStats = () => { throw new Error('unavailable'); };
       rig.panel.showView('ramps');
       expect(html()).not.toContain('Speed in');
@@ -173,15 +184,16 @@ describe('runs panel', () => {
     expect(detailRows({ramp, split: false}).map(row => [row.label, row.ref, row.diff, row.tone])).toEqual([['Touch', '—', '', 'muted'], ['Surf', '—', '', 'muted']]);
   });
 
-  test('each ramp’s number is the whole ramp against the reference, on one bar scale for the map', () => {
+  test('each ramp’s number is its metric against the reference, on one bar scale for the map', () => {
     const ramps = [{key: 'a', surf: 40}, {key: 'b', surf: 20}, {key: 'c', surf: null}, {key: 'd', surf: 30}, {key: 'e', surf: 334}];
     const reference = {a: 30, b: 25, c: 10, e: 40};
-    const vs = rampHeroes(ramps, ramp => reference[ramp.key], 2);
+    const surf = (list, compared) => scaleBars(list.map(ramp => rampMetric('surf', {ramp, reference: {surf: reference[ramp.key]}, tolerance: 2, compared})));
+    const vs = surf(ramps, true);
     expect(vs.map(hero => [hero.text, hero.tone])).toEqual([['−10.0', 'loss'], ['+5.0', 'good'], ['—', 'muted'], ['', 'muted'], ['−294.0', 'loss']]);
     expect(vs[3].absent).toBe(true);
     // The bail runs off the end of the scale the other ramps set, so their bars still differ.
     expect(vs.map(hero => [hero.size, hero.over])).toEqual([[1, false], [.5, false], [0, false], [0, false], [1, true]]);
-    const raw = rampHeroes(ramps.slice(0, 4));
+    const raw = surf(ramps.slice(0, 4), false);
     expect(raw.map(hero => [hero.text, hero.tone, hero.size])).toEqual([['−40.0', 'plain', 1], ['−20.0', 'plain', .5], ['—', 'muted', 0], ['−30.0', 'plain', .75]]);
     // The scale: the largest value within three times the median, never under 5 u/s.
     expect(barScale([6.8, 4.4, 11.9, 6.8, 6, 299.5, 1.7, 9.3, 0.3])).toBe(11.9);
@@ -189,6 +201,18 @@ describe('runs panel', () => {
     expect(barScale([13.4, 29.9, 46.9, 27.4, 40.2])).toBe(46.9);
     expect(barScale([0.4, -0.2, null])).toBe(5);
     expect(barScale([])).toBe(5);
+    expect(barScale([0.4, 0.2], 1)).toBe(1);
+
+    // Touch metrics come from the touch stats: speeds better higher, the angle lower, in degrees.
+    const touch = {speedIn: {best: 2400, last10: 2390}, speedOut: {best: 2380}, angle: {best: 3.2, last10: 4}};
+    const against = {speedIn: 2410, speedOut: 2370, angle: 2.4};
+    expect(rampMetric('speedIn', {touch, touchReference: against, compared: true})).toMatchObject({text: '−10', tone: 'loss', bar: -10, you: '2400', ref: '2410'});
+    expect(rampMetric('speedOut', {touch, touchReference: against, compared: true})).toMatchObject({text: '+10', tone: 'good', bar: 10});
+    expect(rampMetric('angle', {touch, touchReference: against, compared: true})).toMatchObject({text: '+0.8°', tone: 'loss', you: '3.2°', ref: '2.4°'});
+    expect(rampMetric('angle', {touch, mode: 'recent'})).toMatchObject({text: '4.0°', tone: 'plain', bar: 4});
+    expect(rampMetric('angle', {touch, touchReference: null, compared: true})).toMatchObject({absent: true, tone: 'muted'});
+    expect(rampMetric('speedIn', {touch: null, compared: true})).toMatchObject({text: '—', tone: 'muted', bar: null});
+    expect(rampMetric('board', {ramp: {board: 7.5}, reference: {board: 5.1}, compared: true, tolerance: 2})).toMatchObject({text: '−2.4', tone: 'loss', you: '−7.5', ref: '−5.1'});
   });
 
   test('how far a run got', () => {
@@ -254,7 +278,7 @@ describe('runs panel', () => {
     expect(compareRamp(-5, -2)).toEqual({text: '+5.0', diff: '+3.0', tone: 'good'});
     expect(compareRamp(-2, -5)).toEqual({text: '+2.0', diff: '−3.0', tone: 'loss'});
     expect(compareRamp(-2, -2)).toMatchObject({diff: '±0.0', tone: 'good'});
-    expect(rampHeroes([{surf: -5}, {surf: -2}], () => -3).map(hero => [hero.text, hero.tone])).toEqual([['+2.0', 'good'], ['−1.0', 'loss']]);
+    expect([-5, -2].map(own => rampMetric('surf', {ramp: {surf: own}, reference: {surf: -3}, compared: true})).map(value => [value.text, value.tone])).toEqual([['+2.0', 'good'], ['−1.0', 'loss']]);
   });
 
   test('official Watch loads native replay only on demand and reuses it, while local fallback keeps its run id', async () => {
