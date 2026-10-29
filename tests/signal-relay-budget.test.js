@@ -190,3 +190,40 @@ test('the public Worker never forwards requests to the internal reservation endp
   expect(response.status).toBe(404);
   expect(calls).toEqual([]);
 });
+
+test('a 32-holder cohort can reserve successive 45-minute renewals through a rolling day', async () => {
+  const store = storage(), env = {...ENV, RELAY_GRANTS_PER_HOUR: '256', RELAY_GRANTS_PER_DAY: '1024', RELAY_MAX_UNEXPIRED: '256'};
+  const originalNow = Date.now;
+  let at = DAY;
+  Date.now = () => at;
+  try {
+    const object = await lobby(store, env);
+    for (let elapsed = 0; elapsed <= DAY; elapsed += 45 * 60 * 1000) {
+      at = DAY + elapsed;
+      const reservations = await Promise.all(Array.from({length: 32}, () => requestReservation(object)));
+      expect(reservations.map(response => response.status)).toEqual(Array(32).fill(201));
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('a full 256-holder join cohort cannot renew at 45 minutes', async () => {
+  const store = storage(), env = {...ENV, RELAY_GRANTS_PER_HOUR: '256', RELAY_GRANTS_PER_DAY: '1024', RELAY_MAX_UNEXPIRED: '256'};
+  const originalNow = Date.now;
+  let at = DAY;
+  Date.now = () => at;
+  try {
+    const object = await lobby(store, env);
+    const initial = await Promise.all(Array.from({length: 256}, () => requestReservation(object)));
+    expect(initial.map(response => response.status)).toEqual(Array(256).fill(201));
+    expect((await requestReservation(object)).status).toBe(503);
+
+    at += 45 * 60 * 1000;
+    const renewals = await Promise.all(Array.from({length: 256}, () => requestReservation(object)));
+    expect(renewals.map(response => response.status)).toEqual(Array(256).fill(503));
+    expect(store.values.get(RELAY_BUDGET_KEY).grants).toHaveLength(256);
+  } finally {
+    Date.now = originalNow;
+  }
+});

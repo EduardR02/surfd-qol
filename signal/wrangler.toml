@@ -13,9 +13,14 @@ RELAY = "off"
 # Explicit example grant budgets; choose limits before enabling paid relay.
 # All three MUST be positive safe integers. Counts are global rolling windows,
 # persisted in the singleton Lobby, and failed requests burn reservations.
-# Unexpired includes the one-hour TTL plus a five-second issuance window.
-# These are NOT byte/spend caps: one grant can relay arbitrary bytes, and hostile
-# callers can exhaust the grants. They are not account-authentication controls.
+# Unexpired includes the one-hour TTL and five-second issuance window.
+# Count holders as one host plus one per guest. With 1h credentials renewed at
+# 45m, each continuous holder uses about 32 grants/day and overlaps two grants
+# in the hourly and unexpired windows: daily allows at most 32 continuous
+# holders, while the hourly/unexpired examples theoretically allow 128.
+# Leave margin for joins, reconnects and failures. A 256-holder initial cohort
+# exhausts the hourly and unexpired quotas and cannot renew at 45m. Credential
+# limits are not room-capacity, byte, or spending guarantees.
 RELAY_GRANTS_PER_HOUR = "256"
 RELAY_GRANTS_PER_DAY = "1024"
 RELAY_MAX_UNEXPIRED = "256"
