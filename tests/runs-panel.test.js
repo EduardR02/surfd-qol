@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { bestFinish, compareRamp, createRunsPanel, paceCells, rampSections, reachText, reached, surfBars, touchCells, versusPb, when } from '../src/runs-panel.js';
+import { bestFinish, compareRamp, createRunsPanel, detailRows, paceCells, rampHeroes, rampSections, reachText, reached, touchCells, versusPb, when } from '../src/runs-panel.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {createReplayControl} from '../src/replay-control.js';
 
@@ -110,49 +110,77 @@ describe('runs panel', () => {
     expect([reachText(0.999), reachText(1), reachText(0), reachText(null)]).toEqual(['99%', '100%', '0%', '—']);
   });
 
-  test('the Ramps view adds each touch under its ramp, or says how far collecting has got', () => {
-    const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'a', label: 'Ramp 1', checkpoint: 0, board: 2}, {key: 'b', label: 'Ramp 2', checkpoint: 0, board: 3}]};
-    const slot = {status: 'ready', label: 'PB', ramps: new Map([['a', {board: 2}]])};
+  test('each ramp is one row: reach and the whole ramp against the reference; the chevron opens the rest', () => {
+    const data = {key: 'utopia:3', name: 'Utopia', ramps: [{key: 'a', label: 'Ramp 1', checkpoint: 0, board: 2, down: 10, up: 20, surf: 30},
+      {key: 'b', label: 'Ramp 2', checkpoint: 0, board: 3, down: 100, up: 234, surf: 334}]};
+    const slot = {status: 'ready', label: 'PB', ramps: new Map([['a', {board: 1.5, down: 9, up: 15, surf: 24}]])};
     const reference = {sources: () => [{name: 'pb', label: 'PB'}, {name: 'wr', label: 'KSF WR'}], version: () => 1,
       createConsumer: () => ({get: () => slot, release() {}, destroy() {}})};
     const stat = value => ({best: value, last10: value + 1, avg: value + 2});
     let stats = {runs: 12, collecting: true, touches: []};
     const rig = panelRig({reference, data});
     rig.history.touchStats = key => key === 'utopia:3' ? stats : null;
-    const lines = () => rig.body.innerHTML.match(/class="rn-tl"/g)?.length ?? 0;
+    const html = () => rig.body.innerHTML;
     try {
       rig.panel.show(); rig.panel.showView('ramps');
-      expect(rig.body.innerHTML).toContain('Collecting touch stats: 12 of 50 runs.');
-      expect(lines()).toBe(0);
+      expect(html()).toContain('Collecting touch stats: 12 of 50 runs.');
+      // One graded number per ramp, the whole ramp against the PB; Ramp 2 isn't on the PB's route.
+      expect(html()).toContain('<span class="rn-hero loss" role="cell" title="Whole ramp, touch included: −30.0. PB: −24.0">−6.0</span>');
+      expect(html()).toContain('not in PB');
+      expect(html()).toContain('vs PB');
+      expect(html()).not.toContain('class="rn-detail"');
       stats = {runs: 64, collecting: false, touches: [
-        {key: 'a', index: 0, checkpoint: 0, reach: 1, speedIn: stat(2400), speedOut: stat(2390), angle: stat(2),
+        {key: 'a', index: 0, checkpoint: 0, reach: 0.43, speedIn: stat(2400), speedOut: stat(2390), angle: stat(2),
           pb: {speedIn: 2410, speedOut: 2380, angle: 3}, wr: {speedIn: 2500, speedOut: 2490, angle: 1}},
       ]};
       rig.panel.showView('ramps');
-      expect(rig.body.innerHTML).not.toContain('Collecting');
-      expect(lines()).toBe(2);
-      // Compared with the selected PB; a ramp the stats don't have shows dashes.
-      expect(rig.body.innerHTML).toContain('<b>2400</b><em>−10</em>');
-      expect(rig.body.innerHTML).toContain('<b>2.0°</b><em>−1.0°</em>');
-      expect(rig.body.innerHTML).toContain('rn-t muted');
+      expect(html()).not.toContain('Collecting');
+      expect(html()).toContain('>43%</span>');
+      rig.action({ramp: 'a'});
+      expect(html()).toContain('class="rn-detail"');
+      expect(html()).toContain('<span role="rowheader">Speed in</span><b role="cell">2400</b><span role="cell">2410</span><b role="cell" class="loss">−10</b>');
+      expect(html()).toContain('Reached in 43% of runs');
       rig.action({rampMode: 'recent'});
-      expect(rig.body.innerHTML).toContain('<b>2401</b>');
+      expect(html()).toContain('<b role="cell">2401</b>');
+      // While the reference loads, the row shows the loss itself and the open table only You.
       slot.status = 'loading';
       rig.panel.showView('ramps');
-      expect(rig.body.innerHTML).not.toContain('<em>−10</em>');
+      expect(html()).toContain('>lost<');
+      expect(html()).toContain('class="rn-x solo"');
       rig.history.touchStats = () => { throw new Error('unavailable'); };
       rig.panel.showView('ramps');
-      expect(lines()).toBe(0);
+      expect(html()).not.toContain('Speed in');
     } finally { rig.panel.destroy(); }
   });
 
-  test('surf bars diverge around the reference, or grow with the loss without one', () => {
-    const ramps = [{key: 'a', surf: 40}, {key: 'b', surf: 20}, {key: 'c', surf: null}, {key: 'd', surf: 30}];
-    const reference = {a: 30, b: 25, c: 10};
-    const vs = surfBars(ramps, ramp => reference[ramp.key], 2);
-    expect(vs.map(bar => bar && [bar.side, bar.tone, bar.size])).toEqual([['left', 'loss', 1], ['right', 'good', .5], null, null]);
-    const raw = surfBars(ramps);
-    expect(raw.map(bar => bar && [bar.side, bar.size])).toEqual([['raw', 1], ['raw', .5], null, ['raw', .75]]);
+  test('the open ramp lists Touch with its angle, Surf with Down and Up, then the speeds, grading only the difference', () => {
+    const ramp = {board: 7.5, down: 14.6, up: 38.1, surf: 52.7};
+    const reference = {board: 5.1, down: 13.5, up: 30, surf: 44};
+    const touch = {reach: 0.5, speedIn: {best: 1929}, speedOut: {best: 1918}, angle: {best: 3.7}};
+    const rows = detailRows({ramp, reference, touch, touchReference: {speedIn: 1951, speedOut: 1955, angle: 2.1}, tolerance: 2});
+    expect(rows.map(row => [row.label, row.sub, row.you, row.ref, row.diff, row.tone])).toEqual([
+      ['Touch', false, '−7.5', '−5.1', '−2.4', 'loss'],
+      ['angle', true, '3.7°', '2.1°', '+1.6°', 'loss'],
+      ['Surf', false, '−52.7', '−44.0', '−8.7', 'loss'],
+      ['down', true, '−14.6', '−13.5', '−1.1', 'warn'],
+      ['up', true, '−38.1', '−30.0', '−8.1', 'loss'],
+      ['Speed in', false, '1929', '1951', '−22', 'loss'],
+      ['Speed out', false, '1918', '1955', '−37', 'loss'],
+    ]);
+    // Net Surf and no touch stats: Touch and Surf only; no reference: nothing graded.
+    expect(detailRows({ramp, split: false}).map(row => [row.label, row.ref, row.diff, row.tone])).toEqual([['Touch', '—', '', 'muted'], ['Surf', '—', '', 'muted']]);
+  });
+
+  test('each ramp’s number is the whole ramp against the reference, on one bar scale for the map', () => {
+    const ramps = [{key: 'a', surf: 40}, {key: 'b', surf: 20}, {key: 'c', surf: null}, {key: 'd', surf: 30}, {key: 'e', surf: 334}];
+    const reference = {a: 30, b: 25, c: 10, e: 40};
+    const vs = rampHeroes(ramps, ramp => reference[ramp.key], 2);
+    expect(vs.map(hero => [hero.text, hero.tone])).toEqual([['−10.0', 'loss'], ['+5.0', 'good'], ['—', 'muted'], ['', 'muted'], ['−294.0', 'loss']]);
+    expect(vs[3].absent).toBe(true);
+    // The costliest ramp fills the bar; the others are measured against it.
+    expect(vs.map(hero => Number(hero.size.toFixed(3)))).toEqual([0.034, 0.017, 0, 0, 1]);
+    const raw = rampHeroes(ramps.slice(0, 4));
+    expect(raw.map(hero => [hero.text, hero.tone, hero.size])).toEqual([['−40.0', 'plain', 1], ['−20.0', 'plain', .5], ['—', 'muted', 0], ['−30.0', 'plain', .75]]);
   });
 
   test('how far a run got', () => {
@@ -218,7 +246,7 @@ describe('runs panel', () => {
     expect(compareRamp(-5, -2)).toEqual({text: '+5.0', diff: '+3.0', tone: 'good'});
     expect(compareRamp(-2, -5)).toEqual({text: '+2.0', diff: '−3.0', tone: 'loss'});
     expect(compareRamp(-2, -2)).toMatchObject({diff: '±0.0', tone: 'good'});
-    expect(surfBars([{surf: -5}, {surf: -2}], () => -3).map(bar => [bar.side, bar.tone])).toEqual([['right', 'good'], ['left', 'loss']]);
+    expect(rampHeroes([{surf: -5}, {surf: -2}], () => -3).map(hero => [hero.text, hero.tone])).toEqual([['+2.0', 'good'], ['−1.0', 'loss']]);
   });
 
   test('official Watch loads native replay only on demand and reuses it, while local fallback keeps its run id', async () => {
@@ -407,8 +435,8 @@ describe('runs panel', () => {
     rig.panel.showView('ramps');
     rig.action({rampMode: 'recent'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'recent']);
-    expect(rig.body.innerHTML).toContain('3 valid');
-    expect(rig.body.innerHTML).toContain('0 valid');
+    rig.action({ramp: 'ramp'});
+    expect(rig.body.innerHTML).toContain('3 runs');
     rig.action({rampMode: 'average'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'average']);
     rig.action({resetAverages: 'ask'});

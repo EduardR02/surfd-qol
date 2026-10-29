@@ -148,17 +148,39 @@ export function touchCells(touch, mode = 'best', reference = null, tolerance = 0
   };
 }
 
-// Each ramp's net Surf loss as a bar. Against a reference the bars diverge
-// from the middle: left for speed lost beyond it, right for speed kept. With
-// no reference they grow from the left with the loss itself.
-export function surfBars(ramps, reference = null, tolerance = 0) {
+// Each ramp's one number: what the whole ramp (Surf, the touch included) cost
+// beyond the reference, or with no reference the loss itself. Bars share one
+// scale across the map, so the costliest ramps stand out.
+export function rampHeroes(ramps, reference = null, tolerance = 0) {
   const entries = ramps.map(ramp => {
     const own = ramp.surf, other = reference ? reference(ramp) : null;
-    if (!Number.isFinite(own) || (reference && !Number.isFinite(other))) return null;
-    return reference ? {value: other - own, tone: referenceTone(own, other, tolerance)} : {value: own, tone: 'plain'};
+    if (!Number.isFinite(own)) return {text: '—', tone: 'muted', value: null};
+    if (!reference) return {text: formatDelta(-own, 1), tone: 'plain', value: own};
+    if (!Number.isFinite(other)) return {text: '', tone: 'muted', value: null, absent: true};
+    const {diff, tone} = compareRamp(own, other, tolerance);
+    return {text: diff, tone, value: other - own};
   });
-  const scale = Math.max(1e-6, ...entries.filter(Boolean).map(entry => Math.abs(entry.value)));
-  return entries.map(entry => entry && {...entry, side: !reference ? 'raw' : entry.value < 0 ? 'left' : 'right', size: Math.abs(entry.value) / scale});
+  const scale = Math.max(1e-6, ...entries.map(entry => Math.abs(entry.value ?? 0)));
+  return entries.map(entry => ({...entry, size: Math.abs(entry.value ?? 0) / scale}));
+}
+
+// The open ramp's measurements against the reference: Touch with its angle,
+// Surf with Down and Up, then the speeds into and out of the touch. Only the
+// difference is graded.
+export function detailRows({ramp, reference = null, touch = null, touchReference = null, mode = 'best', tolerance = 0, split = true}) {
+  const loss = (label, field, sub = false) => {
+    const other = reference?.[field], value = compareRamp(ramp?.[field], other, tolerance);
+    return {label, sub, you: value.text, ref: Number.isFinite(other) ? formatDelta(-other, 1) : '—', diff: value.diff, tone: value.diff ? value.tone : 'muted'};
+  };
+  const cells = touch ? touchCells(touch, mode, touchReference, tolerance) : null;
+  const measured = (label, cell, other, sub = false) => ({label, sub, you: cell.text, ref: other, diff: cell.diff, tone: cell.diff ? cell.tone : 'muted'});
+  return [
+    loss('Touch', 'board'),
+    ...cells ? [measured('angle', cells.angle, Number.isFinite(touchReference?.angle) ? `${touchReference.angle.toFixed(1)}°` : '—', true)] : [],
+    loss('Surf', 'surf'),
+    ...split ? [loss('down', 'down', true), loss('up', 'up', true)] : [],
+    ...cells ? [measured('Speed in', cells.speedIn, fixed(touchReference?.speedIn, 0)), measured('Speed out', cells.speedOut, fixed(touchReference?.speedOut, 0))] : [],
+  ];
 }
 
 // One slanted segment per checkpoint and one for the finish, filled as far as the run got.
@@ -356,14 +378,13 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     return `<button type="button" class="rn-name${reason ? ' off' : ''}" data-ramp-watch="${escape(ramp.key)}" data-play-source="" aria-label="${escape(label)}" title="${escape(label)}"${pending ? ' aria-busy="true"' : ''}><i class="rn-tri" aria-hidden="true"></i>${escape(ramp.label)}</button>`;
   }
   function rampPlayback(data, ramp, refs, selected, picked, choices) {
-    if (expandedRamp !== ramp.key) return '';
     const pending = busy === `ramp:${ramp.key}`;
     const chips = choices.map(([name, label]) => {
       const reason = playbackReason(data, ramp.key, name, refs, selected, picked);
       return {reason, html: `<button type="button" class="rn-chip" data-ramp-watch="${escape(ramp.key)}" data-play-source="${name}" aria-label="${escape(reason ? `${label}: ${reason}` : `Watch ${ramp.label} in ${label}`)}" title="${escape(reason || `Watch ${ramp.label} in ${label}`)}"${reason || pending ? ' disabled' : ''}${pending && playbackSource === name ? ' aria-busy="true"' : ''}><i class="rn-tri" aria-hidden="true"></i>${escape(label)}</button>`};
     });
     const missing = chips.filter(chip => chip.reason).map(chip => chip.reason);
-    return `<div id="rn-play-${escape(encodeURIComponent(ramp.key))}" class="rn-ramp-play" role="group" aria-label="Watch ${escape(ramp.label)} in another replay">
+    return `<div class="rn-ramp-play" role="group" aria-label="Watch ${escape(ramp.label)} in another replay">
       ${chips.map(chip => chip.html).join('')}
       <span class="rn-play-note">${escape(missing.length ? `${missing.join('. ')}.` : 'Starts just before the ramp, paused.')}</span>
     </div>`;
@@ -389,7 +410,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     }
     const ready = picked?.status === 'ready';
     const net = settings.rampResult === 'total';
-    const fields = net ? [['board', 'touch'], ['surf', 'surf']] : [['board', 'touch'], ['down', 'down'], ['up', 'up']];
     const tolerance = settings.referenceLossTolerance ?? 0;
     const here = history.currentMap === key;
     const note = !here ? `Comparisons need the map loaded in the game. Load ${escape(data.name)} to compare against your PB or the WR.`
@@ -400,53 +420,49 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       `<button type="button" role="radio" aria-checked="${ref === selected}" tabindex="${ref === selected ? 0 : -1}" data-source="${ref.name}">${escape(ref.label)}</button>`).join('')}</div>` : '';
     const legend = ready ? `<p class="rn-legend"><span class="good">at or better than ${escape(picked.label)}</span><span class="warn">within ${fixed(tolerance)} u/s</span><span class="loss">worse</span></p>` : '';
     const counted = rampMode !== 'best';
-    const cell = (ramp, field, label) => {
-      const reference = ready ? picked.ramps.get(ramp.key)?.[field] : null;
-      const value = compareRamp(ramp[field], reference, tolerance);
-      const count = ramp.counts?.[field] ?? 0;
-      const title = [counted ? `${label} from ${count} valid run${count === 1 ? '' : 's'}` : '',
-        Number.isFinite(reference) ? `${picked.label}: ${formatDelta(-reference, 1)}` : ''].filter(Boolean).join('. ');
-      return `<span class="rn-v ${value.tone}" role="cell"${title ? ` title="${escape(title)}"` : ''}><b>${value.text}</b>${value.diff ? `<em>${value.diff}</em>` : ''}</span>`;
-    };
-    const bars = new Map(surfBars(data.ramps ?? [], ready ? ramp => picked.ramps.get(ramp.key)?.surf : null, tolerance).map((bar, index) => [data.ramps[index], bar]));
-    const bar = ramp => {
-      const entry = bars.get(ramp);
-      return `<span class="rn-bar${ready ? ' vs' : ''}" aria-hidden="true">${entry ? `<i class="${entry.tone} ${entry.side}" style="width:${(entry.size * (ready ? 50 : 100)).toFixed(1)}%"></i>` : ''}</span>`;
-    };
+    const referenceOf = ramp => ready ? picked.ramps.get(ramp.key) ?? null : null;
+    const heroes = new Map(rampHeroes(data.ramps ?? [], ready ? ramp => referenceOf(ramp)?.surf : null, tolerance).map((hero, index) => [data.ramps[index], hero]));
     // How many runs back a Last 10 or Average row: the most any of its values has.
-    const samples = ramp => counted ? Math.max(0, ...fields.map(([field]) => ramp.counts?.[field] ?? 0)) : null;
+    const samples = ramp => Math.max(0, ...['board', 'down', 'up', 'surf'].map(field => ramp.counts?.[field] ?? 0));
     const choices = destinations(data, refs);
     let touchData = null;
     try { touchData = history.touchStats?.(key) ?? null; } catch { /* unavailable */ }
     const touches = touchData && !touchData.collecting ? new Map((touchData.touches ?? []).map(touch => [touch.key, touch])) : null;
-    const touchLine = ramp => {
-      if (!touches) return '';
-      const touch = touches.get(ramp.key);
-      const reference = ready ? touch?.[selected.name] ?? null : null;
-      const values = touchCells(touch, rampMode, reference, tolerance);
-      const item = (value, label, help, other = '') => {
-        const title = value.diff ? `${help}. ${picked.label}: ${other}` : help;
-        return `<span class="rn-t ${value.tone}" role="cell" title="${escape(title)}"><small>${label}</small><b>${value.text}</b>${value.diff ? `<em>${value.diff}</em>` : ''}</span>`;
-      };
-      return `<div class="rn-tl">${
-        item(values.reach, 'reach', 'Share of your runs that got this far')}${
-        item(values.speedIn, 'in', 'Speed as you touch the ramp', fixed(reference?.speedIn, 0))}${
-        item(values.speedOut, 'out', 'Speed right after the touch', fixed(reference?.speedOut, 0))}${
-        item(values.angle, 'angle', 'How far your path was off the ramp’s surface. 0° loses nothing', `${fixed(reference?.angle)}°`)}</div>`;
+    const detail = ramp => {
+      const touch = touches?.get(ramp.key) ?? null, reach = touch ? reachText(touch.reach) : '—';
+      const rows = detailRows({ramp, reference: referenceOf(ramp), touch, touchReference: ready ? touch?.[selected.name] ?? null : null,
+        mode: rampMode, tolerance, split: !net});
+      const count = samples(ramp);
+      const line = [counted ? count ? plural(count, 'run') : 'No runs yet' : '', reach !== '—' ? `reached in ${reach} of runs` : ''].filter(Boolean).join(' · ');
+      return `<div class="rn-detail" role="row"><div id="rn-play-${escape(encodeURIComponent(ramp.key))}" class="rn-detail-in" role="cell">
+        <div class="rn-x${ready ? '' : ' solo'}" role="table" aria-label="${escape(`${ramp.label}${ready ? ` against ${picked.label}` : ''}`)}">
+          <div class="rn-xr rn-xh" role="row"><span role="columnheader"></span><span role="columnheader">You</span>${ready ? `<span role="columnheader">${escape(picked.label)}</span><span role="columnheader">Δ</span>` : ''}</div>
+          ${rows.map(row => `<div class="rn-xr${row.sub ? ' sub' : ''}" role="row"><span role="rowheader">${row.label}</span><b role="cell">${row.you}</b>${
+            ready ? `<span role="cell">${row.ref}</span><b role="cell" class="${row.tone}">${row.diff || ''}</b>` : ''}</div>`).join('')}
+        </div>
+        ${line ? `<p class="rn-x-note">${line.charAt(0).toUpperCase()}${line.slice(1)}</p>` : ''}
+        ${rampPlayback(data, ramp, refs, selected, picked, choices)}
+      </div></div>`;
     };
     const rampRow = ramp => {
-      const open = expandedRamp === ramp.key, count = samples(ramp);
-      const runs = count === null ? '' : `<small class="rn-n">${count ? `${count} run${count === 1 ? '' : 's'}` : 'no runs yet'}</small>`;
-      return `<div class="rn-rr${open ? ' open' : ''}${touches ? ' touched' : ''}" role="row"><span class="rn-namecell" role="rowheader">${rampName(data, ramp, refs, selected, picked, choices)}${runs}</span>${bar(ramp)}${
-        fields.map(([field, label]) => cell(ramp, field, label)).join('')}<span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
-        open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="Watch ${escape(ramp.label)} in another replay" title="Other replays">${CHEVRON}</button></span>${touchLine(ramp)}</div>${rampPlayback(data, ramp, refs, selected, picked, choices)}`;
+      const open = expandedRamp === ramp.key, hero = heroes.get(ramp), touch = touches?.get(ramp.key);
+      const reach = touch && Number.isFinite(touch.reach) ? reachText(touch.reach) : '';
+      const reference = referenceOf(ramp)?.surf;
+      const title = !Number.isFinite(ramp.surf) ? 'No measurement yet'
+        : `Whole ramp, touch included: ${formatDelta(-ramp.surf, 1)}${Number.isFinite(reference) ? `. ${picked.label}: ${formatDelta(-reference, 1)}` : ''}`;
+      return `<div class="rn-rr${open ? ' open' : ''}" role="row"><span class="rn-namecell" role="rowheader">${rampName(data, ramp, refs, selected, picked, choices)}</span>
+        <span class="rn-rch" role="cell"${reach ? ` title="${escape(`Reached in ${reach} of your runs`)}"` : ''}>${reach}</span>
+        <span class="rn-bar" aria-hidden="true">${hero.size ? `<i class="${hero.tone}" style="width:${(hero.size * 100).toFixed(1)}%"></i>` : ''}</span>
+        <span class="rn-hero ${hero.tone}" role="cell" title="${escape(title)}">${hero.absent ? `not in ${escape(picked.label)}` : hero.text}</span>
+        <span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
+        open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="${escape(`${ramp.label}: details and other replays`)}" title="Details and other replays">${CHEVRON}</button></span></div>${open ? detail(ramp) : ''}`;
     };
     const runCount = Math.max(0, Math.min(TOUCH_MIN_RUNS, touchData?.runs ?? 0)), filled = Math.floor(runCount / TOUCH_MIN_RUNS * 10);
     const collecting = touchData?.collecting ? `<p class="rn-caption rn-collect"><span class="rn-meter" aria-hidden="true">${
       Array.from({length: 10}, (_, i) => `<i${i < filled ? ' class="on"' : ''}></i>`).join('')}</span><span>Collecting touch stats: ${runCount} of ${TOUCH_MIN_RUNS} runs.</span></p>` : '';
     return rampControls(compare) + collecting + `${note ? `<p class="rn-note">${note}</p>` : legend}
-      <div class="rn-ramps${net ? ' net' : ''}" role="table" aria-label="Ramp measurements">
-        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span class="rn-bar-head" role="columnheader">surf${ready ? `<span class="rn-bar-reference"> vs ${escape(picked.label)}</span>` : ''}</span>${fields.map(([, label]) => `<span role="columnheader">${label}</span>`).join('')}<span role="columnheader"></span></div>
+      <div class="rn-ramps" role="table" aria-label="Ramp measurements">
+        <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${touches ? 'reach' : ''}</span><span role="columnheader"></span><span role="columnheader">${ready ? `vs ${escape(picked.label)}` : 'lost'}</span><span role="columnheader"></span></div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>
           ${section.ramps.map(rampRow).join('')}`).join('')}
       </div>`;

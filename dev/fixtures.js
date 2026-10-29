@@ -83,6 +83,8 @@ const maps = {
     pb: null, splits: [], ramps: [], start: {best: 347.2, average: 347.2, count: 2},
   },
 };
+// A bail on Utopia's Ramp 6: most of your speed gone where the PB and WR lose little.
+Object.assign(maps['utopia:3'].ramps[5], {board: 38.6, down: 96.2, up: 238, surf: 334.2, clean: {board: 4.1, down: 12.6, up: 27.9, surf: 40.5}});
 maps['boreas:2'].pb = maps['boreas:2'].runs[1];
 maps['boreas:2'].splits = [split('CP1', 21.404, 2690, 21.404, 0), split('CP2', 43.118, 3010, 43.118, 0)];
 for (const [key, map] of Object.entries(maps)) {
@@ -97,11 +99,12 @@ function touchStatsFor(map, mode) {
   const runs = mode === 'collecting' ? 23 : mode === 'none' ? 0 : Math.min(200, map.totals.attempts);
   const touches = map.ramps.map((ramp, n) => {
     const reach = runs ? round(Math.max(0.18, 1 - n * 0.07 - noise(n + 40) * 0.05), 3) : null;
-    const speed = 1900 + n * 120 + noise(n + 7) * 90, angle = 2.2 + noise(n + 21) * 3.4;
+    const speed = 1900 + n * 120 + noise(n + 7) * 90, angle = ramp.clean ? 14.2 : 2.2 + noise(n + 21) * 3.4;
     const stat = (value, spread) => runs ? {best: round(value), last10: round(value + spread), avg: round(value + spread * 1.4)} : {best: null, last10: null, avg: null};
     const out = (into, a) => into * Math.cos(a * Math.PI / 180) - 2;
-    const reference = factor => ({speedIn: round(speed + 8 * factor - noise(n + factor) * 20), speedOut: round(out(speed + 8 * factor, angle * (1 - 0.15 * factor))),
-      angle: round(angle * (1 - 0.15 * factor) + (noise(n * 3 + factor) - 0.5) * 0.8)});
+    const theirs = ramp.clean ? 3 : angle;
+    const reference = factor => ({speedIn: round(speed + 8 * factor - noise(n + factor) * 20), speedOut: round(out(speed + 8 * factor, theirs * (1 - 0.15 * factor))),
+      angle: round(theirs * (1 - 0.15 * factor) + (noise(n * 3 + factor) - 0.5) * 0.8)});
     return {key: ramp.key, index: n, checkpoint: ramp.checkpoint, reach,
       speedIn: stat(speed + 30, -42), speedOut: stat(out(speed + 30, angle), -48),
       angle: runs ? {best: round(angle), last10: round(angle + 0.9 + noise(n + 3) * 0.6), avg: round(angle + 1.2 + noise(n + 5) * 0.5)} : {best: null, last10: null, avg: null},
@@ -180,10 +183,11 @@ export function createRampReference({params, settings, current = 'utopia:3'}) {
   const mode = params.get('ref') ?? 'ready';
   const listeners = new Set();
   const table = factor => new Map(maps[current].ramps.flatMap((ramp, n) => {
-    if (mode === 'absent' && n === 0) return [];
-    const shift = (noise(n * 13 + factor) - .45) * 6 * factor;
-    return [[ramp.key, {tick: 450 + n * 190, board: Math.max(0, round((ramp.board ?? 4) + shift)), down: Math.max(0, round(ramp.down + shift)),
-      up: Math.max(0, round(ramp.up + shift * 1.4)), surf: Math.max(0, round(ramp.surf + shift * 2.4))}]];
+    // Ramp 9 is off both references' route.
+    if (n === 8 || (mode === 'absent' && n === 0)) return [];
+    const shift = (noise(n * 13 + factor) - .62) * 6 * factor, base = ramp.clean ?? ramp;
+    return [[ramp.key, {tick: 450 + n * 190, board: Math.max(0, round((base.board ?? 4) + shift)), down: Math.max(0, round(base.down + shift)),
+      up: Math.max(0, round(base.up + shift * 1.4)), surf: Math.max(0, round(base.surf + shift * 2.4))}]];
   }));
   const label = () => settings.wrSource === 'leaderboard' ? 'Site WR' : 'KSF WR';
   const entries = {pb: {status: 'ready', label: 'PB', ramps: table(1)}, wr: {status: 'ready', get label() { return label(); }, ramps: table(2.2)}};

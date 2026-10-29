@@ -162,9 +162,9 @@ export const runsStyles = `
 .rn-reset-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 20px 8px;font-size:12px;color:var(--text)}
 .rn-reset-confirm span{flex:1 1 220px}
 .rn-reset-confirm small{font-size:12px;color:var(--text-3)}
-/* Watching a ramp: the name plays it in the compared replay; the chips under an open row offer the others. */
+/* Watching a ramp: the name plays it in the compared replay; the chips in an open row offer the others. */
 .rn-tri{flex:none;width:8px;height:9px;margin-right:7px;background:currentColor;clip-path:polygon(0 0,100% 50%,0 100%);opacity:.55}
-.rn-ramp-play{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-2px 0 4px;padding:4px 8px 10px 8px;border-radius:0 0 8px 8px;background:rgba(255,255,255,.045)}
+.rn-ramp-play{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
 .rn-chip{display:inline-flex;align-items:center;height:28px;padding:0 11px 0 10px;border:0;border-radius:999px;background:rgba(255,255,255,.08);font-size:12.5px;font-weight:700}
 .rn-chip .rn-tri{color:var(--accent);opacity:1}
 .rn-chip:hover:not(:disabled){background:var(--accent);color:var(--on-accent)!important}
@@ -177,44 +177,48 @@ export const runsStyles = `
 .rn-legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
 .rn-legend span::before{content:"";display:inline-block;width:4px;height:11px;margin-right:7px;border-radius:1px;transform:skewX(-18deg);vertical-align:-1px}
 .rn-legend .good::before{background:var(--good)}.rn-legend .warn::before{background:var(--warn)}.rn-legend .loss::before{background:var(--bad)}
+/* Ramps: one row per ramp, read at a glance. Its name and reach stay quiet;
+   only the one number (the whole ramp against the reference) and its bar,
+   on one scale across the map, carry colour. The chevron opens the rest. */
 .rn-ramps{padding:0 12px 8px}
-.rn-rr{display:grid;grid-template-columns:92px minmax(48px,1fr) repeat(3,62px) 24px;align-items:center;gap:10px;padding:5px 4px 5px 8px;border-radius:8px}
-.rn-ramps.net .rn-rr{grid-template-columns:92px minmax(48px,1fr) repeat(2,76px) 24px}
+.rn-rr{display:grid;grid-template-columns:96px 40px minmax(40px,1fr) 78px 24px;align-items:center;gap:12px;min-height:36px;padding:0 4px 0 8px;border-radius:8px}
 .rn-rr.open{border-radius:8px 8px 0 0;background:rgba(255,255,255,.045)}
-.rn-bar{position:relative;height:8px;margin:0 6px}
-.rn-bar.vs::before{content:"";position:absolute;left:50%;top:-5px;bottom:-5px;width:1px;background:var(--line-2)}
-.rn-bar i{position:absolute;top:0;bottom:0;min-width:2px;border-radius:1.5px;transform:skewX(-20deg);background:rgba(255,255,255,.24)}
-.rn-bar i.left{right:50%}.rn-bar i.right{left:50%}.rn-bar i.raw{left:0}
-.rn-bar i.good{background:var(--good)}.rn-bar i.warn{background:var(--warn)}.rn-bar i.loss{background:var(--bad)}
-#runs-panel .rn-rh .rn-bar-head{text-align:center}
 .rn-rr:not(.rn-rh):hover{background:rgba(255,255,255,.045)}
-.rn-rh{position:sticky;top:0;z-index:1;padding-top:6px;padding-bottom:5px;border-radius:0;background:rgba(10,10,10,.55);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--line)}
-.rn-rh span{font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3);text-align:right}
-.rn-sec{display:flex;align-items:center;padding:14px 8px 4px}
+.rn-rh{position:sticky;top:0;z-index:1;min-height:0;padding-top:7px;padding-bottom:6px;border-radius:0;background:rgba(10,10,10,.55);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--line)}
+.rn-rh span{font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3);text-align:right;white-space:nowrap}
+.rn-sec{display:flex;align-items:center;padding:16px 8px 4px}
 .rn-sec span{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700;color:var(--text-2)}
 .rn-sec i{width:4px;height:12px;border-radius:1px;background:var(--text-3);transform:skewX(-18deg)}
-.rn-namecell{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
-.rn-name{display:flex;align-items:center;padding:5px 0;border:0;background:none;text-align:left;white-space:nowrap;font-size:12.5px;color:var(--text-2)}
+.rn-namecell{display:flex;min-width:0}
+.rn-name{display:flex;align-items:center;padding:5px 0;border:0;background:none;text-align:left;white-space:nowrap;font-size:13px;color:var(--text-2)}
 .rn-name:hover{color:var(--text)}
 .rn-name:hover .rn-tri{color:var(--accent);opacity:1}
 .rn-name.off .rn-tri{opacity:.2}
-.rn-n{margin:-3px 0 2px 15px;font-size:11px;color:var(--text-3);white-space:nowrap}
+.rn-rch{text-align:right;font-size:12.5px;color:var(--text-3)}
+.rn-bar{position:relative;height:7px}
+.rn-bar i{position:absolute;right:2px;top:0;bottom:0;min-width:2px;border-radius:1.5px;transform:skewX(-20deg);background:rgba(255,255,255,.16)}
+.rn-bar i.good{background:var(--good)}.rn-bar i.warn{background:var(--warn)}.rn-bar i.loss{background:var(--bad)}
+.rn-hero{text-align:right;font-size:15px;font-weight:700;white-space:nowrap}
+.rn-hero.good{color:var(--good)}.rn-hero.warn{color:var(--warn)}.rn-hero.loss{color:var(--bad)}
+.rn-hero.muted{font-size:12px;font-weight:400;color:var(--text-3)}
 .rn-more{display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:7px;background:none;color:var(--text-3)}
 .rn-more:hover,.rn-more[aria-expanded=true]{background:rgba(255,255,255,.08);color:var(--text)}
 #runs-panel .rn-more svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
 .rn-more[aria-expanded=true] svg{transform:rotate(180deg)}
-.rn-v{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
-.rn-v b{font-size:15.5px;line-height:1.15}
-.rn-v em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--text-3)}
-.rn-v.good b{color:var(--good)}.rn-v.warn b{color:var(--warn)}.rn-v.loss b{color:var(--bad)}.rn-v.muted b{color:var(--text-3);font-weight:400}
-/* Touch stats: a quieter second line under each ramp, graded like the values above it. */
-.rn-rr.touched{row-gap:2px;padding-bottom:8px}
-.rn-tl{grid-column:1/-2;display:grid;grid-template-columns:77px repeat(3,minmax(0,1fr));gap:10px;padding-left:15px}
-.rn-t{display:flex;align-items:baseline;gap:6px;min-width:0;white-space:nowrap}
-.rn-t small{font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--text-3)}
-.rn-t b{font-size:13px}
-.rn-t em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--text-3)}
-.rn-t.good b{color:var(--good)}.rn-t.warn b{color:var(--warn)}.rn-t.loss b{color:var(--bad)}.rn-t.muted b{color:var(--text-3);font-weight:400}
+/* An open ramp: You, the reference and the difference, aligned as figures; only the difference is graded. */
+.rn-detail{margin:0 0 6px;border-radius:0 0 8px 8px;background:rgba(255,255,255,.045)}
+.rn-detail-in{padding:2px 12px 10px 23px}
+.rn-x{display:grid;grid-template-columns:minmax(78px,max-content) repeat(3,66px);column-gap:14px;width:max-content;font-size:12.5px;line-height:1.3}
+.rn-x.solo{grid-template-columns:minmax(78px,max-content) 66px}
+.rn-xr{display:contents}
+.rn-xr>*{padding:3px 0;text-align:right;white-space:nowrap}
+.rn-xr>:first-child{text-align:left;color:var(--text-2)}
+.rn-xr.sub>:first-child{padding-left:12px;color:var(--text-3)}
+.rn-xr>b{font-weight:700;color:var(--text)}
+.rn-xr>span:nth-child(3){color:var(--text-2)}
+.rn-xr>b.good{color:var(--good)}.rn-xr>b.warn{color:var(--warn)}.rn-xr>b.loss{color:var(--bad)}.rn-xr>b.muted{color:var(--text-3)}
+.rn-xh>*{padding:6px 0 4px;font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3)!important}
+.rn-x-note{margin:8px 0 0;font-size:12px;color:var(--text-3)}
 .rn-collect{align-items:center}
 .rn-collect .rn-meter{flex:none;padding:0}
 .rn-collect .rn-meter i{flex:none;width:9px}
@@ -239,12 +243,11 @@ export const runsStyles = `
 @media (max-width:470px){
   .rn-row,.rn-cols{grid-template-columns:86px 62px minmax(36px,1fr) 52px 30px}
   .rn-start,.rn-cols span:nth-child(4){display:none}
-  .rn-rr{grid-template-columns:78px minmax(20px,1fr) repeat(3,50px) 22px;gap:6px}
-  .rn-ramps.net .rn-rr{grid-template-columns:78px minmax(20px,1fr) repeat(2,66px) 22px}
+  .rn-rr{grid-template-columns:80px 34px minmax(24px,1fr) 70px 22px;gap:8px}
   .rn-toolbar{gap:6px}.rn-seg button{padding:5px 9px}
-  .rn-bar-reference{display:none}
-  .rn-tl{grid-template-columns:58px repeat(3,minmax(0,1fr));gap:6px;padding-left:0}
-  .rn-t{gap:4px}.rn-t small{letter-spacing:0}.rn-t em{display:none}
+  .rn-detail-in{padding-left:12px}
+  .rn-x{grid-template-columns:minmax(70px,max-content) repeat(3,58px);column-gap:10px}
+  .rn-x.solo{grid-template-columns:minmax(70px,max-content) 58px}
 }
 @media (prefers-reduced-motion:reduce){#runs-panel{animation:none}.rn-watch[aria-busy=true]::after{animation-duration:2s}}
 
