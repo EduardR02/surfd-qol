@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Surfd QoL",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Custom HUD, per-tick surf feedback, start splits, PB/WR checkpoint speeds and a native crouch-jump binding.",
   "minimum_chrome_version": "118",
   "permissions": ["debugger", "storage"],
