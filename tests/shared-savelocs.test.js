@@ -25,7 +25,7 @@ function fixture() {
   const controller = createSharedSavelocs({practice, send: value => sent.push(value), invalid: () => { invalid++; },
     notice: text => notices.push(text), now: () => time});
   controller.state({mapId: map.id, epoch: 1});
-  controller.receive({type: 'saveloc-init', mapId: map.id, epoch: 1, ownerId: OWN});
+  controller.receive({type: 'saveloc-init', mapId: map.id, epoch: 1, ownerId: OWN, count: 0});
   const add = (id, ownerId = OWN, value = snapshot(id)) => controller.receive({type: 'saveloc-add', mapId: map.id, epoch: 1,
     entry: {id, ownerId, name: ownerId === OWN ? 'My_Name' : 'Their_Name', snapshot: value}});
   const remove = id => controller.receive({type: 'saveloc-remove', mapId: map.id, epoch: 1, id});
@@ -87,11 +87,23 @@ describe('shared native saveloc list', () => {
     f.controller.close();
   });
 
-  test('your saves retained from before a reconnect are listed without announcements', () => {
+  test('joining late applies the room’s retained saves as one batch and redraws once', () => {
     const f = fixture(), h = f.handlers();
-    f.add(1); f.add(2, OTHER); f.add(3);
+    f.controller.state({mapId: map.id, epoch: 2});
+    const before = f.refreshes();
+    f.controller.receive({type: 'saveloc-init', mapId: map.id, epoch: 2, ownerId: OWN, count: 200});
+    for (let id = 1; id <= 200; id++) {
+      const ownerId = id % 10 ? `00000000-0000-4000-8000-10000000000${id % 10}` : OWN;
+      f.controller.receive({type: 'saveloc-add', mapId: map.id, epoch: 2, entry: {id, ownerId, name: 'Name', snapshot: snapshot(1)}});
+      if (id < 200) expect(f.refreshes()).toBe(before);
+    }
+    expect(f.refreshes()).toBe(before + 1);
+    expect(h.entries(f.live)).toHaveLength(200);
+    // Your own retained saves are listed without announcements.
     expect(f.notices).toEqual([]);
-    expect(h.selected(f.live)).toBe(3);
+    expect(h.selected(f.live)).toBe(200);
+    f.controller.receive({type: 'saveloc-add', mapId: map.id, epoch: 2, entry: {id: 201, ownerId: OTHER, name: 'Name', snapshot: snapshot(1)}});
+    expect(f.refreshes()).toBe(before + 2);
     f.controller.close();
   });
 

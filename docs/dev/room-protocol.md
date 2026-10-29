@@ -81,7 +81,7 @@ Community command replies are local and fixed: votes explain that the host picks
 | `spectator-demand` | `{active, count}`; `count` is 0–64 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
 | `result` | a finished run, below |
-| `saveloc-init` (extension only) | `{mapId, epoch, ownerId}` after `welcome` and each map change: this browser's owner id |
+| `saveloc-init` (extension only) | `{mapId, epoch, ownerId, count}` after `welcome` and each map change: this browser's owner id, and how many retained saves follow directly. A joiner applies those as one batch and redraws the list once. |
 | `saveloc-add` (extension only) | `{mapId, epoch, entry: {id, ownerId, name, snapshot}}`: a new save, or a retained one after `saveloc-init` |
 | `saveloc-remove` (extension only) | `{mapId, epoch, id}`: a deletion or a replaced save, sent before the save that replaces it |
 | `check`, `afk-warning`, `chat-status`, `reports` | official server features; never sent by a private room |

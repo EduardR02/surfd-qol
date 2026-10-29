@@ -8,7 +8,7 @@ const TOO_FAST = "You're saving locations too fast.";
 export function createSharedSavelocs({practice, send, invalid, notice = () => {}, now = Date.now}) {
   const saves = new Map(), hidden = new Set(), deleting = new Set(), placed = new WeakMap();
   const bucket = {tokens: LIMIT.burst, at: now()};
-  let state = null, ownerId = null, selection = null, submitted = 0, evicted = false, closed = false;
+  let state = null, ownerId = null, selection = null, submitted = 0, evicted = false, closed = false, batch = 0;
   const refresh = () => practice.refresh?.();
   // A save the local map can't place (another map version, or a hostile claim) stays out of the list.
   function placement(save, map) {
@@ -72,11 +72,17 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
     saves.set(entry.id, {id: entry.id, ownerId: entry.ownerId, name: entry.name, snapshot});
     const replaced = evicted;
     evicted = false;
-    // Retained saves sent on joining are not news.
-    if (entry.ownerId !== ownerId || !submitted) return;
-    submitted--;
-    selection = entry.id;
-    notice(`Saved location #${entry.id} · ${formatTime(snapshot.timer.state.elapsed)}.${replaced ? ' Oldest save replaced.' : ''}`);
+    // Retained saves sent on joining are not news, and the list redraws once they are all in.
+    if (batch) {
+      if (!--batch) refresh();
+      return;
+    }
+    if (entry.ownerId === ownerId && submitted) {
+      submitted--;
+      selection = entry.id;
+      notice(`Saved location #${entry.id} · ${formatTime(snapshot.timer.state.elapsed)}.${replaced ? ' Oldest save replaced.' : ''}`);
+    }
+    refresh();
   }
   const handlers = {
     entries: session => list(session).map(({save, snapshot}) => ({id: save.id, name: save.name,
@@ -122,19 +128,24 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
     state(next) {
       if (closed || state && (next.epoch < state.epoch || next.epoch === state.epoch && next.mapId === state.mapId)) return;
       state = {mapId: next.mapId, epoch: next.epoch};
+      const shown = saves.size > 0;
       saves.clear(); hidden.clear(); deleting.clear();
-      ownerId = null; selection = null; submitted = 0; evicted = false;
-      refresh();
+      ownerId = null; selection = null; submitted = 0; evicted = false; batch = 0;
+      if (shown) refresh();
     },
     receive(message) {
       if (closed || !state || message.mapId !== state.mapId || message.epoch !== state.epoch) return;
-      if (message.type === 'saveloc-init') ownerId = message.ownerId;
-      else if (message.type === 'saveloc-add') add(message.entry);
+      // An epoch's saves start empty, so ownership alone changes nothing on screen.
+      if (message.type === 'saveloc-init') {
+        ownerId = message.ownerId;
+        batch = message.count;
+      } else if (message.type === 'saveloc-add') add(message.entry);
       else if (message.type === 'saveloc-remove') {
         evicted = saves.get(message.id)?.ownerId === ownerId && !deleting.has(message.id);
         saves.delete(message.id); hidden.delete(message.id); deleting.delete(message.id);
-      } else return;
-      refresh();
+        batch = 0;
+        refresh();
+      }
     },
     close() {
       if (closed) return;

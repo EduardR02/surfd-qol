@@ -3,6 +3,7 @@ import {createRoomHost} from '../src/private-rooms/host.js';
 import {createRoomId} from '../src/private-rooms/ids.js';
 import {CLOSE, createRoomFilter, decodeControl} from '../src/private-rooms/protocol.js';
 import {sanitizeSaveloc} from '../src/private-rooms/saveloc-validation.js';
+import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 
 const spawn = {position: {x: 0, y: 0, z: 32}, yaw: 0, pitch: 0};
 const start = {id: 'start', kind: 'start', min: {x: -64, y: -64, z: 0}, max: {x: 64, y: 64, z: 128}};
@@ -62,6 +63,7 @@ describe('shared saveloc authority', () => {
       owner.close(1000, 'Left');
       const late = connect();
       expect(late.sent.map(message => message.type)).toEqual(['welcome', 'saveloc-init', 'saveloc-add']);
+      expect(late.messages('saveloc-init')[0].count).toBe(1);
       expect(late.messages('saveloc-add')[0].entry).toEqual(entry);
       expect(connect(false, browserId).messages('saveloc-init')[0].ownerId).toBe(ownerId);
       expect(JSON.stringify(peer.sent)).not.toContain(browserId);
@@ -105,13 +107,38 @@ describe('shared saveloc authority', () => {
       save(peer);
       host.receive({type: 'change-map', mapId: 'two'});
       const stateAt = peer.sent.findIndex(message => message.type === 'state');
-      expect(peer.sent[stateAt + 1]).toMatchObject({type: 'saveloc-init', mapId: 'two', epoch: 2});
+      expect(peer.sent[stateAt + 1]).toMatchObject({type: 'saveloc-init', mapId: 'two', epoch: 2, count: 0});
       save(peer, snapshot(), {mapId: 'one', epoch: 1});
       expect(peer.messages('saveloc-add')).toHaveLength(1);
       const next = snapshot(); next.key = JSON.stringify(['two', map.version, JSON.stringify({dt: 0.015}), 8]);
       save(peer, next);
       expect(peer.messages('saveloc-add').at(-1)).toMatchObject({mapId: 'two', epoch: 2, entry: {id: 2}});
       expect(connect().messages('saveloc-add').map(message => message.entry.id)).toEqual([2]);
+    } finally { room.close(); }
+  });
+
+  test('a late joiner applies 200 retained saves through its filter with one redraw', () => {
+    const {room, connect, save, advance} = fixture();
+    try {
+      const owners = Array.from({length: 10}, () => connect());
+      for (let round = 0; round < 20; round++) {
+        for (const socket of owners) save(socket);
+        advance();
+      }
+      const late = connect(), filter = createRoomFilter({roomId: room.state.roomId, maps: [{id: 'one'}, {id: 'two'}]});
+      let redraws = 0, handlers = null;
+      const controller = createSharedSavelocs({send() {}, invalid() { throw new Error('Invalid room data'); },
+        practice: {shared(value) { handlers = value; return () => {}; }, refresh() { redraws++; },
+          destination: () => ({map, mapId: map.id, mapVersion: map.version})}});
+      for (const frame of late.sent) {
+        const message = filter(frame);
+        if (message?.type === 'welcome') controller.state(message.state);
+        else if (message?.type.startsWith('saveloc-')) controller.receive(message);
+      }
+      expect(late.messages('saveloc-add')).toHaveLength(200);
+      expect(handlers.entries({map})).toHaveLength(200);
+      expect(redraws).toBe(1);
+      controller.close();
     } finally { room.close(); }
   });
 

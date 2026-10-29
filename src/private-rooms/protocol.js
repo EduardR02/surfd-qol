@@ -1,4 +1,4 @@
-import {sanitizeSaveloc} from './saveloc-validation.js';
+import {MAX_ROOM_SAVELOCS, sanitizeSaveloc} from './saveloc-validation.js';
 
 export const VERSION = 1;
 export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, refused: 4008, congested: 4013});
@@ -422,8 +422,8 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
         if (!current || message.mapId !== current.mapId || message.epoch !== current.epoch) return null;
         const envelope = {type: message.type, mapId: message.mapId, epoch: message.epoch};
         if (message.type === 'saveloc-init') {
-          requireValid(isUuid(message.ownerId), 'Invalid saveloc owner');
-          return {...envelope, ownerId: message.ownerId};
+          requireValid(isUuid(message.ownerId) && uint(message.count, MAX_ROOM_SAVELOCS), 'Invalid saveloc owner');
+          return {...envelope, ownerId: message.ownerId, count: message.count};
         }
         if (message.type === 'saveloc-remove') {
           requireValid(Number.isSafeInteger(message.id) && message.id > 0, 'Invalid saveloc ID');

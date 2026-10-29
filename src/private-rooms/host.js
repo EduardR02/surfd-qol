@@ -91,8 +91,9 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     bucket.tokens--;
     return true;
   }
+  // count is how many retained saves follow directly, so a joiner can apply them as one batch.
   function initSavelocs(client) {
-    send(client, {type: 'saveloc-init', mapId: state.mapId, epoch: state.epoch, ownerId: client.owner.id});
+    send(client, {type: 'saveloc-init', mapId: state.mapId, epoch: state.epoch, ownerId: client.owner.id, count: savelocs.size});
   }
   function removeSaveloc(id) {
     const owner = savelocs.get(id).owner;
