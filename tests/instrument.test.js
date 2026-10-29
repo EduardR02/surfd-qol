@@ -597,6 +597,20 @@ describe('native community behavior integration', () => {
     expect(fixture.warnings).toEqual([]);
   });
 
+  test('failed community joins report once per native action without escaping accepted invites', async () => {
+    const closed = 'This private room has closed.';
+    for (const join of [() => Promise.reject(new Error(closed)), () => { throw new Error(closed); }]) {
+      const fixture = roomFixture(socialHooks({join})), native = fixture.runtime.native;
+      await native.friends.join(communityId);
+      await native.profile.join(communityId);
+      native.accept({roomId: communityId});
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(native.nativeToasts).toEqual([closed, closed, closed]);
+      expect(fixture.requests).toEqual([]);
+      expect(native.nativeJoins).toEqual([]);
+    }
+  });
+
   test('missing runtime never falls back to official friend tickets for community IDs', () => {
     const fixture = roomFixture(undefined);
     fixture.runtime.native.friends.join(communityId);

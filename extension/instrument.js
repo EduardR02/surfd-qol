@@ -1,6 +1,6 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v12:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v13:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';

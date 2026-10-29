@@ -47,7 +47,7 @@ function friendHooks(source, hook, lobby) {
   const ownRoom = unique(source, new RegExp(`myRoom:\\(\\)=>(${identifier})\\.connected\\(\\)\\?(${identifier})\\.rows\\(\\)\\.find\\((${identifier})=>\\3\\.name===\\1\\.title\\(\\)\\)\\?\\.id\\?\\?null:null`, 'g'), 'native passive invite link');
   const note = unique(source, new RegExp(`noteOf\\((${identifier})\\)\\{const (${identifier})=(${identifier})\\[\\1\\.roomId\\?\\?"eu"\\]\\?\\.name\\?\\?"Surfd EU"`, 'g'), 'native invitation label');
   const fallback = unique(source, new RegExp(`${literal(roomName[4])}=(${identifier})=>(${identifier})\\[\\1\\]\\?\\.name\\?\\?"Surfd "\\+\\1\\.toUpperCase\\(\\)`, 'g'), 'native room label fallback');
-  for (const join of joins) source = source.replace(join[0], () => `join:${join[1]}=>{${join[2]}.close(!1);return ${community(join[1])}?${hook}?.join(${join[1]}):${join[3]}(${join[1]})}`);
+  for (const join of joins) source = source.replace(join[0], () => `join:${join[1]}=>{${join[2]}.close(!1);return ${community(join[1])}?__qolNativeJoin(${join[1]}):${join[3]}(${join[1]})}`);
   source = source.replace(roomName[0], () => `roomName:${roomName[1]}=>${community(roomName[1])}?__qolNativeRoomName(${roomName[1]}):${roomName[0].slice(roomName[0].indexOf('=>') + 2)}`);
   source = source.replace(roomMap[0], () => roomMap[0].replace('{', () => `{if(${community(roomMap[1])})return __qolNativeRoomMap(${roomMap[1]});`));
   source = source.replace(profile[0], () => `(${community(`${profile[2]}.roomId`)}?"Playing on "+__qolNativeRoomName(${profile[2]}.roomId)+" · "+__qolNativeRoomMap(${profile[2]}.roomId):${profile[0]})`);
@@ -58,5 +58,5 @@ function friendHooks(source, hook, lobby) {
   source = source.replace(fallback[0], () => `${roomName[4]}=${fallback[1]}=>${community(fallback[1])}?__qolNativeRoomName(${fallback[1]}):${fallback[2]}[${fallback[1]}]?.name??"Surfd "+${fallback[1]}.toUpperCase()`);
   // Server presence is authored by the official server. Native deliberately sends
   // null while connected: do not invent a successful client presence publication.
-  return source + `\nfunction __qolNativeRoomName(id){const room=${hook}?.roomInfo?.(id);return room?.visibility==="public"?room.name:"Private room"}\nfunction __qolNativeRoomMap(id){return ${hook}?.roomInfo?.(id)?.mapTitle??"connecting"}\n`;
+  return source + `\nasync function __qolNativeJoin(id){try{return await ${hook}?.join(id)}catch(error){${invite[6]}.toast(error?.message??"Couldn't reach the room service. Try again in a moment.")}}\nfunction __qolNativeRoomName(id){const room=${hook}?.roomInfo?.(id);return room?.visibility==="public"?room.name:"Private room"}\nfunction __qolNativeRoomMap(id){return ${hook}?.roomInfo?.(id)?.mapTitle??"connecting"}\n`;
 }
