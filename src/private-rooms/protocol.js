@@ -1,3 +1,5 @@
+import {sanitizeSaveloc} from './saveloc-validation.js';
+
 export const VERSION = 1;
 export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, refused: 4008, congested: 4013});
 // Everything a host may show its players. Guests replace or drop any other notice or close text.
@@ -278,6 +280,16 @@ export function decodeControl(text) {
   const message = JSON.parse(text);
   requireValid(message && typeof message === 'object' && !Array.isArray(message) && typeof message.type === 'string', 'Invalid room message');
   switch (message.type) {
+    case 'saveloc-save': {
+      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0, 'Invalid saveloc map');
+      const snapshot = sanitizeSaveloc(message.snapshot);
+      requireValid(JSON.parse(snapshot.key)[0] === message.mapId, 'Invalid saveloc key');
+      return {type: 'saveloc-save', mapId: message.mapId, epoch: message.epoch, snapshot};
+    }
+    case 'saveloc-delete':
+      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
+        && Number.isSafeInteger(message.id) && message.id > 0, 'Invalid saveloc deletion');
+      return {type: 'saveloc-delete', mapId: message.mapId, epoch: message.epoch, id: message.id};
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');
       return {type: 'chat', text: message.text.trim().slice(0, 240)};
@@ -347,7 +359,7 @@ function readPlayer(player) {
 // Maps come from the receiver's own catalog; host is true for the host's own view of its room.
 export function createRoomFilter({roomId, maps = [], host = false}) {
   const catalog = new Map(maps.map(map => [map.id, catalogEntry(map)]));
-  let own = null;
+  let own = null, current = null;
   function readPlayers(players) {
     requireValid(Array.isArray(players) && players.length <= MAX_ROOM_PLAYERS, 'Invalid room roster');
     const slots = new Set(), connections = new Set();
@@ -392,13 +404,38 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
           && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
         'Invalid room welcome');
         const ids = new Set(message.maps.map(map => record(map) ? map.id : null));
+        current = state;
         return {type: 'welcome', state, player, players, maps: [...ids].filter(id => catalog.has(id)).map(id => catalog.get(id)),
           serverTime: message.serverTime, spectatorStream: true, playtime: false, activityTracking: false,
           recentResults: [], chatMute: null};
       }
-      case 'state':
+      case 'state': {
         requireValid(timestamp(message.serverTime), 'Invalid room time');
-        return {type: 'state', state: readState(message.state), serverTime: message.serverTime};
+        const state = readState(message.state);
+        current = state;
+        return {type: 'state', state, serverTime: message.serverTime};
+      }
+      case 'saveloc-init':
+      case 'saveloc-add':
+      case 'saveloc-remove': {
+        requireValid(catalog.has(message.mapId) && uint(message.epoch) && message.epoch > 0, 'Invalid saveloc map');
+        if (!current || message.mapId !== current.mapId || message.epoch !== current.epoch) return null;
+        const envelope = {type: message.type, mapId: message.mapId, epoch: message.epoch};
+        if (message.type === 'saveloc-init') {
+          requireValid(isUuid(message.ownerId), 'Invalid saveloc owner');
+          return {...envelope, ownerId: message.ownerId};
+        }
+        if (message.type === 'saveloc-remove') {
+          requireValid(Number.isSafeInteger(message.id) && message.id > 0, 'Invalid saveloc ID');
+          return {...envelope, id: message.id};
+        }
+        const entry = message.entry;
+        requireValid(record(entry) && Number.isSafeInteger(entry.id) && entry.id > 0
+          && isUuid(entry.ownerId) && isPlayerName(entry.name), 'Invalid saveloc entry');
+        const snapshot = sanitizeSaveloc(entry.snapshot);
+        requireValid(JSON.parse(snapshot.key)[0] === message.mapId, 'Invalid saveloc key');
+        return {...envelope, entry: {id: entry.id, ownerId: entry.ownerId, name: entry.name, snapshot}};
+      }
       case 'roster':
         return {type: 'roster', players: readPlayers(message.players)};
       case 'chat':

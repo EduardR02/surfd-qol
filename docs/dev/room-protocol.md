@@ -58,6 +58,8 @@ Community command replies are local and fixed: votes explain that the host picks
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
 | `chat` | `text`, trimmed and limited to 240 characters by the host | refuses guests with an `error` "Sign in to send chat messages. You can still read chat."; otherwise masks whole-word English slurs and strong profanity with equal-length asterisks, then broadcasts to everyone, sender included, with the sender's fields. Matching ignores case and handles letter substitutions and repetition, not innocent substrings. The list and licence are in `chat-filter-words.js` and `chat-filter-notice.txt`. Rate: 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
 | `finish` (extension only) | `mapId`, `epoch`, `timeUs`, `personalBest`, `previousBestUs` | current map and epoch only; integer time from 1 to 86,400,000,000 µs; at most one accepted claim per player every 3 seconds, excess dropped. `previousBestUs` is the browser's earlier map best when beaten, otherwise `null`; a non-null best must exceed the finish time. |
+| `saveloc-save` (extension only) | `mapId`, `epoch`, `snapshot` | current map and epoch; checked as under Shared savelocs; 1 per second with bursts of 3 per owner, excess dropped; 20 per owner, replacing that owner's oldest |
+| `saveloc-delete` (extension only) | `mapId`, `epoch`, `id` | current map and epoch; removes only the sender's own save |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
 | `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; starts and target changes allow 2 per second with bursts of 4, beyond which they are dropped; Stop always applies, and repeated Stop/current-target requests only retain the latest request id |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
@@ -79,6 +81,9 @@ Community command replies are local and fixed: votes explain that the host picks
 | `spectator-demand` | `{active, count}`; `count` is 0–64 and positive exactly when `active`. Tells a player to stream detailed frames. |
 | `context` | `{epoch, token}`; private `token` is always `null` |
 | `result` | a finished run, below |
+| `saveloc-init` (extension only) | `{mapId, epoch, ownerId}` after `welcome` and each map change: this browser's owner id |
+| `saveloc-add` (extension only) | `{mapId, epoch, entry: {id, ownerId, name, snapshot}}`: a new save, or a retained one after `saveloc-init` |
+| `saveloc-remove` (extension only) | `{mapId, epoch, id}`: a deletion or a replaced save, sent before the save that replaces it |
 | `check`, `afk-warning`, `chat-status`, `reports` | official server features; never sent by a private room |
 
 **Result:** `{result}` with `id` (deduplication), `userId`, `name`, `rank`, `mapId`, `mapTitle`, `timeUs`, `record`, `personalBest`, `previousBestUs`, `pointsDelta`, `promoted`, and optionally `leaderboardRank`, `leaderboardTotal` and `stageRecords` (`[{stage, timeUs, previousRecordUs}]`, at most 64). `record` outranks `personalBest` in the text and sound; leaderboard text needs `0 < leaderboardRank <= leaderboardTotal`.
@@ -86,6 +91,14 @@ Community command replies are local and fixed: votes explain that the host picks
 Private rooms announce valid timed finishes, including the host's through its loopback. Claims are unverified, like names. The extension compares against this browser's run history before recording the finish; practice, invalid, replay and spectated runs send nothing. The host supplies a fresh result `id`, the room player's `userId` (or player `id` without an account), name and `"Guest"` rank, and catalog map fields. `record` means a strict best on that map since the room started, kept across map changes; `previousBestUs` is the old room record when beaten, otherwise the claimed own best. Points are 0, promotion false, and leaderboard and stage-record fields are omitted and stripped on receipt. Native text says "New room record!" and "First completion." only in community rooms; sounds keep the native record/PB/completion priority.
 
 Reliable native text travels as a one-byte ASCII `d` tag followed by the original text, without another JSON envelope. Extension transport controls remain JSON. The tag and UTF-8 payload together must fit within 65,536 bytes. Larger native JSON messages retain sequential `{type:"room-chunk",data,final}` frames, bounded to 4,000 source characters per chunk. An assembled message stays within 262,144 characters and 66 chunks; nested chunks are refused.
+
+## Shared savelocs
+
+Community rooms share practice saves, as community surf servers do; official rooms and offline play keep the game's local bank. The game's Save button and bind, and replay savelocs, submit to the host, and its confirmation brings the game's "Saved location #N" with the room-wide number. The game's own list shows every owner's saves newest first, labelled with the owner's name. Load picks your latest save unless you select another; Previous and Next walk the whole list. Loading runs the game's own restore with the receiver's own start position, so Restart behaves as after loading your own save.
+
+The host gives each `browserId` an owner id for the room, so a reconnect keeps its saves and rate budget. Save ids increase across the room. Saves outlive their owner's connection until the map changes or the room closes; past 1,280 saves, a new one replaces the oldest save of a player who left, so present players' saves are never replaced by others'. Deleting another owner's save hides it for that connection only.
+
+Snapshots are rebuilt from the game's practice schema, at most 32,768 UTF-8 bytes, sent with a `null` start position. Host and receivers check the map key, finite and bounded numbers (positions ±131072, velocities ±32767, yaw ±360, pitch ±89, elapsed 0–86,400 s), ordered splits and unfinished timers; malformed saves close with 4002. Stages, pending stage teleports, checkpoint counts, start regions and map outputs must exist in the loaded map; a save failing only these, as one from another map version does, is dropped by the host and left out of a receiver's list. The checks make a save safe to load, not proof that anyone reached it.
 
 ## Binary frames
 

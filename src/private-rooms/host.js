@@ -1,11 +1,13 @@
 import {isPrivateRoomId} from './ids.js';
 import {maskChat} from './chat-filter.js';
+import {MAX_ROOM_SAVELOCS, SAVELOC_RING, sanitizeSaveloc} from './saveloc-validation.js';
 import {CLOSE, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isUuid, kickedNotice,
   normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
+const SAVELOC_LIMIT = {rate: 1, burst: 3};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
@@ -14,7 +16,7 @@ const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRA
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now}) {
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now, getMap = () => null}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   if (!isMaxPlayers(maxPlayers)) throw new Error('Choose a player limit from 2 to 64.');
   name = normalizeRoomName(name);
@@ -35,6 +37,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   const clients = new Set();
   const slots = new Set(), pending = new Map(), bans = new Map();
   const records = new Map();
+  const owners = new Map(), savelocs = new Map();
+  let nextSavelocId = 1;
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
   let flushAt = 0;
   let closed = false;
@@ -86,6 +90,36 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     if (bucket.tokens < 1) return false;
     bucket.tokens--;
     return true;
+  }
+  function initSavelocs(client) {
+    send(client, {type: 'saveloc-init', mapId: state.mapId, epoch: state.epoch, ownerId: client.owner.id});
+  }
+  function removeSaveloc(id) {
+    const owner = savelocs.get(id).owner;
+    owner.entries.splice(owner.entries.indexOf(id), 1);
+    savelocs.delete(id);
+    broadcast({type: 'saveloc-remove', mapId: state.mapId, epoch: state.epoch, id});
+  }
+  function saveSaveloc(client, message) {
+    if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(client.owner.bucket, SAVELOC_LIMIT)) return;
+    const map = getMap();
+    // A catalog entry is not a native map; never accept a claim without map-aware validation.
+    if (!map || map.id !== state.mapId || !Number.isSafeInteger(nextSavelocId)) return;
+    let snapshot;
+    // Malformed snapshots already closed the connection in the decoder. One that only
+    // disagrees with the host's map, as from another map version, is dropped.
+    try { snapshot = sanitizeSaveloc(message.snapshot, map); } catch { return; }
+    const owner = client.owner;
+    if (owner.entries.length === SAVELOC_RING) removeSaveloc(owner.entries[0]);
+    else if (savelocs.size >= MAX_ROOM_SAVELOCS) {
+      const present = new Set([...clients].map(peer => peer.owner));
+      // At most 64 owners are present and the saver holds fewer than 20, so a departed owner's save exists.
+      for (const [id, save] of savelocs) if (!present.has(save.owner)) { removeSaveloc(id); break; }
+    }
+    const entry = {id: nextSavelocId++, ownerId: owner.id, name: client.player.name, snapshot};
+    owner.entries.push(entry.id);
+    savelocs.set(entry.id, {entry, owner});
+    broadcast({type: 'saveloc-add', mapId: state.mapId, epoch: state.epoch, entry});
   }
   function clearPending() {
     clearTimeout(flushTimer);
@@ -168,6 +202,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }
     clients.clear();
     slots.clear();
+    owners.clear();
+    savelocs.clear();
     hostClient = null;
     onChange();
   }
@@ -244,6 +280,13 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       }
       const message = decodeControl(data);
       switch (message.type) {
+        case 'saveloc-save':
+          saveSaveloc(client, message);
+          break;
+        case 'saveloc-delete':
+          if (message.mapId === state.mapId && message.epoch === state.epoch
+            && savelocs.get(message.id)?.owner === client.owner) removeSaveloc(message.id);
+          break;
         case 'ping':
           send(client, 'pong');
           break;
@@ -285,11 +328,14 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
             state = {...state, mapId: message.mapId, mapTitle: catalog.get(message.mapId).title,
               epoch: state.epoch + 1, startedAt: Date.now(), recent: [state.mapId, ...state.recent].slice(0, 8)};
             clearPending();
+            savelocs.clear();
+            for (const owner of owners.values()) owner.entries.length = 0;
             for (const peer of clients) {
               peer.sequence = null;
               peer.spectatorSequence = null;
             }
             broadcast({type: 'state', state, serverTime: Date.now()});
+            for (const peer of clients) initSavelocs(peer);
             // The native client clears its viewer count on each epoch, not its demand flag.
             for (const peer of clients) demand(peer);
             onChange();
@@ -343,7 +389,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     // Signed-in players are taken at their word; a hello that can't be one becomes a guest.
     const guest = hello.guest || !isPlayerName(hello.name);
     const userId = !guest && isUuid(hello.userId) ? hello.userId : undefined;
-    const client = {socket, host, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
+    let owner = owners.get(hello.browserId);
+    if (!owner) {
+      owner = {id: crypto.randomUUID(), entries: [], bucket: {tokens: SAVELOC_LIMIT.burst, at: now()}};
+      owners.set(hello.browserId, owner);
+    }
+    const client = {socket, host, owner, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       spectatorSequence: null, spectator: {tokens: SPECTATOR_LIMIT.burst, at: now()},
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
       nextResultAt: -Infinity,
@@ -359,6 +410,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       send(client, {type: 'welcome', state, player: client.player, players: players(), maps: [...catalog.values()],
         serverTime: Date.now(), spectatorStream: true, playtime: false, activityTracking: false,
         recentResults: [], chatMute: null});
+      initSavelocs(client);
+      for (const {entry} of savelocs.values()) send(client, {type: 'saveloc-add', mapId: state.mapId, epoch: state.epoch, entry});
       roster();
     };
     client.onMessage = event => receive(client, event.data);
