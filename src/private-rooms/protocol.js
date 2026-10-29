@@ -328,6 +328,22 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
 export const isGuestName = value => typeof value === 'string' && /^Guest_[0-9a-f]{5}$/.test(value);
 export const isUuid = value => typeof value === 'string' && UUID.test(value);
+// The game's rank table, for a game build whose own table can't be read.
+export const RANKS = Object.freeze([[0, 'Unranked'], [100, 'Rookie'], [500, 'Surfer'], [2000, 'Regular'],
+  [4000, 'Skilled'], [7000, 'Expert'], [11000, 'Master'], [20000, 'Legend']].map(([points, title]) => Object.freeze({points, title})));
+export const isPoints = value => Number.isSafeInteger(value) && value >= 0 && value <= 1e9;
+export function rankTable(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 32 || value[0]?.points !== 0) return RANKS;
+  const titles = new Set();
+  for (const [index, rank] of value.entries()) {
+    if (!record(rank) || !isPoints(rank.points) || (index > 0 && rank.points <= value[index - 1].points)
+      || typeof rank.title !== 'string' || !/^[A-Za-z][A-Za-z ]{0,23}$/.test(rank.title)
+      || rank.title === 'Guest' || titles.has(rank.title)) return RANKS;
+    titles.add(rank.title);
+  }
+  return value.map(({points, title}) => ({points, title}));
+}
+export const rankFor = (points, ranks) => ranks.findLast(rank => points >= rank.points).title;
 export const normalizeRoomName = value => typeof value === 'string' ? value.trim().replace(/ +/g, ' ') : '';
 export function roomNameProblem(value) {
   const name = normalizeRoomName(value);
@@ -342,24 +358,25 @@ export function catalogEntry(map) {
   return {id: map.id, title: map.title ?? map.name ?? map.id, ...(map.tier !== undefined ? {tier: map.tier} : {})};
 }
 
-function readPlayer(player) {
-  requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
-    && player.id === 'private-' + player.connectionId && uint(player.slot, MAX_ROOM_PLAYERS - 1) && isPlayerName(player.name)
-    && player.rank === 'Guest' && player.points === 0
-    && (player.guest === true ? isGuestName(player.name) && player.userId === undefined
-      : player.guest === false && (player.userId === undefined || isUuid(player.userId)))
-    && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
-    && validAppearance(player.appearance), 'Invalid room player');
-  return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
-    rank: 'Guest', points: 0, guest: player.guest, ...(player.userId === undefined ? {} : {userId: player.userId}),
-    moderator: player.moderator, appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
-}
-
 // Each host message is rebuilt from the fields the game reads, so nothing else a host sends reaches it.
-// Maps come from the receiver's own catalog; host is true for the host's own view of its room.
-export function createRoomFilter({roomId, maps = [], host = false}) {
+// Maps and ranks come from the receiver's own game; host is true for the host's own view of its room.
+export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false}) {
   const catalog = new Map(maps.map(map => [map.id, catalogEntry(map)]));
+  const titles = new Set(rankTable(ranks).map(rank => rank.title));
   let own = null, current = null;
+  function readPlayer(player) {
+    requireValid(record(player) && typeof player.connectionId === 'string' && UUID.test(player.connectionId)
+      && player.id === 'private-' + player.connectionId && uint(player.slot, MAX_ROOM_PLAYERS - 1) && isPlayerName(player.name)
+      && (player.guest === true ? isGuestName(player.name) && player.userId === undefined && player.rank === 'Guest' && player.points === 0
+        : player.guest === false && (player.userId === undefined || isUuid(player.userId))
+          && titles.has(player.rank) && isPoints(player.points))
+      && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
+      && validAppearance(player.appearance), 'Invalid room player');
+    return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
+      rank: player.rank, points: player.points, guest: player.guest, ...(player.userId === undefined ? {} : {userId: player.userId}),
+      moderator: player.moderator, appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
+  }
+  const validRank = rank => rank === 'Guest' || titles.has(rank);
   function readPlayers(players) {
     requireValid(Array.isArray(players) && players.length <= MAX_ROOM_PLAYERS, 'Invalid room roster');
     const slots = new Set(), connections = new Set();
@@ -440,20 +457,20 @@ export function createRoomFilter({roomId, maps = [], host = false}) {
         return {type: 'roster', players: readPlayers(message.players)};
       case 'chat':
         requireValid(playerId(message.playerId) && isPlayerName(message.name) && textValue(message.text, 240)
-          && (message.rank === undefined || message.rank === 'Guest')
+          && (message.rank === undefined || validRank(message.rank))
           && (message.appearance === undefined || validAppearance(message.appearance)), 'Invalid room chat');
         return {type: 'chat', playerId: message.playerId, name: message.name, text: message.text,
-          ...(message.rank === undefined ? {} : {rank: 'Guest'}),
+          ...(message.rank === undefined ? {} : {rank: message.rank}),
           ...(message.appearance === undefined ? {} : {appearance: normalizeAppearance(message.appearance)})};
       case 'result': {
         const result = message.result;
         requireValid(record(result) && isUuid(result.id) && (isUuid(result.userId) || playerId(result.userId))
-          && isPlayerName(result.name) && result.rank === 'Guest' && catalog.has(result.mapId)
+          && isPlayerName(result.name) && validRank(result.rank) && catalog.has(result.mapId)
           && runTime(result.timeUs) && typeof result.record === 'boolean' && typeof result.personalBest === 'boolean'
           && (result.previousBestUs === null || (result.record || result.personalBest)
             && runTime(result.previousBestUs) && result.previousBestUs > result.timeUs)
           && result.pointsDelta === 0 && result.promoted === false, 'Invalid room result');
-        return {type: 'result', result: {id: result.id, userId: result.userId, name: result.name, rank: 'Guest',
+        return {type: 'result', result: {id: result.id, userId: result.userId, name: result.name, rank: result.rank,
           mapId: result.mapId, mapTitle: catalog.get(result.mapId).title, timeUs: result.timeUs,
           record: result.record, personalBest: result.personalBest, previousBestUs: result.previousBestUs,
           pointsDelta: 0, promoted: false}};

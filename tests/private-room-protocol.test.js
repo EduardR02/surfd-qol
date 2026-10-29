@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, RANKS, rankFor, rankTable, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -197,7 +197,7 @@ describe('private room control boundaries', () => {
   test('validates a full 64-player roster through bounded control frames', () => {
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
       id: 'private-' + uuid(slot), connectionId: uuid(slot), slot,
-      name: 'Player_' + slot, rank: 'Guest', points: 0, guest: false,
+      name: 'Player_' + slot, rank: 'Unranked', points: 0, guest: false,
       moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
     }));
     const message = {type: 'roster', players};
@@ -215,7 +215,7 @@ describe('private room control boundaries', () => {
   });
 
   test('refuses rosters over 64 players and slots outside the room limit', () => {
-    const player = slot => ({id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest', rank: 'Guest',
+    const player = slot => ({id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest', rank: 'Unranked',
       points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE});
     const roster = length => ({type: 'roster', players: Array.from({length}, (_, slot) => player(slot))});
     expect(() => filter()(roster(MAX_ROOM_PLAYERS))).not.toThrow();
@@ -263,7 +263,7 @@ describe('private room control boundaries', () => {
     read({type: 'state', state: {...state, maxPlayers: 2}, serverTime: 1});
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
       id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Player_' + slot,
-      rank: 'Guest', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+      rank: 'Unranked', points: 0, guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
     }));
     expect(read({type: 'roster', players}).players).toHaveLength(MAX_ROOM_PLAYERS);
     expect(() => read({type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS})).not.toThrow();
@@ -356,4 +356,29 @@ test('host binary output roundtrips the independent native client validators', (
   expect(nativeSnapshot(encodeSnapshot([]))).toEqual([]);
   expect(() => nativeSnapshot(changed(relayPose(encodePoseBatch(batch), 0).buffer, 15, 1))).toThrow();
   expect(() => nativeSpectator(changed(relaySpectator(encodeSpectator(packet), 0).buffer, 54, 64))).toThrow();
+});
+
+describe('community ranks', () => {
+  const uuid = slot => '00000000-0000-4000-8000-' + String(slot).padStart(12, '0');
+  const player = {id: 'private-' + uuid(1), connectionId: uuid(1), slot: 1, name: 'Surfer', rank: 'Skilled', points: 4200,
+    guest: false, moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE};
+  const table = [{points: 0, title: 'Unranked'}, {points: 50, title: 'Skilled'}];
+
+  test('the game’s rank table is used when it reads as one, else the built-in table', () => {
+    expect(rankTable(table)).toEqual(table);
+    for (const invalid of [undefined, null, [], [{points: 10, title: 'Unranked'}], [...table, {points: 50, title: 'Expert'}],
+      [...table, {points: 60, title: 'Skilled'}], [...table, {points: 60, title: 'Guest'}], [...table, {points: 60, title: '<b>X</b>'}],
+      [...table, {points: -1, title: 'Expert'}], [table[0], null]]) expect(rankTable(invalid)).toBe(RANKS);
+    expect([0, 99, 100, 4000, 19999, 20000, 1e9].map(points => rankFor(points, RANKS)))
+      .toEqual(['Unranked', 'Unranked', 'Rookie', 'Skilled', 'Master', 'Legend', 'Legend']);
+  });
+
+  test('rosters and chat carry ranks from the receiver’s own table', () => {
+    const read = createRoomFilter({roomId: 'p-abcdefghjkmn', maps: [{id: 'one'}], ranks: table});
+    expect(read({type: 'roster', players: [player]}).players[0]).toMatchObject({rank: 'Skilled', points: 4200});
+    expect(() => read({type: 'roster', players: [{...player, rank: 'Legend'}]})).toThrow('Invalid room player');
+    expect(read({type: 'chat', playerId: player.id, name: 'Surfer', text: 'hi', rank: 'Skilled'}).rank).toBe('Skilled');
+    expect(() => read({type: 'chat', playerId: player.id, name: 'Surfer', text: 'hi', rank: 'Legend'})).toThrow('Invalid room chat');
+    expect(createRoomFilter({roomId: 'p-abcdefghjkmn'})({type: 'roster', players: [{...player, rank: 'Legend'}]}).players[0].rank).toBe('Legend');
+  });
 });

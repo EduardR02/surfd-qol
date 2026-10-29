@@ -1,7 +1,7 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
-import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
+import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, rankTable, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -238,8 +238,21 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   function hello() {
     const adapter = rooms();
     const name = adapter.displayName(), guest = adapter.guest();
+    const profile = guest ? null : adapter.profile?.() ?? null;
     return {name: isPlayerName(name) ? name : guestName(), appearance: adapter.appearance(), guest,
-      userId: guest ? null : adapter.userId?.() ?? null, browserId: browserId()};
+      userId: guest ? null : adapter.userId?.() ?? null, browserId: browserId(),
+      ...(profile ? {rank: profile.rank, points: profile.points} : {})};
+  }
+  const ranks = () => rankTable(getAdapter()?.rooms?.ranks?.());
+  // The site's public profile for an account, read without credentials.
+  async function siteProfile(userId) {
+    const response = await fetchRooms('/api/surf?' + new URLSearchParams({action: 'progression', userId}),
+      {credentials: 'omit', cache: 'no-store'});
+    // Rate limits and outages say nothing about the account.
+    if (response.status === 429 || response.status >= 500) throw new Error(SERVICE);
+    if (!response.ok) return null;
+    const body = await response.json();
+    return body?.player ?? null;
   }
   const roomName = () => `${hello().name}'s room`;
   // TURN relay credentials, {config, ttl}, over a meeting point connection
@@ -588,7 +601,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const id = createRoomId();
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
       current.room = createRoomHost({roomId: id, mapId, maps, visibility, maxPlayers: limit,
-        name,
+        name, ranks: ranks(), lookupProfile: siteProfile,
         getMap: () => getAdapter()?.practice?.destination?.()?.map ?? null,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
@@ -715,7 +728,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       setup();
       if (id === hosted?.id) {
         const current = hosted;
-        const [client, host] = createLoopbackPair({roomId: id, maps: rooms().maps()});
+        const [client, host] = createLoopbackPair({roomId: id, maps: rooms().maps(), ranks: ranks()});
         current.room.addClient(host, hello(), {host: true});
         return track(client, id);
       }
@@ -730,7 +743,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       timers.clearTimeout(session.idleTimer);
       let stopRelay = null;
       const socket = session.socket = socketFactory({roomId: id,
-        peerId: () => session.signal.id, signalling: session.signalling, hello: hello(), maps: rooms().maps(),
+        peerId: () => session.signal.id, signalling: session.signalling, hello: hello(), maps: rooms().maps(), ranks: ranks(),
         async rtcConfig() {
           const issued = await askRelay(session.signal);
           if (socket.readyState < 2) stopRelay = keepRelay(issued.ttl, () => guestRelay(id), config => socket.renewRelay?.(config));

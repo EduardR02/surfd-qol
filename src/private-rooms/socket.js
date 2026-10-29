@@ -116,9 +116,9 @@ function frameParts(data) {
 }
 
 // With a roomId, the first socket (the host's own game) reads the room through the same filter as guests.
-export function createLoopbackPair({roomId = null, maps = []} = {}) {
+export function createLoopbackPair({roomId = null, maps = [], ranks} = {}) {
   const sockets = [new RoomSocket(), new RoomSocket()], queue = new Set();
-  const incoming = roomId === null ? null : createRoomControlReader(createRoomFilter({roomId, maps, host: true}));
+  const incoming = roomId === null ? null : createRoomControlReader(createRoomFilter({roomId, maps, ranks, host: true}));
   const deliver = async (peer, data) => {
     if (!incoming || peer !== sockets[0]) return receive(peer, data);
     try {
@@ -222,7 +222,7 @@ export function createClosedSocket(code, reason) {
   return socket;
 }
 
-function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, host, onSocket, onDispose, onFailure}) {
+function createConnection({roomId, peerId, signalling, hello, maps, ranks, rtcConfig, host, onSocket, onDispose, onFailure}) {
   const socket = new RoomSocket();
   let pc, control, poses, remoteHello, helloReceived = false, helloSent = false;
   let disposed = false, closeTimer, closeInfo = null, cleanClose = false;
@@ -232,7 +232,7 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
   // other side never gets a candidate before the description it belongs to.
   let used = null, describing = false, restarting = false, restartAgain = false;
   const held = [], restarts = [];
-  const incoming = createRoomControlReader(host ? null : createRoomFilter({roomId, maps}));
+  const incoming = createRoomControlReader(host ? null : createRoomFilter({roomId, maps, ranks}));
   let negotiation = Promise.resolve();
   const candidates = [];
   const signal = (type, payload) => signalling.send({
@@ -568,9 +568,9 @@ function createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, h
   return {socket, accept};
 }
 
-export function createPeerSocket({roomId, peerId, signalling, hello, maps, rtcConfig, onFailure}) {
+export function createPeerSocket({roomId, peerId, signalling, hello, maps, ranks, rtcConfig, onFailure}) {
   let unsubscribe;
-  const connection = createConnection({roomId, peerId, signalling, hello, maps, rtcConfig, onFailure, host: false,
+  const connection = createConnection({roomId, peerId, signalling, hello, maps, ranks, rtcConfig, onFailure, host: false,
     onDispose: () => unsubscribe?.()});
   unsubscribe = signalling.subscribe(message => {
     if (message.roomId === roomId && message.peerId === (typeof peerId === 'function' ? peerId() : peerId)) {

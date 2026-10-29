@@ -35,7 +35,7 @@ describe('private room finish claims', () => {
         record: false, leaderboardRank: 1, pointsDelta: 9000, promoted: true, stageRecords: [{stage: 1}]});
       const result = peer.results()[0];
       expect(result).toEqual({id: expect.stringMatching(/^[0-9a-f-]{36}$/), userId: identity.userId,
-        name: 'Surfer', rank: 'Guest', mapId: 'one', mapTitle: 'One', timeUs: 12000000,
+        name: 'Surfer', rank: 'Unranked', mapId: 'one', mapTitle: 'One', timeUs: 12000000,
         record: true, personalBest: true, previousBestUs: null, pointsDelta: 0, promoted: false});
       expect(host.results()).toEqual([result]);
     } finally { room.close(); }
@@ -127,7 +127,7 @@ describe('incoming room results', () => {
   });
   test('rejects malformed or ranked results before the native client sees them', () => {
     const read = createRoomFilter({roomId, maps});
-    for (const invalid of [{id: 'x'}, {userId: 'x'}, {name: '<b>Surfer</b>'}, {rank: 'Legend'}, {mapId: 'unknown'},
+    for (const invalid of [{id: 'x'}, {userId: 'x'}, {name: '<b>Surfer</b>'}, {rank: 'Admin'}, {rank: '<b>Legend</b>'}, {mapId: 'unknown'},
       {timeUs: 0}, {timeUs: -1}, {timeUs: 0.5}, {timeUs: 86400000001}, {timeUs: null},
       {record: 'true'}, {personalBest: 1}, {previousBestUs: 12000000}, {previousBestUs: '13000000'},
       {personalBest: false}, {pointsDelta: 1}, {promoted: true}]) {

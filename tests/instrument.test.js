@@ -234,8 +234,10 @@ function nativeBrowser(options){let entries=[],status="Checking servers…",sele
   const view={el:{hidden:true},open(value){typeof value=="string"&&(selection=value);options.refresh()},close(){clearInterval(browserTimer)}};
   return{view:view,update(rows,note){const now=Date.now();entries=rows.map(row=>({...row,...row.endsAt===undefined?{}:{endsAt:row.endsAt+(row.serverTime===undefined?0:now-row.serverTime)}}));status=note},
     rows:()=>entries,best:recommended,visible,groups,detail,rosterView,setOpenHandler(fn){this.requestOpen=fn},filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
+const rankSteps=[{points:0,title:"Unranked"},{points:100,title:"Rookie"}];
+let ownProfile={kind:"member",userId:"account-a",name:"Fixture player",rank:"Rookie",points:150};
 function lobbyFactory(){const windows={opened:[],open(view,value){this.opened.push({view,value})}},servers=nativeBrowser({refresh:()=>{}});servers.setOpenHandler(()=>windows.open("servers"));return {
-  servers,windows,sync:nativeSync,selected:()=>catalog[0],tab(value){this.tabbed=value},
+  servers,windows,sync:nativeSync,me:{get:()=>ownProfile},selected:()=>catalog[0],tab(value){this.tabbed=value},
   updateServers(rows,status){servers.update(rows,status);listed=servers.rows()},
   bindServers(connect,refresh){joinCallback=connect,refreshCallback=refresh,refresh()},
   refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}
@@ -287,7 +289,7 @@ function roomFixture(privateRooms, source = roomSource) {
     instrumented = instrumentGame(source);
   } finally { console.warn = warn; }
   const runtime = new Function('globalThis', 'fetch', 'WebSocket', instrumented + `
-    return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},
+    return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},me:value=>{ownProfile=value},
       guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()},
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
         notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
@@ -383,6 +385,12 @@ describe('optional native private room instrumentation', () => {
     expect(adapter.rooms.appearance()).toBe(appearance);
     expect(adapter.rooms.guest()).toBe(false);
     expect(adapter.rooms.userId()).toBe('account-a');
+    expect(adapter.rooms.profile()).toEqual({rank: 'Rookie', points: 150});
+    expect(adapter.rooms.ranks()).toEqual([{points: 0, title: 'Unranked'}, {points: 100, title: 'Rookie'}]);
+    runtime.me({kind: 'member', userId: 'account-b', rank: 'Legend', points: 30000});
+    expect(adapter.rooms.profile()).toBeNull();
+    runtime.me({kind: 'guest', userId: null, rank: 'Unranked', points: 0});
+    expect(adapter.rooms.profile()).toBeNull();
     runtime.guest();
     expect(adapter.rooms.guest()).toBe(true);
     expect(adapter.rooms.userId()).toBeNull();

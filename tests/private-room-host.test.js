@@ -67,7 +67,7 @@ describe('private room host', () => {
     host.open();
     const welcome = host.messages('welcome')[0];
     expect(welcome).toMatchObject({type: 'welcome', spectatorStream: true, playtime: false, activityTracking: false, recentResults: [], chatMute: null});
-    expect(welcome.player).toMatchObject({name: 'Surfer', guest: false, moderator: true, points: 0, rank: 'Guest', spectating: false, slot: 0, appearance: DEFAULT_APPEARANCE});
+    expect(welcome.player).toMatchObject({name: 'Surfer', guest: false, moderator: true, points: 0, rank: 'Unranked', spectating: false, slot: 0, appearance: DEFAULT_APPEARANCE});
     expect(welcome.state).toMatchObject({epoch: 1, mapId: 'one', endsAt: 0, untimed: true, vote: null, nextMap: null, nominations: {}, recent: []});
     const peer = connect();
     expect(peer.messages('welcome')[0].players).toHaveLength(2);
@@ -136,7 +136,7 @@ describe('private room host', () => {
     try {
       const player = member.messages('welcome')[0].player;
       member.receive({type: 'chat', text: ' Scunthorpe class: FUUUCK, sh1t! ', name: 'Forged'});
-      const chat = {type: 'chat', playerId: player.id, name: player.name, rank: 'Guest',
+      const chat = {type: 'chat', playerId: player.id, name: player.name, rank: 'Unranked',
         appearance: DEFAULT_APPEARANCE, text: 'Scunthorpe class: ******, ****!'};
       for (const recipient of [host, member, guest]) expect(recipient.messages('chat')).toEqual([chat]);
       guest.receive({type: 'chat', text: 'FUUUCK'});
@@ -176,7 +176,7 @@ describe('private room host', () => {
     const {connect} = fixture(), host = connect(true), peer = connect();
     peer.receive({type: 'chat', text: ' hello ', playerId: 'spoof', name: 'Spoof'});
     const player = peer.messages('welcome')[0].player;
-    expect(host.messages('chat')[0]).toEqual({type: 'chat', text: 'hello', playerId: player.id, name: player.name, rank: 'Guest', appearance: DEFAULT_APPEARANCE});
+    expect(host.messages('chat')[0]).toEqual({type: 'chat', text: 'hello', playerId: player.id, name: player.name, rank: 'Unranked', appearance: DEFAULT_APPEARANCE});
     expect(peer.messages('chat')).toHaveLength(1);
     peer.receive('ping');
     expect(peer.sent.at(-1)).toBe('pong');
@@ -902,4 +902,65 @@ test('real loopback host receives binary as ArrayBuffer and relays native packet
   } finally {
     room.close();
   }
+});
+
+describe('community room ranks', () => {
+  const member = (name = 'Surfer', extra = {}) => ({...hello, name, userId: crypto.randomUUID(), ...extra});
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  test('signed-in players start with their claimed rank and guests stay guests', () => {
+    const {room, connect} = fixture();
+    connect(true, member('Host', {rank: 'Skilled', points: 4200}));
+    connect(false, member('Rookie_1', {rank: 'Rookie', points: 120}));
+    connect(false, {...guestHello, rank: 'Legend', points: 30000});
+    for (const [rank, points] of [['Admin', 10], ['<b>Legend</b>', 30000], ['Legend', -1], ['Legend', 1.5], ['Legend', '20000'],
+      [undefined, 100], ['Guest', 0]]) connect(false, member('Claimer', {rank, points}));
+    expect(room.players.map(player => [player.rank, player.points])).toEqual([['Skilled', 4200], ['Rookie', 120], ['Guest', 0],
+      ...Array(7).fill(['Unranked', 0])]);
+    room.close();
+  });
+
+  test('the site profile of the claimed account sets rank and points, once per join', async () => {
+    const lookups = [];
+    const profiles = {
+      match: {username: 'Surfer', rank: 'Expert', points: 7300},
+      renamed: {username: 'Someone_else', rank: 'Legend', points: 30000},
+      unknown: {username: 'Surfer', rank: 'Mythic', points: 4500},
+      none: null,
+    };
+    const ids = Object.fromEntries(Object.keys(profiles).map(key => [key, crypto.randomUUID()]));
+    const {room, connect} = fixture({lookupProfile: userId => {
+      lookups.push(userId);
+      const key = Object.keys(ids).find(name => ids[name] === userId);
+      return key ? Promise.resolve(profiles[key]) : Promise.reject(new Error('offline'));
+    }});
+    const host = connect(true, {...hello, userId: ids.match, rank: 'Skilled', points: 4000});
+    for (const key of ['renamed', 'unknown', 'none']) connect(false, {...hello, userId: ids[key], rank: 'Legend', points: 25000});
+    connect(false, member('Offline', {rank: 'Regular', points: 2100}));
+    connect(false, guestHello);
+    connect(false, {...hello, name: 'No_account'});
+    expect(lookups).toEqual([]);
+    await settle();
+    expect(lookups).toHaveLength(5);
+    expect(room.players.map(player => [player.name, player.rank, player.points])).toEqual([
+      ['Surfer', 'Expert', 7300], ['Surfer', 'Unranked', 0], ['Surfer', 'Skilled', 4500], ['Surfer', 'Unranked', 0],
+      ['Offline', 'Regular', 2100], ['Guest_0a1b2', 'Guest', 0], ['No_account', 'Unranked', 0]]);
+    await rosterTick();
+    expect(host.messages('roster').at(-1).players[0]).toMatchObject({rank: 'Expert', points: 7300});
+    room.close();
+  });
+
+  test('a profile that arrives after the player left or the room closed changes nothing', async () => {
+    let answer;
+    const {room, connect} = fixture({lookupProfile: () => new Promise(resolve => { answer = resolve; })});
+    connect(true);
+    const peer = connect(false, member('Surfer', {rank: 'Rookie', points: 100}));
+    const player = room.players[1];
+    await settle();
+    peer.close(1000);
+    answer({username: 'Surfer', rank: 'Legend', points: 30000});
+    await settle();
+    expect(player).toMatchObject({rank: 'Rookie', points: 100});
+    room.close();
+  });
 });

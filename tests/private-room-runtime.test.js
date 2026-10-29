@@ -626,6 +626,33 @@ describe('private room runtime', () => {
     }
   });
 
+  test('a signed-in hello carries the game profile’s rank and points; a guest’s carries none', async () => {
+    for (const [displayName, expected] of [['Surfer', {rank: 'Skilled', points: 4100}], ['', {}]]) {
+      const f = fixture({displayName});
+      f.adapter.rooms.profile = () => ({rank: 'Skilled', points: 4100});
+      try {
+        await f.join();
+        const {rank, points} = f.runtime.roomSocket(ROOM).options.hello;
+        expect(JSON.parse(JSON.stringify({rank, points}))).toEqual(expected);
+      } finally { f.runtime.destroy(); }
+    }
+  });
+
+  test('the host checks each joining account against the site profile, without credentials', async () => {
+    const f = fixture();
+    f.adapter.rooms.profile = () => ({rank: 'Rookie', points: 150});
+    f.response({ok: true, status: 200, json: async () => ({player: {username: 'Surfer', rank: 'Expert', points: 7300}})});
+    try {
+      const id = await f.host();
+      const socket = f.runtime.roomSocket(id);
+      expect((await welcomed(socket)).player).toMatchObject({rank: 'Expert', points: 7300});
+      const lookup = f.requests.findIndex(url => String(url).startsWith('/api/surf?'));
+      expect(new URL(f.requests[lookup], 'https://surfd.net').searchParams.toString()).toBe(`action=progression&userId=${ACCOUNT}`);
+      expect(f.requestOptions[lookup]).toEqual({credentials: 'omit', cache: 'no-store'});
+      expect(f.requests.filter(url => String(url).startsWith('/api/surf?'))).toHaveLength(1);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('the hello carries a browser id that persists', async () => {
     const storage = new Map(), ids = [];
     for (let run = 0; run < 2; run++) {

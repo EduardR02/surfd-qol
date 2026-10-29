@@ -1,9 +1,9 @@
 import {isPrivateRoomId} from './ids.js';
 import {maskChat} from './chat-filter.js';
 import {MAX_ROOM_SAVELOCS, SAVELOC_RING, sanitizeSaveloc} from './saveloc-validation.js';
-import {CLOSE, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
-  bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isUuid, kickedNotice,
-  normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
+import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
+  bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isPoints, isUuid, kickedNotice,
+  normalizeAppearance, normalizeRoomName, rankFor, rankTable, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
@@ -15,9 +15,15 @@ const RESULT_INTERVAL_MS = 3000;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
+const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now, getMap = () => null}) {
+// lookupProfile(userId) resolves to the site's public profile ({username, rank, points}), null when the
+// site has no such player, or rejects when it can't answer.
+export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now, getMap = () => null,
+  ranks = RANKS, lookupProfile = null}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
+  ranks = rankTable(ranks);
+  const titles = new Set(ranks.map(rank => rank.title));
   if (!isMaxPlayers(maxPlayers)) throw new Error('Choose a player limit from 2 to 64.');
   name = normalizeRoomName(name);
   const problem = roomNameProblem(name);
@@ -390,6 +396,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     // Signed-in players are taken at their word; a hello that can't be one becomes a guest.
     const guest = hello.guest || !isPlayerName(hello.name);
     const userId = !guest && isUuid(hello.userId) ? hello.userId : undefined;
+    const claimed = !guest && titles.has(hello.rank) && isPoints(hello.points);
     let owner = owners.get(hello.browserId);
     if (!owner) {
       owner = {id: crypto.randomUUID(), entries: [], bucket: {tokens: SAVELOC_LIMIT.burst, at: now()}};
@@ -402,7 +409,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,
       name: guest ? (isGuestName(hello.name) ? hello.name : guestName()) : hello.name,
-      appearance: normalizeAppearance(hello.appearance), guest, ...(userId ? {userId} : {}), rank: 'Guest', points: 0,
+      appearance: normalizeAppearance(hello.appearance), guest, ...(userId ? {userId} : {}),
+      rank: guest ? 'Guest' : claimed ? hello.rank : ranks[0].title, points: claimed ? hello.points : 0,
       moderator: host, spectating: false,
     }};
     client.onOpen = () => {
@@ -422,7 +430,25 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     socket.addEventListener('open', client.onOpen);
     socket.addEventListener('message', client.onMessage);
     socket.addEventListener('close', client.onClose);
+    if (userId && lookupProfile) confirmProfile(client);
     if (socket.readyState === 1) client.onOpen();
+  }
+  // Rank and points follow the site's profile for the claimed account. A profile under another
+  // name, or none, means the claim isn't that player's; a check that fails keeps the claim.
+  function confirmProfile(client) {
+    const player = client.player;
+    Promise.resolve().then(() => lookupProfile(player.userId)).then(profile => {
+      if (closed || !clients.has(client)) return;
+      let rank = ranks[0].title, points = 0;
+      if (record(profile) && profile.username === player.name) {
+        points = isPoints(profile.points) ? profile.points : 0;
+        rank = titles.has(profile.rank) ? profile.rank : rankFor(points, ranks);
+      }
+      if (rank === player.rank && points === player.points) return;
+      player.rank = rank;
+      player.points = points;
+      if (client.open) roster();
+    }, () => {});
   }
   function setVisibility(value) {
     if (value !== 'private' && value !== 'public') throw new Error('Invalid room visibility.');

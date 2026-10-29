@@ -19,7 +19,7 @@ const spectator = (sequence, slot) => ({
 const uuid = slot => '00000000-0000-4000-8000-' + String(slot).padStart(12, '0');
 const roomPlayer = (slot = 0) => ({
   id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest',
-  rank: 'Guest', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
+  rank: 'Unranked', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
 });
 const maps = [{id: 'one', title: 'One', tier: 1}];
 const roomState = {roomId: 'room-a', name: "Host's room", visibility: 'private', maxPlayers: DEFAULT_MAX_PLAYERS, mapId: 'one', mapTitle: 'One',
@@ -937,6 +937,10 @@ describe('private room WebRTC socket', () => {
       {type: 'chat', playerId: roomPlayer().id, name: '<Guest>', text: 'hi'},
       {type: 'roster', players: [{...roomPlayer(), name: 'Surfd EU 2 · Frankfurt'}]},
       {type: 'roster', players: [{...roomPlayer(), guest: true}]},
+      {type: 'roster', players: [{...roomPlayer(), name: 'Guest_0a1b2', guest: true}]},
+      ...['Guest', 'Admin', '<b>Legend</b>', null].map(rank => ({type: 'roster', players: [{...roomPlayer(), rank}]})),
+      ...[-1, 1.5, '100', 1e10].map(points => ({type: 'roster', players: [{...roomPlayer(), points}]})),
+      {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: 'hi', rank: 'Admin'},
       {type: 'roster', players: [{...roomPlayer(), name: 'Guest_0a1b2', guest: true, userId: uuid(9)}]},
       {type: 'roster', players: [{...roomPlayer(), userId: 'account-1'}]},
       {type: 'state', state: {...roomState, name: 'Official Surfd server'}, serverTime: 1},
@@ -972,7 +976,7 @@ describe('private room WebRTC socket', () => {
       maps: [{id: 'one', title: '<b>Spoof</b>', tier: '"><img src=x>'}, {id: 'unknown', title: 'Unknown'}],
       state: {...roomState, mapTitle: '<b>Spoof</b>', extra: 1}, player: {...roomPlayer(), extra: 1}, players: [{...roomPlayer(), extra: 1}]}));
     accepted[0].socket.send(JSON.stringify({type: 'state', state: {...roomState, recent: ['one', 'unknown']}, serverTime: 2, extra: 1}));
-    const visitor = {...roomPlayer(2), name: 'Guest_0a1b2', guest: true};
+    const visitor = {...roomPlayer(2), name: 'Guest_0a1b2', rank: 'Guest', guest: true};
     accepted[0].socket.send(JSON.stringify({type: 'roster', players: [{...roomPlayer(), memory: 'x'.repeat(1000)},
       {...roomPlayer(1), moderator: true, userId: uuid(7)}, visitor]}));
     await nextTask();

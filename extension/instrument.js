@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v16:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v17:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -231,8 +231,16 @@ function roomHooks(source, client, state) {
     source = native.source;
     const ui = roomUiHooks(source, hook);
     source = ui.source;
+    let ranks = '';
+    try {
+      const table = unique(source, new RegExp(`const (${identifier})=\\[\\{points:0,title:"Unranked"\\}`, 'g'), 'rank table')[1];
+      ranks = `
+      ranks: () => ${table},`;
+    } catch (error) {
+      console.warn('[Surfd QoL] Rank table unavailable:', error.message);
+    }
     return {source, adapter: `
-    rooms: {${ui.adapter}
+    rooms: {${ui.adapter}${ranks}
       // The server browser's own status line, kept until the game lists servers again.
       setStatus: text => ${lobby}.updateServers(${lobby}.servers.rows().map(({serverTime,...row})=>row), text),
       openBrowser: () => ${lobby}.tab?.("servers"),
@@ -251,6 +259,8 @@ function roomHooks(source, client, state) {
       appearance: () => ${client}.profile?.appearance ?? null,
       guest: () => !${client}.session,
       userId: () => ${client}.session?.user?.id ?? null,
+      // The signed-in player's rank and points as the game's own profile shows them.
+      profile: () => { const me = ${lobby}.me?.get?.(); return me?.kind === "member" && me.userId === ${client}.session?.user?.id ? {rank: me.rank, points: me.points} : null; },
       onAccountChange: listener => ${client}.onChange?.(listener) ?? (() => {}),
       signIn: () => ${account}.openAccount(),
       maps: () => ${maps},
