@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, normalizeAppearance, relayPose, relaySpectator, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isListedName, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -10,6 +10,46 @@ function changed(buffer, offset, value, method = 'setUint8') {
   new DataView(copy)[method](offset, value, true);
   return copy;
 }
+
+describe('private room names', () => {
+  test('normalizes surrounding whitespace and repeated literal spaces', () => {
+    expect(normalizeRoomName("  My   room#1: (Main)!  ")).toBe('My room#1: (Main)!');
+    expect(normalizeRoomName('\t My room \n')).toBe('My room');
+    expect(normalizeRoomName('My\troom')).toBe('My\troom');
+    for (const value of [undefined, null, 16, {}, []]) expect(normalizeRoomName(value)).toBe('');
+  });
+
+  test('accepts free names and the shared ASCII punctuation at canonical lengths', () => {
+    for (const name of ['abc', 'A'.repeat(32), "Host's room", "A-z_0. !?&#:()"]) {
+      expect(roomNameProblem(name)).toBeNull();
+      expect(isRoomName(name)).toBe(true);
+      expect(isListedName(name)).toBe(true);
+    }
+    expect(roomNameProblem('  My   room  ')).toBeNull();
+    for (const name of [' My room', 'My room ', 'My  room']) {
+      expect(isRoomName(name)).toBe(false);
+      expect(isListedName(name)).toBe(false);
+    }
+  });
+
+  test('reports exact length, character and impersonation errors for every visibility', () => {
+    for (const value of [undefined, null, 3, '', '  ', 'ab', 'A'.repeat(33)]) {
+      expect(roomNameProblem(value)).toBe('Room names need 3–32 characters.');
+      expect(isRoomName(value)).toBe(false);
+    }
+    for (const name of ['My\troom', 'My\nroom', 'My\u00a0room', 'Café', '<room>', 'room/name', 'room"name', 'room\\name']) {
+      expect(roomNameProblem(name)).toBe('Use letters, numbers, spaces and simple punctuation.');
+      expect(isRoomName(name)).toBe(false);
+    }
+    for (const name of ['Surfd', "surFD's room", 'UnoFFicial room', 'OFFICIAL']) {
+      for (const visibility of ['private', 'public']) {
+        expect(roomNameProblem(name, visibility)).toBe("Room names can't include Surfd or official.");
+      }
+      expect(isRoomName(name)).toBe(false);
+      expect(isListedName(name)).toBe(false);
+    }
+  });
+});
 
 describe('private room binary protocol', () => {
   test('compact pose roundtrips native quantization and extrema', () => {

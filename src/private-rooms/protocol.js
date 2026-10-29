@@ -305,14 +305,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
 export const isGuestName = value => typeof value === 'string' && /^Guest_[0-9a-f]{5}$/.test(value);
 export const isUuid = value => typeof value === 'string' && UUID.test(value);
-export const isRoomName = value => typeof value === 'string' && value.endsWith("'s room") && isPlayerName(value.slice(0, -7));
-// Public rooms named like the site's own servers aren't listed (signal/src/lobby.js refuses them too).
-export const isListedName = value => isRoomName(value) && !/surfd|official/i.test(value);
-export function roomNameProblem(name, visibility = 'private') {
-  if (!isRoomName(name)) return "Use 3–24 letters, digits, _ or - before 's room.";
-  return visibility === 'public' && !isListedName(name)
-    ? "Rooms with Surfd or official in the name can't be public." : null;
+export const normalizeRoomName = value => typeof value === 'string' ? value.trim().replace(/ +/g, ' ') : '';
+export function roomNameProblem(value) {
+  const name = normalizeRoomName(value);
+  if (name.length < 3 || name.length > 32) return 'Room names need 3–32 characters.';
+  if (!/^[A-Za-z0-9 '\-_.!?&#:()]+$/.test(name)) return 'Use letters, numbers, spaces and simple punctuation.';
+  return /surfd|official/i.test(name) ? "Room names can't include Surfd or official." : null;
 }
+export const isRoomName = value => typeof value === 'string' && value === normalizeRoomName(value) && roomNameProblem(value) === null;
+export const isListedName = isRoomName;
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
 export function catalogEntry(map) {
