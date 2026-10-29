@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { bestFinish, compareRamp, createRunsPanel, detailRows, paceCells, rampHeroes, rampSections, reachText, reached, touchCells, versusPb, when } from '../src/runs-panel.js';
+import { barScale, bestFinish, compareRamp, createRunsPanel, detailRows, paceCells, rampHeroes, rampSections, reachText, reached, touchCells, versusPb, when } from '../src/runs-panel.js';
 import {createRampReference} from '../src/ramp-reference.js';
 import {createReplayControl} from '../src/replay-control.js';
 
@@ -136,8 +136,10 @@ describe('runs panel', () => {
       rig.panel.showView('ramps');
       expect(html()).not.toContain('Collecting');
       expect(html()).toContain('>43%</span>');
-      rig.action({ramp: 'a'});
+      // Clicking anywhere on the row opens it, as its chevron does.
+      rig.body.emit('click', {target: {closest: selector => selector === 'button' ? null : {dataset: {ramp: 'a'}}}});
       expect(html()).toContain('class="rn-detail"');
+      expect(html()).toContain('aria-expanded="true"');
       expect(html()).toContain('<span role="rowheader">Speed in</span><b role="cell">2400</b><span role="cell">2410</span><b role="cell" class="loss">−10</b>');
       expect(html()).toContain('Reached in 43% of runs');
       rig.action({rampMode: 'recent'});
@@ -177,10 +179,16 @@ describe('runs panel', () => {
     const vs = rampHeroes(ramps, ramp => reference[ramp.key], 2);
     expect(vs.map(hero => [hero.text, hero.tone])).toEqual([['−10.0', 'loss'], ['+5.0', 'good'], ['—', 'muted'], ['', 'muted'], ['−294.0', 'loss']]);
     expect(vs[3].absent).toBe(true);
-    // The costliest ramp fills the bar; the others are measured against it.
-    expect(vs.map(hero => Number(hero.size.toFixed(3)))).toEqual([0.034, 0.017, 0, 0, 1]);
+    // The bail runs off the end of the scale the other ramps set, so their bars still differ.
+    expect(vs.map(hero => [hero.size, hero.over])).toEqual([[1, false], [.5, false], [0, false], [0, false], [1, true]]);
     const raw = rampHeroes(ramps.slice(0, 4));
     expect(raw.map(hero => [hero.text, hero.tone, hero.size])).toEqual([['−40.0', 'plain', 1], ['−20.0', 'plain', .5], ['—', 'muted', 0], ['−30.0', 'plain', .75]]);
+    // The scale: the largest value within three times the median, never under 5 u/s.
+    expect(barScale([6.8, 4.4, 11.9, 6.8, 6, 299.5, 1.7, 9.3, 0.3])).toBe(11.9);
+    expect(barScale([300, 280, 8, 10, 12, 9, 7])).toBe(12);
+    expect(barScale([13.4, 29.9, 46.9, 27.4, 40.2])).toBe(46.9);
+    expect(barScale([0.4, -0.2, null])).toBe(5);
+    expect(barScale([])).toBe(5);
   });
 
   test('how far a run got', () => {

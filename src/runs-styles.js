@@ -162,7 +162,7 @@ export const runsStyles = `
 .rn-reset-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 20px 8px;font-size:12px;color:var(--text)}
 .rn-reset-confirm span{flex:1 1 220px}
 .rn-reset-confirm small{font-size:12px;color:var(--text-3)}
-/* Watching a ramp: the name plays it in the compared replay; the chips in an open row offer the others. */
+/* Watching a ramp: the chips in an open row play it in each replay. */
 .rn-tri{flex:none;width:8px;height:9px;margin-right:7px;background:currentColor;clip-path:polygon(0 0,100% 50%,0 100%);opacity:.55}
 .rn-ramp-play{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
 .rn-chip{display:inline-flex;align-items:center;height:28px;padding:0 11px 0 10px;border:0;border-radius:999px;background:rgba(255,255,255,.08);font-size:12.5px;font-weight:700}
@@ -171,7 +171,7 @@ export const runsStyles = `
 .rn-chip:hover:not(:disabled) .rn-tri{color:var(--on-accent)}
 .rn-chip:disabled{opacity:.35}
 .rn-chip[aria-busy=true]{opacity:1}
-.rn-chip[aria-busy=true] .rn-tri,.rn-name[aria-busy=true] .rn-tri{clip-path:none;border-radius:50%;background:none;border:1.5px solid currentColor;border-right-color:transparent;opacity:1;animation:rn-spin .7s linear infinite}
+.rn-chip[aria-busy=true] .rn-tri{clip-path:none;border-radius:50%;background:none;border:1.5px solid currentColor;border-right-color:transparent;opacity:1;animation:rn-spin .7s linear infinite}
 .rn-play-note{flex:1 0 100%;margin-top:2px;font-size:11.5px;color:var(--text-3)}
 .rn-note{margin:0 20px 6px;font-size:12.5px;line-height:1.45;color:var(--text-2);max-width:56ch}
 .rn-legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
@@ -183,21 +183,21 @@ export const runsStyles = `
 .rn-ramps{padding:0 12px 8px}
 .rn-rr{display:grid;grid-template-columns:96px 40px minmax(40px,1fr) 78px 24px;align-items:center;gap:12px;min-height:36px;padding:0 4px 0 8px;border-radius:8px}
 .rn-rr.open{border-radius:8px 8px 0 0;background:rgba(255,255,255,.045)}
+.rn-rr:not(.rn-rh){cursor:pointer}
 .rn-rr:not(.rn-rh):hover{background:rgba(255,255,255,.045)}
 .rn-rh{position:sticky;top:0;z-index:1;min-height:0;padding-top:7px;padding-bottom:6px;border-radius:0;background:rgba(10,10,10,.55);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--line)}
 .rn-rh span{font-size:11px;font-weight:700;letter-spacing:.07em;color:var(--text-3);text-align:right;white-space:nowrap}
 .rn-sec{display:flex;align-items:center;padding:16px 8px 4px}
 .rn-sec span{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700;color:var(--text-2)}
 .rn-sec i{width:4px;height:12px;border-radius:1px;background:var(--text-3);transform:skewX(-18deg)}
-.rn-namecell{display:flex;min-width:0}
-.rn-name{display:flex;align-items:center;padding:5px 0;border:0;background:none;text-align:left;white-space:nowrap;font-size:13px;color:var(--text-2)}
-.rn-name:hover{color:var(--text)}
-.rn-name:hover .rn-tri{color:var(--accent);opacity:1}
-.rn-name.off .rn-tri{opacity:.2}
+.rn-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--text-2)}
+.rn-rr:hover .rn-name,.rn-rr.open .rn-name{color:var(--text)}
 .rn-rch{text-align:right;font-size:12.5px;color:var(--text-3)}
 .rn-bar{position:relative;height:7px}
 .rn-bar i{position:absolute;right:2px;top:0;bottom:0;min-width:2px;border-radius:1.5px;transform:skewX(-20deg);background:rgba(255,255,255,.16)}
 .rn-bar i.good{background:var(--good)}.rn-bar i.warn{background:var(--warn)}.rn-bar i.loss{background:var(--bad)}
+/* Past the scale: a full bar, broken near its far end. */
+.rn-bar i.over{-webkit-mask:linear-gradient(90deg,#000 5px,transparent 5px 9px,#000 9px);mask:linear-gradient(90deg,#000 5px,transparent 5px 9px,#000 9px)}
 .rn-hero{text-align:right;font-size:15px;font-weight:700;white-space:nowrap}
 .rn-hero.good{color:var(--good)}.rn-hero.warn{color:var(--warn)}.rn-hero.loss{color:var(--bad)}
 .rn-hero.muted{font-size:12px;font-weight:400;color:var(--text-3)}
@@ -207,7 +207,7 @@ export const runsStyles = `
 .rn-more[aria-expanded=true] svg{transform:rotate(180deg)}
 /* An open ramp: You, the reference and the difference, aligned as figures; only the difference is graded. */
 .rn-detail{margin:0 0 6px;border-radius:0 0 8px 8px;background:rgba(255,255,255,.045)}
-.rn-detail-in{padding:2px 12px 10px 23px}
+.rn-detail-in{padding:2px 12px 10px 8px}
 .rn-x{display:grid;grid-template-columns:minmax(78px,max-content) repeat(3,66px);column-gap:14px;width:max-content;font-size:12.5px;line-height:1.3}
 .rn-x.solo{grid-template-columns:minmax(78px,max-content) 66px}
 .rn-xr{display:contents}
@@ -245,7 +245,6 @@ export const runsStyles = `
   .rn-start,.rn-cols span:nth-child(4){display:none}
   .rn-rr{grid-template-columns:80px 34px minmax(24px,1fr) 70px 22px;gap:8px}
   .rn-toolbar{gap:6px}.rn-seg button{padding:5px 9px}
-  .rn-detail-in{padding-left:12px}
   .rn-x{grid-template-columns:minmax(70px,max-content) repeat(3,58px);column-gap:10px}
   .rn-x.solo{grid-template-columns:minmax(70px,max-content) 58px}
 }

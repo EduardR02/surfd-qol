@@ -148,9 +148,19 @@ export function touchCells(touch, mode = 'best', reference = null, tolerance = 0
   };
 }
 
+// Bars share one scale across the map: the largest value within three times
+// the median, never under 5 u/s. A bail far past the rest then runs off the
+// end with a break instead of shrinking every other bar to a sliver.
+const BAR_FLOOR = 5;
+export function barScale(values) {
+  const sizes = values.filter(Number.isFinite).map(Math.abs).sort((a, b) => a - b);
+  if (!sizes.length) return BAR_FLOOR;
+  const cap = 3 * sizes[Math.floor((sizes.length - 1) / 2)];
+  return Math.max(BAR_FLOOR, ...sizes.filter(size => size <= cap));
+}
+
 // Each ramp's one number: what the whole ramp (Surf, the touch included) cost
-// beyond the reference, or with no reference the loss itself. Bars share one
-// scale across the map, so the costliest ramps stand out.
+// beyond the reference, or with no reference the loss itself.
 export function rampHeroes(ramps, reference = null, tolerance = 0) {
   const entries = ramps.map(ramp => {
     const own = ramp.surf, other = reference ? reference(ramp) : null;
@@ -160,8 +170,11 @@ export function rampHeroes(ramps, reference = null, tolerance = 0) {
     const {diff, tone} = compareRamp(own, other, tolerance);
     return {text: diff, tone, value: other - own};
   });
-  const scale = Math.max(1e-6, ...entries.map(entry => Math.abs(entry.value ?? 0)));
-  return entries.map(entry => ({...entry, size: Math.abs(entry.value ?? 0) / scale}));
+  const scale = barScale(entries.map(entry => entry.value));
+  return entries.map(entry => {
+    const size = Math.abs(entry.value ?? 0) / scale;
+    return {...entry, size: Math.min(1, size), over: size > 1};
+  });
 }
 
 // The open ramp's measurements against the reference: Touch with its angle,
@@ -368,15 +381,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const pbLabel = refs.find(ref => ref.name === 'pb')?.label ?? (best && !best.official ? 'Best finish' : 'PB');
     return [['pb', pbLabel], ['wr', refs.find(ref => ref.name === 'wr')?.label ?? 'WR'], ['recentBest', 'Recent best']];
   }
-  // A ramp's name plays it straight away in the compared replay; its chevron
-  // opens the other replays it can be watched in, each one click away.
-  function rampName(data, ramp, refs, selected, picked, choices) {
-    const destination = selected?.name ?? 'pb', name = choices.find(([entry]) => entry === destination)?.[1] ?? 'PB';
-    const reason = playbackReason(data, ramp.key, destination, refs, selected, picked);
-    const pending = busy === `ramp:${ramp.key}`;
-    const label = reason ? `${ramp.label}: ${reason}` : `Watch ${ramp.label} in ${name}, from just before it`;
-    return `<button type="button" class="rn-name${reason ? ' off' : ''}" data-ramp-watch="${escape(ramp.key)}" data-play-source="" aria-label="${escape(label)}" title="${escape(label)}"${pending ? ' aria-busy="true"' : ''}><i class="rn-tri" aria-hidden="true"></i>${escape(ramp.label)}</button>`;
-  }
   function rampPlayback(data, ramp, refs, selected, picked, choices) {
     const pending = busy === `ramp:${ramp.key}`;
     const chips = choices.map(([name, label]) => {
@@ -450,9 +454,9 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       const reference = referenceOf(ramp)?.surf;
       const title = !Number.isFinite(ramp.surf) ? 'No measurement yet'
         : `Whole ramp, touch included: ${formatDelta(-ramp.surf, 1)}${Number.isFinite(reference) ? `. ${picked.label}: ${formatDelta(-reference, 1)}` : ''}`;
-      return `<div class="rn-rr${open ? ' open' : ''}" role="row"><span class="rn-namecell" role="rowheader">${rampName(data, ramp, refs, selected, picked, choices)}</span>
+      return `<div class="rn-rr${open ? ' open' : ''}" role="row" data-ramp="${escape(ramp.key)}"><span class="rn-name" role="rowheader">${escape(ramp.label)}</span>
         <span class="rn-rch" role="cell"${reach ? ` title="${escape(`Reached in ${reach} of your runs`)}"` : ''}>${reach}</span>
-        <span class="rn-bar" aria-hidden="true">${hero.size ? `<i class="${hero.tone}" style="width:${(hero.size * 100).toFixed(1)}%"></i>` : ''}</span>
+        <span class="rn-bar" aria-hidden="true">${hero.size ? `<i class="${hero.tone}${hero.over ? ' over' : ''}" style="width:${(hero.size * 100).toFixed(1)}%"></i>` : ''}</span>
         <span class="rn-hero ${hero.tone}" role="cell" title="${escape(title)}">${hero.absent ? `not in ${escape(picked.label)}` : hero.text}</span>
         <span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
         open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="${escape(`${ramp.label}: details and other replays`)}" title="Details and other replays">${CHEVRON}</button></span></div>${open ? detail(ramp) : ''}`;
@@ -640,9 +644,14 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
 
   body.addEventListener('click', event => {
     const target = event.target.closest('button');
-    if (!target) return;
+    // A ramp's whole row opens it; its chevron is the same toggle for the keyboard.
+    if (!target) {
+      const row = event.target.closest('.rn-rr[data-ramp]');
+      if (row) { cancelRampNavigation(); expandedRamp = expandedRamp === row.dataset.ramp ? null : row.dataset.ramp; playbackSource = null; render(); }
+      return;
+    }
     if (target.dataset.watch) return watch(target.dataset.watch);
-    // A ramp name or chip names its replay ('' = the compared one) and plays it in one click.
+    // A chip names its replay and plays it in one click.
     if (target.dataset.rampWatch && 'playSource' in target.dataset) {
       cancelRampNavigation();
       playbackSource = target.dataset.playSource || null;

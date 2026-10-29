@@ -7,7 +7,7 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
-import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds, createStrafePreview} from './fixtures.js';
+import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds, createStrafePreview, skipBail} from './fixtures.js';
 import {startStrafePreview} from '../src/strafe-preview-ui.js';
 import {mountNativeTransport} from './native-transport.js';
 
@@ -78,6 +78,7 @@ const panelPage = params.get('panel');
 // ?maps opens its map list; ?history=empty has no runs at all.
 const runsMap = params.get('runs');
 const emptyHistory = params.get('history') === 'empty';
+if (params.get('bail') === 'none') skipBail();
 const history = createHistory({settings, empty: emptyHistory, touch: params.get('touch')});
 const replays = createReplays({empty: emptyHistory});
 const replayControl = createReplayControl({params, active: () => scenario.watching === true});
@@ -154,7 +155,7 @@ else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has(
 if (runsMap !== null && params.get('view') === 'ramps') {
   const press = selector => document.getElementById('surfd-qol').shadowRoot.querySelectorAll(selector);
   if (params.has('stat')) press(`[data-ramp-mode="${params.get('stat')}"]`)[0]?.click();
-  if (params.has('expand')) press('[data-ramp]')[Number(params.get('expand')) || 0]?.click();
+  if (params.has('expand')) press('button[data-ramp]')[Number(params.get('expand')) || 0]?.click();
   if (params.has('reset')) press('[data-reset-averages="ask"]')[0]?.click();
 }
 

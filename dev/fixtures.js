@@ -85,6 +85,12 @@ const maps = {
 };
 // A bail on Utopia's Ramp 6: most of your speed gone where the PB and WR lose little.
 Object.assign(maps['utopia:3'].ramps[5], {board: 38.6, down: 96.2, up: 238, surf: 334.2, clean: {board: 4.1, down: 12.6, up: 27.9, surf: 40.5}});
+// ?bail=none: Ramp 6 surfed cleanly instead.
+export function skipBail() {
+  const ramp = maps['utopia:3'].ramps[5];
+  Object.assign(ramp, ramp.clean);
+  delete ramp.clean;
+}
 maps['boreas:2'].pb = maps['boreas:2'].runs[1];
 maps['boreas:2'].splits = [split('CP1', 21.404, 2690, 21.404, 0), split('CP2', 43.118, 3010, 43.118, 0)];
 for (const [key, map] of Object.entries(maps)) {
