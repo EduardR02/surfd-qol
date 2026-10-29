@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isListedName, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -23,16 +23,14 @@ describe('private room names', () => {
     for (const name of ['abc', 'A'.repeat(32), "Host's room", "A-z_0. !?&#:()"]) {
       expect(roomNameProblem(name)).toBeNull();
       expect(isRoomName(name)).toBe(true);
-      expect(isListedName(name)).toBe(true);
     }
     expect(roomNameProblem('  My   room  ')).toBeNull();
     for (const name of [' My room', 'My room ', 'My  room']) {
       expect(isRoomName(name)).toBe(false);
-      expect(isListedName(name)).toBe(false);
     }
   });
 
-  test('reports exact length, character and impersonation errors for every visibility', () => {
+  test('reports exact length, character and impersonation errors', () => {
     for (const value of [undefined, null, 3, '', '  ', 'ab', 'A'.repeat(33)]) {
       expect(roomNameProblem(value)).toBe('Room names need 3–32 characters.');
       expect(isRoomName(value)).toBe(false);
@@ -42,11 +40,8 @@ describe('private room names', () => {
       expect(isRoomName(name)).toBe(false);
     }
     for (const name of ['Surfd', "surFD's room", 'UnoFFicial room', 'OFFICIAL']) {
-      for (const visibility of ['private', 'public']) {
-        expect(roomNameProblem(name, visibility)).toBe("Room names can't include Surfd or official.");
-      }
+      expect(roomNameProblem(name)).toBe("Room names can't include Surfd or official.");
       expect(isRoomName(name)).toBe(false);
-      expect(isListedName(name)).toBe(false);
     }
   });
 });

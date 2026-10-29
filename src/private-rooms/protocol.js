@@ -316,7 +316,6 @@ export function roomNameProblem(value) {
   return /surfd|official/i.test(name) ? "Room names can't include Surfd or official." : null;
 }
 export const isRoomName = value => typeof value === 'string' && value === normalizeRoomName(value) && roomNameProblem(value) === null;
-export const isListedName = isRoomName;
 const playerId = value => typeof value === 'string' && value.startsWith('private-') && UUID.test(value.slice(8));
 
 export function catalogEntry(map) {

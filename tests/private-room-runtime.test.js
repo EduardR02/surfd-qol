@@ -1,5 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
+import {createRoomControlReader, encodeControlFrames} from '../src/private-rooms/protocol.js';
 
 const ROOM = 'p-abcdefghjkmn';
 const OTHER = 'p-nmkjhgfedcba';
@@ -135,13 +136,18 @@ function fixture({storage = new Map(), displayName = 'Surfer'} = {}) {
   };
 }
 const opened = socket => socket.readyState === 1 ? Promise.resolve() : new Promise(resolve => socket.addEventListener('open', resolve, {once: true}));
-const welcomed = socket => new Promise(resolve => socket.addEventListener('message', function receive(event) {
-  if (typeof event.data !== 'string') return;
-  const message = JSON.parse(event.data);
-  if (message.type !== 'welcome') return;
-  socket.removeEventListener('message', receive);
-  resolve(message);
-}));
+const welcomed = socket => {
+  const incoming = createRoomControlReader();
+  return new Promise(resolve => socket.addEventListener('message', function receive(event) {
+    if (typeof event.data !== 'string') return;
+    const text = incoming.read(event.data);
+    if (text === null) return;
+    const message = JSON.parse(text);
+    if (message.type !== 'welcome') return;
+    socket.removeEventListener('message', receive);
+    resolve(message);
+  }));
+};
 const closed = socket => new Promise(resolve => socket.addEventListener('close', resolve, {once: true}));
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
@@ -191,7 +197,7 @@ describe('private room runtime', () => {
       const updates = f.updates(), refreshes = f.ui.refreshes;
       socket.send('ping'); f.timers.advance(24); socket.message('pong');
       socket.message(JSON.stringify({type: 'state', state: {mapId: 'other', mapTitle: 'Other', epoch: 2}}));
-      socket.message(JSON.stringify({type: 'roster', players: [{name: 'Visitor', points: 0}]}));
+      socket.message(JSON.stringify({type: 'roster', players: [{name: 'Visitor', guest: false}]}));
       expect(f.updates()).toBe(updates);
       expect(f.ui.refreshes).toBe(refreshes);
       f.open(true); f.runtime.browserVisibility(true);
@@ -577,16 +583,18 @@ describe('private room runtime', () => {
     finally { long.runtime.destroy(); }
   });
 
-  test('room rows keep local map titles and accept valid free-text names', async () => {
+  test('room rows keep local map titles and refuse invalid room and roster names', async () => {
     const f = fixture();
     try {
       const joining = f.runtime.join(ROOM), signal = f.signals[0];
       signal.ready();
       signal.message('room-info', {...row(), name: 'Surfd EU 2 · Frankfurt'});
       expect(f.runtime.mergeRooms([])).toEqual([]);
-      signal.message('room-info', {...row(), name: 'Evening practice', mapTitle: '<b>Spoof</b>', roster: [{name: '<i>x</i>', points: 0}, {name: 'Visitor', points: 3}]});
+      signal.message('room-info', {...row(), name: 'Evening practice', mapTitle: '<b>Spoof</b>',
+        roster: [{name: '<i>x</i>', guest: false}, {name: 'Visitor', guest: false, points: 3, rank: 'Admin'}]});
       await joining;
-      expect(f.runtime.mergeRooms([])[0]).toMatchObject({name: 'Evening practice', mapTitle: 'Map', roster: [{name: 'Visitor', points: 3}]});
+      expect(f.runtime.mergeRooms([])[0]).toMatchObject({name: 'Evening practice', mapTitle: 'Map',
+        roster: [{name: 'Visitor', guest: false}]});
     } finally { f.runtime.destroy(); }
   });
 
@@ -771,6 +779,120 @@ describe('private room runtime', () => {
       expect(f.runtime.roomInfo(ROOM)).toMatchObject({capacity: 3, players: 64});
       socket.message(JSON.stringify({type: 'state', state: {maxPlayers: 65}}));
       expect(f.runtime.roomInfo(ROOM).capacity).toBe(3);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('previews keep honest guest and account identity and never trust incoming you claims', async () => {
+    const f = fixture();
+    try {
+      const roster = [
+        {name: 'Member', guest: false, userId: ACCOUNT, points: 9000, rank: 'Admin', you: true},
+        {name: 'Guest_abcde', guest: true, you: true},
+        {name: 'NoAccount', guest: false},
+        {name: 'NoFlag'}, {name: 'BadFlag', guest: 'false'},
+        {name: 'NotGuest', guest: true}, {name: 'Guest_ABCDE', guest: true},
+        {name: 'Guest_12345', guest: true, userId: ACCOUNT},
+        {name: 'BadAccount', guest: false, userId: 'not-a-uuid'},
+      ];
+      const expected = [{name: 'Member', guest: false, userId: ACCOUNT},
+        {name: 'Guest_abcde', guest: true}, {name: 'NoAccount', guest: false}];
+      const joining = f.runtime.join(ROOM), signal = f.signals[0]; signal.ready();
+      signal.message('room-info', {...row(), roster});
+      await joining;
+      expect(f.runtime.roomInfo(ROOM).roster).toEqual(expected);
+      f.open(true);
+      f.response({ok: true, json: async () => ({rooms: [{...row(OTHER), roster}]})});
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.roomInfo(OTHER).roster).toEqual(expected);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('only the latest socket welcome connection marks your entry, not matching names or accounts', async () => {
+    const f = fixture(), ownId = crypto.randomUUID(), otherId = crypto.randomUUID();
+    try {
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM); socket.open();
+      const players = [
+        {name: 'Surfer', guest: false, userId: ACCOUNT, connectionId: otherId, you: true},
+        {name: 'Surfer', guest: false, userId: ACCOUNT, connectionId: ownId},
+      ];
+      socket.message(JSON.stringify({type: 'roster', players}));
+      expect(f.runtime.roomInfo(ROOM).roster).toEqual(players.map(({name, guest, userId}) => ({name, guest, userId})));
+      socket.message(JSON.stringify({type: 'welcome', player: players[1], players, state: {maxPlayers: 2}}));
+      expect(f.runtime.roomInfo(ROOM).roster).toEqual([
+        {name: 'Surfer', guest: false, userId: ACCOUNT}, {name: 'Surfer', guest: false, userId: ACCOUNT, you: true},
+      ]);
+      socket.message(JSON.stringify({type: 'state', state: {name: 'Practice now', maxPlayers: 3}}));
+      expect(f.runtime.roomInfo(ROOM).roster[1].you).toBe(true);
+      socket.message(JSON.stringify({type: 'roster', players: [
+        {...players[1], name: 'Renamed'}, {...players[0], name: 'Surfer'},
+      ]}));
+      expect(f.runtime.roomInfo(ROOM).roster).toEqual([
+        {name: 'Renamed', guest: false, userId: ACCOUNT, you: true}, {name: 'Surfer', guest: false, userId: ACCOUNT},
+      ]);
+      const replacement = f.runtime.roomSocket(ROOM); replacement.open();
+      socket.message(JSON.stringify({type: 'welcome', player: players[1], players}));
+      replacement.message(JSON.stringify({type: 'roster', players}));
+      expect(f.runtime.roomInfo(ROOM).roster.every(player => player.you === undefined)).toBe(true);
+      replacement.message(JSON.stringify({type: 'welcome', player: players[0], players}));
+      expect(f.runtime.roomInfo(ROOM).roster[0].you).toBe(true);
+      expect(f.runtime.roomInfo(ROOM).roster[1].you).toBeUndefined();
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('chunked welcomes identify the latest guest connection and update room metadata', async () => {
+    const f = fixture(), oldId = crypto.randomUUID(), ownId = crypto.randomUUID();
+    const players = [oldId, ownId].map(connectionId => ({connectionId, name: 'Surfer', guest: false, userId: ACCOUNT}));
+    const frames = own => encodeControlFrames({type: 'welcome', player: players[own], players,
+      state: {name: 'Large catalog', maxPlayers: 4}, maps: Array.from({length: 1000}, (_, id) => ({id: 'map_' + id, title: 'A'.repeat(64)}))});
+    try {
+      await f.join();
+      const old = f.runtime.roomSocket(ROOM); old.open();
+      for (const frame of frames(0)) old.message(frame);
+      expect(f.runtime.roomInfo(ROOM)).toMatchObject({name: 'Large catalog', capacity: 4});
+      expect(f.runtime.roomInfo(ROOM).roster.map(player => !!player.you)).toEqual([true, false]);
+      const replacement = f.runtime.roomSocket(ROOM); replacement.open();
+      const chunks = frames(1);
+      replacement.message(chunks[0]);
+      for (const frame of frames(0)) old.message(frame);
+      for (const frame of chunks.slice(1)) replacement.message(frame);
+      expect(f.runtime.roomInfo(ROOM).roster.map(player => !!player.you)).toEqual([false, true]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('a large host catalog preserves Your room identity across host socket replacement', async () => {
+    const f = fixture();
+    f.adapter.rooms.maps = () => Array.from({length: 1001}, (_, id) => ({id: id ? 'map_' + id : 'map', title: 'A'.repeat(64)}));
+    try {
+      const id = await f.host();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const own = f.runtime.roomSocket(id), welcome = welcomed(own);
+        await welcome;
+        expect(f.runtime.roomInfo(id).roster).toEqual([{name: 'Surfer', guest: false, userId: ACCOUNT, you: true}]);
+        expect(f.runtime.roomInfo(id).players).toBe(1);
+      }
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('host rosters stay current while hidden and public listings never identify your local entry', async () => {
+    const f = fixture();
+    try {
+      const id = await f.host({visibility: 'public'});
+      const own = f.runtime.roomSocket(id); await welcomed(own);
+      const updates = f.updates();
+      expect(f.runtime.roomInfo(id).roster).toEqual([{name: 'Surfer', guest: false, userId: ACCOUNT, you: true}]);
+      const peer = new Socket(); peer.open();
+      f.listeners[0].onSocket(peer, {name: 'Surfer', guest: false, userId: ACCOUNT, appearance: {}, browserId: crypto.randomUUID()});
+      expect(f.runtime.roomInfo(id).roster).toEqual([
+        {name: 'Surfer', guest: false, userId: ACCOUNT, you: true}, {name: 'Surfer', guest: false, userId: ACCOUNT},
+      ]);
+      expect(f.signals[0].sent.at(-1).data.roster).toEqual([
+        {name: 'Surfer', guest: false, userId: ACCOUNT}, {name: 'Surfer', guest: false, userId: ACCOUNT},
+      ]);
+      peer.close();
+      expect(f.runtime.roomInfo(id).roster).toEqual([{name: 'Surfer', guest: false, userId: ACCOUNT, you: true}]);
+      expect(f.runtime.roomInfo(id).players).toBe(1);
+      expect(f.updates()).toBe(updates);
     } finally { f.runtime.destroy(); }
   });
 
@@ -1042,9 +1164,9 @@ describe('private room runtime', () => {
       await f.join();
       const socket = f.runtime.roomSocket(ROOM); socket.open();
       socket.message(JSON.stringify({type: 'state', state: {mapId: 'other', mapTitle: 'Other', epoch: 2}}));
-      socket.message(JSON.stringify({type: 'roster', players: [{name: 'Visitor', points: 0}]}));
+      socket.message(JSON.stringify({type: 'roster', players: [{name: 'Visitor', guest: false}]}));
       expect(f.runtime.mergeRooms([])[0]).toMatchObject({mapId: 'other', epoch: 2, players: 1,
-        roster: [{name: 'Visitor', points: 0}]});
+        roster: [{name: 'Visitor', guest: false}]});
       expect(f.signals[0].state).toBe('closed');
     } finally { f.runtime.destroy(); }
   });
@@ -1087,7 +1209,7 @@ describe('private room runtime', () => {
         resolve();
       }));
       expect(f.signals[0].sent.at(-1).data).toEqual({name: "Surfer's room", mapId: 'other', players: 1, capacity: 16,
-        roster: [{name: 'Surfer', points: 0}]});
+        roster: [{name: 'Surfer', guest: false, userId: ACCOUNT}]});
       socket.close(); await closed(socket);
       expect(f.signals[0].sent.at(-1).data.players).toBe(0);
     } finally { f.runtime.destroy(); }
@@ -1191,9 +1313,9 @@ describe('private room runtime', () => {
   test('public previews bound and sanitize rosters before entering native rows', async () => {
     const f = fixture();
     try {
-      const roster = Array.from({length: 26}, (_, index) => ({name: `Player_${index}`, points: index}));
-      roster[0] = {name: '<img onerror=x>', points: 0};
-      roster[1] = {name: 'Fractional', points: 1.5};
+      const roster = Array.from({length: 26}, (_, index) => ({name: `Player_${index}`, guest: false}));
+      roster[0] = {name: '<img onerror=x>', guest: false};
+      roster[1] = {name: 'InvalidGuest', guest: true};
       f.response({ok: true, json: async () => ({rooms: [{...row(), players: 26, roster}]})});
       f.open(true); await f.runtime.refreshDirectory();
       expect(f.rows()[1].roster).toEqual(roster.slice(2, 24));

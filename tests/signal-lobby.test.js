@@ -143,10 +143,10 @@ test('malformed stored rows and roster entries do not poison other public rooms'
   const entries = new Map([
     ['p-bad', {id: 'p-bad', name: 'Bad', mapId: 'map', players: 1, client: 'a', updatedAt: 50}],
     ['p-good', {id: 'p-good', name: "Good's room", mapId: 'map', players: 2, capacity: 16,
-      roster: [{name: '<bad>', points: 1}, {name: 'Visitor_1', points: 5}], client: 'b', updatedAt: 51}],
+      roster: [{name: '<bad>', guest: false}, {name: 'Visitor_1', guest: false, points: 5}], client: 'b', updatedAt: 51}],
   ]);
   const lobby = createLobby({entries, now: () => 100});
   expect(lobby.rooms()).toEqual([{id: 'p-good', name: "Good's room", mapId: 'map', players: 2, capacity: 16,
-    roster: [{name: 'Visitor_1', points: 5}], updatedAt: 51}]);
+    roster: [{name: 'Visitor_1', guest: false}], updatedAt: 51}]);
   expect(entries.has('p-bad')).toBe(false);
 });

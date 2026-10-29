@@ -1,7 +1,7 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
-import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
+import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -84,8 +84,21 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     if (adapter) adapter.update(mergeRooms(adapter.rows()));
     ui?.refresh();
   }
+  function normalizeRoster(players, limit = MAX_ROOM_PLAYERS, ownConnectionId = null) {
+    if (!Array.isArray(players)) return [];
+    const roster = [];
+    for (const player of players.slice(0, limit)) {
+      if (!player || !isPlayerName(player.name) || typeof player.guest !== 'boolean' ||
+          (player.guest ? !isGuestName(player.name) || player.userId !== undefined
+            : player.userId !== undefined && !isUuid(player.userId))) continue;
+      roster.push({name: player.name, guest: player.guest,
+        ...(!player.guest && player.userId !== undefined ? {userId: player.userId} : {}),
+        ...(ownConnectionId !== null && player.connectionId === ownConnectionId ? {you: true} : {})});
+    }
+    return roster;
+  }
   // Rows come from the host; map titles always come from the local catalog.
-  function normalize(row, publicRoom = false) {
+  function normalize(row, publicRoom = false, ownConnectionId = null) {
     const map = row && getAdapter()?.rooms?.maps().find(entry => entry.id === row.mapId);
     if (!map || !isPrivateRoomId(row.id) || !isRoomName(row.name) ||
         !isMaxPlayers(row.capacity) || !Number.isSafeInteger(row.players) ||
@@ -96,23 +109,22 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
       region: publicVisibility ? 'Public' : 'Private', endsAt: 0, untimed: true,
       online: true, epoch: Number.isSafeInteger(row.epoch) && row.epoch > 0 ? row.epoch : 1,
       ping: known.get(row.id)?.ping ?? directory.get(row.id)?.ping ?? null,
-      roster: Array.isArray(row.roster) ? row.roster.slice(0, publicRoom ? 24 : MAX_ROOM_PLAYERS).filter(player => player &&
-        isPlayerName(player.name) && Number.isSafeInteger(player.points)).map(player =>
-        ({name: player.name, points: player.points})) : []};
+      roster: normalizeRoster(row.roster, publicRoom ? 24 : MAX_ROOM_PLAYERS, ownConnectionId)};
   }
   function hostRow() {
     const {state, players} = hosted.room;
     return {id: state.roomId, name: state.name, mapId: state.mapId, mapTitle: state.mapTitle.slice(0, 64),
       epoch: state.epoch, players: players.length, capacity: state.maxPlayers, visibility: hosted.visibility,
-      roster: players.map(player => ({name: player.name, points: player.points}))};
+      roster: players};
   }
   function publish(force = false) {
     if (!hosted) return;
     updateHostTimers();
     const row = hostRow();
-    known.set(row.id, normalize(row));
+    known.set(row.id, normalize(row, false, hosted.ownConnectionId));
     const data = hosted.visibility === 'public'
-      ? {name: row.name, mapId: row.mapId, players: row.players, capacity: row.capacity, roster: row.roster.slice(0, 24)} : null;
+      ? {name: row.name, mapId: row.mapId, players: row.players, capacity: row.capacity,
+        roster: normalizeRoster(row.roster, 24)} : null;
     const serialized = JSON.stringify(data);
     if ((force || serialized !== hosted.listing) && hosted.signal?.send(null, 'listing', data)) {
       hosted.listing = serialized;
@@ -279,7 +291,8 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     const ownHost = id === hosted?.id;
     sockets.set(socket, id);
     latestSockets.set(id, socket);
-    let pingAt = null, opened = false;
+    let pingAt = null, opened = false, ownConnectionId = null;
+    const incoming = createRoomControlReader();
     socket.addEventListener('open', () => { opened = true; ui?.refresh(); }, {once: true});
     const send = socket.send.bind(socket);
     socket.send = data => {
@@ -295,20 +308,37 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         if (previous && elapsed >= 0 && Number.isFinite(elapsed)) { previous.ping = elapsed; updateLobby(); }
         return;
       }
-      if (id === hosted?.id || !previous || typeof event.data !== 'string' || event.data === 'pong') return;
+      if (typeof event.data !== 'string' || event.data === 'pong') return;
       let message;
-      try { message = JSON.parse(event.data); } catch { return; }
+      try {
+        const text = incoming.read(event.data);
+        if (text === null) return;
+        message = JSON.parse(text);
+      } catch { return; }
       if (!message || !['welcome', 'state', 'roster'].includes(message.type)) return;
+      if (message.type === 'welcome' && ownConnectionId === null && isUuid(message.player?.connectionId)) {
+        ownConnectionId = message.player.connectionId;
+        if (ownHost && id === hosted?.id) {
+          hosted.ownConnectionId = ownConnectionId;
+          publish();
+        }
+      }
+      if (ownHost || !previous) return;
       const state = message.state;
       const players = message.players;
       const row = normalize({...previous,
         ...(state ? {name: state.name ?? previous.name, mapId: state.mapId ?? previous.mapId,
           epoch: state.epoch ?? previous.epoch, visibility: state.visibility ?? previous.visibility,
           capacity: state.maxPlayers ?? previous.capacity} : {}),
-        ...(Array.isArray(players) ? {players: players.length, roster: players} : {})});
-      if (row) { known.set(id, row); updateLobby(); }
+        ...(Array.isArray(players) ? {players: players.length, roster: players} : {})}, false, ownConnectionId);
+      if (row) {
+        if (!Array.isArray(players)) row.roster = previous.roster;
+        known.set(id, row);
+        updateLobby();
+      }
     });
     socket.addEventListener('close', event => {
+      incoming.clear();
       sockets.delete(socket);
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
@@ -445,7 +475,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
         const next = new Map();
         // Rows this browser can't show are skipped, so one bad listing never hides the others.
         for (const value of rows.slice(0, DIRECTORY_SIZE)) {
-          const row = isListedName(value?.name) ? normalize(value, true) : null;
+          const row = normalize(value, true);
           if (row && !gone.has(row.id)) next.set(row.id, row);
         }
         if (destroyed || controller.signal.aborted) return;
