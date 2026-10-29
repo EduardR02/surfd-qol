@@ -300,6 +300,20 @@ export function decodeControl(text) {
           && message.previousBestUs > message.timeUs), 'Invalid room finish');
       return {type: 'finish', mapId: message.mapId, epoch: message.epoch, timeUs: message.timeUs,
         personalBest: message.personalBest, previousBestUs: message.previousBestUs};
+    case 'verified': {
+      const ranked = message.leaderboardRank !== undefined || message.leaderboardTotal !== undefined;
+      requireValid((message.id === undefined || isUuid(message.id)) && identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
+        && runTime(message.timeUs) && typeof message.personalBest === 'boolean' && typeof message.record === 'boolean'
+        && (message.previousBestUs === null || (message.personalBest || message.record) && runTime(message.previousBestUs)
+          && message.previousBestUs > message.timeUs)
+        && isPointsDelta(message.pointsDelta) && typeof message.promoted === 'boolean'
+        && (message.rank === undefined || message.promoted && textValue(message.rank, 32))
+        && (!ranked || isStanding(message.leaderboardRank, message.leaderboardTotal)), 'Invalid room finish');
+      return {type: 'verified', ...(message.id === undefined ? {} : {id: message.id}), mapId: message.mapId, epoch: message.epoch,
+        timeUs: message.timeUs, personalBest: message.personalBest, previousBestUs: message.previousBestUs, record: message.record,
+        pointsDelta: message.pointsDelta, promoted: message.promoted, ...(message.rank === undefined ? {} : {rank: message.rank}),
+        ...(ranked ? {leaderboardRank: message.leaderboardRank, leaderboardTotal: message.leaderboardTotal} : {})};
+    }
     case 'change-map':
       requireValid(typeof message.mapId === 'string' && message.mapId.length > 0, 'Invalid map');
       return {type: 'change-map', mapId: message.mapId};
@@ -322,7 +336,10 @@ const record = value => value !== null && typeof value === 'object' && !Array.is
 const textValue = (value, max, empty = false) => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0);
 const identifier = value => textValue(value, 256);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
-const runTime = value => Number.isSafeInteger(value) && value > 0 && value <= 86400000000;
+export const runTime = value => Number.isSafeInteger(value) && value > 0 && value <= 86400000000;
+const isPointsDelta = value => Number.isSafeInteger(value) && value >= 0 && value <= 1e6;
+// A leaderboard place the game would print: 0 < rank <= total.
+export const isStanding = (rank, total) => Number.isSafeInteger(rank) && Number.isSafeInteger(total) && rank > 0 && total >= rank && total <= 1e9;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The site's username rules, which Guest_ names also meet.
 export const isPlayerName = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,24}$/.test(value);
@@ -463,17 +480,24 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
           ...(message.rank === undefined ? {} : {rank: message.rank}),
           ...(message.appearance === undefined ? {} : {appearance: normalizeAppearance(message.appearance)})};
       case 'result': {
-        const result = message.result;
+        // Only runs the site verified carry points, promotions and a leaderboard place; an unverified record is the room's.
+        const result = message.result, verified = result?.verified === true;
+        const ranked = verified && (result.leaderboardRank !== undefined || result.leaderboardTotal !== undefined);
         requireValid(record(result) && isUuid(result.id) && (isUuid(result.userId) || playerId(result.userId))
           && isPlayerName(result.name) && validRank(result.rank) && catalog.has(result.mapId)
           && runTime(result.timeUs) && typeof result.record === 'boolean' && typeof result.personalBest === 'boolean'
           && (result.previousBestUs === null || (result.record || result.personalBest)
             && runTime(result.previousBestUs) && result.previousBestUs > result.timeUs)
-          && result.pointsDelta === 0 && result.promoted === false, 'Invalid room result');
+          && [undefined, true, false].includes(result.verified) && [undefined, true, false].includes(result.roomRecord)
+          && (verified ? isPointsDelta(result.pointsDelta) && typeof result.promoted === 'boolean'
+            && (!ranked || isStanding(result.leaderboardRank, result.leaderboardTotal))
+            : result.pointsDelta === 0 && result.promoted === false), 'Invalid room result');
+        const roomRecord = result.record && (!verified || result.roomRecord === true);
         return {type: 'result', result: {id: result.id, userId: result.userId, name: result.name, rank: result.rank,
           mapId: result.mapId, mapTitle: catalog.get(result.mapId).title, timeUs: result.timeUs,
-          record: result.record, personalBest: result.personalBest, previousBestUs: result.previousBestUs,
-          pointsDelta: 0, promoted: false}};
+          record: result.record, ...(roomRecord ? {roomRecord} : {}), personalBest: result.personalBest, previousBestUs: result.previousBestUs,
+          pointsDelta: verified ? result.pointsDelta : 0, promoted: verified && result.promoted,
+          ...(ranked ? {leaderboardRank: result.leaderboardRank, leaderboardTotal: result.leaderboardTotal} : {}), verified}};
       }
       case 'notice':
       case 'error': {

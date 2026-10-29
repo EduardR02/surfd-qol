@@ -1,7 +1,7 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
-import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, rankTable, roomNameProblem } from './protocol.js';
+import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, decodeControl, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, rankTable, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -22,6 +22,8 @@ const VISIBILITY_KEY = 'surfd-qol-room-visibility';
 const MAX_PLAYERS_KEY = 'surfd-qol-room-max-players';
 const NAME_KEY = 'surfd-qol-room-guest-name';
 const BROWSER_KEY = 'surfd-qol-room-browser';
+// The game keeps at most six runs waiting for the site.
+const PENDING_RUNS = 6;
 
 export function createPrivateRooms({ getAdapter, getState = () => globalThis.__SURF__?.snapshot?.() ?? null, signalFactory = connectSignal,
   fetch: fetchRooms = (...args) => globalThis.fetch(...args), now = Date.now,
@@ -37,6 +39,9 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
   let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
+  // Finishes the game sent for verification wait for the site's verdict, by attempt id.
+  const pendingRuns = new Map();
+  let queuedRun, stopVerdicts = null;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
   let visibility = stored(VISIBILITY_KEY) === 'public' ? 'public' : 'private';
@@ -244,15 +249,51 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       ...(profile ? {rank: profile.rank, points: profile.points} : {})};
   }
   const ranks = () => rankTable(getAdapter()?.rooms?.ranks?.());
+  async function siteRead(query) {
+    const response = await fetchRooms('/api/surf?' + new URLSearchParams(query), {credentials: 'omit', cache: 'no-store'});
+    // Rate limits and outages say nothing about what was asked.
+    if (response.status === 429 || response.status >= 500) throw new Error(SERVICE);
+    return response.ok ? response.json() : null;
+  }
+  // The uncached board, as the game reads it right after a verified run.
+  async function siteBoard(mapId) {
+    const boardId = getAdapter()?.rooms?.boardId?.(mapId);
+    return typeof boardId === 'string' && boardId ? siteRead({action: 'leaderboard', boardId}) : null;
+  }
+  // Drops the runs waiting on a socket, or all of them, and stops watching verdicts once none wait.
+  function forgetRuns(socket = null) {
+    for (const [id, run] of pendingRuns) if (socket === null || run.socket === socket) pendingRuns.delete(id);
+    if (!pendingRuns.size) { stopVerdicts?.(); stopVerdicts = null; }
+  }
+  // The site's verdict on a room finish: a verified run with its result goes to the host for checking;
+  // a rejected one, or one without a result, gets the unverified announcement.
+  function verdict(id, submission) {
+    const run = pendingRuns.get(id), status = submission?.status;
+    if (!run || (status !== 'verified' && status !== 'rejected')) return;
+    pendingRuns.delete(id);
+    if (!pendingRuns.size) forgetRuns();
+    const {socket, claim} = run;
+    if (destroyed || socket !== currentSocket || socket.readyState !== 1) return;
+    socket.send(JSON.stringify(status === 'verified' && verifiedClaim(claim, submission.result) || claim));
+  }
+  function verifiedClaim(claim, result) {
+    if (!result || typeof result !== 'object' || result.mapId !== claim.mapId) return null;
+    const personalBest = result.personalBest === true, record = result.record === true, promoted = result.promoted === true;
+    const ranked = Number.isSafeInteger(result.leaderboardRank) && Number.isSafeInteger(result.leaderboardTotal)
+      && result.leaderboardRank > 0 && result.leaderboardTotal >= result.leaderboardRank;
+    try {
+      return decodeControl(JSON.stringify({type: 'verified', ...(isUuid(result.id) ? {id: result.id} : {}),
+        mapId: claim.mapId, epoch: claim.epoch, timeUs: result.timeUs, personalBest, record,
+        previousBestUs: (personalBest || record) && Number.isSafeInteger(result.previousBestUs) && result.previousBestUs > result.timeUs
+          ? result.previousBestUs : null,
+        pointsDelta: Number.isSafeInteger(result.pointsDelta) && result.pointsDelta > 0 ? result.pointsDelta : 0, promoted,
+        ...(promoted ? {rank: result.rank} : {}),
+        ...(ranked ? {leaderboardRank: result.leaderboardRank, leaderboardTotal: result.leaderboardTotal} : {})}));
+    } catch { return null; }
+  }
   // The site's public profile for an account, read without credentials.
   async function siteProfile(userId) {
-    const response = await fetchRooms('/api/surf?' + new URLSearchParams({action: 'progression', userId}),
-      {credentials: 'omit', cache: 'no-store'});
-    // Rate limits and outages say nothing about the account.
-    if (response.status === 429 || response.status >= 500) throw new Error(SERVICE);
-    if (!response.ok) return null;
-    const body = await response.json();
-    return body?.player ?? null;
+    return (await siteRead({action: 'progression', userId}))?.player ?? null;
   }
   const roomName = () => `${hello().name}'s room`;
   // TURN relay credentials, {config, ttl}, over a meeting point connection
@@ -381,6 +422,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     socket.addEventListener('close', event => {
       incoming.clear();
       sockets.delete(socket);
+      forgetRuns(socket);
       if (currentSocket === socket) {
         currentSocket = null;
         shared?.close();
@@ -559,7 +601,11 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     });
   }
   const api = {
+    // Called by the game as it handles each finish: the attempt id it sends for verification, or null.
+    finishQueued(id) { queuedRun = typeof id === 'string' ? id : null; },
     async observeFinish(live, history) {
+      // The game reports this finish's attempt only after this tick, so an earlier report is cleared first.
+      queuedRun = undefined;
       const socket = currentSocket, id = sockets.get(socket), state = roomStates.get(socket);
       if (destroyed || !id || latestSockets.get(id) !== socket || socket.readyState !== 1 || !state) return false;
       const adapter = getAdapter(), timer = live?.timer?.state;
@@ -577,8 +623,17 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const bestUs = best === null ? null : Math.round(best * 1e6);
       if (bestUs !== null && (!Number.isSafeInteger(bestUs) || bestUs <= 0 || bestUs > 86400000000)) return false;
       const personalBest = bestUs === null || timeUs < bestUs;
-      socket.send(JSON.stringify({type: 'finish', mapId: state.mapId, epoch: state.epoch, timeUs,
-        personalBest, previousBestUs: personalBest ? bestUs : null}));
+      const claim = {type: 'finish', mapId: state.mapId, epoch: state.epoch, timeUs,
+        personalBest, previousBestUs: personalBest ? bestUs : null};
+      const attempt = queuedRun, onVerdict = adapter.rooms?.onVerdict;
+      queuedRun = undefined;
+      if (typeof attempt === 'string' && typeof onVerdict === 'function') {
+        if (pendingRuns.size >= PENDING_RUNS) pendingRuns.delete(pendingRuns.keys().next().value);
+        pendingRuns.set(attempt, {socket, claim});
+        stopVerdicts ??= onVerdict(verdict);
+        return true;
+      }
+      socket.send(JSON.stringify(claim));
       return true;
     },
     async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id,
@@ -601,7 +656,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const id = createRoomId();
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
       current.room = createRoomHost({roomId: id, mapId, maps, visibility, maxPlayers: limit,
-        name, ranks: ranks(), lookupProfile: siteProfile,
+        name, ranks: ranks(), lookupProfile: siteProfile, lookupBoard: siteBoard,
         getMap: () => getAdapter()?.practice?.destination?.()?.map ?? null,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
@@ -799,6 +854,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       closeHost();
       sharedSaves?.close();
       sharedSaves = null;
+      forgetRuns();
       destroyed = true;
       directoryAbort?.abort();
       timers.clearInterval(heartbeat);

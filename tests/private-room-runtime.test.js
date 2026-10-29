@@ -299,6 +299,96 @@ describe('community room finish claims', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  describe('finishes the game sends for verification', () => {
+    const RESULT = '00000000-0000-4000-8000-0000000000aa';
+    const site = {id: RESULT, userId: ACCOUNT, name: 'Surfer', rank: 'Rookie', mapId: 'map', mapTitle: 'Map', timeUs: 12345678,
+      record: false, personalBest: true, previousBestUs: 13000000, pointsDelta: 25, promoted: false,
+      leaderboardRank: 5, leaderboardTotal: 80, stageRecords: []};
+    const unverified = {type: 'finish', mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: true, previousBestUs: null};
+    async function queued(attempt = 'attempt-1') {
+      const f = finishFixture(), watch = {listener: null, starts: 0, stops: 0};
+      f.adapter.rooms.onVerdict = listener => {
+        watch.listener = listener;
+        watch.starts++;
+        return () => { watch.listener = null; watch.stops++; };
+      };
+      const socket = await f.guest();
+      const sending = f.runtime.observeFinish(f.live, f.history);
+      // The game reports the attempt while it handles the finish, after the tick that observed it.
+      if (attempt !== 'unreported') f.runtime.finishQueued(attempt);
+      expect(await sending).toBe(true);
+      return {f, socket, watch, sent: () => socket.sent.map(JSON.parse)};
+    }
+
+    test('wait for the verdict, then send the site\u2019s verified fields once', async () => {
+      const {f, watch, sent} = await queued();
+      try {
+        expect(sent()).toEqual([]);
+        expect(watch.starts).toBe(1);
+        const listener = watch.listener;
+        listener('attempt-2', {status: 'verified', result: site});
+        listener('attempt-1', {status: 'verifying'});
+        expect(sent()).toEqual([]);
+        listener('attempt-1', {status: 'verified', result: site});
+        listener('attempt-1', {status: 'verified', result: site});
+        expect(sent()).toEqual([{type: 'verified', id: RESULT, mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: true,
+          previousBestUs: 13000000, record: false, pointsDelta: 25, promoted: false, leaderboardRank: 5, leaderboardTotal: 80}]);
+        expect(watch.stops).toBe(1);
+        expect(f.requests).toEqual([]);
+      } finally { f.runtime.destroy(); }
+    });
+
+    test('a promotion carries the new rank; fields the game wouldn\u2019t print are left out', async () => {
+      const {f, watch, sent} = await queued();
+      try {
+        watch.listener('attempt-1', {status: 'verified', result: {...site, id: 'not-a-uuid', promoted: true, rank: 'Surfer',
+          personalBest: false, previousBestUs: 13000000, pointsDelta: -5, leaderboardRank: 81}});
+        expect(sent()).toEqual([{type: 'verified', mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: false,
+          previousBestUs: null, record: false, pointsDelta: 0, promoted: true, rank: 'Surfer'}]);
+      } finally { f.runtime.destroy(); }
+    });
+
+    test('rejected runs, and verified ones without a usable result, get the unverified announcement', async () => {
+      for (const answer of [{status: 'rejected', reason: 'Bad replay'}, {status: 'verified'},
+        {status: 'verified', result: {...site, mapId: 'other'}}, {status: 'verified', result: {...site, timeUs: 0}}]) {
+        const {f, watch, sent} = await queued();
+        try {
+          watch.listener('attempt-1', answer);
+          expect(sent()).toEqual([unverified]);
+        } finally { f.runtime.destroy(); }
+      }
+    });
+
+    test('finishes the game doesn\u2019t send, or doesn\u2019t report, are announced at once', async () => {
+      for (const attempt of [null, 'unreported']) {
+        const {f, watch, sent} = await queued(attempt);
+        try {
+          expect(sent()).toEqual([unverified]);
+          expect(watch.starts).toBe(0);
+        } finally { f.runtime.destroy(); }
+      }
+      const f = finishFixture();
+      try {
+        const socket = await f.guest();
+        f.runtime.finishQueued('stale');
+        expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
+        f.runtime.finishQueued('attempt-1');
+        expect(socket.sent.map(JSON.parse)).toEqual([unverified]);
+      } finally { f.runtime.destroy(); }
+    });
+
+    test('leaving the room drops a waiting run and stops watching verdicts', async () => {
+      const {f, socket, watch, sent} = await queued();
+      try {
+        const listener = watch.listener;
+        socket.close(1000);
+        expect(watch.stops).toBe(1);
+        listener('attempt-1', {status: 'verified', result: site});
+        expect(sent()).toEqual([]);
+      } finally { f.runtime.destroy(); }
+    });
+  });
+
   test('loading history never sends an old finish after epoch, map, socket or room changes', async () => {
     for (const change of [
       (f, socket) => socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'map', epoch: 2}})),
@@ -650,6 +740,25 @@ describe('private room runtime', () => {
       expect(new URL(f.requests[lookup], 'https://surfd.net').searchParams.toString()).toBe(`action=progression&userId=${ACCOUNT}`);
       expect(f.requestOptions[lookup]).toEqual({credentials: 'omit', cache: 'no-store'});
       expect(f.requests.filter(url => String(url).startsWith('/api/surf?'))).toHaveLength(1);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('the host reads the map\u2019s uncached board once per verified personal best, without credentials', async () => {
+    const f = fixture();
+    f.adapter.rooms.boardId = mapId => mapId === 'map' ? 'board-1' : null;
+    f.response({ok: true, status: 200, json: async () => ({entries: [], total: 0, player: null})});
+    const site = url => String(url).startsWith('/api/surf?') && new URL(url, 'https://surfd.net').searchParams.get('action') === 'leaderboard';
+    try {
+      const id = await f.host();
+      const socket = f.runtime.roomSocket(id);
+      await welcomed(socket);
+      const claim = {type: 'verified', mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: true, previousBestUs: null,
+        record: false, pointsDelta: 10, promoted: false};
+      socket.send(JSON.stringify(claim));
+      socket.send(JSON.stringify({...claim, personalBest: false}));
+      for (let wait = 0; wait < 20 && !f.requests.some(site); wait++) await new Promise(resolve => setTimeout(resolve, 5));
+      const lookups = f.requests.flatMap((url, index) => site(url) ? [[String(url), f.requestOptions[index]]] : []);
+      expect(lookups).toEqual([['/api/surf?action=leaderboard&boardId=board-1', {credentials: 'omit', cache: 'no-store'}]]);
     } finally { f.runtime.destroy(); }
   });
 

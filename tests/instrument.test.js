@@ -191,6 +191,13 @@ const nativeResults=[];
 function nativeResultText(result){const text=result.record?"New Surfd record!":result.personalBest?result.previousBestUs?"Personal best, "+(result.previousBestUs-result.timeUs)+" faster.":"First verified completion.":"Finished.";return result.mapTitle+" in "+result.timeUs+". "+text}
 function nativeResultChat(text,type,name,rank){nativeResults.push({text,type,name,rank})}
 function announceResult(result){nativeResultChat(nativeResultText(result),"result",result.name,result.rank)}
+const nativeSubmissions={calls:[],answers:new Map(),submit(id,context){this.calls.push(["submit",id,context]);return Promise.resolve(this.answers.get(id))},
+  submission(id){this.calls.push(["submission",id]);return Promise.resolve(this.answers.get(id))}};
+Object.assign(client,{submit:nativeSubmissions.submit,submission:nativeSubmissions.submission,answers:nativeSubmissions.answers,calls:nativeSubmissions.calls});
+client.config.maps.push({id:'archived-map',boardId:'old-board',archived:true},{id:'archived-map',boardId:'new-board'});
+let rankedTicket=null,guestTicket=null,finishStatus="";
+const rankedAttempts={take:()=>rankedTicket},guestAttempts={take:()=>guestTicket};
+function nativeFinish(replay,valid){let current;const ticket=rankedAttempts.take(replay,valid);if(current=ticket?.ticket.id??null,!ticket){const guest=guestAttempts.take(replay,valid);finishStatus=guest?"Replay kept for sign-in.":"Saved locally only.";return finishStatus}finishStatus="Replay queued for verification. You can keep surfing.";return "Replay queued for verification."}
 `;
 
 // The fixture intentionally preserves only semantic/minified signatures, not
@@ -294,7 +301,8 @@ function roomFixture(privateRooms, source = roomSource) {
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
         notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
-        results:nativeResults,announceResult,
+        results:nativeResults,announceResult,client,
+        finish:ticket=>{rankedTicket=ticket?{ticket:{id:ticket}}:null;return nativeFinish({},true)},
         menu:open=>{nativeMenu.hidden=!open;nativeFrame()},frame:nativeFrame,label:roomLabel},
       ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
       playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
@@ -905,10 +913,10 @@ describe('native community behavior integration', () => {
     expect(native.nativeReplies.slice(-2)).toEqual(['Official help', 'Official help']);
   });
 
-  test('room records and first completions keep native announcements without official record or verification claims', () => {
+  test('community room records and unverified completions get room wording; site results keep native wording', () => {
     const {runtime} = roomFixture(socialHooks()), native = runtime.native;
     const result = {mapTitle: 'Fixture map', timeUs: 1000000, name: 'Surfer', rank: 'Guest',
-      record: true, personalBest: true, previousBestUs: null};
+      record: true, roomRecord: true, personalBest: true, previousBestUs: null, verified: false};
     native.setRoom(communityId);
     native.announceResult(result);
     expect(native.results.at(-1)).toEqual({text: 'Fixture map in 1000000. New room record!',
@@ -917,11 +925,44 @@ describe('native community behavior integration', () => {
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First completion.');
     native.announceResult({...result, record: false, previousBestUs: 1200000});
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. Personal best, 200000 faster.');
+    const site = {...result, roomRecord: undefined, verified: undefined};
+    native.announceResult(site);
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
+    native.announceResult({...site, record: false});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First verified completion.');
+    native.announceResult({...result, roomRecord: false, verified: true});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
     native.setRoom('eu');
     native.announceResult(result);
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
     native.announceResult({...result, record: false});
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First verified completion.');
+  });
+
+  test('the game reports each finish\u2019s verification attempt, or none, as it handles the finish', () => {
+    const reports = [], {runtime} = roomFixture(socialHooks({finishQueued: id => reports.push(id)}));
+    expect(runtime.native.finish('attempt-1')).toBe('Replay queued for verification.');
+    expect(runtime.native.finish(null)).toBe('Saved locally only.');
+    expect(reports).toEqual(['attempt-1', null]);
+  });
+
+  test('verdict watching reports every site answer by attempt id and restores the client when stopped', async () => {
+    const {adapter, runtime} = roomFixture(socialHooks()), client = runtime.native.client;
+    const prototype = {submission: client.submission};
+    expect(adapter.rooms.boardId('map')).toBeNull();
+    expect(adapter.rooms.boardId('archived-map')).toBe('new-board');
+    client.answers.set('a', {status: 'verified', result: {id: 'r'}});
+    const seen = [], stop = adapter.rooms.onVerdict((id, answer) => seen.push([id, answer?.status]));
+    expect(await client.submit('a', null)).toEqual({status: 'verified', result: {id: 'r'}});
+    await client.submission('b');
+    await Promise.resolve();
+    expect(seen).toEqual([['a', 'verified'], ['b', undefined]]);
+    expect(client.calls).toEqual([['submit', 'a', null], ['submission', 'b']]);
+    stop();
+    expect(client.submission).toBe(prototype.submission);
+    await client.submission('a');
+    await Promise.resolve();
+    expect(seen).toHaveLength(2);
   });
 });
 

@@ -38,6 +38,13 @@ export function nativeRoomHooks(source, hook, lobby) {
   } catch (error) {
     console.warn('[Surfd QoL] Native community results unavailable:', error.message);
   }
+  try {
+    // The attempt id of a finish the game sends for verification, or null when it sends none.
+    const queued = unique(source, new RegExp(`if\\((${identifier})=(${identifier})\\?\\.ticket\\.id\\?\\?null,!\\2\\)`, 'g'), 'native ranked finish');
+    source = source.replace(queued[0], () => `if(${queued[1]}=${queued[2]}?.ticket.id??null,${hook}?.finishQueued?.(${queued[1]}),!${queued[2]})`);
+  } catch (error) {
+    console.warn('[Surfd QoL] Verified community results unavailable:', error.message);
+  }
   return {source, adapter};
 }
 
@@ -46,8 +53,9 @@ function resultHooks(source, lobby) {
   const formatter = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=\\2\\.record\\?"New Surfd record!":`, 'g'), 'native result text');
   const first = unique(source, /"First verified completion\."/g, 'native first completion');
   const call = unique(source, new RegExp(`${literal(formatter[1])}\\((${identifier})\\),"result",\\1\\.name,\\1\\.rank`, 'g'), 'native result notification');
-  source = source.replace(formatter[0], () => `function ${formatter[1]}(${formatter[2]},__qolCommunity=false){const ${formatter[3]}=${formatter[2]}.record?(__qolCommunity?"New room record!":"New Surfd record!"):`);
-  source = source.replace(first[0], () => '(__qolCommunity?"First completion.":"First verified completion.")');
+  // Community hosts mark room records and unverified runs; the site's own results never carry these marks.
+  source = source.replace(formatter[0], () => `function ${formatter[1]}(${formatter[2]},__qolCommunity=false){const ${formatter[3]}=${formatter[2]}.record?(__qolCommunity&&${formatter[2]}.roomRecord?"New room record!":"New Surfd record!"):`);
+  source = source.replace(first[0], () => `(__qolCommunity&&${formatter[2]}.verified===false?"First completion.":"First verified completion.")`);
   return source.replace(call[0], () => `${formatter[1]}(${call[1]},${community(`${native}?.roomId()`)}),"result",${call[1]}.name,${call[1]}.rank`);
 }
 

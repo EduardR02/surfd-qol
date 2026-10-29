@@ -3,7 +3,7 @@ import {maskChat} from './chat-filter.js';
 import {MAX_ROOM_SAVELOCS, SAVELOC_RING, sanitizeSaveloc} from './saveloc-validation.js';
 import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isPoints, isUuid, kickedNotice,
-  normalizeAppearance, normalizeRoomName, rankFor, rankTable, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
+  isStanding, normalizeAppearance, normalizeRoomName, rankFor, rankTable, relayPose, relaySpectator, roomNameProblem, runTime} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
@@ -11,16 +11,19 @@ const SAVELOC_LIMIT = {rate: 1, burst: 3};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
-const RESULT_INTERVAL_MS = 3000;
+const RESULT_INTERVAL_MS = 3000, VERIFIED_LIMIT = {rate: 1 / 3, burst: 3};
+// Earlier epochs a late claim may name, and verified runs remembered so none is announced twice.
+const EPOCH_HISTORY = 9, ANNOUNCED_RUNS = 256;
 const LOSSY_BACKLOG = 64 * 1024, RELIABLE_BACKLOG = 8 * 1024 * 1024, BACKLOG_GRACE_MS = 5000;
 
 const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 // lookupProfile(userId) resolves to the site's public profile ({username, rank, points}), null when the
-// site has no such player, or rejects when it can't answer.
+// site has no such player, or rejects when it can't answer. lookupBoard(mapId) resolves to the map's
+// leaderboard ({entries: [{rank, userId, timeUs}], total}) or null.
 export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now, getMap = () => null,
-  ranks = RANKS, lookupProfile = null}) {
+  ranks = RANKS, lookupProfile = null, lookupBoard = null}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
   ranks = rankTable(ranks);
   const titles = new Set(ranks.map(rank => rank.title));
@@ -42,7 +45,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   };
   const clients = new Set();
   const slots = new Set(), pending = new Map(), bans = new Map();
-  const records = new Map();
+  const records = new Map(), epochs = new Map([[1, mapId]]), announced = new Set();
   const owners = new Map(), savelocs = new Map();
   let nextSavelocId = 1;
   let nextSlot = 0, hostClient = null, flushTimer = null, rosterTimer = null;
@@ -239,6 +242,80 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }
     if (rosterChanged) roster();
   }
+  // verified is null for a run the site didn't verify, else the leaderboard place to show. An unverified
+  // record is the room's; the finisher's own game already shows the site's result for a verified run.
+  function announce(client, claim, verified = null) {
+    const player = client.player;
+    const previous = records.get(claim.mapId) ?? null;
+    const roomRecord = previous === null || claim.timeUs < previous;
+    if (roomRecord) records.set(claim.mapId, claim.timeUs);
+    const siteRecord = !!verified && claim.record;
+    let promoted = false;
+    if (verified) {
+      const rank = ranks.findIndex(entry => entry.title === claim.rank);
+      promoted = claim.promoted && rank > ranks.findIndex(entry => entry.title === player.rank);
+      const points = Math.min(1e9, player.points + claim.pointsDelta);
+      if (promoted || points !== player.points) {
+        if (promoted) player.rank = claim.rank;
+        player.points = points;
+        roster();
+      }
+    }
+    broadcast({type: 'result', result: {
+      id: claim.id ?? crypto.randomUUID(), userId: player.userId ?? player.id, name: player.name, rank: player.rank,
+      mapId: claim.mapId, mapTitle: catalog.get(claim.mapId).title, timeUs: claim.timeUs,
+      record: siteRecord || roomRecord, ...(roomRecord && !siteRecord ? {roomRecord: true} : {}),
+      personalBest: claim.personalBest,
+      previousBestUs: roomRecord && !siteRecord ? previous : claim.personalBest || siteRecord ? claim.previousBestUs : null,
+      pointsDelta: verified ? claim.pointsDelta : 0, promoted,
+      ...(verified?.leaderboardRank ? {leaderboardRank: verified.leaderboardRank, leaderboardTotal: verified.leaderboardTotal} : {}),
+      verified: !!verified,
+    }}, claim.type === 'verified' ? client : undefined);
+  }
+  // A run the site verified, as the finisher's game reports it. Only a personal best changes the board:
+  // its time and place must show there, or the run reads as unverified. A slower run waits for nothing
+  // and keeps only a standing the board agrees with.
+  function verify(client, claim) {
+    const player = client.player;
+    if (player.guest || !player.userId || epochs.get(claim.epoch) !== claim.mapId || announced.has(claim.id)
+      || !take(client.verified, VERIFIED_LIMIT)) return;
+    if (claim.id) {
+      announced.add(claim.id);
+      if (announced.size > ANNOUNCED_RUNS) announced.delete(announced.values().next().value);
+    }
+    const best = claim.personalBest || claim.record;
+    // Points come from a map's best time, so a slower run earns none.
+    if (!best) claim = {...claim, pointsDelta: 0, promoted: false};
+    if (!best && claim.leaderboardRank === undefined) {
+      announce(client, claim, {});
+      return;
+    }
+    Promise.resolve().then(() => lookupBoard?.(claim.mapId)).catch(() => null).then(board => {
+      if (closed || !clients.has(client)) return;
+      const place = standing(board, claim, player.userId);
+      if (best && !place) announce(client, claim);
+      else announce(client, claim, place && claim.leaderboardRank !== undefined
+        ? {leaderboardRank: place.rank, leaderboardTotal: place.total} : {});
+    });
+  }
+  function standing(board, claim, userId) {
+    if (!record(board) || !Array.isArray(board.entries) || board.entries.length > 1000 || !Number.isSafeInteger(board.total)
+      || board.total < board.entries.length || !board.entries.every(entry => record(entry) && Number.isSafeInteger(entry.rank)
+        && entry.rank > 0 && typeof entry.userId === 'string' && runTime(entry.timeUs))) return null;
+    const best = claim.personalBest || claim.record;
+    const own = board.entries.find(entry => entry.userId === userId);
+    if (own) {
+      if (best ? own.timeUs !== claim.timeUs : own.timeUs > claim.timeUs) return null;
+      if (claim.record && own.rank !== 1) return null;
+      return isStanding(own.rank, board.total) ? {rank: own.rank, total: board.total} : null;
+    }
+    // The board lists only its top places; an unlisted place must fall below them.
+    const last = board.entries.at(-1);
+    if (claim.record || board.entries.length >= board.total || (best && last && claim.timeUs < last.timeUs)) return null;
+    if (claim.leaderboardRank === undefined) return {};
+    return claim.leaderboardRank > (last?.rank ?? 0) && isStanding(claim.leaderboardRank, board.total)
+      ? {rank: claim.leaderboardRank, total: board.total} : null;
+  }
   function moderate(client, {playerId, action}) {
     const target = [...clients].find(peer => peer.player.id === playerId);
     if (!client.host || !target || target.host) return;
@@ -311,21 +388,14 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           broadcast({type: 'chat', playerId: client.player.id, name: client.player.name,
             rank: client.player.rank, appearance: client.player.appearance, text: maskChat(message.text)});
           break;
-        case 'finish': {
-          if (message.mapId !== state.mapId || message.epoch !== state.epoch || now() < client.nextResultAt) break;
+        case 'finish':
+          if (epochs.get(message.epoch) !== message.mapId || now() < client.nextResultAt) break;
           client.nextResultAt = now() + RESULT_INTERVAL_MS;
-          const previous = records.get(state.mapId) ?? null;
-          const record = previous === null || message.timeUs < previous;
-          if (record) records.set(state.mapId, message.timeUs);
-          broadcast({type: 'result', result: {
-            id: crypto.randomUUID(), userId: client.player.userId ?? client.player.id,
-            name: client.player.name, rank: client.player.rank,
-            mapId: state.mapId, mapTitle: catalog.get(state.mapId).title, timeUs: message.timeUs,
-            record, personalBest: message.personalBest,
-            previousBestUs: record ? previous : message.previousBestUs, pointsDelta: 0, promoted: false,
-          }});
+          announce(client, message);
           break;
-        }
+        case 'verified':
+          verify(client, message);
+          break;
         case 'change-map':
           if (!client.host) {
             send(client, {type: 'error', text: ROOM_TEXTS.hostChangesMaps});
@@ -334,6 +404,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           } else if (message.mapId !== state.mapId) {
             state = {...state, mapId: message.mapId, mapTitle: catalog.get(message.mapId).title,
               epoch: state.epoch + 1, startedAt: Date.now(), recent: [state.mapId, ...state.recent].slice(0, 8)};
+            epochs.set(state.epoch, state.mapId);
+            epochs.delete(state.epoch - EPOCH_HISTORY);
             clearPending();
             savelocs.clear();
             for (const owner of owners.values()) owner.entries.length = 0;
@@ -405,7 +477,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const client = {socket, host, owner, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       spectatorSequence: null, spectator: {tokens: SPECTATOR_LIMIT.burst, at: now()},
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
-      nextResultAt: -Infinity,
+      nextResultAt: -Infinity, verified: {tokens: VERIFIED_LIMIT.burst, at: now()},
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,
       name: guest ? (isGuestName(hello.name) ? hello.name : guestName()) : hello.name,

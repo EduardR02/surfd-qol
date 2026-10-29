@@ -265,6 +265,23 @@ function roomHooks(source, client, state) {
       signIn: () => ${account}.openAccount(),
       maps: () => ${maps},
       currentMap: () => ${state}?.map ?? ${lobby}.selected(),
+      boardId: mapId => (${client}.config.maps.find(map => map.id === mapId && !map.archived) ?? ${client}.config.maps.find(map => map.id === mapId))?.boardId ?? null,
+      // Every answer the site gives about a submitted run, as listener(attemptId, submission), until stopped.
+      onVerdict: __qolListener => {
+        const __qolClient = ${client}, __qolRestore = [];
+        for (const name of ["submit", "submission"]) {
+          const original = __qolClient[name], own = Object.hasOwn(__qolClient, name);
+          if (typeof original !== "function") continue;
+          const wrapper = function (id, ...rest) {
+            const reply = original.call(this, id, ...rest);
+            Promise.resolve(reply).then(value => __qolListener(id, value), () => {});
+            return reply;
+          };
+          __qolClient[name] = wrapper;
+          __qolRestore.push(() => { if (__qolClient[name] === wrapper) own ? __qolClient[name] = original : delete __qolClient[name]; });
+        }
+        return () => { for (const undo of __qolRestore.splice(0)) undo(); };
+      },
     },`};
   } catch (error) {
     console.warn('[Surfd QoL] Private rooms unavailable:', error.message);
