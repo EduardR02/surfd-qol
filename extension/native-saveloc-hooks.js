@@ -16,8 +16,12 @@ export function nativeSavelocHooks(source, store) {
   const selector = unique(source, new RegExp(`const (${identifier})=${literal(panel[1])}\\(${literal(store)},`, 'g'), 'saveloc selector')[1];
   const label = unique(source, new RegExp('(' + identifier + ')\\.textContent=`#\\$\\{(' + identifier + ')\\.id\\} · ', 'g'), 'saveloc label');
   const save = unique(source, new RegExp(`const ${identifier}=${literal(store)}\\.entries\\((${identifier})\\)\\.length>=${identifier},${identifier}=${literal(store)}\\.save\\(\\1\\)`, 'g'), 'saveloc save action');
+  const count = unique(source, new RegExp('(' + identifier + ')\\.textContent=`\\$\\{(' + identifier + ')\\.length\\} / \\$\\{' + identifier + '\\}`', 'g'), 'saveloc count');
   source = source.replace(label[0], () => `${label[1]}.textContent=\`\${${label[2]}.name ? ${label[2]}.name + " #" + ${label[2]}.id : "#" + ${label[2]}.id} · `);
   source = source.replace(save[0], () => `if(__qolSharedPractice){${store}.save(${save[1]});${selector}.refresh();return}${save[0]}`);
+  // The game's "N / 20" stays, counting your own saves against your own 20.
+  const rows = count[2];
+  source = source.replace(count[0], () => count[0].replace(`\${${rows}.length}`, `\${__qolSharedPractice?${rows}.filter(row=>row.own).length:${rows}.length}`));
   return {source, setup: `
 var __qolSharedPractice=null;
 const __qolPracticeMethods=${JSON.stringify(methods)};

@@ -970,7 +970,7 @@ describe('native shared practice consumers', () => {
     const {adapter, runtime, node} = sharedPracticeFixture();
     const store = runtime.bank, original = Object.getOwnPropertyDescriptors(store);
     let selected = 23;
-    const rows = [{id: 23, name: '<Owner>', time: 4, stage: 2, checkpoints: 3},
+    const rows = [{id: 23, name: '<Owner>', own: true, time: 4, stage: 2, checkpoints: 3},
       {id: 8, name: 'Friend', time: 1.5, stage: 1, checkpoints: 1}];
     const calls = [];
     const handlers = {entries: () => rows, selected: () => selected, save: () => null,
@@ -979,17 +979,17 @@ describe('native shared practice consumers', () => {
     const cleanup = adapter.practice.shared(handlers);
     expect(node('saveloc-list').children.map(row => row.textContent)).toEqual(['<Owner> #23 · CP 3 · 4.000', 'Friend #8 · CP 1 · 1.500']);
     expect(node('saveloc-list').children[0].selected).toBe(true);
-    // The game's own count of the listed saves.
-    expect(node('count').textContent).toBe('2 / 20');
+    // The game's own count, of your saves against your 20.
+    expect(node('count').textContent).toBe('1 / 20');
     expect(node('saveloc-help').textContent).toContain('Each player keeps their newest 20.');
     node('saveloc-list').value = '8';
     node('saveloc-list').onchange();
     expect(calls).toEqual([[adapter.getSession(), 8]]);
     adapter.getSession().map.stages = [{}, {}];
-    rows.unshift({id: 24, name: 'Newest', time: 5, stage: 2, checkpoints: 2});
+    rows.unshift({id: 24, name: 'Newest', own: true, time: 5, stage: 2, checkpoints: 2});
     adapter.practice.refresh();
     expect(node('saveloc-list').children[0].textContent).toBe('Newest #24 · Stage 2 · 5.000');
-    expect(node('count').textContent).toBe('3 / 20');
+    expect(node('count').textContent).toBe('2 / 20');
     cleanup();
     for (const name of ['entries', 'selected', 'save', 'select', 'cycle', 'remove', 'restore']) {
       expect(Object.getOwnPropertyDescriptor(store, name)).toEqual(original[name]);
@@ -1089,7 +1089,8 @@ describe('shared savelocs in the game before any save of your own', () => {
   // List, count, Load, Previous and Next, for whatever saves the room holds.
   function playable(r, newest, older) {
     expect(r.rows()).toEqual([`> GPT-7-Nebula #${newest} · CP 0 · ${newest}.000`, `GPT-7-Nebula #${older} · CP 0 · ${older}.000`]);
-    expect(r.node('count').textContent).toBe('2 / 20');
+    // Your own saves against your 20; none yet.
+    expect(r.node('count').textContent).toBe('0 / 20');
     r.runtime.nativeLoad();
     expect(r.loaded()).toEqual([newest]);
     r.runtime.nativeCycle(1);
