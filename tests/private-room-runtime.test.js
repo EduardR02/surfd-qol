@@ -570,16 +570,16 @@ describe('private room runtime', () => {
     finally { long.runtime.destroy(); }
   });
 
-  test('room rows keep local map titles and refuse names that are not a player room', async () => {
+  test('room rows keep local map titles and accept valid free-text names', async () => {
     const f = fixture();
     try {
       const joining = f.runtime.join(ROOM), signal = f.signals[0];
       signal.ready();
       signal.message('room-info', {...row(), name: 'Surfd EU 2 · Frankfurt'});
       expect(f.runtime.mergeRooms([])).toEqual([]);
-      signal.message('room-info', {...row(), mapTitle: '<b>Spoof</b>', roster: [{name: '<i>x</i>', points: 0}, {name: 'Visitor', points: 3}]});
+      signal.message('room-info', {...row(), name: 'Evening practice', mapTitle: '<b>Spoof</b>', roster: [{name: '<i>x</i>', points: 0}, {name: 'Visitor', points: 3}]});
       await joining;
-      expect(f.runtime.mergeRooms([])[0]).toMatchObject({name: "Guest's room", mapTitle: 'Map', roster: [{name: 'Visitor', points: 3}]});
+      expect(f.runtime.mergeRooms([])[0]).toMatchObject({name: 'Evening practice', mapTitle: 'Map', roster: [{name: 'Visitor', points: 3}]});
     } finally { f.runtime.destroy(); }
   });
 
@@ -653,15 +653,53 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('a name the directory would refuse cannot go public', async () => {
-    const f = fixture({displayName: 'SurfdFan'});
+  test('free-text names normalize literal spaces and reject invalid inputs before side effects', async () => {
+    const storage = new Map(), f = fixture({storage});
     try {
-      await expect(f.runtime.host({visibility: 'public'})).rejects.toThrow("Rooms with Surfd or official in the name can't be public.");
+      const invalid = [
+        ['', 'Room names need 3–32 characters.'],
+        ['ab', 'Room names need 3–32 characters.'],
+        ['a'.repeat(33), 'Room names need 3–32 characters.'],
+        ['Snow \u2603', 'Use letters, numbers, spaces and simple punctuation.'],
+        ['Night\tpractice', 'Use letters, numbers, spaces and simple punctuation.'],
+        ['Night\npractice', 'Use letters, numbers, spaces and simple punctuation.'],
+        [null, 'Room names need 3–32 characters.'],
+        [42, 'Room names need 3–32 characters.'],
+        ['SURFD practice', "Room names can't include Surfd or official."],
+        ['oFfIcIaL practice', "Room names can't include Surfd or official."],
+      ];
+      for (const [name, problem] of invalid) {
+        await expect(f.runtime.host({name})).rejects.toThrow(problem);
+        await expect(f.runtime.rename(name)).rejects.toThrow(problem);
+      }
+      expect(storage.size).toBe(0);
       expect(f.signals).toEqual([]);
-      const id = await f.host({visibility: 'private'});
-      expect(() => f.runtime.setVisibility('public')).toThrow("can't be public");
-      expect(f.runtime.hosting()).toMatchObject({id, visibility: 'private'});
-      expect(f.signals[0].sent.filter(message => message.data !== null)).toEqual([]);
+      expect(f.listeners).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      await f.runtime.rename('  ABC  ');
+      expect(f.runtime.roomName()).toBe('ABC');
+      const name = "Night -_.!?&#:()' practice";
+      const id = await f.host({name: `  ${name.replace(' ', '   ')}  `});
+      expect(f.runtime.hosting()).toMatchObject({id, name});
+      expect(f.runtime.roomInfo(id).name).toBe(name);
+      await f.runtime.rename('a'.repeat(32));
+      expect(f.runtime.roomInfo(id).name).toBe('a'.repeat(32));
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('reserved names cannot host privately or publicly, without replacing an existing room', async () => {
+    const f = fixture();
+    try {
+      const id = await f.host({name: 'Evening practice'});
+      const sent = f.signals[0].sent.length;
+      for (const visibility of ['public', 'private']) {
+        for (const name of ['Surfd fan club', 'Unofficial practice']) {
+          await expect(f.runtime.host({visibility, name})).rejects.toThrow("Room names can't include Surfd or official.");
+        }
+      }
+      expect(f.runtime.hosting()).toMatchObject({id, name: 'Evening practice', visibility: 'private'});
+      expect(f.signals).toHaveLength(1);
+      expect(f.signals[0].sent).toHaveLength(sent);
     } finally { f.runtime.destroy(); }
   });
 
@@ -1048,16 +1086,15 @@ describe('private room runtime', () => {
       const id = await f.host({visibility: 'public', mapId: 'other', name: "Practice's room"});
       const guest = new Socket(); guest.open();
       f.listeners[0].onSocket(guest, {name: 'Visitor', guest: false, appearance: {}, browserId: crypto.randomUUID()});
-      f.runtime.rename("Evening's room");
+      await f.runtime.rename('  Evening   practice  ');
       const state = guest.sent.filter(value => typeof value === 'string').map(value => JSON.parse(value))
         .findLast(message => message.type === 'state').state;
-      expect(state).toMatchObject({name: "Evening's room", mapId: 'other', epoch: 1});
-      expect(f.signals[0].sent.at(-1).data).toMatchObject({name: "Evening's room", mapId: 'other', players: 1});
-      expect(() => f.runtime.rename("Official's room")).toThrow();
-      expect(f.runtime.roomInfo(id).name).toBe("Evening's room");
+      expect(state).toMatchObject({name: 'Evening practice', mapId: 'other', epoch: 1});
+      expect(f.signals[0].sent.at(-1).data).toMatchObject({name: 'Evening practice', mapId: 'other', players: 1});
+      await expect(f.runtime.rename("Official's room")).rejects.toThrow("Room names can't include Surfd or official.");
+      expect(f.runtime.roomInfo(id).name).toBe('Evening practice');
       f.runtime.setVisibility('private');
-      f.runtime.rename("Official's room");
-      expect(() => f.runtime.setVisibility('public')).toThrow();
+      await expect(f.runtime.rename("Official's room")).rejects.toThrow("Room names can't include Surfd or official.");
       expect(f.runtime.visibility()).toBe('private');
       expect(f.signals[0].sent.at(-1).data).toBeNull();
     } finally { f.runtime.destroy(); }

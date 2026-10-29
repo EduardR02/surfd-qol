@@ -1,7 +1,7 @@
 import { createRoomHost } from './host.js';
 import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
-import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid, roomNameProblem } from './protocol.js';
+import { CLOSE, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, isListedName, isPlayerName, isRoomName, isUuid, normalizeRoomName, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
@@ -81,7 +81,7 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     if (adapter) adapter.update(mergeRooms(adapter.rows()));
     ui?.refresh();
   }
-  // Rows come from the host, so names must look like a player's room and map titles are our own.
+  // Rows come from the host; map titles always come from the local catalog.
   function normalize(row, publicRoom = false) {
     const map = row && getAdapter()?.rooms?.maps().find(entry => entry.id === row.mapId);
     if (!map || !isPrivateRoomId(row.id) || !isRoomName(row.name) ||
@@ -478,13 +478,14 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     });
   }
   const api = {
-    async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id, name = api.roomName()} = {}) {
+    async host({visibility: choice = visibility, mapId = getAdapter()?.rooms?.currentMap()?.id, name} = {}) {
       const adapter = rooms();
       if (adapter.guest()) throw new Error(SIGN_IN);
       if (choice !== 'public' && choice !== 'private') throw new Error('Invalid room visibility.');
       const maps = adapter.maps();
       if (!mapId || !maps.some(map => map.id === mapId)) throw new Error('Select a map before hosting a room.');
-      const problem = roomNameProblem(name, choice);
+      name = normalizeRoomName(name === undefined ? api.roomName() : name);
+      const problem = roomNameProblem(name);
       if (problem) throw new Error(problem);
       setup();
       closeHost();
@@ -561,8 +562,9 @@ export function createPrivateRooms({ getAdapter, signalFactory = connectSignal,
     },
     roomInfo: id => known.get(id) ?? directory.get(id) ?? null,
     roomName: () => hosted?.room.state.name ?? chosenName ?? roomName(),
-    rename(value) {
-      const problem = roomNameProblem(value, hosted?.visibility ?? visibility);
+    async rename(value) {
+      value = normalizeRoomName(value);
+      const problem = roomNameProblem(value);
       if (problem) throw new Error(problem);
       chosenName = value;
       hosted?.room.setName(value);
