@@ -2,6 +2,13 @@ import {describe, expect, test} from 'bun:test';
 import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, isCurrentInstrumented} from '../extension/instrument.js';
 import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
 
+const nativePracticePanelSource = `
+function fixturePanel(n,e,document){const save=document.getElementById("save"),count={};
+  return {refresh(){const rows=n.entries(e());for(const row of rows){const option={};option.textContent=\`#\${row.id} · CP \${row.checkpoints} · \${row.time}\`}count.textContent=\`\${rows.length} / \${limit}\`}};
+}
+const fixtureSelector=fixturePanel(bank,()=>nativeSession,{getElementById:()=>({})});
+`;
+
 // The private names are deliberately unrelated to the live bundle's names.
 // This miniature native module keeps the signatures used by instrumentation
 // and the game's pre-download generation / guarded startup behavior.
@@ -47,6 +54,7 @@ function nativeWatch(load) {
   const token=++generation;
   return load().then(data=>watch(data,()=>true,'native',token));
 }
+${nativePracticePanelSource}
 `;
 
 function fixture() {
@@ -106,7 +114,7 @@ describe('native practice destinations', () => {
     const {adapter, runtime} = fixture();
     const legacy = adapter.getSession(), legacyKey = legacy.practiceKey(), count = runtime.sessions();
     const destination = adapter.practice.destination();
-    expect(destination).toEqual({mapId: 'map', mapVersion: 1, key: JSON.stringify(['map', 1, 'current', 8]), startPosition: null});
+    expect(destination).toEqual({map: legacy.map, mapId: 'map', mapVersion: 1, key: JSON.stringify(['map', 1, 'current', 8]), startPosition: null});
     expect(runtime.sessions()).toBe(count);
     expect(adapter.getSession()).toBe(legacy);
     expect(legacy.practiceKey()).toBe(legacyKey);
@@ -118,7 +126,7 @@ describe('native practice destinations', () => {
     runtime.setReplayMap({id: 'map', version: 2});
     runtime.setRules('unrestricted');
     const destination = adapter.practice.destination();
-    expect(destination).toEqual({mapId: 'map', mapVersion: 2,
+    expect(destination).toEqual({map: {id: 'map', version: 2}, mapId: 'map', mapVersion: 2,
       key: JSON.stringify(['map', 2, 'unrestricted', 8]), startPosition: null});
     expect(adapter.getSession().map.version).toBe(1);
     expect(runtime.restart().practiceKey()).toBe(destination.key);
@@ -905,5 +913,133 @@ describe('native community behavior integration', () => {
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
     native.announceResult({...result, record: false});
     expect(native.results.at(-1).text).toBe('Fixture map in 1000000. First verified completion.');
+  });
+});
+
+// A consumer fixture: real native buttons call the store, and the selector
+// renders entries through the same minified signatures as the shipped game.
+const sharedPracticeSource = nativeSource.replace(nativePracticePanelSource, '').replace('bank={entries:()=>[],save(){}}', `bank=new class {
+  revision=0;banks=new Map();nextId=1;rows=[{id:1,time:2,stage:1,checkpoints:0}];picked=1;
+  entries(){return this.rows}selected(){return this.picked}
+  save(){return 1}select(session,id){this.picked=id;return true}
+  cycle(){return true}remove(){return true}
+  restore(session){return session.restorePractice({native:true})}
+}`)
+  .replace('function save() { const full=', 'function save() { if(nativeSession.timer.state.phase==="finished")return;const full=')
+  .replace('result=bank.save(nativeSession); }', 'result=bank.save(nativeSession);panel.refresh();messages.push(result===null?"Could not save":`Saved #${result}`); }')
+  + `
+const messages=[],effects=[];
+nativeSession.restorePractice=snapshot=>{effects.push(["restore",snapshot]);return true};
+function nativePanel(n,e,t){const saveButton=document.getElementById("save"),loadButton=document.getElementById("load");
+  const select=document.getElementById("saveloc-list"),count=document.getElementById("count");
+  let revision=-1;
+  function refresh(){if(revision===n.revision)return;revision=n.revision;const session=e(),rows=n.entries(session);
+    select.replaceChildren(...rows.map(row=>{const option=document.createElement("option");
+      option.value=String(row.id);option.textContent=\`#\${row.id} · \${session.map.stages?.length?"Stage "+row.stage:"CP "+row.checkpoints} · \${row.time.toFixed(3)}\`;
+      option.selected=row.id===n.selected(session);return option}));
+    count.textContent=\`\${rows.length} / \${limit}\`;
+  }
+  select.onchange=()=>{n.select(e(),Number(select.value));refresh()};
+  return {refresh};
+}
+const panel=nativePanel(bank,()=>nativeSession,()=>true);
+function nativeLoad(){if(!bank.restore(nativeSession))return;effects.push("invalidate","view","input","practice");panel.refresh()}
+`;
+
+function sharedPracticeFixture() {
+  const nodes = new Map();
+  const document = {
+    getElementById(id) {
+      if (!nodes.has(id)) nodes.set(id, {textContent: id === 'saveloc-help' ? 'Native solo help' : '',
+        children: [], replaceChildren(...children) { this.children = children; }});
+      return nodes.get(id);
+    },
+    createElement: () => ({}),
+  };
+  let adapter;
+  const runtime = new Function('globalThis', 'document', instrumentGame(sharedPracticeSource) +
+    ';return {bank,save,nativeLoad,messages,effects,panel};')(
+    {__SURFD_QOL__: {attach(value) { adapter = value; }}}, document);
+  return {adapter, runtime, node: id => document.getElementById(id)};
+}
+
+describe('native shared practice consumers', () => {
+  test('native selector preserves supplied newest order, owner labels, selection and solo rendering on detach', () => {
+    const {adapter, runtime, node} = sharedPracticeFixture();
+    const store = runtime.bank, original = Object.getOwnPropertyDescriptors(store);
+    let selected = 23;
+    const rows = [{id: 23, name: '<Owner>', time: 4, stage: 2, checkpoints: 3},
+      {id: 8, name: 'Friend', time: 1.5, stage: 1, checkpoints: 1}];
+    const calls = [];
+    const handlers = {entries: () => rows, selected: () => selected, save: () => null,
+      select(session, id) { calls.push([session, id]); selected = id; adapter.practice.refresh(); return true; },
+      cycle: () => true, remove: () => true, restore: () => true, saveSnapshot() {}};
+    const cleanup = adapter.practice.shared(handlers);
+    expect(node('saveloc-list').children.map(row => row.textContent)).toEqual(['<Owner> #23 · CP 3 · 4.000', 'Friend #8 · CP 1 · 1.500']);
+    expect(node('saveloc-list').children[0].selected).toBe(true);
+    expect(node('count').textContent).toBe('2 shared');
+    expect(node('saveloc-help').textContent).toContain('Each player keeps their newest 20.');
+    node('saveloc-list').value = '8';
+    node('saveloc-list').onchange();
+    expect(calls).toEqual([[adapter.getSession(), 8]]);
+    adapter.getSession().map.stages = [{}, {}];
+    rows.unshift({id: 24, name: 'Newest', time: 5, stage: 2, checkpoints: 2});
+    adapter.practice.refresh();
+    expect(node('saveloc-list').children[0].textContent).toBe('Newest #24 · Stage 2 · 5.000');
+    cleanup();
+    for (const name of ['entries', 'selected', 'save', 'select', 'cycle', 'remove', 'restore']) {
+      expect(Object.getOwnPropertyDescriptor(store, name)).toEqual(original[name]);
+    }
+    expect(node('saveloc-list').children[0].textContent).toBe('#1 · Stage 1 · 2.000');
+    expect(node('count').textContent).toBe('1 / 20');
+    expect(node('saveloc-help').textContent).toBe('Native solo help');
+  });
+
+  test('buttons delegate without false save feedback and Load retains native side effects', () => {
+    const {adapter, runtime} = sharedPracticeFixture();
+    const session = adapter.getSession(), snapshot = {key: 'native'}, calls = [];
+    let accepted = true;
+    const handlers = {
+      entries: () => [], selected: () => null,
+      save(live) { calls.push(['save', live]); return null; },
+      select: (...args) => calls.push(['select', ...args]),
+      cycle: (...args) => calls.push(['cycle', ...args]),
+      remove: (...args) => calls.push(['remove', ...args]),
+      restore: live => live.restorePractice(snapshot),
+      saveSnapshot: value => { calls.push(['snapshot', value]); return accepted; },
+    };
+    const nativeSave = runtime.bank.save;
+    runtime.bank.save = nativeSave.bind(runtime.bank);
+    const descriptor = Object.getOwnPropertyDescriptor(runtime.bank, 'save');
+    adapter.practice.shared(handlers);
+    runtime.save();
+    expect(calls).toEqual([['save', session]]);
+    expect(runtime.messages).toEqual([]);
+    runtime.nativeLoad();
+    expect(runtime.effects).toEqual([['restore', snapshot], 'invalidate', 'view', 'input', 'practice']);
+    runtime.bank.cycle(session, -1);
+    runtime.bank.remove(session);
+    expect(calls.slice(1)).toEqual([['cycle', session, -1], ['remove', session]]);
+    expect(adapter.practice.shareSnapshot(snapshot)).toBe(true);
+    expect(calls.at(-1)).toEqual(['snapshot', snapshot]);
+    // A refused capture stays with the replay's local fallback.
+    accepted = false;
+    expect(adapter.practice.shareSnapshot(snapshot)).toBe(false);
+    adapter.practice.shared(null);
+    expect(Object.getOwnPropertyDescriptor(runtime.bank, 'save')).toEqual(descriptor);
+    expect(adapter.practice.shareSnapshot(snapshot)).toBe(false);
+    runtime.save();
+    expect(runtime.messages).toEqual(['Saved #1']);
+  });
+
+  test('an old cleanup cannot detach replacement room handlers', () => {
+    const {adapter} = sharedPracticeFixture();
+    const handlers = value => ({entries: () => [], selected: () => value, save() {}, select() {}, cycle() {}, remove() {}, restore() {}, saveSnapshot() {}});
+    const cleanup = adapter.practice.shared(handlers(1));
+    adapter.practice.shared(handlers(2));
+    cleanup();
+    expect(adapter.practice.store().selected(adapter.getSession())).toBe(2);
+    adapter.practice.shared(null);
+    expect(adapter.practice.store().selected(adapter.getSession())).toBe(1);
   });
 });

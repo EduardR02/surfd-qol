@@ -1,6 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
+import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v15:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v16:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -57,7 +58,10 @@ function practiceHooks(source, sessionClass, state) {
     } catch (error) {
       console.warn('[Surfd QoL] Savelocs from replays keep the replay’s start position:', error.message);
     }
-    return `
+    let shared = {source, setup: '', adapter: ''};
+    try { shared = nativeSavelocHooks(source, store); }
+    catch (error) { console.warn('[Surfd QoL] Shared practice savelocs unavailable:', error.message); }
+    return {...shared, adapter: `
     practice: {
       // The saveloc store: one bank of snapshots per practice key (map and movement rules).
       store: () => ${store},
@@ -66,12 +70,12 @@ function practiceHooks(source, sessionClass, state) {
         if (!map) return null;
         // practiceKey is native's pure metadata key, not a synthetic Session.
         const key = ${sessionClass}.prototype.practiceKey.call({map, config: ${fresh[3]}(map), replayFormat: ${fresh[4]}});
-        return {mapId: map.id, mapVersion: map.version, key${loadStart ? `, startPosition: ${loadStart}(map) ?? null` : ''}};
-      },
-    },`;
+        return {map, mapId: map.id, mapVersion: map.version, key${loadStart ? `, startPosition: ${loadStart}(map) ?? null` : ''}};
+      },${shared.adapter}
+    },`};
   } catch (error) {
     console.warn('[Surfd QoL] Practice savelocs from replays unavailable:', error.message);
-    return '';
+    return {source, setup: '', adapter: ''};
   }
 }
 // The game's own notice line (where "Saved location #1" appears), optional.
@@ -282,7 +286,10 @@ export function instrumentGame(source) {
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
+  const practice = practiceHooks(source, sessionClass, state);
+  source = practice.source;
   return source + `${ADAPTER_MARKER} native community rooms and optional room transport */
+${practice.setup}
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;
   if (!qol) return;
@@ -293,7 +300,7 @@ export function instrumentGame(source) {
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practiceHooks(source, sessionClass, state)}${noticeHook(source)}${rooms.adapter}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practice.adapter}${noticeHook(source)}${rooms.adapter}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;
