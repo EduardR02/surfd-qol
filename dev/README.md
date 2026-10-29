@@ -47,6 +47,8 @@ PUPPETEER=<puppeteer ESM entry or package> CHROME=<chrome.exe> bun dev/shoot.js 
 
 Writes the HUD states, each settings section, Runs panel (overview and Ramps), native transport/extras and custom replay bar at desktop and narrow sizes into `outDir` (default: `<tmp>/surfd-qol-shots`). Includes native ramp hover, idle, indexing, Return to server and custom keyboard-sheet scenarios. Puppeteer is not a project dependency.
 
+`docs/hud-full.jpg` is `?shot&state=checkpoint&bg=fog&set.surfHud=full` at a 1920×1080 viewport with device scale 0.75 (1440×810), saved as JPEG at quality 88.
+
 ## Fonts
 
 `src/hud-fonts.js` embeds Instrument Sans (SIL OFL 1.1), subset to the characters the HUD and panel use. Regenerate with `python dev/subset-fonts.py <folder with InstrumentSans-*.ttf>` (needs fontTools).
