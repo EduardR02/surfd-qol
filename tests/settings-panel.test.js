@@ -37,6 +37,13 @@ describe('settings preview', () => {
     for (const key of Object.keys(defaults)) if (key !== 'crouchJumpKey') expect(bound.has(key)).toBe(true);
   });
 
+  test('players read touch, never board', () => {
+    expect(text(panelMarkup)).not.toMatch(/\bboard/i);
+    expect(text(panelMarkup)).toContain('leaderboard');
+    expect(panelMarkup).toContain('aria-label="Touch loss, better below"');
+    expect(previewModel(defaults).feedback.board.label).toBe('TOUCH');
+  });
+
   test('the Zen pill is a named toggle button', () => {
     expect(zenMarkup).toContain('aria-pressed="false"');
     expect(zenMarkup).toContain('aria-label="Zen mode"');

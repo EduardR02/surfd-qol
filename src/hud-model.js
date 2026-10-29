@@ -68,7 +68,7 @@ export function buildFeedback(metrics, runRefs, settings) {
     const rampLoss = ramp?.available && Number.isFinite(ramp.loss) ? ramp.loss : null;
     const result = slot(type === null, type === 'surf' ? 'INPUT' : 'STRAFE', strafeLoss, lossTone(strafeLoss, .5, 5),
       type === 'surf' ? 'Live ramp input against the best same-pressure input.' : 'Live missed strafe gain over the recent window.');
-    const board = slot(boardHidden, ramp?.kind === 'turn' ? 'CLIP' : ramp?.kind === 'contact' ? 'CONTACT' : 'BOARD', rampLoss,
+    const board = slot(boardHidden, ramp?.kind === 'turn' ? 'CLIP' : ramp?.kind === 'contact' ? 'CONTACT' : 'TOUCH', rampLoss,
       startTone(rampLoss, settings.boardLossAmazing, settings.boardLossGood), 'Live ramp collision loss.');
     const up = slot(true, 'UP', null, 'muted', '');
     return { hidden: result.hidden && board.hidden, result, board, up };
@@ -87,7 +87,7 @@ export function buildFeedback(metrics, runRefs, settings) {
     const source = settings.surfColorReference;
     result = slot(false, split ? 'DOWN' : 'SURF', value,
       relative(source) ? reference(field, value) : startTone(value, settings.airLossAmazing, settings.airLossGood),
-      (split ? 'Last ramp, on the way down (includes the board).' : 'Last ramp, net against gravity-only conversion (includes the board).') +
+      (split ? 'Last ramp, on the way down (includes the touch).' : 'Last ramp, net against gravity-only conversion (includes the touch).') +
         (relative(source) ? referenceNote(field, source) : ''));
   } else result = slot(true, 'AIR', null, 'muted', '');
 
@@ -102,9 +102,9 @@ export function buildFeedback(metrics, runRefs, settings) {
 
   const boardLoss = boardMetric?.available && Number.isFinite(boardMetric.loss) ? boardMetric.loss : null;
   const boardSource = settings.boardColorReference;
-  const board = slot(boardHidden, 'BOARD', boardLoss,
+  const board = slot(boardHidden, 'TOUCH', boardLoss,
     relative(boardSource) ? reference('board', boardLoss) : startTone(boardLoss, settings.boardLossAmazing, settings.boardLossGood),
-    'Collision loss at the latest ramp entry.' + (relative(boardSource) ? referenceNote('board', boardSource) : ''));
+    'Speed lost as you touched the latest ramp.' + (relative(boardSource) ? referenceNote('board', boardSource) : ''));
   return { hidden: result.hidden && board.hidden && up.hidden, result, board, up };
 }
 

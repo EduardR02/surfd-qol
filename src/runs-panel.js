@@ -338,7 +338,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     const sections = rampSections(data);
     if (!sections.length) {
       rampConsumer?.release();
-      return rampControls() + `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you board in a recorded run show up here with your Board, Down and Up measurements.</p></div>`;
+      return rampControls() + `<div class="rn-empty"><b>No ramps measured yet</b><p>Ramps you touch in a recorded run show up here with your Touch, Down and Up measurements.</p></div>`;
     }
     const refs = references();
     const preferred = settings.surfColorReference === 'pb' || settings.surfColorReference === 'wr' ? settings.surfColorReference : 'pb';
@@ -355,7 +355,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     }
     const ready = picked?.status === 'ready';
     const net = settings.rampResult === 'total';
-    const fields = net ? [['board', 'board'], ['surf', 'surf']] : [['board', 'board'], ['down', 'down'], ['up', 'up']];
+    const fields = net ? [['board', 'touch'], ['surf', 'surf']] : [['board', 'touch'], ['down', 'down'], ['up', 'up']];
     const tolerance = settings.referenceLossTolerance ?? 0;
     const here = history.currentMap === key;
     const note = !here ? `Comparisons need the map loaded in the game. Load ${escape(data.name)} to compare against your PB or the WR.`

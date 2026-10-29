@@ -50,15 +50,15 @@ export const hudMarkup = `
   </div>
   <div class="speed" data-part="speed" data-text="speed">—</div>
   <div class="feedback" data-part="feedback">
-    <div class="slot" data-part="board">${num('board', 'val')}${label('boardLabel', 'board')}</div>
+    <div class="slot" data-part="board">${num('board', 'val')}${label('boardLabel', 'touch')}</div>
     <div class="slot" data-part="result">${num('result', 'val')}${label('resultLabel', 'air')}</div>
     <div class="slot" data-part="up">${num('up', 'val')}${label('upLabel', 'up')}</div>
   </div>
   <div class="meter" data-part="meter" hidden>
     <i class="m-track" data-part="segTrack"></i><i class="m-seg" data-part="segAir"></i><i class="m-seg" data-part="segBoard"></i><i class="m-seg" data-part="segDown"></i><i class="m-seg" data-part="segUp"></i><i class="m-tick" data-part="segTick"></i>
     ${num('meterAir', 'm-value')}${num('meterRamp', 'm-value')}
-    <div class="m-row" data-part="rampRow">${['air', 'board', 'down', 'up', 'surf'].map(name =>
-      `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${name}</span></div>`).join('')}</div>
+    <div class="m-row" data-part="rampRow">${[['air', 'air'], ['board', 'touch'], ['down', 'down'], ['up', 'up'], ['surf', 'surf']].map(([name, text]) =>
+      `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${text}</span></div>`).join('')}</div>
   </div>`;
 
 // A new ramp's board alone never fills less of the bar than this many u/s would.

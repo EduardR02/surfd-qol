@@ -54,7 +54,7 @@ export function markTip(mark, status) {
   if (!mark) return {title: '', value: time(status.hover ?? 0), label: '', tone: ''};
   if (mark.type === 'ramp') {
     const known = Number.isFinite(mark.board);
-    return {title: mark.label, value: known ? formatDelta(-mark.board, 1) : '—', label: 'board', tone: known ? mark.tone : 'muted'};
+    return {title: mark.label, value: known ? formatDelta(-mark.board, 1) : '—', label: 'touch', tone: known ? mark.tone : 'muted'};
   }
   return {title: mark.label, value: time(mark.tick), label: mark.type === 'loc' ? 'right-click removes' : '', tone: mark.type === 'loc' ? 'loc' : ''};
 }

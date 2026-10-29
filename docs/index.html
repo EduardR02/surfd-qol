@@ -193,16 +193,16 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
       <h2>What the numbers mean</h2>
       <p class="lede measure">Under the speed, a bar of fixed width splits your last flight and the ramp you landed on into their parts, in the order they happened, each in the color of its grade. A tick marks where the ramp would have ended at the reference's cost; past it is what you lost. Each value stays up until the next ramp or flight replaces it, so you can read it in the air instead of mid-ramp. All of them are in units per second. Turn the bar off to keep just the values.</p>
       <div class="row" aria-hidden="true">
-        <div class="value"><b class="good">−2<small>.6</small></b><span class="lab">board</span></div>
+        <div class="value"><b class="good">−2<small>.6</small></b><span class="lab">touch</span></div>
         <div class="value"><b class="warn">−34<small>.4</small></b><span class="lab">down</span></div>
         <div class="value"><b class="bad">−16<small>.2</small></b><span class="lab">up</span></div>
       </div>
       <dl class="defs">
-        <div><dt>Board</dt><dd>Speed clipped off as you land on a ramp. Height conversion doesn't count.</dd></div>
-        <div><dt>Down</dt><dd>What the ramp cost from boarding to the lowest point you touched, the board included.</dd></div>
-        <div><dt>Up</dt><dd>What it cost from the lowest point to where you left the ramp. Down and Up add up to the whole ramp, board included.</dd></div>
+        <div><dt>Touch</dt><dd>Speed clipped off as you land on a ramp. Height conversion doesn't count.</dd></div>
+        <div><dt>Down</dt><dd>What the ramp cost from the touch to the lowest point you reached, the touch included.</dd></div>
+        <div><dt>Up</dt><dd>What it cost from the lowest point to where you left the ramp. Down and Up add up to the whole ramp, touch included.</dd></div>
         <div><dt>Air</dt><dd>Your last flight: speed lost to braking plus gain missed by imperfect strafes. It's the left part of the bar.</dd></div>
-        <div><dt>Surf</dt><dd>The whole ramp, board included. While you surf, the bar shows just Air and this, the ramp's loss so far.</dd></div>
+        <div><dt>Surf</dt><dd>The whole ramp, touch included. While you surf, the bar shows just Air and this, the ramp's loss so far.</dd></div>
       </dl>
       <ul class="legend">
         <li class="good"><i></i><span>As good as the reference or better</span></li>
@@ -212,7 +212,7 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
       </ul>
       <p class="note measure">You choose what to compare against: the KSF record route (the default), Surfd's leaderboard #1, or your own PB. Even the record loses real speed on most ramps, so the comparison tells you more than the raw number.</p>
       <figure class="shot full">
-        <img src="hud-full.jpg" width="1440" height="810" alt="The full HUD on Boreas just after a checkpoint: the split with its PB and KSF deltas above the timer and sync, speed 2950, and the ramp bar with air, board, down, up and surf written out below." loading="lazy">
+        <img src="hud-full.jpg" width="1440" height="810" alt="The full HUD on Boreas just after a checkpoint: the split with its PB and KSF deltas above the timer and sync, speed 2950, and the ramp bar with air, touch, down, up and surf written out below." loading="lazy">
         <figcaption>The full HUD, as replays and spectating show it: the split with its PB and KSF deltas for a few seconds, the timer and sync, and every ramp value under the bar. Each part can be shown or hidden on its own. Boreas.</figcaption>
       </figure>
     </div>

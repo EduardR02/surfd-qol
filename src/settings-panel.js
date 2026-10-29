@@ -93,9 +93,9 @@ export const panelMarkup = `
     <section id="page-feedback" role="tabpanel" aria-labelledby="tab-feedback" tabindex="0" hidden>
       <h3>Values</h3>
       <div class="group">
-        ${toggle('showBoard', 'Board', 'Speed lost as you land on a ramp.')}
+        ${toggle('showBoard', 'Touch', 'Speed lost as you touch a ramp.')}
         ${toggle('showSurf', 'Ramp', 'Speed lost on the last ramp, after height is accounted for.')}
-        ${choice('rampResult', 'Show as', [['split', 'Down + Up'], ['total', 'Net Surf']], 'Split into the way down and the way up, or one net value. Both include the board.', ' sub')}
+        ${choice('rampResult', 'Show as', [['split', 'Down + Up'], ['total', 'Net Surf']], 'Split into the way down and the way up, or one net value. Both include the touch.', ' sub')}
         ${toggle('showAir', 'Air', 'Speed lost over your last flight.')}
         ${choice('airMetric', 'Count', [['missed', 'Missed gain'], ['braking', 'Braking'], ['combined', 'Both']], '<span id="air-explain"></span>', ' sub')}
         ${toggle('showSync', 'Strafe sync')}
@@ -122,7 +122,7 @@ export const panelMarkup = `
       </div>
       <h3>Grade colors against</h3>
       <div class="group">
-        ${choice('boardColorReference', 'Board', references)}
+        ${choice('boardColorReference', 'Touch', references)}
         ${choice('surfColorReference', 'Ramp', references, 'Down, Up and Surf.')}
         ${choice('startColorReference', 'Start', references)}
         ${number('referenceLossTolerance', 'Near margin', 0, 0, 0.1, 'u/s', 'How much worse than PB or WR still counts as near. Start has no near band.')}
@@ -136,7 +136,7 @@ export const panelMarkup = `
           <span role="columnheader"></span><span role="columnheader">${swatch('good')}below</span><span role="columnheader">${swatch('warn')}below</span>
           <span role="rowheader">Start height</span><span class="num">${cutoff('startHeightAmazing', 'Start height, better below', 0.1, 'u')}</span><span class="num">${cutoff('startHeightGood', 'Start height, near below', 0.1, 'u')}</span>
           <span role="rowheader">Start speed short of cap</span><span class="num">${cutoff('startDeficitAmazing', 'Start speed shortfall, better below', 0.1, 'u/s')}</span><span class="num">${cutoff('startDeficitGood', 'Start speed shortfall, near below', 0.1, 'u/s')}</span>
-          <span role="rowheader">Board loss</span><span class="num">${cutoff('boardLossAmazing', 'Board loss, better below', 0.5, 'u/s')}</span><span class="num">${cutoff('boardLossGood', 'Board loss, near below', 0.5, 'u/s')}</span>
+          <span role="rowheader">Touch loss</span><span class="num">${cutoff('boardLossAmazing', 'Touch loss, better below', 0.5, 'u/s')}</span><span class="num">${cutoff('boardLossGood', 'Touch loss, near below', 0.5, 'u/s')}</span>
           <span role="rowheader">Air and ramp loss</span><span class="num">${cutoff('airLossAmazing', 'Air and ramp loss, better below', 0.5, 'u/s')}</span><span class="num">${cutoff('airLossGood', 'Air and ramp loss, near below', 0.5, 'u/s')}</span>
         </div>
         <p class="explain">Anything else is ${swatch('loss')}worse. Sync uses the game’s own steps: ${swatch('good')}95% ${swatch('warn')}85% ${swatch('loss')}below.</p>
@@ -165,7 +165,7 @@ export const panelMarkup = `
       <p id="history-rule" class="hist-rule" role="status"></p>
       <h3>Playback</h3>
       <div class="group">
-        ${toggle('customReplayUi', 'Custom replay bar', 'Replays use Surfd’s own bar, with ramp boards, savelocs and Runs added to it. This swaps in Surfd QoL’s bar instead.')}
+        ${toggle('customReplayUi', 'Custom replay bar', 'Replays use Surfd’s own bar, with ramp touches, savelocs and Runs added to it. This swaps in Surfd QoL’s bar instead.')}
       </div>
       <h3>Storage</h3>
       <div class="group hist-store">
@@ -202,7 +202,7 @@ export function previewModel(settings) {
     ? value(!air && !ramp, air ? 'STRAFE' : 'INPUT', '−0.4', 'good')
     : ramp ? value(false, split ? 'DOWN' : 'SURF', split ? '−14.6' : '−52.7', 'warn')
       : value(!air, settings.airMetric === 'missed' ? 'MISSED' : settings.airMetric === 'braking' ? 'BRAKE' : 'AIR', '−9.8', 'warn');
-  const board = value(settings.showBoard === false, 'BOARD', '−3.2', 'good');
+  const board = value(settings.showBoard === false, 'TOUCH', '−3.2', 'good');
   const up = value(live || !ramp || !split, 'UP', '−38.1', 'loss');
   const zen = settings.zen === true;
   const layout = zen ? 'zen' : settings.surfHud === 'full' ? 'full' : 'surf';

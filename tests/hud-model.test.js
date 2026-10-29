@@ -12,7 +12,7 @@ describe('HUD feedback slots', () => {
   test('after a ramp: Down in the shared slot, Board and Up of the same ramp', () => {
     const feedback = buildFeedback(metrics, null, settings());
     expect(feedback.result).toMatchObject({ hidden: false, label: 'DOWN', text: '−18.0', value: 18 });
-    expect(feedback.board).toMatchObject({ hidden: false, label: 'BOARD', text: '−3.0' });
+    expect(feedback.board).toMatchObject({ hidden: false, label: 'TOUCH', text: '−3.0' });
     expect(feedback.up).toMatchObject({ hidden: false, label: 'UP', text: '−12.0', stale: false });
     expect(feedback.result.value + feedback.up.value).toBe(surf.loss);
   });
