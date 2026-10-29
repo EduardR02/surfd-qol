@@ -1,6 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {createRoomUi, uploadEstimate} from '../src/private-rooms/ui.js';
 import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
+import {parseRoomCode} from '../src/private-rooms/ids.js';
 
 class Element {
   constructor(tag = 'div') {
@@ -95,7 +96,8 @@ function fixture({guest = false} = {}) {
   const join = add(group, 'button', 'servers-join', 'btn btn-primary', 'Join');
   let visibility = 'private', hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0, signIns = 0;
   let name = "Surfer's room", copiedText = [], clipboardFails = false;
-  const calls = [], ended = [], details = [], rows = [{id: 'eu', region: 'Europe', players: 4, online: true}];
+  const calls = [], ended = [], details = [], joined = [], rows = [{id: 'eu', region: 'Europe', players: 4, online: true}];
+  let finishJoin = null;
   const rooms = {
     visibility: () => visibility, hosting: () => hosting, currentRoom: () => current, roomName: () => hosting?.name ?? name,
     showHostDetails: value => details.push(value),
@@ -118,6 +120,12 @@ function fixture({guest = false} = {}) {
       return ROOM;
     },
     end() { ended.push(hosting.id); hosting = null; current = null; },
+    joinCode(value) {
+      const id = parseRoomCode(value);
+      if (!id) return Promise.reject(new Error('Check the room code.'));
+      if (id !== ROOM) return Promise.reject(new Error('This private room has closed.'));
+      return new Promise(resolve => { finishJoin = () => { joined.push(id); resolve(id); }; });
+    },
   };
   const pickers = [], statuses = [], opened = [], changes = [];
   const adapter = {rooms: {
@@ -144,6 +152,7 @@ function fixture({guest = false} = {}) {
   const footButton = label => group.children.find(node => node.textContent === label && !node.hidden);
   return {ui, rooms, adapter, document, root, title, layout, toolbar, rowsBody, detail, info, invite, foot, group, status, refresh, join, calls, ended, details, rows,
     pickers, statuses, opened, changes, copied: () => copiedText, failClipboard: () => { clipboardFails = true; },
+    joined, finishJoin: () => finishJoin(),
     view: () => body.querySelector('.qol-host-view'), footButton,
     host: () => group.children[0], nativeJoins: () => nativeJoins, signIns: () => signIns,
     fail: error => { failure = error; }, select: id => { selected = id; }, current: id => { current = id; },
@@ -341,6 +350,31 @@ describe('Your room', () => {
 });
 
 describe('server browser', () => {
+  test('the room code field joins from the toolbar and explains refusals in the status line', async () => {
+    const f = fixture();
+    const form = f.toolbar.querySelector('.qol-code-join');
+    expect(f.toolbar.children.map(node => node.className)).toEqual(['chips', 'qol-code-join', 'grow']);
+    const input = form.querySelector('input'), submit = form.querySelector('button');
+    expect(input.placeholder).toBe('Room code');
+    expect([submit.textContent, submit.className, submit.type]).toEqual(['Join', 'btn small', 'submit']);
+    let prevented = 0;
+    const send = async value => { input.value = value; await form.onsubmit({preventDefault() { prevented++; }}); };
+    await send('7GR6-3S7Y');
+    expect(f.status.textContent).toBe('Check the room code.');
+    await send('7gr6 3s7y fb9p');
+    expect(f.status.textContent).toBe('This private room has closed.');
+    const pending = send(' AAAA-aaaa-AAAA ');
+    expect(submit.disabled).toBe(true);
+    f.finishJoin();
+    await pending;
+    expect(f.joined).toEqual([ROOM]);
+    expect(submit.disabled).toBe(false);
+    expect(prevented).toBe(3);
+    expect(f.nativeJoins()).toBe(0);
+    f.ui.destroy();
+    expect(f.toolbar.querySelector('.qol-code-join')).toBeNull();
+  });
+
   test('community rows keep one detail line', () => {
     const f = fixture();
     f.rows.push({id: ROOM, visibility: 'private', players: 3, online: true});

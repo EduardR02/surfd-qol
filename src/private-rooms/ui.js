@@ -11,6 +11,8 @@ const CHOICES = [
 ];
 
 export const ROOM_STYLE = `
+.qol-code-join { display: inline-flex; align-items: center; gap: 6px; }
+.qol-code-join .field input { width: 150px; }
 .qol-host-view { flex: 1; min-height: 0; overflow: auto; }
 .qol-host-view .field input { width: 220px; }
 .qol-host-view .setting code.qol-room-code { padding: 0; background: none; color: var(--m-ink); font: 700 22px/1.3 Consolas, monospace; letter-spacing: 2px; }
@@ -31,7 +33,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   let root = null, nodes = null, picker = null, style = null;
   // 'list' is the game's server list; 'host' replaces it with Host a room, or Your room while hosting.
   let mode = 'list', draftMap = null, pickerEpoch = 1, nameError = '', copied = null;
-  let starting = false, destroyed = false, scheduled = false, wasOpen = false;
+  let starting = false, joining = false, destroyed = false, scheduled = false, wasOpen = false;
   let observedRoot, observedOpen;
 
   const element = (tag, className = '', value = '') => {
@@ -132,16 +134,27 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     join.after(back);
     back.after(start);
 
+    const form = element('form', 'qol-code-join'), field = element('label', 'field'), code = element('input');
+    code.type = 'text'; code.placeholder = 'Room code'; code.spellcheck = false; code.autocomplete = 'off';
+    code.setAttribute('aria-label', 'Room code');
+    const submit = button('Join', 'btn small');
+    submit.type = 'submit';
+    field.append(code);
+    form.append(field, submit);
+    form.onsubmit = event => { event.preventDefault(); joinCode(); };
+    const toolbar = root.querySelector('.toolbar'), grow = toolbar?.querySelector('.grow');
+    if (grow) grow.before(form); else toolbar?.append(form);
+
     const view = buildView();
     root.querySelector('.window-body')?.append(view.view);
     const title = root.querySelector('.titlebar h2');
-    nodes = {hostButton, back, start, refreshButton, join, view, title, titleText: title?.textContent ?? '',
+    nodes = {hostButton, back, start, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
       layout: root.querySelector('.servers-layout'), help: element('p', 'sub')};
   }
   function unmount() {
     if (!nodes) return;
-    const {hostButton, back, start, refreshButton, join, view, title, titleText, layout, help} = nodes;
-    for (const node of [hostButton, back, start, view.view, help]) node.remove();
+    const {hostButton, back, start, refreshButton, join, form, view, title, titleText, layout, help} = nodes;
+    for (const node of [hostButton, back, start, form, view.view, help]) node.remove();
     hidden(refreshButton, false); hidden(join, false); hidden(layout, false);
     text(title, titleText);
     nodes = null;
@@ -172,6 +185,13 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     rooms.end();
     mode = 'list';
     refresh();
+  }
+  async function joinCode() {
+    if (joining || !nodes) return;
+    joining = true; refresh();
+    try { await rooms.joinCode(nodes.code.value); }
+    catch (error) { status(error?.message ?? String(error)); }
+    finally { joining = false; refresh(); }
   }
   function choose(value) {
     try { rooms.setVisibility(value); }
@@ -304,13 +324,14 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   }
   function render(adapter, hosting) {
     const host = mode === 'host';
-    const {hostButton, back, start, refreshButton, join, view, title, titleText, layout} = nodes;
+    const {hostButton, back, start, refreshButton, join, submit, view, title, titleText, layout} = nodes;
     hidden(layout, host); hidden(view.view, !host);
     text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);
     text(hostButton, hosting ? 'Your room' : 'Host a room');
     hidden(hostButton, host); hidden(refreshButton, host); hidden(join, host);
     hidden(back, !host); hidden(start, !host);
     hostButton.disabled = starting;
+    submit.disabled = joining;
     if (!host) return;
     if (hosting) {
       classes(start, 'btn btn-danger'); text(start, 'End room'); start.disabled = false;
