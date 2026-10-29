@@ -481,7 +481,7 @@ describe('Your room', () => {
   });
 
   test('lists who is in the room with the game’s guest look', async () => {
-    const f = fixture({roster: [{name: 'Surfer', points: 0}, {name: 'Guest_1a2b3', points: 0}, {name: 'Morrow', points: 0, guest: true}]});
+    const f = fixture({roster: [{name: 'Surfer', guest: false, you: true}, {name: 'Guest_1a2b3', guest: true}, {name: 'Morrow', guest: true}]});
     await f.hostNow();
     f.setPlayers(4);
     f.ui.openRoom();
@@ -499,6 +499,22 @@ describe('Your room', () => {
     expect(view.querySelector('.roster-list').hidden).toBe(true);
     expect(view.querySelector('.qol-room-players .empty').textContent).toBe('Nobody here yet.');
     expect(view.querySelector('.qol-room-players .empty').hidden).toBe(false);
+    f.ui.destroy();
+  });
+
+  test('marks only the local roster entry even when a peer copies the host name', async () => {
+    const f = fixture({roster: [{name: 'Surfer', guest: false}, {name: 'Surfer', guest: false, you: true}]});
+    await f.hostNow();
+    f.ui.openRoom();
+    const labels = () => f.view().querySelectorAll('.roster-list tr').map(row => !!row.querySelector('.you-tag'));
+    expect(labels()).toEqual([false, true]);
+    f.setRoster([{name: 'Surfer', guest: false, you: true}, {name: 'Surfer', guest: false}]);
+    f.ui.refresh();
+    expect(labels()).toEqual([true, false]);
+    f.setRoster([{name: 'Surfer', guest: false}]);
+    f.setPlayers(1);
+    f.ui.refresh();
+    expect(labels()).toEqual([false]);
     f.ui.destroy();
   });
 

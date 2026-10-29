@@ -121,13 +121,13 @@ export function buildRoomView(doc) {
 }
 
 // Rows like the game's Who's on list: face, name, and Guest for guests.
-export function rosterRows(element, players, total, me) {
+export function rosterRows(element, players, total) {
   const rows = players.map(player => {
     const tr = element('tr'), who = element('td'), rank = element('td', 'c-min');
     const tag = element('span', 'who'), face = element('img', 'face');
     face.src = '/menu/cosmetics/render/face-default.png'; face.alt = ''; face.width = 20; face.height = 20;
     tag.append(face, element('span', '', player.name));
-    if (player.name === me) tag.append(element('span', 'you-tag', 'you'));
+    if (player.you) tag.append(element('span', 'you-tag', 'you'));
     who.append(tag);
     if (player.guest) rank.append(element('span', 'rank-name rank-guest', 'Guest'));
     tr.append(who, rank);

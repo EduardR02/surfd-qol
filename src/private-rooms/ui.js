@@ -305,16 +305,15 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     hidden(view.thumb, !src);
     hidden(view.change, hosting ? !adapter.changeMap || rooms.currentRoom?.() !== hosting.id : !adapter.mapPicker);
   }
-  function renderPlayers(view, adapter, hosting, limit) {
+  function renderPlayers(view, hosting, limit) {
     const roster = hosting ? rooms.roomInfo?.(hosting.id)?.roster ?? [] : [];
-    const players = roster.map(player => ({name: player.name, guest: player.guest === true || isGuestName(player.name)}));
+    const players = roster.map(player => ({name: player.name, guest: player.guest === true || isGuestName(player.name), you: player.you === true}));
     const count = hosting?.players ?? 0;
     text(view.count, `${count} / ${limit}${count >= limit ? ' · full' : ''}`);
-    const me = adapter.displayName?.() ?? null;
-    const key = JSON.stringify([players, count, me]);
+    const key = JSON.stringify([players, count]);
     if (key !== rosterKey) {
       rosterKey = key;
-      view.roster.replaceChildren(...rosterRows(element, players, count, me));
+      view.roster.replaceChildren(...rosterRows(element, players, count));
     }
     hidden(view.table, !players.length);
     hidden(view.empty, !!players.length);
@@ -329,7 +328,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const limit = hosting ? hosting.maxPlayers : startLimit();
     renderLimit(view, hosting, limit);
     renderMap(view, adapter, hosting);
-    renderPlayers(view, adapter, hosting, limit);
+    renderPlayers(view, hosting, limit);
     hidden(view.invite, !hosting);
     if (!hosting) return nameOk;
     text(view.code, formatRoomCode(hosting.id));
