@@ -948,6 +948,53 @@ describe('ramp averages', () => {
     expect(row(reload.history)).toEqual(row(r.history));
   });
 
+  test('upgrading ramp averages clears every map once without deleting records or bests', async () => {
+    const r = rig({onReplay: () => {}});
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 2, down: 6, up: 4, surfLoss: 10}); r.checkpoint(900); r.finish();
+    r.live.map = {id: 'other', version: 1};
+    r.go(); r.ramp({boardLoss: 5, down: 10, up: 10, surfLoss: 20}); r.finish();
+    await flush();
+    for (const best of r.store.data.bests.values()) delete best.averagesVersion;
+    const before = await r.store.load();
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    for (const best of before.bests) {
+      const {averages, averagesVersion, ...records} = best;
+      expect(reload.history.view(best.id, {rampMode: 'average'}).ramps[0]).toMatchObject({
+        board: null, surf: null, crashes: 0, counts: {board: 0, surf: 0}});
+      const {averages: cleared, averagesVersion: version, ...after} = r.store.data.bests.get(best.id);
+      expect(after).toEqual(records);
+      expect(cleared).toEqual({});
+    }
+    expect([...r.store.data.runs.values()]).toEqual(before.runs);
+    reload.go(); reload.ramp({boardLoss: 7, surfLoss: 30}); reload.restart();
+    await flush();
+    const again = rig({store: r.store});
+    await again.history.ready;
+    expect(again.history.view('utopia:3', {rampMode: 'average'}).ramps[0]).toMatchObject({
+      board: 7, surf: 30, counts: {board: 1, surf: 1}});
+  });
+
+  test('an attempt ending during legacy load contributes only fresh averages after upgrade', async () => {
+    const first = rig();
+    await first.history.ready;
+    first.go(); first.ramp({boardLoss: 500, surfLoss: 900}); first.finish();
+    await flush();
+    const saved = await first.store.load();
+    delete saved.bests[0].averagesVersion;
+    let resolveLoad;
+    const next = rig({store: {...first.store, load: () => new Promise(resolve => { resolveLoad = resolve; })}, now: 5000});
+    next.go(); next.ramp({boardLoss: 7, surfLoss: 30}); next.restart();
+    resolveLoad(saved);
+    await next.history.ready;
+    expect(row(next.history)).toMatchObject({board: 7, surf: 30, counts: {board: 1, surf: 1}});
+    expect(next.history.runs()).toHaveLength(2);
+    const reload = rig({store: first.store});
+    await reload.history.ready;
+    expect(row(reload.history)).toEqual(row(next.history));
+  });
+
   test('available board revisions count once without completed Surf, and unavailable fields never become zero', async () => {
     const r = rig();
     await r.history.ready;

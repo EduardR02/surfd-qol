@@ -10,6 +10,8 @@ const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
 const MAX_TOUCH_RUNS = 200;
 export const TOUCH_STORAGE_KEY = 'surfd-qol-touch-attempts-v1';
+const TOUCH_STORE_VERSION = 2;
+const RAMP_AVERAGES_VERSION = 2;
 const RAMP_FIELDS = ['board', 'down', 'up', 'surf'];
 const RECENT_BEST_MS = 24 * 60 * 60 * 1000;
 const endEvents = new Set(['restart', 'start-return', 'practice-restore']);
@@ -81,10 +83,10 @@ export function createTouchStore({storage, key = TOUCH_STORAGE_KEY} = {}) {
   }
   try {
     const saved = JSON.parse(storage?.getItem(key) ?? 'null');
-    if (saved?.version === 1 && Array.isArray(saved.runs)) {
+    if (saved?.version === TOUCH_STORE_VERSION && Array.isArray(saved.runs)) {
       const runs = saved.runs.map(cleanTouchRun).filter(Boolean).sort((a, b) => a.at - b.at);
       for (const run of runs) retain(run);
-    }
+    } else if (saved?.version === 1) storage?.setItem(key, JSON.stringify({version: TOUCH_STORE_VERSION, runs: []}));
   } catch { /* Private storage and damaged records must not interrupt a run. */ }
   return {
     records(map) { return maps.get(map) ?? []; },
@@ -93,7 +95,7 @@ export function createTouchStore({storage, key = TOUCH_STORAGE_KEY} = {}) {
       if (!run) return;
       retain(run);
       try {
-        storage?.setItem(key, JSON.stringify({version: 1, runs: [...maps.values()].flat()}));
+        storage?.setItem(key, JSON.stringify({version: TOUCH_STORE_VERSION, runs: [...maps.values()].flat()}));
       } catch { /* Keep this session's measurements when storage is unavailable or full. */ }
     },
   };
@@ -219,7 +221,8 @@ const routeOf = record => !record ? [] : record.route
   ? record.route.flatMap(key => record.ramps[key] ? [[key, record.ramps[key]]] : [])
   : Object.entries(record.ramps).sort(([, a], [, b]) => a.checkpoint - b.checkpoint || a.order - b.order);
 const emptyBests = (key, run) => ({id: key, name: run.mapName, kind: run.kind, at: 0, best: null, splits: [], ramps: {},
-  start: {best: null, sum: 0, count: 0, clean: true}, checkpointCount: null, attempts: 0, finishes: 0});
+  start: {best: null, sum: 0, count: 0, clean: true}, checkpointCount: null, attempts: 0, finishes: 0,
+  averagesVersion: RAMP_AVERAGES_VERSION});
 
 function addRampAverages(record, run, ramps, epoch) {
   if (run.practice || run.invalid) return;
@@ -342,10 +345,16 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
   }
   const ready = (async () => {
     let saved = null;
+    const migrated = new Set();
     try { saved = await store?.load(); } catch (error) { console.warn('[Surfd QoL] Could not load run history:', error); }
     if (saved) {
       for (const record of saved.bests ?? []) if (validBests(record)) {
-        if (averageEpoch(record.id)) record.averages = {};
+        // Pre-filter averages cannot distinguish crashes; discard only their samples, never replay retained runs into them.
+        if (record.averagesVersion !== RAMP_AVERAGES_VERSION) {
+          if (record.averages) migrated.add(record);
+          record.averages = {};
+        } else if (averageEpoch(record.id)) record.averages = {};
+        record.averagesVersion = RAMP_AVERAGES_VERSION;
         bests.set(record.id, record);
       }
       // Runs that ended while loading stay newest.
@@ -359,8 +368,10 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       resolve(best === null ? savedBest : savedBest === null ? best : Math.min(best, savedBest));
     }
     // Bests from runs that ended while loading apply on top of the saved ones.
-    const touched = new Set(pending.splice(0).map(([run, ramps]) => addRun(run, ramps)));
+    const touched = new Set(migrated);
+    for (const [run, ramps] of pending.splice(0)) touched.add(addRun(run, ramps));
     commit([], loaded ? [...touched] : []);
+    if (migrated.size) await writeTail;
     notify();
   })();
 

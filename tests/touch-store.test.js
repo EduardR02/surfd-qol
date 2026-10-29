@@ -136,7 +136,7 @@ describe('touch attempt store', () => {
       {key: 'invalid', checkpoint: 0},
       {key: '[2,1,1]', checkpoint: 0},
     ];
-    storage.values.set(TOUCH_STORAGE_KEY, JSON.stringify({version: 1, runs}));
+    storage.values.set(TOUCH_STORAGE_KEY, JSON.stringify({version: 2, runs}));
     const store = createTouchStore({storage});
     expect(store.records('utopia:3')).toHaveLength(200);
     expect(store.records('utopia:3')[0].id).toBe('run-1');
@@ -409,4 +409,21 @@ test('a repeated persisted attempt ID replaces rather than inflates its reach de
   store.append(record(1, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 100, speedAfter: 90, angle: 10}]));
   expect(store.records('utopia:3')).toHaveLength(1);
   expect(createTouchStore({storage}).records('utopia:3')).toEqual(store.records('utopia:3'));
+});
+
+test('upgrading touch statistics discards polluted attempts once and preserves the rebuilt store', () => {
+  const storage = storageRig();
+  storage.values.set('unrelated', 'keep');
+  storage.values.set(TOUCH_STORAGE_KEY, JSON.stringify({version: 1, runs: [
+    record(1, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 50, angle: 80}]),
+    record(2, 'other:1'),
+  ]}));
+  const store = createTouchStore({storage});
+  expect(store.records('utopia:3')).toEqual([]);
+  expect(store.records('other:1')).toEqual([]);
+  store.append(record(3, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 900, angle: 5}]));
+  const reload = createTouchStore({storage});
+  expect(reload.records('utopia:3')).toEqual(store.records('utopia:3'));
+  expect(reload.records('utopia:3').map(run => run.id)).toEqual(['run-3']);
+  expect(storage.values.get('unrelated')).toBe('keep');
 });
