@@ -135,6 +135,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let tickRampLoss = 0;
   let tickRampContact = false;
   let tickMixedContact = false;
+  let tickCrashContact = false;
   let tickGround = false;
   let tickGroundContact = false;
   let tickAirBoundary = false;
@@ -155,6 +156,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let surfMeasuredSeconds = 0;
   let surfUnsupportedTicks = 0;
   let surfSkippedTicks = 0;
+  let surfCrash = false;
   let surfLowHeight = Infinity;
   let surfLowEnergy = NaN;
   let surfTick = null;
@@ -172,7 +174,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   // Each sequence counts accepted summaries since reset; invalidating a board
   // clears its values/tick but does not pretend another board was measured.
   const board = {
-    available: false, loss: 0, speedBefore: 0, speedAfter: 0, angle: null, tick: null, sequence: 0,
+    available: false, loss: 0, speedBefore: 0, speedAfter: 0, angle: null, tick: null, sequence: 0, crash: false,
     entryContacts: 0, entryWindowSeconds: BOARD_ENTRY_WINDOW_SECONDS,
     surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
   };
@@ -183,7 +185,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     available: false, loss: null, downLoss: null, upLoss: null, entrySpeed: null, exitSpeed: null,
     expectedExitSpeed: null, heightDelta: null, lowHeightDelta: null, measuredSeconds: 0,
     tick: null, sequence: 0, surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
-    unsupportedTicks: 0, reason: '',
+    unsupportedTicks: 0, reason: '', crash: false,
   };
   // Cold native seeks can restore a worker keyframe we never analysed.
   // Do not publish the interrupted flight/visit as a complete measurement.
@@ -208,6 +210,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   function clearBoard() {
     if (board.available) boardVersion++;
     board.available = false;
+    board.crash = false;
     board.loss = board.speedBefore = board.speedAfter = 0;
     board.angle = null;
     board.tick = null;
@@ -243,6 +246,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   function clearSurfEpisode() {
     surfEntrySpeedSquared = surfEntryHeight = surfExitSpeedSquared = surfExitHeight = surfGravity = NaN;
     surfContactSeconds = surfMeasuredSeconds = surfUnsupportedTicks = surfSkippedTicks = 0;
+    surfCrash = false;
     surfLowHeight = Infinity;
     surfLowEnergy = NaN;
     surfTick = null;
@@ -253,9 +257,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   }
 
   function finishSurf() {
-    if (surfContactSeconds + TIME_EPSILON >= MIN_SURF_SECONDS) {
+    if (surfCrash || surfContactSeconds > 0) {
       const expectedSquared = surfEntrySpeedSquared + 2 * surfGravity * (surfEntryHeight - surfExitHeight);
-      surf.available = !episodeUnknown && surfUnsupportedTicks === 0 && surfSkippedTicks === 0 && Number.isFinite(expectedSquared) &&
+      surf.available = surfContactSeconds + TIME_EPSILON >= MIN_SURF_SECONDS &&
+        !episodeUnknown && surfUnsupportedTicks === 0 && surfSkippedTicks === 0 && Number.isFinite(expectedSquared) &&
         expectedSquared >= 0 && Number.isFinite(surfExitSpeedSquared) && Number.isFinite(surfLowEnergy);
       surf.entrySpeed = Number.isFinite(surfEntrySpeedSquared) ? Math.sqrt(surfEntrySpeedSquared) : null;
       surf.exitSpeed = Number.isFinite(surfExitSpeedSquared) ? Math.sqrt(surfExitSpeedSquared) : null;
@@ -278,7 +283,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       surf.reason = episodeUnknown ? 'replay-gap' : surfSkippedTicks ? 'not-tracked-while-hidden'
         : surfUnsupportedTicks ? 'unsupported-contact-or-endpoint'
         : !Number.isFinite(expectedSquared) || !Number.isFinite(surfExitSpeedSquared) ? 'invalid-endpoint'
-        : expectedSquared < 0 ? 'above-gravity-only-height' : '';
+        : expectedSquared < 0 ? 'above-gravity-only-height'
+        : surfCrash ? 'crash'
+        : surfContactSeconds + TIME_EPSILON < MIN_SURF_SECONDS ? 'short-contact' : '';
       surf.measuredSeconds = surfMeasuredSeconds;
       surf.tick = surfTick;
       surf.surfaceId = episodeSurface;
@@ -286,6 +293,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       surf.checkpoint = board.checkpoint;
       surf.routePrefix = board.routePrefix;
       surf.unsupportedTicks = surfUnsupportedTicks;
+      surf.crash = surfCrash;
       surf.sequence++;
     }
     clearSurfEpisode();
@@ -311,6 +319,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     status = 'waiting';
     tickGain = tickOptimum = tickRampLoss = 0;
     tickRampContact = tickMixedContact = tickGround = tickGroundContact = false;
+    tickCrashContact = false;
     eventAt = eventSimulationAt = -Infinity;
     entryLoss = turnLoss = eventLoss = 0;
     eventKind = '';
@@ -330,6 +339,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tickAirGated = false;
     clearSurfEpisode();
     surf.available = false;
+    surf.crash = false;
     surf.loss = surf.downLoss = surf.upLoss = surf.entrySpeed = surf.exitSpeed = surf.expectedExitSpeed = null;
     surf.heightDelta = surf.lowHeightDelta = null;
     surf.measuredSeconds = 0;
@@ -487,6 +497,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     accelerationCount = 0;
     tickGain = tickOptimum = tickRampLoss = 0;
     tickAvailable = tickRampContact = tickMixedContact = false;
+    tickCrashContact = false;
     tickPlane = tickBrush = null;
     tickMultiplePlanes = false;
     surfaces = getRampSurfaces(session.map, session.config?.groundNormal);
@@ -578,19 +589,20 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   function collision({ before, after, contacts, firstContact = 0, blocked, config }) {
     if (!open || tickGround) return;
     if (blocked) {
+      tickCrashContact = true;
       tickMixedContact = true;
       tickAirBoundary = true;
       tickBoardAmbiguous = true;
     }
     if (!contacts || firstContact >= contacts.length) return;
-    if (!finiteVector(before) || !finiteVector(after) ||
-      !Number.isFinite(config?.groundNormal)) {
+    const validEndpoints = finiteVector(before) && finiteVector(after);
+    if (!validEndpoints || !Number.isFinite(config?.groundNormal)) {
       tickMixedContact = tickBoardAmbiguous = true;
-      return;
+      if (!Number.isFinite(config?.groundNormal)) return;
     }
     // Native base velocity can be applied between accelerate() and slide().
     // A pressure comparison in a different velocity frame is unsupported.
-    if (tickAvailable && (before.x !== inputAfter.x || before.y !== inputAfter.y || before.z !== inputAfter.z)) {
+    if (tickAvailable && (!validEndpoints || before.x !== inputAfter.x || before.y !== inputAfter.y || before.z !== inputAfter.z)) {
       tickAvailable = false;
       tickReason = 'unsupported-surf';
     }
@@ -600,8 +612,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       const contact = contacts[i];
       const normal = contact.normal;
       const brush = contact.brushId === 'unknown' ? null : contact.brushId ?? null;
-      if (finiteVector(normal) && normal.z > 0 && normal.z < config.groundNormal &&
-        Math.abs(Math.hypot(normal.x, normal.y, normal.z) - 1) < 1e-4) {
+      const validNormal = finiteVector(normal) && Math.abs(Math.hypot(normal.x, normal.y, normal.z) - 1) < 1e-4;
+      // Native surf planes require 0 < normal.z < groundNormal; retain the existing 1e-4 unit-normal tolerance.
+      // Other measured planes or native blocking indicate a crash, not speed loss or unsupported analysis alone.
+      if (validNormal && normal.z > 0 && normal.z < config.groundNormal) {
         ramp = true;
         const surface = surfaces?.find(brush, normal) ?? null;
         if (surface === null) tickSurfaceUnknown = true;
@@ -620,9 +634,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         }
       } else {
         other = true;
-        if (finiteVector(normal) && normal.z >= config.groundNormal &&
-          Math.abs(Math.hypot(normal.x, normal.y, normal.z) - 1) < 1e-4) {
-          tickAirBoundary = tickGroundContact = true;
+        if (validNormal) {
+          if (normal.z >= config.groundNormal) tickAirBoundary = tickGroundContact = true;
+          else tickCrashContact = true;
         }
       }
     }
@@ -634,7 +648,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tickBoardAmbiguous ||= tickSurfaceConflict ||
       (tickDifferentNormals && (tickSurfaceUnknown || tickSurface === null));
     // Whole-slide hooks cannot separate a ramp clip from a wall/floor clip.
-    if (other || blocked || !ramp) return;
+    if (other || blocked || !ramp || !validEndpoints) return;
     const speedBefore = Math.hypot(before.x, before.y, before.z);
     const speedAfter = Math.hypot(after.x, after.y, after.z);
     if (firstRampContact) {
@@ -745,6 +759,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // roundoff at exact 45/90ms boundaries; it is not another contact tick.
     if (episodeActive) episodeSeconds += duration;
     const boarding = episodeContact && !episodeActive;
+    // A floor reached after free air is a landing; simultaneous ramp-floor contact is still an obstruction.
+    if (episodeActive || boarding) {
+      surfCrash ||= tickCrashContact || (tickGroundContact && (tickRampContact || airborneGapSeconds === 0));
+    }
     if (episodeContact) {
       if (boarding) {
         episodeActive = true;
@@ -835,6 +853,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       const grace = episodeSurface === null ? RAMP_CONTACT_GRACE : SURFACE_CONTACT_GRACE;
       if (airborneGapSeconds > grace + TIME_EPSILON) finishSurf();
     }
+    if (episodeActive && surfCrash && !board.crash) {
+      board.crash = true;
+      boardVersion++;
+    }
     if (grounded) {
       finishSurf();
     }
@@ -919,7 +941,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       elapsed, eligible, status, idle, previousSession, previousTick,
       episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
-      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
+      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks, surfCrash,
       surfLowHeight, surfLowEnergy, surfTick,
       unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
       entryPlane: { ...entryPlane }, surfaceVisits: new Map(surfaceVisits), routePrefix, routeEntries,
@@ -940,7 +962,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       elapsed, eligible, status, idle, previousSession, previousTick,
       episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
-      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks,
+      surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks, surfCrash,
       surfLowHeight, surfLowEnergy, surfTick, routePrefix, routeEntries,
       unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
       airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,

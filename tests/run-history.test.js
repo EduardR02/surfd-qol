@@ -72,13 +72,13 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
   return {
     live, history, store, state, snapshots, tick, exit,
     publishBoard(values) {
-      Object.assign(board, {sequence: board.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true}, values);
+      Object.assign(board, {sequence: board.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true, crash: false}, values);
       revision++;
       tick();
     },
     reviseBoard(values) { Object.assign(board, values); revision++; tick(); },
     publishSurf(values) {
-      Object.assign(surf, {sequence: surf.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true}, values);
+      Object.assign(surf, {sequence: surf.sequence + 1, surfaceId: 1, checkpoint: 0, visit: 1, available: true, crash: false}, values);
       tick();
     },
     idle(seconds, { still = false } = {}) {
@@ -99,11 +99,11 @@ function rig({ store = memoryStore(), map = { id: 'utopia', version: 3, stages: 
       tick(['checkpoint']);
     },
     ramp({ boardLoss, surfLoss, down = null, up = null, surfaceId = 1, checkpoint = live.checkpointSpeeds.length, visit = 1, hidden = false, nextBoard = null }) {
-      Object.assign(board, { available: true, loss: boardLoss, sequence: board.sequence + 1, surfaceId, visit, checkpoint });
+      Object.assign(board, { available: true, loss: boardLoss, sequence: board.sequence + 1, surfaceId, visit, checkpoint, crash: false });
       revision++;
       tick();
       Object.assign(surf, hidden ? { available: false, loss: null, downLoss: null, upLoss: null } : { available: true, loss: surfLoss, downLoss: down, upLoss: up },
-        { sequence: surf.sequence + 1, surfaceId, visit, checkpoint });
+        { sequence: surf.sequence + 1, surfaceId, visit, checkpoint, crash: false });
       // A direct ramp-to-ramp tick publishes the old Surf and the new Board together.
       if (nextBoard) { Object.assign(board, nextBoard, {sequence: board.sequence + 1}); revision++; }
       tick();
@@ -928,6 +928,26 @@ describe('ramp averages', () => {
     expect(row(reload.history, 'recent')).toEqual(row(r.history, 'recent'));
   });
 
+  test('crashes count once per visit but never enter any average or last ten', async () => {
+    const r = rig();
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 40, down: 200, up: 100, surfLoss: 300}); r.finish();
+    r.go();
+    r.publishBoard({loss: 500});
+    r.publishSurf({available: false, crash: true});
+    r.publishSurf({available: false, crash: true});
+    r.restart();
+    for (const mode of ['average', 'recent']) {
+      expect(row(r.history, mode)).toMatchObject({crashes: 1, board: 40, down: 200, up: 100, surf: 300,
+        counts: {board: 1, down: 1, up: 1, surf: 1}});
+    }
+    expect(row(r.history, 'best')).toMatchObject({board: 40, surf: 300});
+    await flush();
+    const reload = rig({store: r.store});
+    await reload.history.ready;
+    expect(row(reload.history)).toEqual(row(r.history));
+  });
+
   test('available board revisions count once without completed Surf, and unavailable fields never become zero', async () => {
     const r = rig();
     await r.history.ready;
@@ -1185,9 +1205,9 @@ describe('history statistics boundary regressions', () => {
     r.publishSurf({surfaceId: 8, checkpoint: 0, visit: 1, loss: 60, downLoss: null, upLoss: 25});
     r.restart();
     expect(averages(r.history)).toEqual([
-      {key: '[7,0,1]', label: 'Ramp 1', checkpoint: 0, board: 3, down: 10, up: 20, surf: 30,
+      {key: '[7,0,1]', label: 'Ramp 1', checkpoint: 0, crashes: 0, board: 3, down: 10, up: 20, surf: 30,
         counts: {board: 1, down: 1, up: 1, surf: 1}},
-      {key: '[8,0,1]', label: 'Ramp 2', checkpoint: 0, board: 16, down: null, up: 25, surf: 60,
+      {key: '[8,0,1]', label: 'Ramp 2', checkpoint: 0, crashes: 0, board: 16, down: null, up: 25, surf: 60,
         counts: {board: 1, down: 0, up: 1, surf: 1}},
     ]);
     r.go();

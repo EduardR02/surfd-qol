@@ -56,7 +56,7 @@ function cleanTouchRun(run) {
       touch.checkpoint !== parts[1] || keys.has(touch.key)) continue;
     keys.add(touch.key);
     touches.push({key: touch.key, checkpoint: touch.checkpoint, speedBefore: touchValue(touch.speedBefore),
-      speedAfter: touchValue(touch.speedAfter), angle: touchValue(touch.angle, true)});
+      speedAfter: touchValue(touch.speedAfter), angle: touchValue(touch.angle, true), crash: touch.crash === true});
   }
   return {id: run.id, map: run.map, at: run.at, time: run.time, outcome: run.outcome, checkpoints: run.checkpoints, touches};
 }
@@ -99,17 +99,19 @@ export function createTouchStore({storage, key = TOUCH_STORAGE_KEY} = {}) {
   };
 }
 
-// A field's last ten are its last ten known measurements, not ten attempts.
-function touchSummary(values, angle = false) {
-  if (!values.length) return {best: null, last10: null, avg: null};
-  let sum = 0, recent = 0, best = values[0];
-  for (let index = 0; index < values.length; index++) {
-    const value = values[index];
+// Crashes keep their reach and bests, but never consume a clean last-ten slot.
+function touchSummary(touches, field, angle = false) {
+  let sum = 0, recent = 0, count = 0, best = null;
+  for (let index = touches.length - 1; index >= 0; index--) {
+    const touch = touches[index], value = touch[field];
+    if (!Number.isFinite(value)) continue;
+    if (best === null || (angle ? value < best : value > best)) best = value;
+    if (touch.crash) continue;
     sum += value;
-    if (index >= values.length - 10) recent += value;
-    best = angle ? Math.min(best, value) : Math.max(best, value);
+    if (count < 10) recent += value;
+    count++;
   }
-  return {best, last10: recent / Math.min(10, values.length), avg: sum / values.length};
+  return {best, last10: count ? recent / Math.min(10, count) : null, avg: count ? sum / count : null};
 }
 
 function touchRoute(records) {
@@ -223,10 +225,11 @@ function addRampAverages(record, run, ramps, epoch) {
   if (run.practice || run.invalid) return;
   for (const ramp of ramps) {
     if (ramp.epoch !== epoch) continue;
+    const entry = (record.averages ??= {})[ramp.key] ??= {};
+    if (ramp.crash) { entry.crashes = (entry.crashes ?? 0) + 1; continue; }
     for (const field of RAMP_FIELDS) {
       const value = ramp[field];
       if (!Number.isFinite(value)) continue;
-      const entry = (record.averages ??= {})[ramp.key] ??= {};
       const metric = entry[field] ??= {sum: 0, count: 0, recent: [], recentSum: 0, next: 0};
       metric.sum += value;
       metric.count++;
@@ -429,7 +432,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     if (touchEligible && !run.invalid && !touchTimer?.invalidReason && touchStore) {
       try {
         touchStore.append({id: run.id, map: run.map, at: run.at, time: run.time, outcome,
-          checkpoints: run.checkpoints.length, touches: ramps.flatMap(ramp => ramp.touch ? [ramp.touch] : [])});
+          checkpoints: run.checkpoints.length, touches: ramps.flatMap(ramp => ramp.touch ? [{...ramp.touch, crash: ramp.crash === true}] : [])});
       } catch (error) { console.warn('[Surfd QoL] Could not save touch attempts:', error); }
     }
     touchTimer = null;
@@ -493,6 +496,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         const entry = rampEntry(run, board);
         if (entry && board.available && Number.isFinite(board.loss)) entry.board = round(board.loss);
         if (entry) {
+          entry.crash ||= board.crash === true;
           const touch = entry.touch ??= {key: entry.key, checkpoint: entry.checkpoint,
             speedBefore: board.available ? touchValue(board.speedBefore) : null, speedAfter: null};
           touch.angle = board.available ? touchValue(board.angle, true) : null;
@@ -518,6 +522,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     surfSequence = surf.sequence;
     if (surf.sequence > 0) {
       const entry = rampEntry(run, surf);
+      if (entry) entry.crash ||= surf.crash === true;
       if (entry && surf.available) {
         entry.down = round(surf.downLoss);
         entry.up = round(surf.upLoss);
@@ -616,14 +621,12 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const records = touchStore?.records(key) ?? [];
       let route = routeOf(bests.get(key)).map(([key, ramp]) => ({key, checkpoint: ramp.checkpoint}));
       if (!route.length) route = touchRoute(records);
-      const measurements = new Map(route.map(touch => [touch.key, {reached: 0, speedIn: [], speedOut: [], angle: []}]));
+      const measurements = new Map(route.map(touch => [touch.key, {touches: [], crashes: 0}]));
       for (const run of records) for (const touch of run.touches) {
         const entry = measurements.get(touch.key);
         if (!entry) continue;
-        entry.reached++;
-        if (touch.speedBefore !== null) entry.speedIn.push(touch.speedBefore);
-        if (touch.speedAfter !== null) entry.speedOut.push(touch.speedAfter);
-        if (touch.angle !== null) entry.angle.push(touch.angle);
+        entry.touches.push(touch);
+        if (touch.crash) entry.crashes++;
       }
       let references = null;
       try { references = getTouchReferences?.(key); } catch { /* Optional cached comparisons. */ }
@@ -636,8 +639,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       return {runs: records.length, touches: route.map((touch, index) => {
         const entry = measurements.get(touch.key);
         return {key: touch.key, index, checkpoint: touch.checkpoint,
-          reach: records.length ? entry.reached / records.length : null,
-          speedIn: touchSummary(entry.speedIn), speedOut: touchSummary(entry.speedOut), angle: touchSummary(entry.angle, true),
+          reach: records.length ? entry.touches.length / records.length : null, crashes: entry.crashes,
+          speedIn: touchSummary(entry.touches, 'speedBefore'), speedOut: touchSummary(entry.touches, 'speedAfter'),
+          angle: touchSummary(entry.touches, 'angle', true),
           pb: reference('pb', touch.key), wr: reference('wr', touch.key)};
       })};
     },
@@ -686,7 +690,10 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
           at: split.at, pb: Number.isFinite(pbSplits[index]) ? pbSplits[index] : null}] : []),
         ramps: routeOf(record).map(([rampKey, ramp], index) => {
           const row = {key: rampKey, label: `Ramp ${index + 1}`, checkpoint: ramp.checkpoint};
-          if (rampMode === 'recent' || rampMode === 'average') row.counts = {};
+          if (rampMode === 'recent' || rampMode === 'average') {
+            row.counts = {};
+            row.crashes = record.averages?.[rampKey]?.crashes ?? 0;
+          }
           for (const field of RAMP_FIELDS) {
             if (!row.counts) { row[field] = ramp[field] ?? null; continue; }
             const metric = record.averages?.[rampKey]?.[field];

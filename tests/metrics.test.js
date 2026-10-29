@@ -854,7 +854,7 @@ test('pure ground contacts retain the last board but separate the next ramp entr
   const first = tick(metrics, game, undefined, clip(vector(1000), vector(900))).board;
   const ground = tick(metrics, game, undefined,
     clip(vector(900), vector(890), [{ normal: vector(0, 0, 1), brushId: 'floor' }]));
-  assert.deepEqual(ground.board, first);
+  assert.deepEqual(ground.board, {...first, crash: true});
   const second = tick(metrics, game, undefined, clip(vector(890), vector(880))).board;
   assert.equal(second.sequence, 2);
   close(second.loss, 10);
@@ -942,18 +942,18 @@ test('mixed ramp and ground boundaries finish measured air without inventing a b
 });
 
 test('later mixed, multi-plane and blocked observations retain an accepted episode entry', () => {
-  for (const impact of [
-    clip(vector(900), vector(700), [rampContact, { normal: vector(1, 0, 0), brushId: 'wall' }]),
-    clip(vector(900), vector(700), [rampContact, { normal: vector(0.8, 0, 0.6), brushId: 'ramp-b' }]),
-    { ...clip(vector(900), vector(700)), blocked: true },
-    { ...clip(vector(900), vector(700), []), blocked: true },
+  for (const [impact, crash] of [
+    [clip(vector(900), vector(700), [rampContact, { normal: vector(1, 0, 0), brushId: 'wall' }]), true],
+    [clip(vector(900), vector(700), [rampContact, { normal: vector(0.8, 0, 0.6), brushId: 'ramp-b' }]), false],
+    [{ ...clip(vector(900), vector(700)), blocked: true }, true],
+    [{ ...clip(vector(900), vector(700), []), blocked: true }, true],
   ]) {
     const metrics = createMetrics();
     const game = session();
     const first = tick(metrics, game, undefined, clip(vector(1000), vector(900))).board;
-    assert.deepEqual(tick(metrics, game, undefined, impact).board, first);
+    assert.deepEqual(tick(metrics, game, undefined, impact).board, {...first, crash});
     const continuation = tick(metrics, game, undefined, clip(vector(700), vector(690)));
-    assert.deepEqual(continuation.board, first);
+    assert.deepEqual(continuation.board, {...first, crash});
     assert.equal(continuation.ramp.kind, 'turn');
   }
 });
@@ -1107,16 +1107,16 @@ test('confirmed longer flights accept small genuine boards without a loss magnit
 });
 
 test('ramp-bearing ambiguous contacts restart the airborne gap without losing an accepted board', () => {
-  for (const impact of [
-    clip(vector(900), vector(800), [rampContact, { normal: vector(1, 0, 0) }]),
-    clip(vector(900), vector(800), [rampContact, { normal: vector(0.8, 0, 0.6) }]),
-    { ...clip(vector(900), vector(800)), blocked: true },
+  for (const [impact, crash] of [
+    [clip(vector(900), vector(800), [rampContact, { normal: vector(1, 0, 0) }]), true],
+    [clip(vector(900), vector(800), [rampContact, { normal: vector(0.8, 0, 0.6) }]), false],
+    [{ ...clip(vector(900), vector(800)), blocked: true }, true],
   ]) {
     const metrics = createMetrics();
     const game = session();
     const first = tick(metrics, game, undefined, clip(vector(1000), vector(990))).board;
     for (let i = 0; i < 2; i++) tick(metrics, game);
-    assert.deepEqual(tick(metrics, game, undefined, impact).board, first);
+    assert.deepEqual(tick(metrics, game, undefined, impact).board, {...first, crash});
     for (let i = 0; i < 2; i++) tick(metrics, game);
     const result = tick(metrics, game, undefined, clip(vector(1100), vector(1098)));
     assert.equal(result.board.sequence, 1);
@@ -1137,7 +1137,7 @@ test('wall and blocked observations cannot manufacture confirmed free-flight sep
     for (let i = 0; i < 10; i++) tick(metrics, game, undefined, impact);
     for (let i = 0; i < 2; i++) tick(metrics, game);
     const result = tick(metrics, game, undefined, clip(vector(1100), vector(1099)));
-    assert.deepEqual(result.board, first);
+    assert.deepEqual(result.board, {...first, crash: true});
     assert.equal(result.ramp.kind, 'turn');
   }
 });
@@ -1509,14 +1509,17 @@ test('short same-surface skips discard pending Air but genuine subsequent flight
   close(landed.surf.measuredSeconds, 0.075);
 });
 
-test('Surf requires 50ms actual ramp contact, not elapsed time or gaps, and retains meaningful prior totals', () => {
+test('Surf loss requires 50ms actual contact while short visits still publish final exit speed', () => {
   for (const seconds of [0.049999, 0.05]) {
     const metrics = createMetrics();
     const game = mappedSession({ ...config, dt: seconds });
     coastContact(metrics, game);
     const result = leaveRamp(metrics, game).surf;
     assert.equal(result.available, seconds >= 0.05);
-    assert.equal(result.sequence, seconds >= 0.05 ? 1 : 0);
+    assert.equal(result.sequence, 1);
+    assert.equal(result.crash, false);
+    assert.equal(result.reason, seconds >= 0.05 ? '' : 'short-contact');
+    close(result.exitSpeed, 990);
   }
   const metrics = createMetrics();
   const game = mappedSession();
@@ -1524,8 +1527,11 @@ test('Surf requires 50ms actual ramp contact, not elapsed time or gaps, and reta
   const first = leaveRamp(metrics, game).surf;
   coastContact(metrics, game, { contacts: [separateContact], after: vector(500) });
   const afterGraze = leaveRamp(metrics, game).surf;
-  assert.equal(afterGraze.sequence, first.sequence);
-  close(afterGraze.loss, first.loss);
+  assert.equal(afterGraze.sequence, first.sequence + 1);
+  assert.equal(afterGraze.available, false);
+  assert.equal(afterGraze.loss, null);
+  assert.equal(afterGraze.reason, 'short-contact');
+  close(afterGraze.exitSpeed, 500);
 });
 
 test('ground and native finish finalize Surf using last contact tick, not the boundary tick', () => {
@@ -1563,7 +1569,8 @@ test('native reset transitions discard pending Surf, completed Surf and per-surf
     assert.equal(restarted.board.visit, 1);
     assert.equal(restarted.board.sequence, 1);
     leaveRamp(metrics, game);
-    assert.equal(metrics.snapshot().surf.sequence, 0);
+    assert.equal(metrics.snapshot().surf.sequence, 1);
+    assert.equal(metrics.snapshot().surf.reason, 'short-contact');
   }
 });
 
@@ -1666,7 +1673,8 @@ test('replaced sessions, state objects and tick discontinuities discard pending 
     assert.equal(result.surf.tick, null);
     assert.equal(result.board.sequence, 1);
     assert.equal(result.board.visit, 1);
-    assert.equal(leaveRamp(metrics, game).surf.sequence, 0);
+    assert.equal(leaveRamp(metrics, game).surf.sequence, 1);
+    assert.equal(metrics.snapshot().surf.reason, 'short-contact');
   }
 });
 
@@ -1791,7 +1799,7 @@ test('collision contact offsets exclude earlier contacts and preserve empty-suff
     ...clip(vector(1000), vector(900), contacts), firstContact: contacts.length, blocked: true,
   });
   assert.equal(blocked.strafe.available, false);
-  assert.deepEqual(blocked.board, retained);
+  assert.deepEqual(blocked.board, {...retained, crash: true});
 });
 
 function observedGame() {
@@ -2347,4 +2355,190 @@ test('hidden metrics do not inspect contact data or create touch angles', () => 
   metrics.collision({before: {get x() { throw new Error('idle contact inspected'); }}});
   metrics.end({});
   assert.equal(metrics.boardSnapshot().angle, null);
+});
+
+test('brief edge and blocked contacts publish crashed Surf with the already-recorded Board visit', () => {
+  for (const obstruction of [
+    clip(vector(990), vector(100), [rampContact, {normal: vector(1)}]),
+    clip(vector(990), vector(100), [{normal: vector(1)}]),
+    clip(vector(990), vector(100), [{normal: vector(0, 0, -1)}]),
+    {...clip(vector(990), vector(100), []), blocked: true},
+  ]) {
+    const metrics = createMetrics(), game = mappedSession();
+    const board = coastContact(metrics, game).board;
+    tick(metrics, game, undefined, obstruction);
+    const surf = leaveRamp(metrics, game).surf;
+    assert.equal(surf.sequence, 1);
+    assert.equal(surf.crash, true);
+    assert.equal(surf.available, false);
+    assert.equal(surf.loss, null);
+    assert.equal(surf.surfaceId, board.surfaceId);
+    assert.equal(surf.visit, board.visit);
+    assert.equal(surf.checkpoint, board.checkpoint);
+    assert.equal(surf.routePrefix, board.routePrefix);
+    assert.deepEqual(metrics.boardSnapshot(), {...board, crash: true});
+  }
+});
+
+test('substantial speed loss on valid surf planes is not a crash', () => {
+  for (const contacts of [[rampContact], [rampContact, curveContact]]) {
+    const metrics = createMetrics(), game = mappedSession();
+    for (const speed of [800, 600, 400, 100]) endpointContact(metrics, game, vector(speed), 0, contacts);
+    const surf = leaveRamp(metrics, game).surf;
+    assert.equal(surf.available, true);
+    assert.equal(surf.crash, false);
+    close(surf.loss, 900);
+    close(surf.exitSpeed, 100);
+  }
+});
+
+test('unsupported endpoints, hidden analysis and untracked planes do not imply a crash', () => {
+  for (const kind of ['endpoint', 'hidden', 'unknown', 'different-planes', 'invalid-normal']) {
+    const metrics = createMetrics(kind === 'hidden' ? {showSurf: false} : {});
+    const game = mappedSession();
+    for (let i = 0; i < 4; i++) coastContact(metrics, game);
+    const contacts = kind === 'unknown' ? [{...rampContact, brushId: 'unknown'}]
+      : kind === 'different-planes' ? [rampContact, separateContact]
+      : kind === 'invalid-normal' ? [{normal: vector(NaN)}] : [rampContact];
+    endpointContact(metrics, game, vector(100), kind === 'endpoint' ? NaN : 0, contacts);
+    const surf = leaveRamp(metrics, game).surf;
+    assert.equal(surf.crash, false);
+    assert.equal(surf.sequence, 1);
+    if (kind !== 'unknown') assert.equal(surf.available, false);
+  }
+});
+
+test('measured wall geometry still marks a crash when endpoint measurement is unavailable', () => {
+  for (const hidden of [false, true]) {
+    const metrics = createMetrics({showSurf: !hidden}), game = mappedSession();
+    const board = coastContact(metrics, game).board;
+    tick(metrics, game, undefined, clip(vector(Infinity), vector(NaN), [{normal: vector(1)}]));
+    const surf = leaveRamp(metrics, game).surf;
+    assert.equal(surf.crash, true);
+    assert.equal(surf.available, false);
+    assert.equal(surf.surfaceId, board.surfaceId);
+    assert.equal(surf.visit, board.visit);
+  }
+});
+
+test('floor contact crashes only without free-air departure or with a simultaneous ramp contact', () => {
+  for (const gap of [0, 1, 4]) {
+    for (const mixed of [false, true]) {
+      const metrics = createMetrics(), game = mappedSession();
+      const board = coastContact(metrics, game).board;
+      for (let i = 0; i < 3; i++) coastContact(metrics, game);
+      for (let i = 0; i < gap; i++) tick(metrics, game);
+      const floor = {normal: vector(Math.sqrt(1 - config.groundNormal ** 2), 0, config.groundNormal)};
+      const result = coastContact(metrics, game, {contacts: mixed ? [rampContact, floor] : [floor]});
+      assert.equal(result.surf.crash, mixed || gap === 0);
+      assert.equal(result.surf.surfaceId, board.surfaceId);
+      assert.equal(result.surf.visit, board.visit);
+      assert.equal(result.surf.available, !mixed);
+    }
+  }
+});
+
+test('ground state without a measured obstruction does not mark a crash', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  for (let i = 0; i < 4; i++) coastContact(metrics, game);
+  game.state.grounded = true;
+  const surf = tick(metrics, game).surf;
+  assert.equal(surf.available, true);
+  assert.equal(surf.crash, false);
+});
+
+test('wall contacts belong only to visits still within their contact grace', () => {
+  for (const mapped of [false, true]) {
+    for (const expired of [false, true]) {
+      const physics = {...config, dt: mapped ? 0.05 : 0.015};
+      const metrics = createMetrics(), game = mapped ? mappedSession(physics) : session(physics);
+      for (let i = 0; i < 4; i++) coastContact(metrics, game);
+      const graceTicks = mapped ? 5 : 3;
+      for (let i = 0; i < graceTicks + Number(expired); i++) tick(metrics, game);
+      tick(metrics, game, undefined, clip(vector(990), vector(100), [{normal: vector(1)}]));
+      const surf = leaveRamp(metrics, game).surf;
+      assert.equal(surf.crash, !expired);
+      assert.equal(surf.sequence, 1);
+    }
+  }
+});
+
+test('stale Board identity cannot turn a later isolated wall into a crashed visit', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  for (let i = 0; i < 4; i++) coastContact(metrics, game);
+  const clean = leaveRamp(metrics, game).surf;
+  tick(metrics, game, undefined, clip(vector(990), vector(100), [{normal: vector(1)}]));
+  assert.deepEqual(leaveRamp(metrics, game).surf, clean);
+  for (let i = 0; i < 4; i++) coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(leaveRamp(metrics, game).surf.crash, false);
+});
+
+test('crash classification survives checkpoints and clears on reset and the next visit', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  const board = coastContact(metrics, game).board;
+  tick(metrics, game, undefined, clip(vector(990), vector(100), [{normal: vector(1)}]));
+  const pending = metrics.saveState();
+  metrics.reset();
+  assert.equal(metrics.snapshot().surf.crash, false);
+  metrics.restoreState(pending);
+  const crashed = leaveRamp(metrics, game).surf;
+  assert.equal(crashed.crash, true);
+  assert.equal(crashed.visit, board.visit);
+  assert.equal(crashed.surfaceId, board.surfaceId);
+  const completed = metrics.saveState();
+  metrics.reset();
+  metrics.restoreState(completed);
+  assert.deepEqual(metrics.snapshot().surf, crashed);
+  for (let i = 0; i < 4; i++) coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(leaveRamp(metrics, game).surf.crash, false);
+  metrics.reset();
+  assert.equal(metrics.snapshot().surf.crash, false);
+  for (let i = 0; i < 4; i++) coastContact(metrics, game);
+  assert.equal(leaveRamp(metrics, game).surf.crash, false);
+});
+
+test('Board publishes a crash revision immediately without waiting for Surf closure', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  const board = coastContact(metrics, game).board;
+  const revision = metrics.boardRevision();
+  const wall = clip(vector(990), vector(100), [{normal: vector(1)}]);
+  const result = tick(metrics, game, undefined, wall);
+  assert.equal(result.surf.sequence, 0);
+  assert.deepEqual(result.board, {...board, crash: true});
+  assert.equal(metrics.boardRevision(), revision + 1);
+  tick(metrics, game, undefined, wall);
+  assert.equal(metrics.boardRevision(), revision + 1);
+  const reset = tick(metrics, game, undefined, undefined, ['restart']);
+  assert.equal(reset.board.crash, false);
+  assert.equal(reset.surf.crash, false);
+  assert.equal(coastContact(metrics, game).board.crash, false);
+});
+
+test('short same-visit recontacts publish the final endpoint rather than the first board exit', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  const first = coastContact(metrics, game, {after: vector(900)}).board;
+  for (let i = 0; i < 8; i++) tick(metrics, game);
+  coastContact(metrics, game, {before: vector(1500), after: vector(1490)});
+  const surf = leaveRamp(metrics, game).surf;
+  assert.equal(surf.available, false);
+  assert.equal(surf.reason, 'short-contact');
+  assert.equal(surf.crash, false);
+  assert.equal(surf.visit, first.visit);
+  assert.equal(surf.surfaceId, first.surfaceId);
+  close(surf.exitSpeed, 1490);
+  close(metrics.boardSnapshot().speedAfter, 900);
+});
+
+test('crash geometry uses the native surf-normal boundaries rather than a loss threshold', () => {
+  for (const [z, crash] of [
+    [-1e-8, true], [0, true], [1e-8, false],
+    [config.groundNormal - 1e-8, false], [config.groundNormal, true],
+  ]) {
+    const metrics = createMetrics(), game = mappedSession();
+    coastContact(metrics, game);
+    const normal = vector(Math.sqrt(1 - z * z), 0, z);
+    coastContact(metrics, game, {contacts: [rampContact, {normal}], after: vector(1)});
+    assert.equal(leaveRamp(metrics, game).surf.crash, crash);
+    assert.equal(metrics.boardSnapshot().crash, crash);
+  }
 });
