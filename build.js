@@ -5,6 +5,7 @@ for (const name of ['manifest.json', 'background.js', 'instrument.js', 'native-r
 // The bundled HUD font (Instrument Sans, subset) ships with its licence.
 await copyFile('docs/fonts/OFL.txt', 'dist/InstrumentSans-OFL.txt');
 await copyFile('LICENSE', 'dist/LICENSE');
+await copyFile('src/private-rooms/chat-filter-notice.txt', 'dist/chat-filter-notice.txt');
 // Only the replay-analysis dependency closure invalidates saved PB/WR results.
 // Keep this list in sync with replay-store.js and its analysis imports.
 const sources = ['metrics.js', 'observer.js', 'replay-store.js', 'start.js', 'surfaces.js'];

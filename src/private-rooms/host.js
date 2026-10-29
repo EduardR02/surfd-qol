@@ -1,4 +1,5 @@
 import {isPrivateRoomId} from './ids.js';
+import {maskChat} from './chat-filter.js';
 import {CLOSE, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isUuid, kickedNotice,
   normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
@@ -258,7 +259,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           }
           client.chat.limited = false;
           broadcast({type: 'chat', playerId: client.player.id, name: client.player.name,
-            rank: client.player.rank, appearance: client.player.appearance, text: message.text});
+            rank: client.player.rank, appearance: client.player.appearance, text: maskChat(message.text)});
           break;
         case 'finish': {
           if (message.mapId !== state.mapId || message.epoch !== state.epoch || now() < client.nextResultAt) break;

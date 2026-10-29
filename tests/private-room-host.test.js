@@ -131,6 +131,22 @@ describe('private room host', () => {
     room.close();
   });
 
+  test('masks chat on the host before every recipient sees it, preserving sender fields and guest refusal', () => {
+    const {room, connect} = fixture(), host = connect(true), member = connect(), guest = connect(false, guestHello);
+    try {
+      const player = member.messages('welcome')[0].player;
+      member.receive({type: 'chat', text: ' Scunthorpe class: FUUUCK, sh1t! ', name: 'Forged'});
+      const chat = {type: 'chat', playerId: player.id, name: player.name, rank: 'Guest',
+        appearance: DEFAULT_APPEARANCE, text: 'Scunthorpe class: ******, ****!'};
+      for (const recipient of [host, member, guest]) expect(recipient.messages('chat')).toEqual([chat]);
+      guest.receive({type: 'chat', text: 'FUUUCK'});
+      expect(guest.messages('error').at(-1).text).toBe('Sign in to send chat messages. You can still read chat.');
+      expect(host.messages('chat')).toEqual([chat]);
+      host.receive({type: 'chat', text: 'fUcK'});
+      expect(member.messages('chat').at(-1)).toMatchObject({name: host.messages('welcome')[0].player.name, text: '****'});
+    } finally { room.close(); }
+  });
+
   test('names follow the site rules and anything else becomes a guest name', () => {
     const {room, connect} = fixture();
     for (const name of ['<svg onload=alert(1)>', 'ab', 'a'.repeat(25), 'Surfd EU 2 · Frankfurt', '名前', '', undefined]) connect(false, {...hello, name});
