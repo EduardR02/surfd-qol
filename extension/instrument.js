@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v17:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v18:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -289,6 +289,20 @@ function roomHooks(source, client, state) {
   }
 }
 
+function previewViewHook(source, input) {
+  try {
+    unique(source, new RegExp(`setView\\((${identifier})\\)\\{this\\.yaw=\\1\\.yaw,this\\.pitch=Math\\.max\\(-89,Math\\.min\\(89,\\1\\.pitch\\)\\)\\}`, 'g'), 'camera view setter');
+    return `
+    previewView: {
+      get: () => ({yaw: ${input}.yaw, pitch: ${input}.pitch}),
+      set: view => ${input}.setView(view),
+    },`;
+  } catch (error) {
+    console.warn('[Surfd QoL] Strafe preview unavailable:', error.message);
+    return '';
+  }
+}
+
 // Append access to existing lexical objects; no original movement statement is rewritten.
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
@@ -327,7 +341,7 @@ ${practice.setup}
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${replayHooks(source)}${practice.adapter}${noticeHook(source)}${rooms.adapter}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${previewViewHook(source, binding[1])}${replayHooks(source)}${practice.adapter}${noticeHook(source)}${rooms.adapter}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

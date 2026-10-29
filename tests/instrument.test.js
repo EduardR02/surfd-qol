@@ -28,7 +28,7 @@ class Session{
 const player={replay:null,position:0,host:{position:()=>player.position},open(data){player.replay=data;player.position=0;},snapshot(){return {open:!!player.replay};}};
 let nativeSession=new Session(),generation=0,target=null,view=null;
 let startup=()=>Promise.resolve();
-const input={setBindings(){}},settings={bindings:{}};
+const input={yaw: 0, pitch: 0, setView(e){this.yaw=e.yaw,this.pitch=Math.max(-89,Math.min(89,e.pitch))},setBindings(){}},settings={bindings:{}};
 input.setBindings(settings.bindings);
 const currentFormat=8,liveRules=map=>({rule:settings.rule??'current'});
 let replayMap=null;
@@ -107,6 +107,29 @@ describe('native replay instrumentation', () => {
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'account-b', own: null});
     runtime.setOwner(null);
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'guest', own: null});
+  });
+});
+
+describe('optional camera preview instrumentation', () => {
+  test('sets only native input view without moving the session', () => {
+    const {adapter} = fixture();
+    const session = adapter.getSession();
+    adapter.previewView.set({yaw: 110, pitch: 95});
+    expect(adapter.previewView.get()).toEqual({yaw: 110, pitch: 89});
+    expect(adapter.getSession()).toBe(session);
+    expect(session.state).toBeUndefined();
+  });
+  test('an unsupported camera setter leaves the base adapter usable', () => {
+    const warnings = [], originalWarn = console.warn;
+    let adapter;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      const changed = nativeSource.replace('setView(e){this.yaw=e.yaw,this.pitch=Math.max(-89,Math.min(89,e.pitch))}', 'otherView(){}');
+      new Function('globalThis', instrumentGame(changed))({__SURFD_QOL__: {attach: value => {adapter = value;}}});
+    } finally { console.warn = originalWarn; }
+    expect(adapter.previewView).toBeUndefined();
+    expect(adapter.getSession().map.id).toBe('map');
+    expect(warnings.some(text => text.includes('Strafe preview unavailable:'))).toBe(true);
   });
 });
 

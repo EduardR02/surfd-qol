@@ -12,6 +12,7 @@ import { createBindings } from './bindings.js';
 import { mountHud } from './hud.js';
 import { applySettings as applySettingsTo, colorKeys, defaults, storageKey, storageLimitKeys } from './settings.js';
 import { createPrivateRooms } from './private-rooms/index.js';
+import { createStrafePreview } from './strafe-preview.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -26,6 +27,7 @@ const history = createRunHistory({
   getState: () => window.__SURF__?.snapshot?.() ?? null,
   getMap: () => api.adapter?.getSession()?.map ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
+  getTouchReferences: key => ({pb: rampReference.peek(key, 'pb'), wr: rampReference.peek(key, 'wr')}),
   // The replay is trimmed to a few seconds before the start when the game's
   // own simulation confirms the trimmed one reaches the same start.
   onReplay: (run, replay, clip) => {
@@ -84,6 +86,7 @@ let failed = false;
 let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
 const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
+const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
@@ -106,12 +109,17 @@ const api = {
   adapter: null,
   settings,
   privateRooms,
+  strafePreview,
   attach(adapter) {
     if (destroyed || api.adapter) return;
     try {
       observer = observePhysics(adapter, metrics, {
-        onBeforeTick(session) { replayControl.observe(session); },
+        onBeforeTick(session) {
+          if (strafePreview.active) strafePreview.check();
+          replayControl.observe(session);
+        },
         onTick(session, command, events) {
+          if (strafePreview.active) strafePreview.check();
           // The Start flash costs nothing while hidden; a stale flash ages out.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
           if (events.includes('finish')) void privateRooms.observeFinish(session, history);
@@ -120,7 +128,7 @@ const api = {
           if (events.includes('finish')) hud?.observeFinish();
           replayControl.tick(session);
         },
-        onReset() { start.reset(); history.reset(); },
+        onReset() { strafePreview.stop(); start.reset(); history.reset(); },
         onError: fail
       });
       api.adapter = adapter;
@@ -144,6 +152,7 @@ const api = {
     if (destroyed) return;
     destroyed = true;
     clearInterval(bindingTimer);
+    strafePreview.destroy();
     privateRooms.destroy();
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
@@ -204,8 +213,8 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings, history, replays, replayControl, rampReference,
-    services: { replayStore },
+    settings, onSettings, bindings, history, replays, replayControl, rampReference, strafePreview,
+    services: { replayStore, strafePreview },
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
   hud.setUpdate(availableUpdate);
