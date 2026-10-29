@@ -21,6 +21,7 @@ html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-f
 .qol-host-view .field input { width: 220px; }
 .qol-host-view .setting code.qol-room-code { padding: 0; background: none; color: var(--m-ink); font: 700 22px/1.3 Consolas, monospace; letter-spacing: 2px; }
 .qol-host-view .qol-name-error { color: var(--m-behind); }
+.server-detail .qol-room-note { margin: 10px 0 0; color: var(--m-muted); font-size: 12px; }
 `;
 
 export function uploadEstimate() {
@@ -153,7 +154,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     root.querySelector('.window-body')?.append(view.view);
     const title = root.querySelector('.titlebar h2');
     nodes = {hostButton, back, start, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
-      layout: root.querySelector('.servers-layout'), help: element('p', 'sub')};
+      layout: root.querySelector('.servers-layout'), help: element('p', 'qol-room-note')};
   }
   function unmount() {
     if (!nodes) return;

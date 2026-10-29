@@ -20,6 +20,7 @@ class Element {
   set textContent(value) { this.content = String(value); this.children = []; }
   get isConnected() { let node = this; while (node.parentNode) node = node.parentNode; return node.tag === 'document'; }
   get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1] ?? null; }
+  get nextElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
   append(...nodes) { for (const node of nodes) {node.remove(); node.parentNode = this; this.children.push(node);} }
   remove() { if (this.parentNode) {this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null;} }
   before(node) { const parent = this.parentNode; node.remove(); node.parentNode = parent; parent.children.splice(parent.children.indexOf(this), 0, node); }
@@ -393,11 +394,15 @@ describe('server browser', () => {
     f.ui.destroy();
   });
 
-  test('community rows keep one detail line', () => {
+  test('community rows keep one detail line, spaced under the invite link', () => {
     const f = fixture();
     f.rows.push({id: ROOM, visibility: 'private', players: 3, online: true});
     f.select(ROOM); f.ui.refresh();
-    expect(f.invite.parentNode.children[f.invite.parentNode.children.indexOf(f.invite) + 1].textContent).toBe('Join with the room code or link.');
+    const note = f.invite.nextElementSibling;
+    expect([note.tag, note.className, note.textContent]).toEqual(['p', 'qol-room-note', 'Join with the room code or link.']);
+    expect(f.info.querySelector('.sub').textContent).toBe('Private');
+    const style = f.document.children.find(node => node.tag === 'style').textContent;
+    expect(style).toContain('.server-detail .qol-room-note { margin: 10px 0 0; color: var(--m-muted); font-size: 12px; }');
     f.rows.at(-1).visibility = 'public'; f.ui.refresh();
     expect(f.info.textContent).toContain('Listed for everyone with Surfd QoL.');
     f.select('eu'); f.ui.refresh();
