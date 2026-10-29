@@ -1,14 +1,16 @@
 import {formatRoomCode, inviteLink, isPrivateRoomId} from './ids.js';
-import {estimateBandwidth} from './bandwidth.js';
+import {isGuestName, roomNameProblem} from './protocol.js';
+import {CHOICES, NAME_HINT, attribute, buildRoomView, clampLimit, classes, courseText, hidden, normalizeName, rosterRows, text,
+  uploadEstimate} from './ui-room.js';
+
+export {uploadEstimate} from './ui-room.js';
 
 const PRIVATE_ROW = 'Join with the room code or link.';
 const PUBLIC_ROW = 'Listed for everyone with Surfd QoL.';
 const PICKER_TITLE = 'Choose the room’s map';
 const PICKER_HELP = 'Pick the map the room starts on.';
-const CHOICES = [
-  ['private', 'Private', 'Only people with the room code or link'],
-  ['public', 'Public', 'Listed in Community for everyone with Surfd QoL'],
-];
+const NOBODY = 'Nobody here yet.';
+const NOT_STARTED = 'Players show here once the room starts.';
 
 export const ROOM_CLASS = 'qol-room';
 // The first rule hides map votes and official-server moderation while in a community room.
@@ -17,29 +19,28 @@ html.${ROOM_CLASS} :is(#menu-server [data-act="nominate"], #menu-server [data-ac
 html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 .qol-code-join { display: inline-flex; align-items: center; gap: 6px; }
 .qol-code-join .field input { width: 150px; }
-.qol-host-view { flex: 1; min-height: 0; overflow: auto; }
+.qol-host-view { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(500px, 1.6fr) minmax(220px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 0 18px; }
+.qol-host-view .qol-room-players { display: flex; flex-direction: column; min-height: 0; margin: 0; }
+.qol-host-view .qol-room-players .table-wrap { flex: 1; }
+@media (max-width: 1100px) { .qol-host-view { display: block; } }
 .qol-host-view .field input { width: 220px; }
-.qol-host-view .setting code.qol-room-code { padding: 0; background: none; color: var(--m-ink); font: 700 22px/1.3 Consolas, monospace; letter-spacing: 2px; }
-.qol-host-view .qol-name-error { color: var(--m-behind); }
+.qol-host-view .setting.qol-map-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.qol-host-view .qol-room-code { padding: 5px 8px; border: 1px solid; border-color: var(--m-dark) var(--m-light) var(--m-light) var(--m-dark); background: var(--m-well); color: var(--m-ink); font: 13px/18px Consolas, monospace; letter-spacing: 1px; user-select: all; }
+.qol-host-view .input-error { color: var(--m-behind); }
+.qol-host-view input[aria-invalid="true"] { border-color: var(--m-behind); }
+#servers-window .qol-end-room + .foot-note { margin-right: auto; }
 .server-detail .qol-room-note { margin: 10px 0 0; color: var(--m-muted); font-size: 12px; }
 `;
-
-export function uploadEstimate() {
-  const up = players => estimateBandwidth(players).upload.toFixed(1);
-  return `8 players need about ${up(8)} Mbps up, 16 about ${up(16)}.`;
-}
-
-const text = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
-const hidden = (node, value) => { if (node && node.hidden !== value) node.hidden = value; };
-const classes = (node, value) => { if (node && node.className !== value) node.className = value; };
 
 export function createRoomUi({rooms, getAdapter, document: doc = globalThis.document,
   MutationObserver: Observer = globalThis.MutationObserver, clipboard = globalThis.navigator?.clipboard}) {
   let root = null, nodes = null, picker = null, style = null;
   // 'list' is the game's server list; 'host' replaces it with Host a room, or Your room while hosting.
-  let mode = 'list', draftMap = null, pickerEpoch = 1, nameError = '', copied = null;
-  let starting = false, joining = false, destroyed = false, scheduled = false, wasOpen = false;
-  let observedRoot, observedOpen;
+  let mode = 'list', draftMap = null, pickerEpoch = 1, copied = null;
+  // The name and limit a new room starts with, and edits not yet saved to the hosted room.
+  let draftName = null, draftLimit = null, nameEdit = null, nameError = '', limitEdit = null;
+  let starting = false, joining = false, saving = false, destroyed = false, scheduled = false, wasOpen = false;
+  let observedRoot, observedOpen, rosterKey = '';
 
   const element = (tag, className = '', value = '') => {
     const node = doc.createElement(tag);
@@ -57,72 +58,23 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (adapter?.setStatus) adapter.setStatus(message);
     else text(root?.querySelector('#servers-status'), message);
   }
+  const failure = error => error?.message ?? String(error);
 
   function buildView() {
-    const view = element('div', 'settings-window qol-host-view');
-    view.hidden = true;
-    const group = title => {
-      const node = element('div', 'group'), heading = element('h4', 'group-title', title);
-      node.append(heading);
-      view.append(node);
-      return {node, heading};
+    const view = buildRoomView(doc);
+    view.change.onclick = changeMap;
+    view.copyCode.onclick = () => copy('code');
+    view.copyLink.onclick = () => copy('link');
+    view.name.oninput = () => {
+      if (rooms.hosting()) nameEdit = view.name.value; else draftName = view.name.value;
+      nameError = '';
+      refresh();
     };
-    const row = parent => {
-      const setting = element('div', 'setting'), info = element('div', 'setting-text'), control = element('div', 'setting-control');
-      setting.append(info, control);
-      parent.append(setting);
-      return {setting, info, control};
-    };
-    const map = row(group('Map').node);
-    const mapName = element('span'), chip = element('span', 'tier-chip'), chipShort = element('span'), chipLong = element('span', 'visually-hidden');
-    chipShort.setAttribute('aria-hidden', 'true');
-    chip.append(chipShort, chipLong);
-    const mapTitle = element('span', 'setting-label');
-    mapTitle.append(mapName, doc.createTextNode(' '), chip);
-    map.info.append(mapTitle);
-    const change = button('Change');
-    change.onclick = changeMap;
-    map.control.append(change);
-
-    const codeGroup = group('Room code');
-    const codeRow = row(codeGroup.node);
-    const code = element('code', 'qol-room-code');
-    codeRow.info.append(code);
-    const copyCode = button('Copy code'), copyLink = button('Copy link');
-    copyCode.onclick = () => copy('code');
-    copyLink.onclick = () => copy('link');
-    codeRow.control.append(copyCode, copyLink);
-
-    const nameRow = row(group('Room name').node);
-    const field = element('label', 'field'), name = element('input'), nameProblem = element('small', 'qol-name-error');
-    name.type = 'text'; name.maxLength = 31; name.spellcheck = false; name.autocomplete = 'off';
-    name.setAttribute('aria-label', 'Room name');
-    name.onchange = rename;
-    nameProblem.hidden = true;
-    field.append(name);
-    nameRow.info.append(field, nameProblem);
-
-    const access = row(group('Who can join').node);
-    const accessHelp = element('span', 'setting-label');
-    access.info.append(accessHelp);
-    const seg = element('div', 'seg');
-    seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Who can join');
-    for (const [value, label] of CHOICES) {
-      const option = button(label, '');
-      option.dataset.visibility = value;
-      option.onclick = () => choose(value);
-      seg.append(option);
-    }
-    access.control.append(seg);
-
-    const load = group('Upload');
-    const players = row(load.node);
-    const count = element('span', 'setting-label'), usage = element('small');
-    players.info.append(count, usage);
-    const estimate = element('p', 'setting-note', uploadEstimate());
-    load.node.append(estimate);
-    return {view, mapName, chip, chipShort, chipLong, change, codeGroup: codeGroup.node, code, copyCode, copyLink,
-      name, nameProblem, accessHelp, seg, loadTitle: load.heading, players: players.setting, count, usage, estimate};
+    view.nameForm.onsubmit = event => { event.preventDefault(); void saveName(); };
+    for (const option of view.seg.children) option.onclick = () => choose(option.dataset.visibility);
+    view.limit.oninput = () => { limitEdit = view.limit.value; refresh(); };
+    view.limit.onchange = () => void setLimit();
+    return view;
   }
 
   function mount(next) {
@@ -131,13 +83,16 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const refreshButton = root?.querySelector('#servers-refresh'), join = root?.querySelector('#servers-join');
     if (!refreshButton || !join) return;
     const hostButton = button('Host a room'), back = button('Back'), start = button('Start room', 'btn btn-primary');
-    back.hidden = true; start.hidden = true;
+    const endButton = button('End room', 'btn btn-danger qol-end-room');
+    back.hidden = true; start.hidden = true; endButton.hidden = true;
     hostButton.onclick = openView;
     back.onclick = () => { mode = 'list'; refresh(); };
-    start.onclick = () => rooms.hosting() ? end() : startRoom();
+    start.onclick = startRoom;
+    endButton.onclick = end;
     refreshButton.before(hostButton);
     join.after(back);
     back.after(start);
+    root.querySelector('#servers-status')?.before(endButton);
 
     const form = element('form', 'qol-code-join'), field = element('label', 'field'), code = element('input');
     code.type = 'text'; code.placeholder = 'Room code'; code.spellcheck = false; code.autocomplete = 'off';
@@ -153,37 +108,44 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     const view = buildView();
     root.querySelector('.window-body')?.append(view.view);
     const title = root.querySelector('.titlebar h2');
-    nodes = {hostButton, back, start, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
-      layout: root.querySelector('.servers-layout'), help: element('p', 'qol-room-note')};
+    nodes = {hostButton, back, start, endButton, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
+      layout: root.querySelector('.servers-layout'), note: element('p', 'qol-room-note')};
+    rosterKey = '';
   }
   function unmount() {
     if (!nodes) return;
-    const {hostButton, back, start, refreshButton, join, form, view, title, titleText, layout, help} = nodes;
-    for (const node of [hostButton, back, start, form, view.view, help]) node.remove();
+    const {hostButton, back, start, endButton, refreshButton, join, form, view, title, titleText, layout, note} = nodes;
+    for (const node of [hostButton, back, start, endButton, form, view.view, note]) node.remove();
     hidden(refreshButton, false); hidden(join, false); hidden(layout, false);
     text(title, titleText);
     nodes = null;
   }
 
+  function reset() {
+    mode = 'host'; copied = null; nameEdit = null; nameError = ''; limitEdit = null;
+  }
   function openView() {
     const adapter = getAdapter()?.rooms;
     if (!rooms.hosting() && adapter?.guest?.()) { adapter.signIn?.(); return; }
-    mode = 'host'; nameError = ''; copied = null;
+    reset();
     if (!rooms.hosting()) draftMap = adapter?.currentMap?.()?.id ?? null;
     refresh();
   }
   // The host's own Your room button in the game's room menu.
   function openRoom() {
     if (!rooms.hosting()) return;
-    mode = 'host'; nameError = ''; copied = null;
+    reset();
     getAdapter()?.rooms?.openBrowser?.();
     refresh();
   }
+  const startName = () => normalizeName(draftName ?? rooms.roomName());
+  const startLimit = () => draftLimit ?? rooms.maxPlayers();
   async function startRoom() {
-    if (starting) return;
+    if (starting || rooms.hosting()) return;
     starting = true; refresh();
-    try { await rooms.host({visibility: rooms.visibility(), mapId: draftMap, name: rooms.roomName()}); }
-    catch (error) { status(error?.message ?? String(error)); }
+    try {
+      await rooms.host({visibility: rooms.visibility(), mapId: draftMap, name: startName(), maxPlayers: startLimit()});
+    } catch (error) { status(failure(error)); }
     finally { starting = false; refresh(); }
   }
   function end() {
@@ -195,22 +157,45 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (joining || !nodes) return;
     joining = true; refresh();
     try { await rooms.joinCode(nodes.code.value); }
-    catch (error) { status(error?.message ?? String(error)); }
+    catch (error) { status(failure(error)); }
     finally { joining = false; refresh(); }
   }
   function choose(value) {
     try { rooms.setVisibility(value); }
-    catch (error) { status(error?.message ?? String(error)); }
+    catch (error) { status(failure(error)); }
     refresh();
   }
-  function rename() {
-    const input = nodes?.view.name;
-    if (!input) return;
+  // What Save would send, and whether it can: a changed name with no problem.
+  function pendingName(hosting) {
+    if (!hosting || nameEdit === null) return {name: null, problem: nameError || null};
+    const name = normalizeName(nameEdit);
+    if (name === hosting.name) return {name: null, problem: null};
+    return {name, problem: nameError || roomNameProblem(name)};
+  }
+  async function saveName() {
+    const hosting = rooms.hosting();
+    const {name, problem} = pendingName(hosting);
+    if (saving || !name || problem) return;
+    saving = true; refresh();
     try {
-      rooms.rename(input.value.trim());
-      nameError = '';
-    } catch (error) { nameError = error?.message ?? String(error); }
-    input.value = rooms.roomName();
+      await rooms.rename(name);
+      nameEdit = null; nameError = ''; draftName = name;
+    } catch (error) { nameError = failure(error); }
+    finally { saving = false; refresh(); }
+  }
+  async function setLimit() {
+    const hosting = rooms.hosting(), value = clampLimit(limitEdit ?? '');
+    if (value === null || !hosting || value === hosting.maxPlayers) {
+      if (value !== null && !hosting) draftLimit = value;
+      limitEdit = null;
+      refresh();
+      return;
+    }
+    limitEdit = String(value);
+    refresh();
+    try { await rooms.setMaxPlayers(value); draftLimit = value; }
+    catch (error) { status(failure(error)); }
+    limitEdit = null;
     refresh();
   }
   async function copy(kind) {
@@ -271,22 +256,42 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     }
   }
   function patchDetail(rows, selectedId) {
-    const detail = root.querySelector('#server-detail'), help = nodes.help;
+    const detail = root.querySelector('#server-detail'), note = nodes.note;
     const selected = rows.find(row => row.id === selectedId);
     const info = detail?.querySelector('.srv-info');
-    if (!isPrivateRoomId(selected?.id) || !info) { help.remove(); return; }
+    if (!isPrivateRoomId(selected?.id) || !info) { note.remove(); return; }
     text(info.querySelector('.sub'), selected.visibility === 'public' ? 'Public' : 'Private');
     const ping = info.querySelector('[data-fact="ping"]');
     if (ping?.textContent === '—') text(ping, '');
-    text(help, selected.visibility === 'public' ? PUBLIC_ROW : PRIVATE_ROW);
+    text(note, selected.visibility === 'public' ? PUBLIC_ROW : PRIVATE_ROW);
     const invite = info.querySelector('.invite-line');
-    if (invite && help.previousElementSibling !== invite) invite.after(help);
+    if (invite && note.previousElementSibling !== invite) invite.after(note);
   }
-  function renderView(adapter, hosting) {
-    const view = nodes.view;
+
+  function renderName(view, hosting) {
+    const value = hosting ? nameEdit ?? hosting.name : draftName ?? rooms.roomName();
+    if (view.name.value !== value) view.name.value = value;
+    const {name, problem} = hosting ? pendingName(hosting) : {name: null, problem: roomNameProblem(startName())};
+    text(view.nameNote, problem ?? NAME_HINT);
+    classes(view.nameNote, problem ? 'input-error' : '');
+    attribute(view.name, 'aria-invalid', problem ? 'true' : null);
+    hidden(view.save, !hosting);
+    view.save.disabled = saving || !name || !!problem;
+    return !problem;
+  }
+  function renderLimit(view, hosting, limit) {
+    const value = limitEdit ?? String(limit);
+    if (view.limit.value !== value) view.limit.value = value;
+    // While typing, the estimate follows the number only once it's a valid limit.
+    const shown = limitEdit !== null && clampLimit(limitEdit) === Number(limitEdit) ? Number(limitEdit) : limit;
+    const measured = Number.isFinite(hosting?.uploadMbps) ? ` Now using ${hosting.uploadMbps.toFixed(1)} Mbps up.` : '';
+    text(view.limitNote, uploadEstimate(shown) + measured);
+  }
+  function renderMap(view, adapter, hosting) {
     const mapId = hosting ? hosting.mapId : draftMap;
     const map = adapter.maps().find(entry => entry.id === mapId);
     text(view.mapName, map?.title ?? mapId ?? 'Select a map first.');
+    text(view.mapNote, courseText(map));
     const tier = Number.isInteger(map?.tier) && map.tier > 0 ? map.tier : 0;
     hidden(view.chip, !tier);
     if (tier) {
@@ -294,54 +299,59 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
       text(view.chipShort, `T${tier}`);
       text(view.chipLong, `Tier ${tier}`);
     }
+    // The game's own preview images, as its server list and details use.
+    const src = map?.slug ? `/previews/${map.slug}.jpg` : '';
+    attribute(view.thumb, 'src', src || null);
+    hidden(view.thumb, !src);
     hidden(view.change, hosting ? !adapter.changeMap || rooms.currentRoom?.() !== hosting.id : !adapter.mapPicker);
-
-    hidden(view.codeGroup, !hosting);
-    if (hosting) {
-      text(view.code, formatRoomCode(hosting.id));
-      const label = (kind, idle) => copied?.kind === kind && copied.id === hosting.id ? (copied.ok ? 'Copied' : 'Copy failed') : idle;
-      text(view.copyCode, label('code', 'Copy code'));
-      text(view.copyLink, label('link', 'Copy link'));
+  }
+  function renderPlayers(view, adapter, hosting, limit) {
+    const roster = hosting ? rooms.roomInfo?.(hosting.id)?.roster ?? [] : [];
+    const players = roster.map(player => ({name: player.name, guest: player.guest === true || isGuestName(player.name)}));
+    const count = hosting?.players ?? 0;
+    text(view.count, `${count} / ${limit}${count >= limit ? ' · full' : ''}`);
+    const me = adapter.displayName?.() ?? null;
+    const key = JSON.stringify([players, count, me]);
+    if (key !== rosterKey) {
+      rosterKey = key;
+      view.roster.replaceChildren(...rosterRows(element, players, count, me));
     }
-
-    if (doc.activeElement !== view.name && view.name.value !== rooms.roomName()) view.name.value = rooms.roomName();
-    text(view.nameProblem, nameError);
-    hidden(view.nameProblem, !nameError);
-
+    hidden(view.table, !players.length);
+    hidden(view.empty, !!players.length);
+    text(view.empty, hosting ? NOBODY : NOT_STARTED);
+  }
+  function renderView(adapter, hosting) {
+    const view = nodes.view;
+    const nameOk = renderName(view, hosting);
     const visibility = hosting?.visibility ?? rooms.visibility();
-    for (const option of view.seg.children) {
-      const pressed = String(option.dataset.visibility === visibility);
-      if (option.getAttribute('aria-pressed') !== pressed) option.setAttribute('aria-pressed', pressed);
-    }
-    text(view.accessHelp, CHOICES.find(([value]) => value === visibility)[2]);
-
-    text(view.loadTitle, hosting ? 'Players' : 'Upload');
-    hidden(view.players, !hosting);
-    if (hosting) {
-      text(view.count, `${hosting.players} player${hosting.players === 1 ? '' : 's'}`);
-      const measured = Number.isFinite(hosting.uploadMbps);
-      text(view.usage, measured ? `Now using ${hosting.uploadMbps.toFixed(1)} Mbps up` : '');
-      hidden(view.usage, !measured);
-    }
+    for (const option of view.seg.children) attribute(option, 'aria-pressed', String(option.dataset.visibility === visibility));
+    text(view.accessNote, CHOICES.find(([value]) => value === visibility)[2]);
+    const limit = hosting ? hosting.maxPlayers : startLimit();
+    renderLimit(view, hosting, limit);
+    renderMap(view, adapter, hosting);
+    renderPlayers(view, adapter, hosting, limit);
+    hidden(view.invite, !hosting);
+    if (!hosting) return nameOk;
+    text(view.code, formatRoomCode(hosting.id));
+    const label = (kind, idle) => copied?.kind === kind && copied.id === hosting.id ? (copied.ok ? 'Copied' : 'Copy failed') : idle;
+    text(view.copyCode, label('code', 'Copy code'));
+    text(view.copyLink, label('link', 'Copy link'));
+    return nameOk;
   }
   function render(adapter, hosting) {
     const host = mode === 'host';
-    const {hostButton, back, start, refreshButton, join, submit, view, title, titleText, layout} = nodes;
+    const {hostButton, back, start, endButton, refreshButton, join, submit, view, title, titleText, layout} = nodes;
     hidden(layout, host); hidden(view.view, !host);
     text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);
     text(hostButton, hosting ? 'Your room' : 'Host a room');
     hidden(hostButton, host); hidden(refreshButton, host); hidden(join, host);
-    hidden(back, !host); hidden(start, !host);
+    hidden(back, !host); hidden(start, !host || !!hosting); hidden(endButton, !host || !hosting);
     hostButton.disabled = starting;
     submit.disabled = joining;
     if (!host) return;
-    if (hosting) {
-      classes(start, 'btn btn-danger'); text(start, 'End room'); start.disabled = false;
-    } else {
-      classes(start, 'btn btn-primary'); text(start, starting ? 'Starting…' : 'Start room');
-      start.disabled = starting || !draftMap;
-    }
-    renderView(adapter, hosting);
+    const nameOk = renderView(adapter, hosting);
+    text(start, starting ? 'Starting…' : 'Start room');
+    start.disabled = starting || !draftMap || !nameOk;
   }
   function refresh() {
     if (destroyed || !doc) return;
