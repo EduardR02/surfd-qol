@@ -1,5 +1,6 @@
 import {expect, test} from 'bun:test';
-import {Room} from '../signal/src/worker.js';
+import {Lobby, Room} from '../signal/src/worker.js';
+import {RATE_MESSAGES} from '../signal/src/room.js';
 
 const ROOM = 'p-abcdefghjkmn';
 const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, capacity: 16};
@@ -93,4 +94,28 @@ test('slow publication coalesces a burst to its final unlisting', async () => {
   expect(fixture.requests.map(request => request.method)).toEqual(['PUT', 'DELETE', 'PUT']);
   fixture.requests[2].resolve(new Response(null, {status: 204}));
   await Promise.all(fixture.pending);
+});
+
+test('a private transition unlists after a rename and capacity flood', async () => {
+  const entries = new Map();
+  let ready;
+  const lobby = new Lobby({
+    blockConcurrencyWhile(callback) { ready = callback(); },
+    storage: {list: async () => entries, put: (id, entry) => entries.set(id, entry), delete: id => entries.delete(id)},
+  }, {});
+  await ready;
+  const apply = request => lobby.fetch(new Request(request.url, {method: request.method, body: request.body}));
+  const fixture = await roomHarness();
+  fixture.publish(listing);
+  await Promise.resolve();
+  for (let index = 1; index < RATE_MESSAGES; index++) {
+    fixture.publish({...listing, name: `Practice ${index}`, capacity: index % 2 ? 2 : 64});
+  }
+  fixture.publish(null);
+  fixture.requests[0].resolve(await apply(fixture.requests[0]));
+  await Promise.resolve();
+  expect(fixture.requests.map(request => request.method)).toEqual(['PUT', 'DELETE']);
+  fixture.requests[1].resolve(await apply(fixture.requests[1]));
+  await Promise.all(fixture.pending);
+  expect(await (await lobby.fetch(new Request('https://lobby/rooms'))).json()).toEqual({rooms: []});
 });

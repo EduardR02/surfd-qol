@@ -440,6 +440,32 @@ test('a host publishes a sanitized public roster, updates and unlists it; guests
   expect(room.world.published).toHaveLength(3);
 });
 
+test('unlisting revokes once after the host update budget is exhausted', async () => {
+  const room = await claimed();
+  const listing = {name: 'Practice room', mapId: 'surf_utopia', players: 3, capacity: 16};
+  for (let index = 0; index < RATE_MESSAGES; index++) room.say(room.host, {type: 'listing', data: listing});
+  for (let index = 0; index < RATE_MESSAGES; index++) room.say(room.host, {type: 'listing', data: null});
+  expect(room.world.published.filter(([, data]) => data === null)).toEqual([[ROOM, null]]);
+  expect(room.world.published.at(-1)).toEqual([ROOM, null]);
+  expect(room.host.closed).toBeNull();
+  room.world.time += RATE_WINDOW_MS;
+  room.say(room.host, {type: 'listing', data: listing});
+  room.say(room.host, {type: 'listing', data: null});
+  expect(room.world.published.slice(-2)).toEqual([
+    [ROOM, {...listing, roster: []}, room.host.peer.client], [ROOM, null],
+  ]);
+});
+
+test('unlisting revokes before a client-wide rate refusal closes its host', async () => {
+  let allowed = true;
+  const room = await claimed(0, {allowClient: () => allowed});
+  room.say(room.host, {type: 'listing', data: {name: 'Practice room', mapId: 'surf_utopia', players: 1, capacity: 16}});
+  allowed = false;
+  room.say(room.host, {type: 'listing', data: null});
+  expect(room.host.closed).toEqual({code: CLOSE['rate-limited'], reason: 'rate-limited'});
+  expect(room.world.published.at(-1)).toEqual([ROOM, null]);
+});
+
 test('a room that ends unlists itself, whether its host left or never came back', async () => {
   const left = await claimed();
   left.leave(left.host, 1000);

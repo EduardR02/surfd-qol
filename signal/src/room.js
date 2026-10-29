@@ -110,7 +110,7 @@ const tooLarge = raw => typeof raw === 'string'
 //   ttl}, or of null when it may not have them (relay.js).
 // A socket needs send(text) and close(code, reason).
 export function createRoom({record: stored = null, save, wake, sockets, peerOf, accept, attach, refuse, allowClient = () => true, publish = () => {}, relay = async () => null, hash = hashKey, now = Date.now}) {
-  let record = null, tomb = null;
+  let record = null, tomb = null, unlisted = false;
   if (stored?.endedAt != null) tomb = stored;
   else record = stored;
   // Message counts per connection live in memory: a room only hibernates
@@ -252,11 +252,17 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
     if (peer.role === 'host') {
       // A listing addressed to no one is for the public directory.
       if (value?.type === 'listing' && value.to == null) {
+        // Revoking a public listing must survive an exhausted update budget.
+        if (value.data === null && !unlisted) {
+          publish(record.roomId, null);
+          unlisted = true;
+        }
         if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
-        if (!allow(peer)) return;
-        if (value.data === null) return void publish(record.roomId, null);
+        if (!allow(peer) || value.data === null) return;
         const listing = listingFrom(value.data);
-        return listing && record.roomId ? void publish(record.roomId, listing, peer.client) : fail(socket, 'bad-message');
+        if (!listing || !record.roomId) return fail(socket, 'bad-message');
+        unlisted = false;
+        return void publish(record.roomId, listing, peer.client);
       }
       if (value?.type === RELAY) {
         if (!allowClient(peer.client)) return kick(socket, 'rate-limited');
