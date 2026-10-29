@@ -142,6 +142,21 @@ describe('private room host', () => {
     room.close();
   });
 
+  test('normalizes free-text room names and broadcasts renames without changing the map', () => {
+    const {room, connect} = fixture({name: '  Evening   practice!  '}), host = connect(true), guest = connect();
+    try {
+      expect(host.messages('welcome')[0].state.name).toBe('Evening practice!');
+      room.setName("  Timed & untimed (EU)  ");
+      expect(guest.messages('state').at(-1).state).toMatchObject({name: 'Timed & untimed (EU)', mapId: 'one', epoch: 1});
+      for (const invalid of ['ab', '<script>', 'Official practice', 'SURFD practice']) {
+        expect(() => room.setName(invalid)).toThrow();
+      }
+      expect(room.state.name).toBe('Timed & untimed (EU)');
+      room.setVisibility('public');
+      expect(room.state.visibility).toBe('public');
+    } finally { room.close(); }
+  });
+
   test('relays native chat sender fields and answers ping without public authority', () => {
     const {connect} = fixture(), host = connect(true), peer = connect();
     peer.receive({type: 'chat', text: ' hello ', playerId: 'spoof', name: 'Spoof'});

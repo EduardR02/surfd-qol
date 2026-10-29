@@ -1,7 +1,7 @@
 import {isPrivateRoomId} from './ids.js';
 import {CLOSE, ROOM_TEXTS, VERSION, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isPlayerName, isUuid, kickedNotice,
-  normalizeAppearance, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
+  normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem} from './protocol.js';
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
@@ -14,7 +14,8 @@ const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 
 export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', onChange = () => {}, now = Date.now}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
-  const problem = roomNameProblem(name, visibility);
+  name = normalizeRoomName(name);
+  const problem = roomNameProblem(name);
   if (problem) throw new Error(problem);
   if (!Array.isArray(maps)) throw new Error('Invalid map catalog');
   const catalog = new Map();
@@ -359,7 +360,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   function setVisibility(value) {
     if (value !== 'private' && value !== 'public') throw new Error('Invalid room visibility.');
-    const problem = roomNameProblem(state.name, value);
+    const problem = roomNameProblem(state.name);
     if (problem) throw new Error(problem);
     if (closed || state.visibility === value) return;
     state = {...state, visibility: value};
@@ -367,7 +368,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     onChange();
   }
   function setName(name) {
-    const problem = roomNameProblem(name, state.visibility);
+    name = normalizeRoomName(name);
+    const problem = roomNameProblem(name);
     if (problem) throw new Error(problem);
     if (closed || state.name === name) return;
     state = {...state, name};
