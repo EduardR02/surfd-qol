@@ -203,6 +203,118 @@ describe('private room host', () => {
     expect(host.messages('roster').at(-1).players.find(player => player.slot === 3).spectating).toBe(false);
   });
 
+  test('Stop clears a subscription after its burst is exhausted and redundant Stops stay silent', async () => {
+    let time = 0;
+    const {room, connect} = fixture({now: () => time}), host = connect(true), one = connect(), two = connect(), watcher = connect();
+    const peers = [host, one, two, watcher], id = socket => socket.messages('welcome')[0].player.connectionId;
+    const oneId = id(one), twoId = id(two), watcherId = id(watcher);
+    for (let request = 1; request <= 4; request++) {
+      watcher.receive({type: 'spectate', connectionId: request % 2 ? oneId : twoId, request});
+    }
+    two.receive(encodeSpectator({slot: 0, sequence: 1, epoch: 1, pose: detailed}));
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(1);
+    await rosterTick();
+    expect(host.messages('roster').at(-1).players.find(player => player.connectionId === watcherId).spectating).toBe(true);
+    for (const peer of peers) peer.sent.length = 0;
+
+    watcher.receive({type: 'spectate', connectionId: null, request: 5});
+    expect(room.players.find(player => player.connectionId === watcherId).spectating).toBe(false);
+    expect(two.messages('spectator-demand')).toEqual([{type: 'spectator-demand', active: false, count: 0}]);
+    two.receive(encodeSpectator({slot: 0, sequence: 2, epoch: 1, pose: detailed}));
+    expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toEqual([]);
+    await rosterTick();
+    expect(host.messages('roster').at(-1).players.find(player => player.connectionId === watcherId).spectating).toBe(false);
+    for (const peer of peers) peer.sent.length = 0;
+
+    for (let request = 6; request <= 100; request++) watcher.receive({type: 'spectate', connectionId: null, request});
+    watcher.receive({type: 'spectate', connectionId: oneId, request: 101});
+    await rosterTick();
+    for (const peer of peers) expect(peer.sent).toEqual([]);
+    expect(room.players.find(player => player.connectionId === watcherId).spectating).toBe(false);
+    time = 500;
+    watcher.receive({type: 'spectate', connectionId: oneId, request: 102});
+    expect(one.messages('spectator-demand')).toEqual([{type: 'spectator-demand', active: true, count: 1}]);
+    room.close();
+  });
+
+  test('target switches update demand without rosters and repeated targets retain the latest request', async () => {
+    const {room, connect} = fixture({now: () => 0}), host = connect(true), one = connect(), two = connect(), watcher = connect(), other = connect();
+    const peers = [host, one, two, watcher, other], id = socket => socket.messages('welcome')[0].player.connectionId;
+    const oneId = id(one), twoId = id(two);
+    watcher.receive({type: 'spectate', connectionId: oneId, request: 1});
+    other.receive({type: 'spectate', connectionId: oneId, request: 1});
+    await rosterTick();
+    for (const peer of peers) peer.sent.length = 0;
+
+    watcher.receive({type: 'spectate', connectionId: twoId, request: 2});
+    expect(one.messages('spectator-demand')).toEqual([{type: 'spectator-demand', active: true, count: 1}]);
+    expect(two.messages('spectator-demand')).toEqual([{type: 'spectator-demand', active: true, count: 1}]);
+    await rosterTick();
+    for (const peer of peers) {
+      expect(peer.messages('roster')).toEqual([]);
+      peer.sent.length = 0;
+    }
+    for (let request = 3; request <= 100; request++) watcher.receive({type: 'spectate', connectionId: twoId, request});
+    for (const peer of peers) expect(peer.sent).toEqual([]);
+
+    watcher.receive({type: 'spectate', connectionId: oneId, request: 101});
+    expect(one.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: true, count: 2});
+    expect(two.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: false, count: 0});
+    watcher.receive({type: 'spectate', connectionId: twoId, request: 102});
+    expect(one.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: true, count: 1});
+    expect(two.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: true, count: 1});
+    for (const peer of peers) peer.sent.length = 0;
+    watcher.receive({type: 'spectate', connectionId: twoId, request: 103});
+    watcher.receive({type: 'spectate', connectionId: oneId, request: 104});
+    await rosterTick();
+    for (const peer of peers) expect(peer.sent).toEqual([]);
+    two.close(1000, 'Left');
+    expect(watcher.messages('error')).toEqual([{
+      type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: 103,
+    }]);
+    expect(other.messages('error')).toEqual([]);
+    room.close();
+  });
+
+  test('starting to spectate releases watchers and broadcasts all changed roster flags', async () => {
+    const {room, connect} = fixture(), host = connect(true), target = connect(), one = connect(), two = connect();
+    const id = socket => socket.messages('welcome')[0].player.connectionId;
+    const hostId = id(host), targetId = id(target), oneId = id(one), twoId = id(two);
+    one.receive({type: 'spectate', connectionId: hostId, request: 7});
+    two.receive({type: 'spectate', connectionId: hostId, request: 8});
+    await rosterTick();
+    for (const peer of [host, target, one, two]) peer.sent.length = 0;
+
+    host.receive({type: 'spectate', connectionId: targetId, request: 9});
+    expect(host.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: false, count: 0});
+    expect(target.messages('spectator-demand')).toEqual([{type: 'spectator-demand', active: true, count: 1}]);
+    expect(one.messages('error').at(-1).spectatorRequest).toBe(7);
+    expect(two.messages('error').at(-1).spectatorRequest).toBe(8);
+    await rosterTick();
+    for (const peer of [host, target, one, two]) {
+      expect(peer.messages('roster')).toHaveLength(1);
+      expect(peer.messages('roster')[0].players.map(player => [player.connectionId, player.spectating]))
+        .toEqual([[hostId, true], [targetId, false], [oneId, false], [twoId, false]]);
+    }
+    room.close();
+  });
+
+  test('validates Stop and repeated-target payloads even when the subscription burst is exhausted', () => {
+    for (const invalid of ['stop', 'repeat', 'target']) {
+      const {room, connect} = fixture({now: () => 0}), one = connect(), two = connect(), watcher = connect();
+      const oneId = one.messages('welcome')[0].player.connectionId, twoId = two.messages('welcome')[0].player.connectionId;
+      for (let request = 1; request <= 4; request++) {
+        watcher.receive({type: 'spectate', connectionId: request % 2 ? oneId : twoId, request});
+      }
+      watcher.receive(invalid === 'stop' ? {type: 'spectate', connectionId: null, request: -1}
+        : invalid === 'repeat' ? {type: 'spectate', connectionId: twoId}
+        : {type: 'spectate', connectionId: 123, request: 5});
+      expect(watcher.closed?.code).toBe(CLOSE.invalid);
+      expect(two.messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: false, count: 0});
+      room.close();
+    }
+  });
+
   test('rejects self, missing, and already-spectating targets without changing demand', () => {
     const {connect} = fixture(), one = connect(), two = connect(), three = connect();
     const id = socket => socket.messages('welcome')[0].player.connectionId;
@@ -540,7 +652,7 @@ describe('private room host', () => {
     expect(bytes).toBeLessThan(1e6);
     expect(peers[1].messages('chat')).toHaveLength(3);
     expect(peers[1].messages('roster')).toHaveLength(1);
-    expect(peers[1].messages('spectator-demand')).toHaveLength(4);
+    expect(peers[1].messages('spectator-demand').at(-1)).toEqual({type: 'spectator-demand', active: false, count: 0});
     expect(attacker.messages('error')).toEqual([{type: 'error', text: "You're sending messages too fast."}]);
     time = 1000;
     attacker.receive({type: 'chat', text: 'later'});
@@ -565,6 +677,55 @@ test('a congested player skips poses but keeps reliable messages', async () => {
   watcher.bufferedAmount = 0;
   sender.receive(encodeSpectator({slot: 0, sequence: 2, epoch: 1, pose: detailed}));
   expect(watcher.sent.filter(value => value instanceof ArrayBuffer)).toHaveLength(1);
+  room.close();
+});
+
+test('snapshot chunks stop when a recipient backs up while healthy recipients continue and drained players resume', async () => {
+  const {room, connect} = fixture(), growing = connect(true), backlogged = connect(), notReady = connect();
+  const pending = connect(false, hello, false), healthy = connect();
+  const senders = Array.from({length: 102}, () => connect());
+  const slots = senders.map(sender => sender.messages('welcome')[0].player.slot);
+  const source = encodePoseBatch({sequence: 1, epoch: 1, samples: [pose, {...pose, time: 101}]});
+  const send = growing.send.bind(growing);
+  let congestOnSnapshot = true;
+  growing.send = data => {
+    send(data);
+    if (data instanceof ArrayBuffer && congestOnSnapshot) {
+      congestOnSnapshot = false;
+      growing.bufferedAmount = 64 * 1024 + 1;
+    }
+  };
+  backlogged.bufferedAmount = 64 * 1024 + 1;
+  notReady.readyState = 2;
+  for (const sender of senders) sender.receive(source);
+  await tick();
+  expect(snapshots(growing).map(blocks => blocks.length)).toEqual([100]);
+  expect(snapshots(backlogged)).toEqual([]);
+  expect(snapshots(notReady)).toEqual([]);
+  expect(pending.sent).toEqual([]);
+  expect(snapshots(healthy).map(blocks => blocks.length)).toEqual([100, 2]);
+  expect(snapshots(healthy).flat().map(block => block.slot)).toEqual(slots);
+  expect(snapshots(healthy)[0][0].samples.map(sample => sample.time)).toEqual([100, 101]);
+  expect(snapshots(senders[0]).flat().map(block => block.slot)).toEqual(slots.slice(1));
+
+  senders[0].receive({type: 'chat', text: 'control still arrives'});
+  for (const recipient of [growing, backlogged, healthy]) {
+    expect(recipient.messages('chat').map(message => message.text)).toEqual(['control still arrives']);
+    expect(recipient.closed).toBeNull();
+  }
+  for (const recipient of [growing, backlogged, notReady, healthy, ...senders]) recipient.sent.length = 0;
+  growing.bufferedAmount = 0;
+  backlogged.bufferedAmount = 0;
+  notReady.readyState = 1;
+  senders[0].receive(encodePoseBatch({sequence: 2, epoch: 1, samples: [{...pose, x: 77}]}));
+  await tick();
+  for (const recipient of [growing, backlogged, notReady, healthy]) {
+    expect(snapshots(recipient)).toHaveLength(1);
+    expect(snapshots(recipient)[0]).toHaveLength(1);
+    expect(snapshots(recipient)[0][0]).toMatchObject({slot: slots[0], sequence: 2, samples: [{x: 77}]});
+  }
+  expect(snapshots(senders[0])).toEqual([]);
+  expect(pending.sent).toEqual([]);
   room.close();
 });
 

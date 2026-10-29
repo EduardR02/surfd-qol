@@ -63,7 +63,7 @@ Community command replies are local and fixed: votes explain that the host picks
 | `ping` (plain text) | sent every 15 s; the reply measures ping | answers `pong` |
 | `chat` | `text`, trimmed and limited to 240 characters by the host | refuses guests with an `error` "Sign in to send chat messages. You can still read chat."; otherwise broadcasts to everyone, sender included, with the sender's fields; 1 per second with bursts of 3, beyond which the sender gets one `error` "You're sending messages too fast." |
 | `change-map` | `mapId` from the game's catalog | host only, to a different known map: new epoch, `state` to all |
-| `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; 2 per second with bursts of 4, beyond which requests are dropped |
+| `spectate` | `connectionId` or `null` to stop, `request` (increasing integer) | refuses self, missing or already-spectating targets with an `error` carrying `spectatorRequest`; starts and target changes allow 2 per second with bursts of 4, beyond which they are dropped; Stop always applies, and repeated Stop/current-target requests only retain the latest request id |
 | `context` | none; the game waits up to 2.5 s for it when a map starts | answers `{type: "context", epoch, token: null}` (no ranked context) |
 | `refresh`, `ack`, `activity` | ticket refresh, `check` reply, activity tracking | ignored |
 | `rtv`, `nominate`, `vote`, `extend` | map votes | ignored |
@@ -77,7 +77,7 @@ Community command replies are local and fixed: votes explain that the host picks
 | `pong` (plain text) | updates the ping display |
 | `welcome` | `{state, player, players, maps, serverTime, spectatorStream, playtime, activityTracking, recentResults?, chatMute?}`. Sets the own player, roster and state and loads the map. Private: `spectatorStream: true`, `playtime` and `activityTracking` false, `recentResults: []`, `chatMute: null`. |
 | `state` | `{state, serverTime}`. Lower epochs are ignored; a new epoch clears pose and spectator buffers, so the host republishes spectator demand after a map change. |
-| `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. The private host sends at most one every 100 ms. |
+| `roster` | `{players}`. Replaces the roster and clears buffers of slots that changed hands. The private host sends at most one every 100 ms when roster fields change; switching spectator targets does not broadcast an unchanged roster. |
 | `chat` | `{playerId, name, text, rank?, appearance?}` (flat fields, not a `sender` object) |
 | `notice`, `error` | `{text, spectatorRequest?}`. Shown in chat; an `error` matching the current spectate request stops spectating. Guests keep only the extension's own texts (`ROOM_TEXTS`): they drop other notices and give an `error` with `spectatorRequest` "That player is not available to spectate." |
 | `spectator-demand` | `{active, count}`; `count` is 0–256 and positive exactly when `active`. Tells a player to stream detailed frames. |
@@ -108,7 +108,7 @@ Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on
 
 **Type 1, client pose batch** (44 or 76 bytes): version, type 1, sample count (1 or 2), reserved 0, uint32 sequence, uint32 epoch, then the poses. The game samples at most every 49 ms, usually sends pairs, and closes its socket with 4013 when more than 64 KB is buffered.
 
-**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host keeps each sender's latest upload and bundles the blocks for each recipient about every 50 ms, excluding that recipient. More than 100 blocks are split across snapshots. Pose bytes stay unchanged. A recipient with more than 64 KB buffered skips snapshots and spectator frames until it drains. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
+**Type 2, room snapshot** (4–7804 bytes): version, type 2, uint16 block count (0–100), then per block a 14-byte header (uint16 slot, uint32 sequence, uint32 epoch, uint8 sample count 1–2, uint8 and uint16 reserved 0) and its poses. Duplicate slots or trailing bytes are invalid. The host keeps each sender's latest upload and flushes pending blocks 50 ms after the first pending upload, excluding each recipient's own block. Empty periods send nothing. More than 100 blocks are split across snapshots. Pose bytes stay unchanged. A recipient with more than 64 KB buffered skips snapshots and spectator frames until it drains; snapshot assembly skips already-congested recipients before allocating or copying packets, and stops further chunks if a recipient backs up. Reliable controls remain available. The game keeps up to 12 samples per player, drops samples over 250 ms behind the newest, and extrapolates at most 100 ms.
 
 **Types 3 and 4, spectator frames** (56 bytes; 3 uploaded, 4 forwarded):
 
@@ -127,7 +127,7 @@ Little-endian, version byte 1, ArrayBuffers (set `binaryType = "arraybuffer"` on
 | 54 | uint8 | 0 = no inputs; else bit 7 set, bit 6 clear, low 6 bits held inputs (w 1, a 2, s 4, d 8, jump 16, duck 32) |
 | 55 | uint8 | presses since the last frame, 0–63; 0 when byte 54 is 0 |
 
-A player streams these at about 30 Hz while `spectator-demand` is active for them. The host rewrites only the type and slot and forwards each frame to that player's watchers alone. When a watcher leaves or switches, or the target leaves, demand and roster `spectating` are updated.
+A player streams these at about 30 Hz while `spectator-demand` is active for them. The host rewrites only the type and slot and forwards each frame to that player's watchers alone. When a watcher leaves or switches, or the target leaves, demand counts are updated. A roster is scheduled only when a player's `spectating` flag changes, including watchers released when their target starts spectating; target switches alone do not alter roster fields. Redundant requests preserve the latest request id for a later unavailable-target error without generating demand or roster traffic.
 
 The host validates spectator frames and drops wrong-epoch, duplicate and stale sequences, accepting forward uint32 wraparound independently of pose sequences. Per sender, fanout permits the native minimum interval of `1000/30 - 1` milliseconds plus an eight-frame jitter burst. Epoch and demand changes do not refill the bucket. This bounds outgoing amplification without reducing native-permitted cadence; it does not bound attacker ingress traffic or decoding work.
 

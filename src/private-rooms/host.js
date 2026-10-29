@@ -65,7 +65,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const frames = message instanceof ArrayBuffer ? [message] : encodeControlFrames(message);
     for (const client of clients) if (client !== except) sendFrames(client, frames);
   }
-  // Every spectate toggle changes the roster; one broadcast per interval keeps output bounded.
+  // Roster-visible changes share one broadcast per interval to keep output bounded.
   function roster() {
     rosterTimer ??= setTimeout(() => {
       rosterTimer = null;
@@ -91,7 +91,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const batches = [...pending];
     pending.clear();
     for (const recipient of clients) {
-      if (!recipient.open) continue;
+      if (!recipient.open || recipient.socket.readyState !== 1 || recipient.socket.bufferedAmount > LOSSY_BACKLOG) continue;
       let blocks = [], length = SNAPSHOT_HEADER_BYTES;
       const flush = () => {
         if (!blocks.length) return;
@@ -113,7 +113,10 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
         if (sender === recipient || !sender.open || packet.epoch !== state.epoch) continue;
         blocks.push(packet.buffer);
         length += packet.buffer.byteLength - SNAPSHOT_HEADER_BYTES;
-        if (blocks.length === MAX_SNAPSHOT_BLOCKS) flush();
+        if (blocks.length === MAX_SNAPSHOT_BLOCKS) {
+          flush();
+          if (!recipient.open || recipient.socket.readyState !== 1 || recipient.socket.bufferedAmount > LOSSY_BACKLOG) break;
+        }
       }
       flush();
     }
@@ -170,12 +173,19 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     onChange();
   }
   function spectate(client, message) {
+    if (message.connectionId === (client.target?.player.connectionId ?? null)) {
+      client.request = message.request;
+      return;
+    }
+    // Stopping and redundant requests do not subscribe to a stream or consume its flood budget.
+    if (message.connectionId !== null && !take(client.spectate, SPECTATE_LIMIT)) return;
     const target = message.connectionId === null ? null
       : [...clients].find(peer => peer.open && peer.player.connectionId === message.connectionId);
     if (message.connectionId !== null && (!target || target === client || target.player.spectating)) {
       send(client, {type: 'error', text: ROOM_TEXTS.unavailable, spectatorRequest: message.request});
       return;
     }
+    const rosterChanged = client.player.spectating !== Boolean(target) || client.watchers.size > 0;
     client.request = message.request;
     unwatch(client);
     if (target) {
@@ -185,7 +195,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       target.watchers.add(client);
       demand(target);
     }
-    roster();
+    if (rosterChanged) roster();
   }
   function moderate(client, {playerId, action}) {
     const target = [...clients].find(peer => peer.player.id === playerId);
@@ -267,7 +277,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           }
           break;
         case 'spectate':
-          if (take(client.spectate, SPECTATE_LIMIT)) spectate(client, message);
+          spectate(client, message);
           break;
         case 'context':
           // The game waits for this when a map starts; no token means no ranked runs.
