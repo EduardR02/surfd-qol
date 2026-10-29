@@ -1540,7 +1540,7 @@ describe('private room runtime', () => {
       const added = arrival(socket, 'saveloc-add');
       handlers.save(live);
       await added;
-      expect(handlers.entries(live)).toEqual([{id: 1, name: 'Surfer', own: true, time: 1.25, stage: 1, checkpoints: 0}]);
+      expect(handlers.entries(live)).toEqual([{id: 1, name: 'Surfer', time: 1.25, stage: 1, checkpoints: 0}]);
       expect(notices).toEqual(['Saved location #1 · 00:01.250.']);
       expect(handlers.restore(live)).toBe(true);
       expect(live.practice).toBe(true);

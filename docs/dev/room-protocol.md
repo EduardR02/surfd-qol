@@ -94,7 +94,7 @@ Reliable native text travels as a one-byte ASCII `d` tag followed by the origina
 
 ## Shared savelocs
 
-Community rooms share practice saves, as community surf servers do; official rooms and offline play keep the game's local bank. The game's Save button and bind, and replay savelocs, submit to the host, and its confirmation brings the game's "Saved location #N" with the room-wide number. The game's own list shows every owner's saves newest first, labelled with the owner's name. Load picks your latest save unless you select another; Previous and Next walk the whole list. Loading runs the game's own restore with the receiver's own start position, so Restart behaves as after loading your own save.
+Community rooms share practice saves, as community surf servers do; official rooms and offline play keep the game's local bank. The game's Save button and bind, and replay savelocs, submit to the host, and its confirmation brings the game's "Saved location #N" with the room-wide number. The game's own list shows every owner's saves newest first, labelled with the owner's name. Load picks your latest save, or the room's newest when you have none, unless you select another; Previous and Next walk the whole list. Loading runs the game's own restore with the receiver's own start position, so Restart behaves as after loading your own save.
 
 The host gives each `browserId` an owner id for the room, so a reconnect keeps its saves and rate budget. Save ids increase across the room. Saves outlive their owner's connection until the map changes or the room closes; past 1,280 saves, a new one replaces the oldest save of a player who left, so present players' saves are never replaced by others'. Deleting another owner's save hides it for that connection only.
 

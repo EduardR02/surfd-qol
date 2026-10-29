@@ -28,9 +28,11 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
     }
     return rows.sort((a, b) => b.save.id - a.save.id);
   }
+  // Your latest save by default, else the room's newest: the game disables Load and its bind
+  // reports no saves while nothing is selected.
   function selected(session) {
     const rows = list(session);
-    return (rows.find(row => row.save.id === selection) ?? rows.find(row => row.save.ownerId === ownerId))?.save.id ?? null;
+    return (rows.find(row => row.save.id === selection) ?? rows.find(row => row.save.ownerId === ownerId) ?? rows[0])?.save.id ?? null;
   }
   function choose(id) {
     selection = id;
@@ -85,7 +87,7 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
     refresh();
   }
   const handlers = {
-    entries: session => list(session).map(({save, snapshot}) => ({id: save.id, name: save.name, own: save.ownerId === ownerId,
+    entries: session => list(session).map(({save, snapshot}) => ({id: save.id, name: save.name,
       time: snapshot.timer.state.elapsed, stage: snapshot.state.stage ?? 1, checkpoints: snapshot.timer.state.splits.length})),
     selected,
     saveSnapshot,

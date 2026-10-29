@@ -1,6 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, isCurrentInstrumented} from '../extension/instrument.js';
 import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
+import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 
 const nativePracticePanelSource = `
 function fixturePanel(n,e,document){const save=document.getElementById("save"),count={};
@@ -944,6 +945,7 @@ function nativePanel(n,e,t){const saveButton=document.getElementById("save"),loa
 }
 const panel=nativePanel(bank,()=>nativeSession,()=>true);
 function nativeLoad(){if(!bank.restore(nativeSession))return;effects.push("invalidate","view","input","practice");panel.refresh()}
+function nativeCycle(step){if(!bank.cycle(nativeSession,step)){messages.push("No saved locations.");return}panel.refresh();messages.push("Selected location #"+bank.selected(nativeSession)+".")}
 `;
 
 function sharedPracticeFixture() {
@@ -958,7 +960,7 @@ function sharedPracticeFixture() {
   };
   let adapter;
   const runtime = new Function('globalThis', 'document', instrumentGame(sharedPracticeSource) +
-    ';return {bank,save,nativeLoad,messages,effects,panel};')(
+    ';return {bank,save,nativeLoad,nativeCycle,messages,effects,panel};')(
     {__SURFD_QOL__: {attach(value) { adapter = value; }}}, document);
   return {adapter, runtime, node: id => document.getElementById(id)};
 }
@@ -968,7 +970,7 @@ describe('native shared practice consumers', () => {
     const {adapter, runtime, node} = sharedPracticeFixture();
     const store = runtime.bank, original = Object.getOwnPropertyDescriptors(store);
     let selected = 23;
-    const rows = [{id: 23, name: '<Owner>', own: true, time: 4, stage: 2, checkpoints: 3},
+    const rows = [{id: 23, name: '<Owner>', time: 4, stage: 2, checkpoints: 3},
       {id: 8, name: 'Friend', time: 1.5, stage: 1, checkpoints: 1}];
     const calls = [];
     const handlers = {entries: () => rows, selected: () => selected, save: () => null,
@@ -977,17 +979,17 @@ describe('native shared practice consumers', () => {
     const cleanup = adapter.practice.shared(handlers);
     expect(node('saveloc-list').children.map(row => row.textContent)).toEqual(['<Owner> #23 · CP 3 · 4.000', 'Friend #8 · CP 1 · 1.500']);
     expect(node('saveloc-list').children[0].selected).toBe(true);
-    // The game's own count, of your saves against your 20.
-    expect(node('count').textContent).toBe('1 / 20');
+    // The game's own count of the listed saves.
+    expect(node('count').textContent).toBe('2 / 20');
     expect(node('saveloc-help').textContent).toContain('Each player keeps their newest 20.');
     node('saveloc-list').value = '8';
     node('saveloc-list').onchange();
     expect(calls).toEqual([[adapter.getSession(), 8]]);
     adapter.getSession().map.stages = [{}, {}];
-    rows.unshift({id: 24, name: 'Newest', own: true, time: 5, stage: 2, checkpoints: 2});
+    rows.unshift({id: 24, name: 'Newest', time: 5, stage: 2, checkpoints: 2});
     adapter.practice.refresh();
     expect(node('saveloc-list').children[0].textContent).toBe('Newest #24 · Stage 2 · 5.000');
-    expect(node('count').textContent).toBe('2 / 20');
+    expect(node('count').textContent).toBe('3 / 20');
     cleanup();
     for (const name of ['entries', 'selected', 'save', 'select', 'cycle', 'remove', 'restore']) {
       expect(Object.getOwnPropertyDescriptor(store, name)).toEqual(original[name]);
@@ -1043,5 +1045,86 @@ describe('native shared practice consumers', () => {
     expect(adapter.practice.store().selected(adapter.getSession())).toBe(2);
     adapter.practice.shared(null);
     expect(adapter.practice.store().selected(adapter.getSession())).toBe(1);
+  });
+});
+
+// The game's panel, Load and cycle binds driven by the room's own controller.
+describe('shared savelocs in the game before any save of your own', () => {
+  const OWN = '00000000-0000-4000-8000-000000000001', OTHER = '00000000-0000-4000-8000-000000000002';
+  const roomMap = id => ({id, version: 'v1', zones: [], spawn: {position: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0}});
+  const snapshot = (mapId, elapsed) => ({key: JSON.stringify([mapId, 'v1', JSON.stringify({dt: 0.015}), 8]),
+    state: {position: {x: 1, y: 2, z: 3}, velocity: {x: 0, y: 0, z: 0}, grounded: false, groundId: null, ducked: false,
+      duckFraction: 0, eyeHeight: 64, jumpHeld: false, surfaceFriction: 1, yaw: 0, pitch: 0, tick: 100},
+    timer: {state: {phase: 'running', startTick: 1, endTick: null, splits: [], invalidReason: null, elapsed}, armed: false, prehops: 0},
+    checkpointSpeeds: [], startPosition: null, startJumps: 0, startGroundTime: 0, startHopWarned: false,
+    startRegion: '', rawJumpHeld: false, stageStartRecovery: false});
+  function room() {
+    const f = sharedPracticeFixture(), session = f.adapter.getSession();
+    session.map = roomMap('map');
+    let controller = null;
+    return {...f, session,
+      connect(mapId, epoch, saves) {
+        controller?.close();
+        controller = createSharedSavelocs({practice: f.adapter.practice, send() {}, invalid() { throw new Error('Invalid room data'); }});
+        controller.state({mapId, epoch});
+        controller.receive({type: 'saveloc-init', mapId, epoch, ownerId: OWN, count: saves.length});
+        for (const [id, elapsed] of saves) this.add(mapId, epoch, id, elapsed);
+      },
+      change(mapId, epoch) {
+        session.map = roomMap(mapId);
+        controller.state({mapId, epoch});
+        controller.receive({type: 'saveloc-init', mapId, epoch, ownerId: OWN, count: 0});
+      },
+      add(mapId, epoch, id, elapsed) {
+        controller.receive({type: 'saveloc-add', mapId, epoch, entry: {id, ownerId: OTHER, name: 'GPT-7-Nebula', snapshot: snapshot(mapId, elapsed)}});
+      },
+      rows: () => f.node('saveloc-list').children.map(row => (row.selected ? '> ' : '') + row.textContent),
+      loaded() {
+        const restored = f.runtime.effects.filter(effect => effect[0] === 'restore');
+        f.runtime.effects.length = 0;
+        return restored.map(([, value]) => value.timer.state.elapsed);
+      },
+      close: () => controller.close()};
+  }
+  // List, count, Load, Previous and Next, for whatever saves the room holds.
+  function playable(r, newest, older) {
+    expect(r.rows()).toEqual([`> GPT-7-Nebula #${newest} · CP 0 · ${newest}.000`, `GPT-7-Nebula #${older} · CP 0 · ${older}.000`]);
+    expect(r.node('count').textContent).toBe('2 / 20');
+    r.runtime.nativeLoad();
+    expect(r.loaded()).toEqual([newest]);
+    r.runtime.nativeCycle(1);
+    expect(r.runtime.messages.at(-1)).toBe(`Selected location #${older}.`);
+    r.runtime.nativeLoad();
+    expect(r.loaded()).toEqual([older]);
+    r.runtime.nativeCycle(-1);
+    expect(r.rows()[0]).toStartWith('> ');
+  }
+
+  test('saves arriving live are listed, counted, loaded and walked', () => {
+    const r = room();
+    r.connect('map', 1, []);
+    r.add('map', 1, 1, 1);
+    r.add('map', 1, 2, 2);
+    playable(r, 2, 1);
+    r.close();
+  });
+
+  test('a late joiner gets the same from the retained saves', () => {
+    const r = room();
+    r.connect('map', 1, [[1, 1], [2, 2]]);
+    playable(r, 2, 1);
+    r.close();
+  });
+
+  test('after a map change, saves on the new map work the same', () => {
+    const r = room();
+    r.connect('map', 1, [[1, 1], [2, 2]]);
+    r.change('other', 2);
+    expect(r.rows()).toEqual([]);
+    expect(r.node('count').textContent).toBe('0 / 20');
+    r.add('other', 2, 3, 3);
+    r.add('other', 2, 4, 4);
+    playable(r, 4, 3);
+    r.close();
   });
 });

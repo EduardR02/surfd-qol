@@ -39,8 +39,8 @@ describe('shared native saveloc list', () => {
     const f = fixture(), h = f.handlers();
     f.add(1); f.add(2, OTHER); f.add(3); f.add(4, OTHER);
     expect(h.entries(f.live)).toEqual([
-      {id: 4, name: 'Their_Name', own: false, time: 4, stage: 1, checkpoints: 0}, {id: 3, name: 'My_Name', own: true, time: 3, stage: 1, checkpoints: 0},
-      {id: 2, name: 'Their_Name', own: false, time: 2, stage: 1, checkpoints: 0}, {id: 1, name: 'My_Name', own: true, time: 1, stage: 1, checkpoints: 0}]);
+      {id: 4, name: 'Their_Name', time: 4, stage: 1, checkpoints: 0}, {id: 3, name: 'My_Name', time: 3, stage: 1, checkpoints: 0},
+      {id: 2, name: 'Their_Name', time: 2, stage: 1, checkpoints: 0}, {id: 1, name: 'My_Name', time: 1, stage: 1, checkpoints: 0}]);
     expect(h.selected(f.live)).toBe(3);
     expect(h.restore(f.live)).toBe(true);
     expect(f.restored().timer.state.elapsed).toBe(3);
