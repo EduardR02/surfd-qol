@@ -633,7 +633,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         return touch ? {speedIn: touchValue(touch.speedBefore), speedOut: touchValue(touch.speedAfter),
           angle: touchValue(touch.angle, true)} : null;
       };
-      return {runs: records.length, collecting: records.length < 50, touches: route.map((touch, index) => {
+      return {runs: records.length, touches: route.map((touch, index) => {
         const entry = measurements.get(touch.key);
         return {key: touch.key, index, checkpoint: touch.checkpoint,
           reach: records.length ? entry.reached / records.length : null,

@@ -97,7 +97,7 @@ describe('touch attempt store', () => {
       r.reset();
     }
     expect(r.touchStore.records('utopia:3')).toHaveLength(200);
-    expect(stats(r)).toMatchObject({runs: 200, collecting: false, touches: [{reach: 1 / 200,
+    expect(stats(r)).toMatchObject({runs: 200, touches: [{reach: 1 / 200,
       speedIn: {best: 500, last10: 500, avg: 500}, angle: {best: 20, last10: 20, avg: 20}}]});
     const next = rig({storage: r.storage});
     await next.history.ready;
@@ -161,11 +161,11 @@ describe('per-touch statistics', () => {
   test('reach includes attempts before the first touch, unknown measurements and zero values', async () => {
     const r = rig();
     await r.history.ready;
-    expect(stats(r)).toEqual({runs: 0, collecting: true, touches: []});
+    expect(stats(r)).toEqual({runs: 0, touches: []});
     r.go(); r.reset();
     r.go(); r.reset('start-return');
     r.go(); r.touch({available: false}); r.reset();
-    expect(stats(r)).toEqual({runs: 3, collecting: true, touches: [{key: KEY, index: 0, checkpoint: 0,
+    expect(stats(r)).toEqual({runs: 3, touches: [{key: KEY, index: 0, checkpoint: 0,
       reach: 1 / 3, speedIn: emptyMetric, speedOut: emptyMetric, angle: emptyMetric, pb: null, wr: null}]});
     r.go(); r.touch({speedBefore: 0, speedAfter: 0, angle: 0}); r.finish();
     expect(stats(r)).toMatchObject({runs: 4, touches: [{reach: 0.5, speedIn: {best: 0, last10: 0, avg: 0},
@@ -185,15 +185,13 @@ describe('per-touch statistics', () => {
       r.go(); r.reset();
     }
     const row = stats(r).touches[0];
-    expect(stats(r)).toMatchObject({runs: 48, collecting: true});
+    expect(stats(r)).toMatchObject({runs: 48});
     expect(row.reach).toBe(0.5);
     for (const [field, values] of Object.entries(known)) {
       const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
       expect(row[field]).toEqual({best: field === 'angle' ? Math.min(...values) : Math.max(...values),
         last10: mean(values.slice(-10)), avg: mean(values)});
     }
-    r.go(); r.reset(); r.go(); r.reset();
-    expect(stats(r).collecting).toBe(false);
   });
 
   test('revisions replace a measurement once and repeated surface visits remain separate', async () => {
@@ -219,7 +217,7 @@ describe('per-touch statistics', () => {
     const store = {load: async () => ({runs: [], bests: [bests]})};
     const r = rig({store});
     await r.history.ready;
-    expect(stats(r)).toEqual({runs: 0, collecting: true, touches: [KEY, SECOND].map((key, index) => ({
+    expect(stats(r)).toEqual({runs: 0, touches: [KEY, SECOND].map((key, index) => ({
       key, index, checkpoint: index, reach: null, speedIn: emptyMetric, speedOut: emptyMetric, angle: emptyMetric, pb: null, wr: null,
     }))});
   });
@@ -352,7 +350,7 @@ test('known route touches have zero reach after attempts that end before touchin
   }});
   await history.ready;
   touchStore.append(record(1));
-  expect(history.touchStats(key)).toEqual({runs: 1, collecting: true, touches: [{
+  expect(history.touchStats(key)).toEqual({runs: 1, touches: [{
     key: KEY, index: 0, checkpoint: 0, reach: 0, speedIn: emptyMetric, speedOut: emptyMetric, angle: emptyMetric, pb: null, wr: null,
   }]});
 });
