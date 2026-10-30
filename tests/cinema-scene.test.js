@@ -222,6 +222,27 @@ describe('cinematic run palette', () => {
 });
 
 describe('cinematic scene playback', () => {
+  test('a hidden run draws no ghost, path or label until shown again', () => {
+    const rig = rendererRig(), track = trackAt([0, 10, 20]);
+    const cinema = createCinemaScene(rig.renderer, [{track, colorIndex: 0}, {track, colorIndex: 1}]);
+    const [first, second] = [...new Set(rig.lines().map(mesh => mesh.geometry))].map(geometry => rig.lines().filter(mesh => mesh.geometry === geometry));
+    rig.camera.projected = [0, 0, 0];
+    cinema.show(0, false);
+    cinema.update([1, 1], 1280, 720);
+    expect(rig.ghosts[0].updates).toHaveLength(0);
+    expect(rig.ghosts[1].updates).toHaveLength(1);
+    expect(first.every(mesh => !mesh.visible)).toBe(true);
+    expect(second.some(mesh => mesh.visible)).toBe(true);
+    expect(cinema.labels(1280, 720)[0]).toBeNull();
+    expect(cinema.labels(1280, 720)[1]).not.toBeNull();
+    cinema.show(0, true);
+    cinema.update([1.5, 1.5], 1280, 720);
+    expect(rig.ghosts[0].updates).toHaveLength(1);
+    expect(first.some(mesh => mesh.visible)).toBe(true);
+    expect(cinema.labels(1280, 720)[0]).not.toBeNull();
+    cinema.dispose();
+  });
+
   test('keeps body and path identities in their stable colour slots after reordering', () => {
     const rig = rendererRig(), track = trackAt([0, 10, 20]);
     const cinema = createCinemaScene(rig.renderer, [{track, colorIndex: 0}, {track, colorIndex: 4}, {track, colorIndex: 2}]);

@@ -250,7 +250,7 @@ export function createCinemaScene(renderer, runs) {
         line.dispose();
       });
       for (const mesh of line.meshes) scene.add(mesh);
-      parts.push({run, ghost, label, trail, line,
+      parts.push({run, ghost, group, label, trail, line, shown: true, drawn: line.meshes.map(mesh => mesh.visible),
         frame: {x: 0, y: 0, z: 0, yaw: 0, ducked: false, opacity: 1, trail: new Float32Array(0), trailCount: 0, label: ''}});
     }
     if (three) {
@@ -266,6 +266,7 @@ export function createCinemaScene(renderer, runs) {
     update(at, width, height) {
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index], track = part.run.track;
+        if (!part.shown) continue;
         const tick = Math.max(0, Math.min(track.count - 1, at[index]));
         const frame = trackPoint(track, tick, part.frame);
         frame.yaw = trackYaw(track, tick);
@@ -283,10 +284,19 @@ export function createCinemaScene(renderer, runs) {
         part.line.set(tick, width, height, camera.near);
       }
     },
-    // Where each ghost's head is on screen in CSS pixels, null when off screen.
+    // Hides or shows a run's ghost and path, as first person does for the watched run.
+    show(index, shown) {
+      const part = parts[index];
+      if (!part || part.shown === !!shown) return;
+      part.shown = !!shown;
+      part.group.visible = part.shown;
+      part.line.meshes.forEach((mesh, k) => { mesh.visible = part.shown && part.drawn[k]; });
+    },
+    // Where each ghost's head is on screen in CSS pixels, null when off screen or hidden.
     labels(width, height) {
       camera.updateMatrixWorld();
-      return parts.map(({frame}) => {
+      return parts.map(({frame, shown}) => {
+        if (!shown) return null;
         projected.set(frame.x, frame.z + (frame.ducked ? 56 : 74), -frame.y).project(camera);
         if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z) ||
             projected.z > 1 || projected.z < -1 || Math.abs(projected.x) > 1.05 || Math.abs(projected.y) > 1.05) return null;
