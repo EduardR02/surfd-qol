@@ -56,12 +56,19 @@ function nativeWatch(load) {
   return load().then(data=>watch(data,()=>true,'native',token));
 }
 ${nativePracticePanelSource}
+class Group{}
+function ghostFactory(scene){const group=new Group;group.name="record-ghost",group.visible=!1,scene.add(group);return{update(){},dispose(){}}}
+function mapRenderer(){const scene={children:[],add(object){this.children.push(object)}},camera={fov:0,updateProjectionMatrix(){}},ghost=ghostFactory(scene);let lastFov=-1;
+  const resize=()=>{},api={resize:resize,setQuality:()=>{},render(view){view.fov!==lastFov&&(camera.fov=2*Math.atan(Math.tan(view.fov*Math.PI/360)*.75)*180/Math.PI,camera.updateProjectionMatrix(),lastFov=view.fov);api.lastView=view}};return api}
+let renderer=mapRenderer();
+const recordGhost={frame:(state,alpha)=>({state,alpha})};
+function drawFrame(state,alpha,spectating=false,inReplay=false){renderer.render({state:state,eyePosition:{x:0,y:0,z:0},fov:90,ghost:spectating||inReplay?null:recordGhost.frame(state,alpha)})}
 `;
 
 function fixture() {
   let adapter;
   const runtime = new Function('globalThis', instrumentGame(nativeSource) + `
-    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},
+    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},drawFrame,replaceRenderer:()=>{renderer=mapRenderer();},
       setOwner:id=>{client.session=id?{user:{id}}:null;},
       sessions:()=>sessions,restart,setStart:(key,start)=>{starts[key]=start;},
       setRules:rule=>{settings.rule=rule;},setReplayMap:map=>{replayMap=map;}};
@@ -130,6 +137,44 @@ describe('optional camera preview instrumentation', () => {
     expect(adapter.previewView).toBeUndefined();
     expect(adapter.getSession().map.id).toBe('map');
     expect(warnings.some(text => text.includes('Strafe preview unavailable:'))).toBe(true);
+  });
+});
+
+describe('optional Compare view instrumentation', () => {
+  test('the map renderer exposes its scene, camera and ghost factory, and frames carry their interpolation', () => {
+    const {adapter, runtime} = fixture();
+    const renderer = adapter.cinema.renderer();
+    expect(renderer.qolScene.children.map(child => child.name)).toEqual(['record-ghost']);
+    renderer.qolGhost();
+    expect(renderer.qolScene.children).toHaveLength(2);
+    runtime.drawFrame({tick: 4}, 0.25);
+    expect(renderer.qolCamera.fov).toBeGreaterThan(0);
+    expect(renderer.lastView).toMatchObject({qolAlpha: 0.25, ghost: {alpha: 0.25}});
+    runtime.drawFrame({tick: 5}, 0.5, false, true);
+    expect(renderer.lastView).toMatchObject({qolAlpha: 0.5, ghost: null});
+  });
+  test('a renderer the game replaces is the one the adapter returns', () => {
+    const {adapter, runtime} = fixture();
+    const first = adapter.cinema.renderer();
+    runtime.replaceRenderer();
+    expect(adapter.cinema.renderer()).not.toBe(first);
+    expect(adapter.cinema.renderer().qolScene).toBeTruthy();
+  });
+  test('an unrecognised renderer leaves Compare out and the rest of the adapter working', () => {
+    const warnings = [], originalWarn = console.warn;
+    let adapter;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      const changed = nativeSource.replace('group.name="record-ghost"', 'group.name="other"');
+      new Function('globalThis', instrumentGame(changed))({__SURFD_QOL__: {attach: value => {adapter = value;}}});
+    } finally { console.warn = originalWarn; }
+    expect(adapter.cinema).toBeUndefined();
+    expect(adapter.replay.playback).toBeTypeOf('function');
+    expect(warnings.some(text => text.includes('Compare view unavailable:'))).toBe(true);
+  });
+  test('leaderboard entries are offered with the references', () => {
+    const {adapter} = fixture();
+    expect(adapter.getReferences().entries).toEqual([]);
   });
 });
 
