@@ -54,12 +54,13 @@ export function createReplayBindRouter(now = () => performance.now()) {
 }
 
 export function createReplayUi(options) {
-  const {root, host, control, getBindings = () => null, getCustom = () => false, onRuns, getKind} = options;
+  const {root, host, control, getBindings = () => null, getCustom = () => false, getCinema = () => false, onRuns, getKind} = options;
   const custom = createReplayBar(options);
   const extras = root.getElementById('native-replay-extras');
   const marksLayer = extras.querySelector('.nr-marks'), notice = extras.querySelector('.nr-notice');
   const tools = extras.querySelector('.nr-tools');
   const runs = extras.querySelector('[data-extra="runs"]'), keys = extras.querySelector('[data-extra="keys"]');
+  const save = extras.querySelector('[data-extra="save"]');
   const sheet = extras.querySelector('.nr-keys'), tip = extras.querySelector('.nr-tip');
   // The custom bar replaces the game's. The game lifts its chat, toasts and
   // key display just clear of its own one-row bar; ours has two rows.
@@ -107,6 +108,9 @@ export function createReplayUi(options) {
       marksLayer.innerHTML = marks.map((mark, index) => `<button type="button" class="nr-mark ${mark.type === 'loc' ? `loc${mark.selected ? ' sel' : ''}` : mark.tone}" data-mark="${index}" style="left:${mark.at * 100}%" aria-label="${escape(mark.label)}${mark.type === 'loc' ? '. Right-click removes it.' : ''}"></button>`).join('');
     }
     if (notice.textContent !== (next.notice ?? '')) notice.textContent = next.notice ?? '';
+    // Compare's moments aren't the played run's alone, so it keeps no savelocs.
+    const comparing = getCinema() === true;
+    if (save.hidden !== comparing) { save.hidden = keys.hidden = comparing; if (comparing && sheetOpen) showSheet(); }
     extras.hidden = false;
   }
   // The HUD's 67 ms lifecycle tick is enough for static annotations; native
@@ -173,12 +177,13 @@ export function createReplayUi(options) {
       if (event.code === 'Escape' && sheetOpen) {
         event.preventDefault(); event.stopImmediatePropagation(); if (event.type === 'keydown') showSheet(); return;
       }
+      if (getCinema() === true) return;
       const action = routeBind(event, bindings());
       if (action) { replaySavelocAction(control, action); refresh(); }
     },
     handlePointer(event) {
       if (!available || !control.active || ignores(event)) return;
-      if (event.composedPath().includes(host) || event.composedPath().some(node => node === transport)) return;
+      if (event.composedPath().includes(host) || event.composedPath().some(node => node === transport) || getCinema() === true) return;
       const action = routeBind(event, bindings());
       if (action) { replaySavelocAction(control, action); refresh(); }
     },

@@ -84,11 +84,9 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
     }
   }
 
-  // From here until stop(): the renderer wrap and the canvas listeners.
+  // From here until stop(): the renderer wrap, the canvas listeners and a
+  // check each frame that the replay still plays.
   function start(current, replay) {
-    const adapter = getAdapter(), renderer = adapter.cinema.renderer();
-    current.scene = createScene(renderer, current.tracks.map(track => ({track})));
-    current.renderer = renderer;
     current.replay = replay;
     current.base = replay.initialState?.tick ?? 0;
     current.view = {yaw: 0, pitch: 0, zoom: 1};
@@ -96,20 +94,43 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
     current.shot = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}};
     current.at = [0, 0];
     current.phase = 'playing';
-    const original = renderer.render;
-    current.original = original;
+    attach(current, getAdapter().cinema.renderer());
+    listen(current);
+    const check = () => {
+      if (state !== current) return;
+      const adapter = getAdapter?.();
+      if (adapter?.replay?.playback?.()?.replay !== current.replay) { close(); return; }
+      // The game makes a new renderer when it reloads the map, as Watch from the menu can.
+      const renderer = adapter.cinema?.renderer?.();
+      if (renderer !== current.renderer) {
+        detach(current);
+        if (!renderer?.qolScene) { close(); return; }
+        try { attach(current, renderer); } catch { close(); return; }
+      }
+      current.checking = requestAnimationFrame(check);
+    };
+    current.checking = requestAnimationFrame(check);
+    notify();
+  }
+  function attach(current, renderer) {
+    current.scene = createScene(renderer, current.tracks.map(track => ({track})));
+    current.renderer = renderer;
+    const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
       try { return original.call(this, frame(current, view) ?? view); }
       catch (error) { if (state === current) queueMicrotask(close); throw error; }
     };
-    listen(current);
-    notify();
+  }
+  function detach(current) {
+    if (current.renderer && current.renderer.render === current.wrapper) current.renderer.render = current.original;
+    try { current.scene?.dispose(); } catch { /* the map was unloaded with it */ }
+    current.renderer = current.scene = null;
   }
 
   // The played run's fractional index from the frame's state and interpolation.
   function frame(current, view) {
-    const adapter = getAdapter?.(), playback = adapter?.replay?.playback?.();
-    if (playback?.replay !== current.replay || getAdapter()?.cinema?.renderer?.() !== current.renderer) { queueMicrotask(close); return null; }
+    const playback = getAdapter?.()?.replay?.playback?.();
+    if (playback?.replay !== current.replay) { queueMicrotask(close); return null; }
     const [a, b] = current.tracks;
     const tick = Math.max(0, Math.min(a.count - 1, (view.state?.tick ?? current.base) - current.base - 1 + (Number.isFinite(view.qolAlpha) ? view.qolAlpha : 1)));
     const map = current.maps[current.sync], plan = current.plans[current.sync];
@@ -207,8 +228,8 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
     const current = state;
     if (!current) return;
     current.unlisten?.();
-    if (current.renderer && current.renderer.render === current.wrapper) current.renderer.render = current.original;
-    try { current.scene?.dispose(); } catch { /* the map was unloaded with it */ }
+    cancelAnimationFrame(current.checking);
+    detach(current);
     state = null;
   }
   function close() {

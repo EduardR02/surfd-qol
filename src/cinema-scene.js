@@ -108,7 +108,7 @@ export function createCinemaScene(renderer, runs) {
     labels(width, height) {
       camera.updateMatrixWorld();
       return parts.map(part => {
-        projected.set(part.point.x, part.point.z + 82, -part.point.y).project(camera);
+        projected.set(part.point.x, part.point.z + (part.frame.ducked ? 56 : 74), -part.point.y).project(camera);
         if (projected.z > 1 || projected.z < -1 || Math.abs(projected.x) > 1.05 || Math.abs(projected.y) > 1.05) return null;
         return {x: (projected.x + 1) / 2 * width, y: (1 - projected.y) / 2 * height};
       });
