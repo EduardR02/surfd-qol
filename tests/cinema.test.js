@@ -129,6 +129,18 @@ describe('the planned camera', () => {
     const focus = {x: target.x, y: target.y, z: target.z};
     expect(Math.hypot(eye.x - focus.x, eye.y - focus.y, eye.z - focus.z)).toBeLessThan(260);
   });
+  test('with a wall between the two lines, the camera stays on the played run’s side', async () => {
+    const a = straight(), b = straight({y: 600});
+    // A solid slab from y 200 to 400; a trace that starts inside it is ignored, as the game's startSolid is.
+    const trace = (from, to) => {
+      if (from.y > 200 && from.y < 400) return 1;
+      const crossing = [200, 400].map(y => (y - from.y) / (to.y - from.y)).filter(t => t > 0 && t < 1);
+      return crossing.length ? Math.min(...crossing) : 1;
+    };
+    const planned = await planCamera({a, b, map: alignByPlace(a, b), trace});
+    const {eye} = shotAt(planned, 200);
+    expect(eye.y).toBeLessThan(200);
+  });
   test('never blends across a teleport', () => {
     const values = Float32Array.from([0, 0, 0, 100, 100, 100]), segment = Uint32Array.from([0, 0, 0, 1, 1, 1]);
     expect([...blur(values, 2, segment)]).toEqual([0, 0, 0, 100, 100, 100]);

@@ -63,7 +63,8 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
   const seconds = value => value / (a.dt * STEP);
   const focus = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
   const span = new Float32Array(count), speed = new Float32Array(count), side = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
-  const segment = new Uint32Array(count);
+  const segment = new Uint32Array(count), shares = new Float32Array(count);
+  const runs = [new Float32Array(count * 3), new Float32Array(count * 3)];
   const pa = {x: 0, y: 0, z: 0}, pb = {x: 0, y: 0, z: 0};
   let cutAt = 0;
   for (let s = 0; s < count; s++) {
@@ -76,6 +77,8 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
     trackPoint(a, tick, pa); trackPoint(b, other, pb);
     // Far apart (a different line, a skipped stage), frame the played run alone.
     const apart = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z), share = 0.5 * (1 - smoothstep(800, 1800, apart));
+    runs[0].set([pa.x, pa.y, pa.z], s * 3); runs[1].set([pb.x, pb.y, pb.z], s * 3);
+    shares[s] = share;
     focus[0][s] = pa.x + (pb.x - pa.x) * share;
     focus[1][s] = pa.y + (pb.y - pa.y) * share;
     focus[2][s] = pa.z + (pb.z - pa.z) * share + EYE_HEIGHT;
@@ -146,20 +149,60 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
   const smoothSwing = blur(swing, seconds(0.45), segment), smoothRise = blur(rise, seconds(0.45), segment);
   const room = blur(lowest(limit, Math.round(seconds(0.45)), segment), seconds(0.2), segment);
   const az = blur(azimuth, seconds(0.35), segment), el = blur(elevation, seconds(0.5), segment), far = blur(distance, seconds(0.6), segment);
-  const cx = blur(focus[0], seconds(0.12), segment), cy = blur(focus[1], seconds(0.12), segment), cz = blur(focus[2], seconds(0.2), segment);
-  const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
-  for (let s = 0; s < count; s++) {
-    const d = clamp(Math.min(far[s], room[s]), MIN_DISTANCE, MAX_DISTANCE);
-    const yaw = az[s] + smoothSwing[s], pitch = Math.min(1.35, el[s] + smoothRise[s]);
-    const length = Math.hypot(tx[s], ty[s]) || 1, lead = Math.min(140, far[s] * LEAD);
-    target[s * 3] = cx[s] + tx[s] / length * lead;
-    target[s * 3 + 1] = cy[s] + ty[s] / length * lead;
-    target[s * 3 + 2] = cz[s];
-    eye[s * 3] = cx[s] + Math.cos(yaw) * Math.cos(pitch) * d;
-    eye[s * 3 + 1] = cy[s] + Math.sin(yaw) * Math.cos(pitch) * d;
-    eye[s * 3 + 2] = cz[s] + Math.sin(pitch) * d;
+  // The shot from the smoothed choices. weight scales how far the framing
+  // leans towards the other run; limitTo caps the distance.
+  const compose = (weight, limitTo) => {
+    const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
+    for (let s = 0; s < count; s++) {
+      const k = shares[s] * weight[s], o = s * 3;
+      fx[s] = runs[0][o] + (runs[1][o] - runs[0][o]) * k;
+      fy[s] = runs[0][o + 1] + (runs[1][o + 1] - runs[0][o + 1]) * k;
+      fz[s] = runs[0][o + 2] + (runs[1][o + 2] - runs[0][o + 2]) * k + EYE_HEIGHT;
+    }
+    const cx = blur(fx, seconds(0.12), segment), cy = blur(fy, seconds(0.12), segment), cz = blur(fz, seconds(0.2), segment);
+    const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
+    for (let s = 0; s < count; s++) {
+      const d = clamp(Math.min(far[s], room[s], limitTo[s]), MIN_DISTANCE, MAX_DISTANCE);
+      const yaw = az[s] + smoothSwing[s], pitch = Math.min(1.35, el[s] + smoothRise[s]);
+      const length = Math.hypot(tx[s], ty[s]) || 1, lead = Math.min(140, far[s] * LEAD);
+      target[s * 3] = cx[s] + tx[s] / length * lead;
+      target[s * 3 + 1] = cy[s] + ty[s] / length * lead;
+      target[s * 3 + 2] = cz[s];
+      eye[s * 3] = cx[s] + Math.cos(yaw) * Math.cos(pitch) * d;
+      eye[s * 3 + 1] = cy[s] + Math.sin(yaw) * Math.cos(pitch) * d;
+      eye[s * 3 + 2] = cz[s] + Math.sin(pitch) * d;
+    }
+    return {eye, target, focus: [cx, cy, cz]};
+  };
+  let weight = new Float32Array(count).fill(1), closest = new Float32Array(count).fill(MAX_DISTANCE);
+  let shot = compose(weight, closest);
+  // The smoothed shot can still end up behind something no detour was tested
+  // against, and two lines either side of a wall can put the framing inside
+  // it. Check what the camera really sees: where the played run is hidden,
+  // frame it alone for a while; where the view is blocked, come in closer.
+  for (let pass = 0; trace && pass < 2; pass++) {
+    const hidden = new Float32Array(count), blocked = new Float32Array(count).fill(MAX_DISTANCE);
+    const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0}, body = {x: 0, y: 0, z: 0};
+    let found = false;
+    for (let s = 0; s < count; s += TRACE_EVERY) {
+      if (s % (SLICE * TRACE_EVERY) === 0 && yieldTask) { await yieldTask(); if (!isCurrent()) return null; }
+      from.x = shot.focus[0][s]; from.y = shot.focus[1][s]; from.z = shot.focus[2][s];
+      to.x = shot.eye[s * 3]; to.y = shot.eye[s * 3 + 1]; to.z = shot.eye[s * 3 + 2];
+      body.x = runs[0][s * 3]; body.y = runs[0][s * 3 + 1]; body.z = runs[0][s * 3 + 2] + EYE_HEIGHT;
+      const d = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z), clear = trace(from, to), seen = trace(body, to);
+      for (let k = s; k < Math.min(count, s + TRACE_EVERY); k++) {
+        if (clear < 0.97) { blocked[k] = Math.max(MIN_DISTANCE, clear * d - CLEARANCE); found = true; }
+        if (seen < 0.97) { hidden[k] = 1; found = true; }
+      }
+    }
+    if (!found) break;
+    const lose = blur(lowest(hidden.map(value => 1 - value), Math.round(seconds(0.3)), segment), seconds(0.25), segment);
+    weight = weight.map((value, s) => Math.min(value, lose[s]));
+    const closer = blur(lowest(blocked, Math.round(seconds(0.45)), segment), seconds(0.2), segment);
+    closest = closest.map((value, s) => Math.min(value, closer[s]));
+    shot = compose(weight, closest);
   }
-  return {count, eye, target, segment};
+  return {count, eye: shot.eye, target: shot.target, segment};
 }
 
 // Angles kept continuous within a segment, so blurring never spins the long way.
