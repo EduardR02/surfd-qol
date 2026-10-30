@@ -1,6 +1,6 @@
 # HUD harness
 
-Renders the real HUD, settings panel, Runs panel and replay extras/custom bar (`src/hud.js`, `src/hud-model.js`, the views and styles) with fixture data over screenshots from actual Surfd replays. Only the game session, replay-reference loaders, run history, ramp references, saveloc binds and playback are faked (`dev/fixtures.js`). Native replay uses the actual transport structure and shipping `rt-*` stylesheet in `dev/native-transport.js` / `dev/native-transport.css`; its controller is a fixture, not the game engine.
+Renders the real HUD, settings panel, Runs panel and replay extras/custom bar (`src/hud.js`, `src/hud-model.js`, the views and styles) with fixture data over screenshots from actual Surfd replays. Only the game session, replay-reference loaders, run history, ramp references, saveloc binds, cinematic state and playback are faked (`dev/fixtures.js`). Native replay uses the actual transport structure and shipping `rt-*` stylesheet in `dev/native-transport.js` / `dev/native-transport.css`; its controller is a fixture, not the game engine. Cinematic fixtures exercise controls, not camera rendering, physics or synchronization.
 
 The backdrops are not in the repository (they are screenshots of the game). Save your own 1920×1080 JPEG captures as `dev/backdrops/<name>.jpg` for `snow`, `fog`, `ice`, `neon`, `warm`, `dark` and `menu`; the folder is gitignored. Without them the harness draws a plain gradient sky.
 
@@ -19,6 +19,8 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `panel=display\|feedback\|compare\|controls\|history` | Opens the settings panel on that section |
 | `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s, native transport and extras fade together; custom mode retains its timeline |
 | `set.customReplayUi=true` | Opt into the existing custom bar; otherwise native transport plus graded touch marks, saved locs and tools is shown |
+| `cinema=off\|solo\|group\|focus\|full\|error` | With `state=watching`: cinematic controls disabled, one run, several runs, one focused run, all five runs, or an activation error |
+| `pick`, `adjusted` | With `cinema`: open Add run, or show Reset view after a camera adjustment |
 | `parked=true`, `indexing` | Show Return to server, or partial native indexing reach |
 | `locs=<0–20>`, `at=<tick>`, `speed=<0.25–8>` | With `state=watching`: locs on the timeline (default 3), the start position and the speed |
 | `notice=saved\|full\|<text>` | With `state=watching`: a control notice, as after saving a loc |

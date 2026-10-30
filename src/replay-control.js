@@ -15,6 +15,8 @@ import {mapKey} from './run-history.js';
 export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 export const MAX_SPOTS = 20;
 const NOTICE_MS = 4000;
+// Bars cache annotation geometry by identity, including while it is suppressed.
+const EMPTY_MARKS = Object.freeze([]);
 // The game keeps this many savelocs per bank, dropping the oldest.
 const BANK_SIZE = 20;
 // The furthest a seek may skip ahead to a keyframe the analysis then steps to.
@@ -448,8 +450,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         title: watched.title, index: position(watched), length, start: Math.min(watched.start ?? 0, length), dt: watched.dt, ghosts: others,
         playing: !!t && !paused && !ended, ended, speed, parked, reachable,
         indexed: t?.index?.indexed ?? reachable, complete: t?.index?.complete ?? false,
-        markers: watched.markers, ramps: others ? [] : ramps(watched),
-        spots: others ? [] : watched.spots, lastSpot: others ? null : watched.lastSpot,
+        markers: watched.markers, ramps: others ? EMPTY_MARKS : ramps(watched),
+        spots: others ? EMPTY_MARKS : watched.spots, lastSpot: others ? null : watched.lastSpot,
         notice: notice && clock() - notice.at < NOTICE_MS ? notice.text : '', run: watched.run,
       };
     },

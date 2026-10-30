@@ -193,7 +193,7 @@ export const replayBarStyles = `
 
 /* At rest (playing, untouched): only the timeline stays. */
 .rb>.rb-play,.rb-total,.rb-tools{transition:opacity .35s}
-.rb.rest>.rb-play,.rb.rest .rb-total,.rb.rest .rb-tools{opacity:0}
+.rb.rest>.rb-play,.rb.rest .rb-total,.rb.rest .rb-tools{opacity:0;pointer-events:none}
 .rb.rest::before{opacity:.45}
 .rb.rest .rb-marks span{opacity:0}
 .rb.rest .rb-pins button{pointer-events:none}
@@ -211,7 +211,8 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   const headway = q('.rb-headway'), marksLayer = q('.rb-marks'), pins = q('.rb-pins'), tip = q('.rb-tip');
   const [tipTitle, tipValue, tipLabel] = tip.children;
   const total = q('[data-rb="total"]'), notice = q('[data-rb="notice"]');
-  const speedButton = q('.rb-speed'), runsButton = q('.rb-runs');
+  const speedButton = q('.rb-speed'), runsButton = q('.rb-runs'), saveButton = q('[data-act="save"]');
+  const indexed = q('.rb-indexed'), returnButton = q('[data-act="return"]');
   const popovers = Object.fromEntries([...bar.querySelectorAll('[data-popover]')].map(element => [element.dataset.popover, element]));
   const openers = Object.fromEntries([...bar.querySelectorAll('[data-pop]')].map(element => [element.dataset.pop, element]));
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -408,14 +409,18 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     rail.title = status.title ?? '';
   }
   function paint() {
-    const indexed = q('.rb-indexed');
     const reach = Math.min(1, (status.indexed ?? status.length) / Math.max(1, status.length));
     const indexedWidth = `${reach * 100}%`;
     indexed.hidden = status.complete !== false;
     if (indexed.style.width !== indexedWidth) indexed.style.width = indexedWidth;
-    q('[data-act="return"]').hidden = !status.parked;
-    // With other runs alongside there are no locs to save or keys for them.
-    if (q('[data-act="save"]').hidden !== !!status.ghosts) q('[data-act="save"]').hidden = q('[data-pop="keys"]').hidden = !!status.ghosts;
+    returnButton.hidden = !status.parked;
+    // Only multi-run comparison hides watched-run practice actions.
+    if (saveButton.hidden !== !!status.ghosts) {
+      const focused = root.activeElement;
+      saveButton.hidden = openers.keys.hidden = !!status.ghosts;
+      if (status.ghosts && open === 'keys') closePopover();
+      if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="enable"]') ?? play).focus({preventScroll: true});
+    }
     paintMarks();
     paintPosition(position());
     const state = status.ended ? 'again' : status.playing ? 'pause' : 'play';
@@ -434,9 +439,10 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     }
     const length = railTime((status.length - status.start) * status.dt);
     if (length !== totalShown) { totalShown = length; write(total, length); }
+    if (total.title !== (status.title ?? '')) total.title = status.title ?? '';
     write(notice, status.notice || (status.complete === false ? `Indexing ${Math.floor(reach * 100)}%` : ''));
     if (++bindsAge > 30) { bindsAge = 0; readBinds(); }
-    const rest = status.playing && !dragging && !hovering && !open && !held() && !status.notice && now() - lastActivity > REST_MS;
+    const rest = status.playing && !dragging && !hovering && !open && !held() && !bar.contains(root.activeElement) && !status.notice && now() - lastActivity > REST_MS;
     toggleClass(bar, 'rest', rest);
   }
   function loop() {

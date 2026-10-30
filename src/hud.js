@@ -100,10 +100,11 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, onSettings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
+  let cinemaUi = null;
   const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
-    getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.active,
+    getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.comparing,
     getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
-    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open}) : null;
+    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open || !!cinemaUi?.holding}) : null;
 
   // The runs a replay can have alongside it, from the loaded map's history and leaderboard.
   const ghostInputs = () => {
@@ -113,9 +114,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     return {best: bestFinish(data, {key, session: getSession?.(), refs}), recentBest: data?.recentBest ?? null, refs, archive: replays,
       canWatch: run => { try { return !!replayControl?.canWatch?.(run); } catch { return false; } }};
   };
-  const cinemaUi = cinema ? createCinemaUi({root, cinema, getSources: ghostInputs, storage: (() => { try { return localStorage; } catch { return null; } })()}) : null;
+  cinemaUi = cinema ? createCinemaUi({root, cinema, getSources: ghostInputs, storage: (() => { try { return localStorage; } catch { return null; } })()}) : null;
 
-  function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
+  function onKey(event) { if (cinemaUi?.handleKey(event)) return; panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
   function onPointer(event) { replayBar?.handlePointer(event); }
@@ -268,12 +269,12 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     panel.setStatus(model.status);
     const reserve = `${replayBar?.render(replayVisible) ?? 0}px`;
     replayBar?.setRunsOpen(runs.open);
-    // Add run sits on the replay bar; without a replay this is one check.
+    // Cinematic actions share the active replay tools. Geometry is measured
+    // only when their layout changes, rather than polled on the HUD tick.
     if (cinemaUi && (replayVisible || cinemaUi.shown)) {
-      const custom = settings.customReplayUi === true, transport = document.getElementById('replay-transport');
-      const track = !replayBar?.visible ? null : custom ? replayBar.anchor() : transport?.querySelector('.rt-track')?.getBoundingClientRect() ?? null;
-      cinemaUi.render({visible: replayVisible && !!replayBar?.visible, track, custom,
-        idle: !custom && !!transport?.classList.contains('rt-idle'), tags: !finishScreen || finishScreen.hidden});
+      const custom = settings.customReplayUi === true;
+      cinemaUi.render({visible: replayVisible && !!replayBar?.visible, custom,
+        idle: replayBar?.idle ?? false, held: runs.open, tags: !finishScreen || finishScreen.hidden});
     }
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }

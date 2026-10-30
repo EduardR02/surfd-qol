@@ -11,9 +11,9 @@ export const nativeExtrasMarkup = `<section id="native-replay-extras" class="nr"
 </section>`;
 export const nativeExtrasStyles = `
 .nr{--ink:rgba(18,18,18,.94);position:fixed;pointer-events:none;color:var(--paper);font-size:12px;z-index:1}
-.nr-tools{position:absolute;right:0;bottom:25px;display:flex;align-items:center;gap:5px;max-width:100%;pointer-events:auto}
-.nr-tools button{font-family:inherit;font-weight:700;font-size:12px;color:var(--paper);border:1px solid #ffffff30;border-radius:8px;padding:6px 10px;background:rgba(18,18,18,.88);cursor:pointer;white-space:nowrap}
-.nr-tools button:hover,.nr-tools button[aria-expanded=true]{border-color:var(--accent)}
+.nr-tools{position:absolute;right:0;bottom:25px;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;max-width:100%;pointer-events:auto}
+.nr-tools>button{font-family:inherit;font-weight:700;font-size:12px;line-height:1.2;color:var(--paper);border:1px solid #ffffff30;border-radius:8px;min-height:28px;padding:4px 8px;background:rgba(18,18,18,.88);cursor:pointer;white-space:nowrap}
+.nr-tools>button:hover,.nr-tools>button[aria-expanded=true]{border-color:var(--accent)}
 .nr :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .nr-notice{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000;min-width:0}
 .nr-marks{position:absolute;inset:0;pointer-events:none}
@@ -25,7 +25,7 @@ export const nativeExtrasStyles = `
 .nr-mark.sel::before{box-shadow:0 0 0 1px #080808b8,0 0 0 3px #ffffff60}
 .nr-tip{bottom:55px;max-width:calc(100vw - 32px);box-sizing:border-box}
 .nr-keys{bottom:62px;right:0;pointer-events:auto;box-sizing:border-box;max-width:calc(100vw - 28px)}
-@media(max-width:600px){.nr-tools{gap:4px}.nr-tools button{padding:5px 8px}.nr-notice{font-size:11px}}
+@media(max-width:600px){.nr-tools{gap:4px}.nr-tools>button{padding:4px 6px}.nr-notice{font-size:11px}}
 `;
 
 // One route for game-configured saveloc binds, independent of which UI is up.
@@ -54,7 +54,7 @@ export function createReplayBindRouter(now = () => performance.now()) {
 }
 
 export function createReplayUi(options) {
-  const {root, host, control, getBindings = () => null, getCustom = () => false, getCinema = () => false, onRuns, getKind} = options;
+  const {root, host, control, getBindings = () => null, getCustom = () => false, getCinema = () => false, onRuns, getKind, held = () => false} = options;
   const custom = createReplayBar(options);
   const extras = root.getElementById('native-replay-extras');
   const marksLayer = extras.querySelector('.nr-marks'), notice = extras.querySelector('.nr-notice');
@@ -71,7 +71,10 @@ export function createReplayUi(options) {
   suppress.disabled = true;
   document.head.append(suppress);
   let transport = null, status = null, customMode = false, available = false, reserve = 0;
-  let drawn = null, geometry = '', marks = [], sheetOpen = false;
+  let drawn = null, geometryDirty = true, marks = [], sheetOpen = false;
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { geometryDirty = true; }) : null;
+  const resized = () => { geometryDirty = true; };
+  addEventListener('resize', resized, {passive: true});
   const routeBind = createReplayBindRouter();
   const bindings = () => savelocBinds(getBindings());
   const hideExtras = () => {
@@ -87,20 +90,20 @@ export function createReplayUi(options) {
   }
   function paint() {
     // Check visibility before status(): hidden extras must not request analysis.
-    if (!available || customMode || !transport || transport.hidden || transport.classList.contains('rt-idle')) { hideExtras(); return; }
+    const holding = held() || extras.contains(root.activeElement) || sheetOpen;
+    if (!available || customMode || !transport || transport.hidden || transport.classList.contains('rt-idle') && !holding) { hideExtras(); return; }
     const next = control.status();
     if (!next) { status = null; hideExtras(); return; }
     status = next;
     const track = transport.querySelector('.rt-track');
     if (!track) { hideExtras(); return; }
-    const rect = track.getBoundingClientRect(), nativeRect = transport.getBoundingClientRect();
-    const shape = `${rect.left},${rect.top},${rect.width},${rect.height}`;
-    if (shape !== geometry) {
-      geometry = shape;
+    if (geometryDirty) {
+      const rect = track.getBoundingClientRect(), nativeRect = transport.getBoundingClientRect();
       extras.style.left = `${rect.left}px`; extras.style.top = `${rect.top}px`;
       extras.style.width = `${rect.width}px`; extras.style.height = `${rect.height}px`;
+      reserve = innerHeight - Math.min(nativeRect.top, rect.top - 57) + 16;
+      geometryDirty = false;
     }
-    reserve = innerHeight - Math.min(nativeRect.top, rect.top - 57) + 16;
     const signature = [next.length, next.lastSpot, next.start, next.ramps, next.ramps?.length, ...(next.spots ?? [])];
     if (!drawn || signature.length !== drawn.length || signature.some((value, index) => value !== drawn[index])) {
       drawn = signature;
@@ -108,9 +111,14 @@ export function createReplayUi(options) {
       marksLayer.innerHTML = marks.map((mark, index) => `<button type="button" class="nr-mark ${mark.type === 'loc' ? `loc${mark.selected ? ' sel' : ''}` : mark.tone}" data-mark="${index}" style="left:${mark.at * 100}%" aria-label="${escape(mark.label)}${mark.type === 'loc' ? '. Right-click removes it.' : ''}"></button>`).join('');
     }
     if (notice.textContent !== (next.notice ?? '')) notice.textContent = next.notice ?? '';
-    // Compare's moments aren't the played run's alone, so it keeps no savelocs.
-    const comparing = getCinema() === true || next.ghosts === true;
-    if (save.hidden !== comparing) { save.hidden = keys.hidden = comparing; if (comparing && sheetOpen) showSheet(); }
+    // Multi-run moments aren't the watched run's alone; solo keeps its locs.
+    const comparing = next.ghosts === true;
+    if (save.hidden !== comparing) {
+      const focused = root.activeElement;
+      save.hidden = keys.hidden = comparing;
+      if (comparing && sheetOpen) showSheet();
+      if (comparing && (focused === save || focused === keys || sheet.contains(focused))) (extras.querySelector('[data-cn="enable"]') ?? runs).focus({preventScroll: true});
+    }
     extras.hidden = false;
   }
   // The HUD's 67 ms lifecycle tick is enough for static annotations; native
@@ -145,15 +153,20 @@ export function createReplayUi(options) {
   function ignores(event) {
     const origin = event.composedPath()[0];
     return event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey ||
-      origin instanceof Element && !!origin.closest('input,textarea,select,[contenteditable=""],[contenteditable="true"],#runs-panel,#panel');
+      origin instanceof Element && !!origin.closest('input,textarea,select,[contenteditable=""],[contenteditable="true"],#runs-panel,#panel,.cn-pick');
   }
   return {
     get visible() { return available && (customMode ? custom.visible : !!transport && !transport.hidden); },
+    get idle() { return customMode ? root.getElementById('replay').classList.contains('rest') : !!transport?.classList.contains('rt-idle') && !held() && !extras.contains(root.activeElement) && !sheetOpen; },
     get status() { return customMode ? custom.status : status; },
     render(inSurf) {
       available = inSurf;
       customMode = getCustom() === true;
-      transport = document.getElementById('replay-transport');
+      const nextTransport = document.getElementById('replay-transport');
+      if (transport !== nextTransport) {
+        transport = nextTransport; geometryDirty = true; sizes?.disconnect();
+        if (transport) { sizes?.observe(transport); const track = transport.querySelector('.rt-track'); if (track) sizes?.observe(track); }
+      }
       // Service replay exit even in menus: saved moments must reach the
       // practice bank before the player resumes or opens Load position.
       const active = control.active;
@@ -161,9 +174,9 @@ export function createReplayUi(options) {
       if (suppress.disabled === nativeHidden) suppress.disabled = !nativeHidden;
       if (customMode) { hideExtras(); return custom.render(inSurf); }
       custom.render(false);
-      if (!inSurf || !transport || transport.hidden) { hideExtras(); status = null; reserve = 0; return 0; }
+      if (!inSurf || !transport || transport.hidden) { hideExtras(); status = null; reserve = 0; geometryDirty = true; return 0; }
       // Idle is a cheap lifecycle check only; no geometry or analysis polling.
-      if (transport.classList.contains('rt-idle')) { hideExtras(); return reserve; }
+      if (transport.classList.contains('rt-idle') && !held() && !extras.contains(root.activeElement) && !sheetOpen) { hideExtras(); return reserve; }
       refresh();
       return reserve;
     },
@@ -174,12 +187,12 @@ export function createReplayUi(options) {
     handleKey(event) {
       custom.handleKey(event);
       if (!available || !control.active || ignores(event)) return;
+      if ((event.code === 'Space' || event.code === 'Enter') && event.composedPath().some(node => node?.matches?.('button'))) { event.stopImmediatePropagation(); return; }
       if (event.code === 'Escape' && sheetOpen) {
         event.preventDefault(); event.stopImmediatePropagation(); if (event.type === 'keydown') showSheet(); return;
       }
-      if (getCinema() === true) return;
       const action = routeBind(event, bindings());
-      if (action) { replaySavelocAction(control, action); refresh(); }
+      if (action && getCinema() !== true) { replaySavelocAction(control, action); refresh(); }
     },
     handlePointer(event) {
       if (!available || !control.active || ignores(event)) return;
@@ -189,6 +202,6 @@ export function createReplayUi(options) {
     },
     showPopover(name) { if (customMode) custom.showPopover(name); else if (name === 'keys' && !extras.hidden && !sheetOpen) showSheet(); },
     anchor() { return (customMode ? root.getElementById('replay') : tools).getBoundingClientRect(); },
-    destroy() { hideExtras(); custom.destroy(); suppress.remove(); },
+    destroy() { hideExtras(); custom.destroy(); suppress.remove(); sizes?.disconnect(); removeEventListener('resize', resized); },
   };
 }

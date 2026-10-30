@@ -530,6 +530,35 @@ describe('replay control', () => {
     expect(control.status().ramps).toBe(status.ramps);
   });
 
+  test('multi-run suppression keeps checkpoint navigation and restores watched-run touches and locs when it ends', async () => {
+    const {world, replay, run} = game();
+    let comparing = false;
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {has: () => true, get: async () => replay}, ghosts: () => comparing});
+    try {
+      await control.watch({...run, boards: [[120, 2.5, 'ramp']], spots: [150]});
+      control.setVisible(true);
+      const watched = control.status();
+      expect(watched.ramps.map(ramp => ramp.tick)).toEqual([120]);
+      expect(watched.spots).toEqual([150]);
+      comparing = true;
+      const shared = control.status();
+      expect(shared).toMatchObject({ghosts: true, ramps: [], spots: [], markers: [250], lastSpot: null});
+      // A moving playhead must not invalidate the bar's annotation geometry.
+      control.seek(160);
+      expect(control.status().ramps).toBe(shared.ramps);
+      expect(control.status().spots).toBe(shared.spots);
+      expect(control.saveSpot()).toBe(false);
+      comparing = false;
+      const restored = control.status();
+      expect(restored.ghosts).toBe(false);
+      expect(restored.ramps).toEqual(watched.ramps);
+      expect(restored.spots).toEqual([150]);
+      expect(control.saveSpot()).toBe(true);
+      expect(control.status().spots).toEqual([150, 160]);
+    } finally { control.destroy(); }
+  });
+
   test('timeline grading acquires only while visible and releases when hidden or without boards', async () => {
     const {world, replay, run} = game();
     let tones = 0, held = false, destroyed = 0;
