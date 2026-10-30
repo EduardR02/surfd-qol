@@ -121,6 +121,7 @@ While you watch any replay, **Add run** on the replay bar plays another run of t
 - The row above the replay bar lists each run with its time and how far this run is behind (red) or ahead (teal) of it at this point. × takes a run out; without any, the replay goes back to first person.
 - **Real time** (the default) races the runs on the clock. **Side by side** keeps them at the same place on the route instead: the faster runs are slowed down, so you see where the lines differ.
 - The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
+- Each run keeps its colour when another is removed. Its line has a soft comet tail and a quieter preview ahead; the streaks follow replay time, so pausing freezes them and seeking restores them.
 - **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
 - With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
 
