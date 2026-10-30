@@ -110,7 +110,7 @@ By default, the extension adds Saveloc, Runs and saved-location marks to the gam
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 
-Prefer the extension’s timeline? Enable **QoL → History → Custom replay bar**. It drives the same native player, and you can switch while watching. Recording is separate.
+Prefer the extension’s timeline? Enable **QoL → History → Custom replay bar**. It has the same touch marks and savelocs, drives the same native player, and you can switch while watching. Recording is separate.
 
 Seeking to an unvisited section can leave feedback grey: the game’s keyframe has movement state, but not the extension’s analysis of the earlier ramp or flight. Incomplete segments are excluded rather than shown as complete measurements.
 
