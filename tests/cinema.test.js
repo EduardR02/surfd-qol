@@ -310,8 +310,8 @@ describe('cinematic replay lifecycle', () => {
     const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
     let disposed = 0, scenes = 0, colors = [], positions = [];
-    const control = {playback: {replay: played}};
-    const adapter = {cinema: {renderer: () => renderer}, getSession: () => ({map: {id: 'm', version: 1}}), replay: {playback: () => control.playback}};
+    const control = {playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
+    const adapter = {cinema: {renderer: () => renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null),
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
@@ -452,6 +452,12 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().positions).toEqual([29.25, 29.25]);
     renderer.render({state: {tick: 110}, qolAlpha: 0.5});
     expect(counts().positions).toEqual([9.5, 9.5]);
+    // Native seeking collapses previous=current without clearing its accumulator.
+    control.session.previous = {tick: 110};
+    renderer.render({state: {tick: 110}, qolAlpha: 0.5});
+    expect(counts().positions).toEqual([10, 10]);
+    renderer.render({state: {tick: 111}, qolAlpha: 0.5});
+    expect(counts().positions).toEqual([10.5, 10.5]);
     cinema.close();
   });
   test('concurrent solo activation shares recording and enables both callers', async () => {

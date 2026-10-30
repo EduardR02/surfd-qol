@@ -248,7 +248,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (playing() !== current.replay) { queueMicrotask(() => { if (state === current) close(); }); return null; }
     const a = current.track, plan = current.plan, sync = current.sync;
     if (!plan) return null;
-    let tick = Math.max(0, Math.min(a.count - 1, (view.state?.tick ?? current.base) - current.base - 1 + (Number.isFinite(view.qolAlpha) ? Math.max(0, Math.min(1, view.qolAlpha)) : 1)));
+    const stateTick = view.state?.tick ?? current.base, previousTick = getAdapter()?.getSession?.()?.previous?.tick;
+    // Seeking sets native previous=current but retains its interpolation alpha.
+    // Interpolate the actual state pair, not an assumed preceding tick.
+    const from = Number.isFinite(previousTick) && previousTick <= stateTick ? previousTick : stateTick - 1;
+    const alpha = Number.isFinite(view.qolAlpha) ? Math.max(0, Math.min(1, view.qolAlpha)) : 1;
+    let tick = Math.max(0, Math.min(a.count - 1, from - current.base + (stateTick - from) * alpha));
     // Native teleports set previous=current, so they bypass interpolation.
     if (a.cut[Math.ceil(tick)]) tick = Math.ceil(tick);
     const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
