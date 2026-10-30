@@ -88,12 +88,16 @@ function ease(values, radius, from, to) {
   return values;
 }
 
+// Each run's clock where it is, as the game's timer read it.
+function clock(track, at) {
+  const index = Math.max(0, Math.min(track.finish, at)), low = Math.floor(index), high = Math.min(track.count - 1, low + 1);
+  return track.elapsed[low] + (track.elapsed[high] - track.elapsed[low]) * (index - low);
+}
 // The other run's time to this place minus the played run's, in seconds:
 // negative when the other run got here sooner.
 export function gapAt(a, b, map, tick) {
   const index = Math.max(0, Math.min(a.count - 1, tick));
   if (index < a.start) return null;
   const low = Math.floor(index), high = Math.min(a.count - 1, low + 1);
-  const other = map[low] + (map[high] - map[low]) * (index - low);
-  return (Math.min(other, b.finish) - b.start) * b.dt - (Math.min(index, a.finish) - a.start) * a.dt;
+  return clock(b, map[low] + (map[high] - map[low]) * (index - low)) - clock(a, index);
 }

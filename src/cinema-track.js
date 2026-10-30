@@ -16,7 +16,8 @@ const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'st
 // Positions of index i are the state after i commands, so a track has one
 // more entry than the replay has commands.
 export function createTrack(count, dt) {
-  return {dt, count, position: new Float32Array(count * 3), yaw: new Float32Array(count), ducked: new Uint8Array(count),
+  // elapsed is the game's own run clock on each tick, 0 before the start.
+  return {dt, count, position: new Float32Array(count * 3), yaw: new Float32Array(count), ducked: new Uint8Array(count), elapsed: new Float64Array(count),
     normal: new Float32Array(count * 3), cut: new Uint8Array(count), start: 0, finish: count - 1, splits: [], time: null};
 }
 
@@ -88,6 +89,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
         keep(index);
         if (events.some(event => TELEPORTS.has(event))) track.cut[index] = 1;
         const timer = shadow.timer?.state;
+        if (Number.isFinite(timer?.elapsed)) track.elapsed[index] = timer.elapsed;
         if (!started && timer?.phase === 'running') { started = true; track.start = index; }
         const count = Array.isArray(timer?.splits) ? timer.splits.length : 0;
         while (splits < count) { splits++; track.splits.push(index); }

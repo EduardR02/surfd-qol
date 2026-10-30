@@ -74,7 +74,7 @@ export function createCinemaUi({root, cinema, storage = null}) {
   const runs = [...section.querySelectorAll('.cn-run')], tags = [...section.querySelectorAll('.cn-tag')];
   const gap = section.querySelector('.cn-gap'), tools = section.querySelector('.cn-tools'), hint = section.querySelector('.cn-hint');
   const reset = section.querySelector('[data-cn="reset"]'), syncs = [...section.querySelectorAll('[data-sync]')];
-  let frame = 0, shown = false, drawn = '', hintTimer = 0;
+  let frame = 0, shown = false, drawn = '', hintTimer = 0, named = true;
   const write = (element, text) => { if (element.textContent !== text) element.textContent = text; };
 
   section.addEventListener('click', event => {
@@ -91,7 +91,7 @@ export function createCinemaUi({root, cinema, storage = null}) {
     const status = shown ? cinema.status() : null;
     if (!status || status.phase !== 'playing') return;
     for (const [index, tag] of tags.entries()) {
-      const at = status.labels?.[index];
+      const at = named ? status.labels?.[index] : null;
       if (tag.hidden !== !at) tag.hidden = !at;
       if (at) tag.style.transform = `translate(${at.x.toFixed(1)}px,${(at.y - 6).toFixed(1)}px) translate(-50%,-100%)`;
     }
@@ -122,7 +122,8 @@ export function createCinemaUi({root, cinema, storage = null}) {
 
   return {
     // anchor: the replay tools' rect, beside which the controls sit; idle: the bar has faded out.
-    render({visible, anchor = null, custom = false, idle = false}) {
+    // tags: whether names may follow the ghosts (not over the game's finish card).
+    render({visible, anchor = null, custom = false, idle = false, tags: showTags = true}) {
       const status = visible ? cinema.status() : null;
       if (!status || status.phase !== 'playing') { hide(); return; }
       if (!shown) { shown = true; section.hidden = false; showHint(); }
@@ -148,6 +149,7 @@ export function createCinemaUi({root, cinema, storage = null}) {
         if (custom) tools.style.bottom = `${Math.round(innerHeight - anchor.top + 8)}px`;
       }
       tools.classList.toggle('idle', idle);
+      named = showTags;
       if (!frame) frame = requestAnimationFrame(follow);
     },
     hide,

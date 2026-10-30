@@ -264,7 +264,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     if (cinemaUi) {
       const transport = document.getElementById('replay-transport');
       cinemaUi.render({visible: replayVisible && !!replayBar?.visible, anchor: replayBar?.visible ? replayBar.anchor() : null,
-        custom: settings.customReplayUi === true, idle: settings.customReplayUi !== true && !!transport?.classList.contains('rt-idle')});
+        custom: settings.customReplayUi === true, idle: settings.customReplayUi !== true && !!transport?.classList.contains('rt-idle'),
+        tags: !finishScreen || finishScreen.hidden});
     }
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }

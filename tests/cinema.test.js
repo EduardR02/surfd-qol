@@ -13,6 +13,7 @@ function straight({count = 400, speed = 20, lead = 20, dt = 0.015, y = 0, normal
     const x = Math.max(0, i - lead) * speed;
     track.position.set([x, y, 0], i * 3);
     track.yaw[i] = 0;
+    track.elapsed[i] = Math.max(0, i - lead) * dt;
     if (normal) track.normal.set(normal, i * 3);
   }
   track.start = lead;
@@ -63,6 +64,7 @@ describe('tracks', () => {
     expect(track.splits).toEqual([4]);
     expect(track.finish).toBe(6);
     expect(track.time).toBe(0.06);
+    expect(track.elapsed[6]).toBe(0.06);
   });
   test('a replay of another map is not read', async () => {
     const replay = {mapId: 'other', mapVersion: 1, commands: [{}]};
