@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {createCinemaScene, RUN_COLORS} from '../src/cinema-scene.js';
+import {createCinemaScene, DEFAULT_TRAIL_STYLE, RUN_COLORS, TRAIL_STYLES, runColors} from '../src/cinema-scene.js';
 import {createTrack} from '../src/cinema-track.js';
 
 function trackAt(xs) {
@@ -127,6 +127,60 @@ describe('cinematic path geometry', () => {
   });
 });
 
+describe('cinematic run palette', () => {
+  test('preserves the five original identities exactly', () => {
+    expect(Array.from({length: 5}, (_, index) => runColors(index))).toEqual([
+      {body: '#a66f73', pale: '#fff1ed', rim: '#edc7c5', outline: '#302025', line: '#ebbcba'},
+      {body: '#608f99', pale: '#edf6f4', rim: '#b4dce0', outline: '#1c2b30', line: '#9ccfd8'},
+      {body: '#ac8654', pale: '#fff3df', rim: '#f3d09c', outline: '#30271d', line: '#f6c177'},
+      {body: '#527e73', pale: '#edf4e9', rim: '#a6c8bb', outline: '#1d2c28', line: '#7eaa9e'},
+      {body: '#a49e94', pale: '#faf7f0', rim: '#eae5dc', outline: '#2c2a27', line: '#e4ded7'},
+    ]);
+  });
+
+  test('extends stable, cached identities without white fallbacks or purple hues', () => {
+    const channels = hex => hex.slice(1).match(/../g).map(channel => parseInt(channel, 16) / 255);
+    const slots = [...Array.from({length: 48}, (_, index) => index), 10000];
+    const colors = slots.map(runColors);
+    expect(new Set(colors.map(color => color.line)).size).toBe(slots.length);
+    for (let index = 5; index < slots.length; index++) {
+      const color = colors[index];
+      expect(runColors(slots[index])).toBe(color);
+      for (const value of Object.values(color)) expect(value).toMatch(/^#[0-9a-f]{6}$/);
+      const [r, g, b] = channels(color.line);
+      const low = Math.min(r, g, b), high = Math.max(r, g, b), span = high - low;
+      const hue = high === r ? ((g - b) / span + 6) % 6 * 60 :
+        high === g ? ((b - r) / span + 2) * 60 : ((r - g) / span + 4) * 60;
+      expect(hue <= 49 || (hue >= 139 && hue <= 226) || hue >= 339).toBe(true);
+      expect(span).toBeGreaterThan(0.18);
+      expect(low).toBeLessThan(0.7);
+      expect(Math.min(...channels(color.pale))).toBeGreaterThan(high);
+      expect(Math.max(...channels(color.outline))).toBeLessThan(low);
+    }
+  });
+
+  test('colours uncapped and reordered ghosts and paths with the same identity', () => {
+    const rig = rendererRig(), track = trackAt([0, 10, 20]);
+    const slots = [10000, 5, 13, 8, 0, 42, 6, 2];
+    const cinema = createCinemaScene(rig.renderer, slots.map(colorIndex => ({track, colorIndex})));
+    cinema.update(slots.map(() => 1.5), 1280, 720);
+    for (const [index, slot] of slots.entries()) {
+      expect(rig.ghosts[index].body.material.uniforms.deepColor.value.value).toBe(runColors(slot).body);
+      for (const mesh of rig.lines().slice(index * 3, index * 3 + 3)) {
+        expect(mesh.material.uniforms.color.value.value).toBe(runColors(slot).line);
+      }
+    }
+    cinema.dispose();
+    expect(rig.scene.children).toEqual([rig.sentinel]);
+    expect(rig.geometries.every(geometry => geometry.disposed === 1)).toBe(true);
+    expect(rig.materials.every(material => material.disposed === 1)).toBe(true);
+  });
+
+  test.each([-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid identity slot (%s)', index => {
+    expect(() => runColors(index)).toThrow(RangeError);
+  });
+});
+
 describe('cinematic scene playback', () => {
   test('keeps body and path identities in their stable colour slots after reordering', () => {
     const rig = rendererRig(), track = trackAt([0, 10, 20]);
@@ -168,6 +222,58 @@ describe('cinematic scene playback', () => {
     rig.camera.projected = [NaN, Infinity, 0];
     expect(cinema.labels(1280, 720)).toEqual([null]);
     cinema.dispose();
+  });
+});
+
+describe('cinematic live trail treatments', () => {
+  test('changes every existing pass in place without replaying ghosts or replacing GPU resources', () => {
+    const track = trackAt([0, 10, 20, 1000, 1010]);
+    track.cut[3] = 1;
+    const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track}, {track, colorIndex: 7}]);
+    cinema.update([2.5, 1.25], 1440, 900);
+    const meshes = rig.lines();
+    const geometries = rig.geometries.slice(), materials = rig.materials.slice();
+    const sharedStyle = meshes[0].material.uniforms.style;
+    const states = meshes.map(mesh => ({
+      geometry: mesh.geometry, material: mesh.material,
+      position: mesh.geometry.getAttribute('position').array,
+      head: mesh.material.uniforms.head.value, time: mesh.material.uniforms.time.value,
+    }));
+    expect(sharedStyle.value).toBe(TRAIL_STYLES.findIndex(style => style.id === DEFAULT_TRAIL_STYLE));
+    const treatments = new Set();
+    for (const style of TRAIL_STYLES) {
+      cinema.setTrailStyle(style.id);
+      treatments.add(sharedStyle.value);
+      expect(rig.lines()).toEqual(meshes);
+      expect(rig.geometries).toEqual(geometries);
+      expect(rig.materials).toEqual(materials);
+      expect(rig.ghosts.every(ghost => ghost.updates.length === 1)).toBe(true);
+      for (const [index, mesh] of meshes.entries()) {
+        expect(mesh.geometry).toBe(states[index].geometry);
+        expect(mesh.material).toBe(states[index].material);
+        expect(mesh.geometry.getAttribute('position').array).toBe(states[index].position);
+        expect(mesh.material.uniforms.style).toBe(sharedStyle);
+        expect(mesh.material.uniforms.head.value).toBe(states[index].head);
+        expect(mesh.material.uniforms.time.value).toBe(states[index].time);
+      }
+    }
+    expect(treatments.size).toBe(3);
+    const selected = sharedStyle.value;
+    cinema.setTrailStyle('unknown');
+    expect(sharedStyle.value).toBe(selected);
+    cinema.update([4, 3], 1920, 1080);
+    cinema.update([2.5, 1.25], 1440, 900);
+    for (const [index, mesh] of meshes.entries()) {
+      expect(mesh.material.uniforms.head.value).toBe(states[index].head);
+      expect(mesh.material.uniforms.time.value).toBe(states[index].time);
+      expect(mesh.material.uniforms.style).toBe(sharedStyle);
+    }
+    expect(spans(meshes[0].geometry)).toEqual([[0, 2], [3, 4]]);
+    cinema.dispose();
+    cinema.dispose();
+    expect(rig.scene.children).toEqual([rig.sentinel]);
+    expect(rig.geometries.every(geometry => geometry.disposed === 1)).toBe(true);
+    expect(rig.materials.every(material => material.disposed === 1)).toBe(true);
   });
 });
 
