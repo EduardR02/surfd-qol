@@ -114,7 +114,8 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
   const sx = blur(side[0], seconds(0.8), segment), sy = blur(side[1], seconds(0.8), segment);
   const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
   const azimuth = new Float32Array(count), elevation = new Float32Array(count), distance = new Float32Array(count);
-  const halfView = Math.atan(Math.tan(FOV * Math.PI / 360) * 0.75) * 1.25;
+  // The vertical half-angle: the narrower one, so a gap in height fits too.
+  const halfView = Math.atan(Math.tan(FOV * Math.PI / 360) * 0.75);
   for (let s = 0; s < count; s++) {
     const length = Math.hypot(tx[s], ty[s]) || 1, fx = tx[s] / length, fy = ty[s] / length;
     // The ramp's open side relative to travel, from -1 (left) to 1 (right).
@@ -123,7 +124,7 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
     const behind = Math.atan2(-fy, -fx);
     azimuth[s] = behind + MAX_SWING * lean;
     elevation[s] = ELEVATION + ELEVATION_AIR * (1 - Math.abs(lean));
-    distance[s] = clamp(Math.max(BASE_DISTANCE + smoothSpeed[s] * 0.035, smoothSpan[s] * 0.5 / Math.tan(halfView) * 1.35 + 120), BASE_DISTANCE, MAX_DISTANCE);
+    distance[s] = clamp(Math.max(BASE_DISTANCE + smoothSpeed[s] * 0.035, smoothSpan[s] * 0.5 / Math.tan(halfView) * 1.3 + 140), BASE_DISTANCE, MAX_DISTANCE);
   }
   unwrap(azimuth, segment);
   const swing = new Float32Array(count), rise = new Float32Array(count), limit = new Float32Array(count).fill(MAX_DISTANCE);
