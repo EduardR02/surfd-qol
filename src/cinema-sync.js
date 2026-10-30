@@ -61,12 +61,20 @@ function anchors(a, b) {
 export function alignByPlace(a, b) {
   const out = new Float32Array(a.count);
   const pairs = anchors(a, b);
-  for (let i = 1; i < pairs.length; i++) warp(a, b, pairs[i - 1][0], pairs[i][0], pairs[i - 1][1], pairs[i][1], out);
+  const radius = Math.max(1, Math.round(EASE_SECONDS / a.dt));
+  for (let i = 1; i < pairs.length; i++) {
+    const [from, otherFrom] = pairs[i - 1], [to, otherTo] = pairs[i];
+    warp(a, b, from, to, otherFrom, otherTo, out);
+    // DTW may average several samples at a boundary. Timer anchors are exact.
+    out[from] = otherFrom;
+    out[to] = otherTo;
+    ease(out, radius, from, to);
+  }
   // Before the start and after the finish both runs keep their own clock.
   const ratio = a.dt / b.dt;
   for (let tick = 0; tick < a.start; tick++) out[tick] = Math.max(0, b.start - (a.start - tick) * ratio);
   for (let tick = a.finish + 1; tick < a.count; tick++) out[tick] = Math.min(b.count - 1, b.finish + (tick - a.finish) * ratio);
-  return ease(out, Math.max(1, Math.round(EASE_SECONDS / a.dt)), a.start, a.finish);
+  return out;
 }
 
 // b's index at the same time since each run's start.
@@ -77,18 +85,18 @@ export function alignByTime(a, b) {
   return out;
 }
 
-// A centred moving average inside [from, to], then kept non-decreasing.
+// A centred moving average within one checkpoint stretch. Shrinking its
+// window at either end preserves exact anchors instead of inventing a gap.
 function ease(values, radius, from, to) {
-  const copy = values.slice();
+  const copy = values.slice(from, to + 1);
   let total = 0, left = from, right = from - 1;
   for (let i = from; i <= to; i++) {
-    const low = Math.max(from, i - radius), high = Math.min(to, i + radius);
-    while (right < high) total += copy[++right];
-    while (left < low) total -= copy[left++];
+    const reach = Math.min(radius, i - from, to - i);
+    const low = i - reach, high = i + reach;
+    while (right < high) total += copy[++right - from];
+    while (left < low) total -= copy[left++ - from];
     values[i] = total / (right - left + 1);
   }
-  for (let i = 1; i < values.length; i++) if (values[i] < values[i - 1]) values[i] = values[i - 1];
-  return values;
 }
 
 // Each run's clock where it is, as the game's timer read it.

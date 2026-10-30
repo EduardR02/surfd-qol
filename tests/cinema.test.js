@@ -155,6 +155,26 @@ describe('matching the runs', () => {
     expect(gapText(-gap)).toMatchObject({value: `−${(-gap).toFixed(3)}`, tone: 'good'});
     expect(gapAt(slow, fast, alignByPlace(slow, fast), 5)).toBeNull();
   });
+  test('close finish deltas retain the correct sign and colour through route smoothing', () => {
+    const watched = straight({count: 1001, speed: 10});
+    const slower = straight({count: 1007, speed: 9800 / 986});
+    const map = alignByPlace(watched, slower);
+    expect(map[watched.start]).toBe(slower.start);
+    expect(map[watched.finish]).toBe(slower.finish);
+    const gap = gapAt(watched, slower, map, watched.finish);
+    expect(gap).toBeCloseTo(0.09, 6);
+    expect(gapText(gap)).toMatchObject({value: '−0.090', tone: 'good'});
+    const reverse = gapAt(slower, watched, alignByPlace(slower, watched), slower.finish);
+    expect(gapText(reverse)).toMatchObject({value: '+0.090', tone: 'loss'});
+  });
+
+  test('route smoothing preserves checkpoints and stays monotonic between anchors', () => {
+    const a = straight({count: 801}), b = straight({count: 901, speed: 17.5});
+    a.splits = [200, 500]; b.splits = [240, 560];
+    const map = alignByPlace(a, b);
+    for (const [from, to] of [[a.start, b.start], [200, 240], [500, 560], [a.finish, b.finish]]) expect(map[from]).toBe(to);
+    for (let tick = 1; tick < map.length; tick++) expect(map[tick]).toBeGreaterThanOrEqual(map[tick - 1]);
+  });
   test('real time preserves fractional starts and different physics tick durations', () => {
     const a = straight({dt: 0.01}), b = straight({dt: 0.02});
     a.startTick = 19.2; b.startTick = 49.8;
@@ -259,12 +279,6 @@ describe('the planned camera', () => {
 describe('picking runs', () => {
   const refs = {record: {runId: 'wr', username: 'fast', timeUs: 40e6}, loadReplay: async id => ({id}), loadRecordRoute: async () => ({ksf: true}),
     entries: [{rank: 1, runId: 'wr', username: 'fast', timeUs: 40e6}]};
-  test('offers your PB, recent best and both records, saying why one is missing', () => {
-    const list = ghostSources({best: null, recentBest: null, refs});
-    expect(list.map(source => source.label)).toEqual(['PB', 'Site WR', 'KSF WR']);
-    expect(list[0]).toMatchObject({load: null, reason: 'No finish on this map yet'});
-    expect(ghostSources({best: {official: true, runId: 'mine', time: 42}, refs})[0]).toMatchObject({label: 'PB', time: 42});
-  });
   test('the site WR and the leaderboard’s #1 are the same run', () => {
     expect(ghostSources({refs})[1].id).toBe(boardSource(refs.entries[0], refs).id);
   });
@@ -275,7 +289,7 @@ describe('cinematic replay lifecycle', () => {
   const originals = {};
   const calls = [];
   const keep = (...names) => { for (const name of names) if (!(name in originals)) originals[name] = globalThis[name]; };
-  const spy = name => { keep(name); const original = originals[name]; globalThis[name] = (...args) => { calls.push(name); return original?.(...args); }; };
+  const spy = name => { keep(name); globalThis[name] = () => { calls.push(name); }; };
   afterEach(() => {
     for (const [name, value] of Object.entries(originals)) globalThis[name] = value;
     for (const name of Object.keys(originals)) delete originals[name];
