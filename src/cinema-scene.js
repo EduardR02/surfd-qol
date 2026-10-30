@@ -7,8 +7,6 @@ import {trackPoint, trackYaw} from './cinema-track.js';
 // Lines run at hip height, clear of the ramp surface the player slides on.
 const LINE_HEIGHT = 20;
 const LINE_STEP = 2;
-// The path ahead of a ghost stays faintly visible this far; behind it is solid.
-const AHEAD_SECONDS = 6;
 // The game's ghost fades out as the camera nears it, for racing it in first
 // person. Compare's camera is often that close in tight rooms, so the ghost is
 // told the camera is at least this far away, along the same line of sight.
@@ -30,23 +28,51 @@ void main(){
   vec4 b=projectionMatrix*modelViewMatrix*vec4(next,1.0);
   vec2 dir=(b.xy/max(b.w,1e-3)-a.xy/max(a.w,1e-3))*resolution;
   dir=length(dir)>1e-5?normalize(dir):vec2(1.0,0.0);
-  float w=width*(tick<=head?1.0:0.62);
+  float w=width*(tick<=head?1.0:0.5);
   here.xy+=vec2(-dir.y,dir.x)*side*w/resolution*here.w;
   vSide=side;vAhead=tick-head;
   gl_Position=here;
 }`;
+// The line the run has left is solid: a pale core in a band of the run's
+// colour with a dark edge, like the game's own ghost trail, brightest over the
+// last few seconds with a pulse running towards the ghost. Ahead it's a faint
+// dashed preview of where the run goes.
 const lineFragment = `
 uniform vec3 color;
+uniform vec3 edge;
 uniform float opacity;
-uniform float ahead;
+uniform float rate;
+uniform float time;
+uniform float glow;
 varying float vSide;
 varying float vAhead;
 void main(){
-  float edge=1.0-smoothstep(0.45,1.0,abs(vSide));
-  float soon=1.0-smoothstep(0.0,ahead,vAhead);
-  float alpha=vAhead<=0.0?0.92:0.16+0.3*soon;
-  vec3 tint=color*mix(1.0,1.35,(1.0-abs(vSide))*step(vAhead,0.0));
-  gl_FragColor=vec4(tint,alpha*edge*opacity);
+  float d=abs(vSide);
+  float core=1.0-smoothstep(0.0,0.3,d);
+  float band=1.0-smoothstep(0.55,0.78,d);
+  float rim=1.0-smoothstep(0.86,1.0,d);
+  vec3 tint=mix(edge,mix(color,vec3(1.0),core*0.75),band);
+  float alpha;
+  if(glow>0.5){
+    float halo=pow(1.0-d,2.0);
+    float recent=vAhead<=0.0?exp(vAhead/rate/2.5):0.0;
+    gl_FragColor=vec4(color,halo*(0.08+0.32*recent)*opacity);
+    if(gl_FragColor.a<.004)discard;
+    #include <colorspace_fragment>
+    return;
+  }
+  if(vAhead<=0.0){
+    float behind=-vAhead/rate;
+    float recent=exp(-behind/3.0);
+    float pulse=0.5+0.5*sin(behind*5.0-time*7.0);
+    tint*=1.0+0.35*recent*pulse*band;
+    alpha=mix(0.62,1.0,recent)*mix(rim*0.7,1.0,band);
+  }else{
+    float ahead=vAhead/rate;
+    float dash=step(0.45,fract(ahead*3.0));
+    alpha=(0.55-0.4*smoothstep(0.0,6.0,ahead))*dash*band;
+  }
+  gl_FragColor=vec4(tint,alpha*opacity);
   if(gl_FragColor.a<.004)discard;
   #include <colorspace_fragment>
 }`;
@@ -55,6 +81,9 @@ void main(){
 export const RUN_COLORS = [
   {body: '#b9781f', pale: '#fff3de', rim: '#ffcf7a', outline: '#2a1704', line: '#f6c177'},
   {body: '#2f9bbd', pale: '#effdff', rim: '#9ff3ff', outline: '#03222d', line: '#5fd3f3'},
+  {body: '#4f9a3c', pale: '#f1ffe9', rim: '#b8f59a', outline: '#0d2406', line: '#9be37a'},
+  {body: '#c2513f', pale: '#fff0ec', rim: '#ffb3a3', outline: '#2b0a05', line: '#ff8c6b'},
+  {body: '#8b97a3', pale: '#ffffff', rim: '#e8f0f7', outline: '#1b2229', line: '#e9eef3'},
 ];
 
 function find(group, test) {
@@ -86,7 +115,7 @@ export function createCinemaScene(renderer, runs) {
     outline.material.uniforms.outlineColor.value.set(colors.outline);
     three ??= {Mesh: body.constructor, Geometry: body.geometry.constructor, Attribute: body.geometry.getAttribute('position').constructor,
       Material: body.material.constructor, Color: body.material.uniforms.deepColor.value.constructor, Vector: body.position.constructor};
-    const line = createLine(three, run.track, colors.line);
+    const line = createLine(three, run.track, colors.line, colors.outline);
     for (const mesh of line.meshes) scene.add(mesh);
     parts.push({run, ghost, label, trail, line, frame: {x: 0, y: 0, z: 0, yaw: 0, ducked: false, opacity: 1, trail: new Float32Array(0), trailCount: 0, label: ''}, point: {x: 0, y: 0, z: 0}});
     disposers.push(() => { ghost.dispose(); for (const mesh of line.meshes) scene.remove(mesh); line.dispose(); });
@@ -128,7 +157,7 @@ export function createCinemaScene(renderer, runs) {
 // One run's path as a ribbon a fixed number of pixels wide, drawn twice: once
 // depth-tested, and once faintly through walls so a line behind a ramp is
 // still there to follow.
-function createLine(three, track, color) {
+function createLine(three, track, color, edge) {
   const points = [];
   for (let tick = 0; tick < track.count; tick += LINE_STEP) points.push(tick);
   if (points.at(-1) !== track.count - 1) points.push(track.count - 1);
@@ -163,24 +192,27 @@ function createLine(three, track, color) {
   geometry.setAttribute('side', new three.Attribute(side, 1));
   geometry.setAttribute('tick', new three.Attribute(tick, 1));
   geometry.setIndex(indices);
-  const material = (opacity, depthTest, width) => new three.Material({
+  const material = (opacity, depthTest, width, glow = 0) => new three.Material({
     vertexShader: lineVertex, fragmentShader: lineFragment, transparent: true, depthWrite: false, depthTest,
-    uniforms: {color: {value: new three.Color(color)}, opacity: {value: opacity}, width: {value: width}, head: {value: 0},
-      ahead: {value: AHEAD_SECONDS / track.dt}, resolution: {value: {x: 1, y: 1, isVector2: true}}},
+    uniforms: {color: {value: new three.Color(color)}, edge: {value: new three.Color(edge)}, opacity: {value: opacity}, width: {value: width},
+      head: {value: 0}, rate: {value: 1 / track.dt}, time: {value: 0}, glow: {value: glow}, resolution: {value: {x: 1, y: 1, isVector2: true}}},
+    // The halo adds light (Three's AdditiveBlending), so it brightens what's behind it without hiding it.
+    ...glow ? {blending: 2} : {},
   });
-  const solid = material(1, true, 3.4), xray = material(0.2, false, 2.4);
-  const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, solid)];
-  meshes[0].renderOrder = 30; meshes[1].renderOrder = 31;
+  const solid = material(1, true, 7), xray = material(0.22, false, 4), halo = material(1, true, 22, 1);
+  const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, halo), new three.Mesh(geometry, solid)];
+  meshes[0].renderOrder = 30; meshes[1].renderOrder = 31; meshes[2].renderOrder = 32;
   for (const mesh of meshes) { mesh.frustumCulled = false; mesh.name = 'surfd-qol-compare-line'; }
   return {
     meshes,
     set(head, width, height) {
       for (const {material: m} of meshes) {
         m.uniforms.head.value = head;
+        m.uniforms.time.value = performance.now() / 1000;
         m.uniforms.resolution.value.x = width;
         m.uniforms.resolution.value.y = height;
       }
     },
-    dispose() { geometry.dispose(); solid.dispose(); xray.dispose(); },
+    dispose() { geometry.dispose(); solid.dispose(); xray.dispose(); halo.dispose(); },
   };
 }
