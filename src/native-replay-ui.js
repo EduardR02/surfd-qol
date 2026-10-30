@@ -109,7 +109,7 @@ export function createReplayUi(options) {
     }
     if (notice.textContent !== (next.notice ?? '')) notice.textContent = next.notice ?? '';
     // Compare's moments aren't the played run's alone, so it keeps no savelocs.
-    const comparing = getCinema() === true;
+    const comparing = getCinema() === true || next.ghosts === true;
     if (save.hidden !== comparing) { save.hidden = keys.hidden = comparing; if (comparing && sheetOpen) showSheet(); }
     extras.hidden = false;
   }

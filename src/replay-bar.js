@@ -414,6 +414,8 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     indexed.hidden = status.complete !== false;
     if (indexed.style.width !== indexedWidth) indexed.style.width = indexedWidth;
     q('[data-act="return"]').hidden = !status.parked;
+    // With other runs alongside there are no locs to save or keys for them.
+    if (q('[data-act="save"]').hidden !== !!status.ghosts) q('[data-act="save"]').hidden = q('[data-pop="keys"]').hidden = !!status.ghosts;
     paintMarks();
     paintPosition(position());
     const state = status.ended ? 'again' : status.playing ? 'pause' : 'play';
