@@ -116,16 +116,16 @@ Seeking to an unvisited section can leave feedback grey: the game’s keyframe h
 
 ### Runs alongside a replay
 
-While you watch any replay, **Add run** on the replay bar plays another run of the map beside it: your PB, your recent best, the site WR, the KSF WR, or any run on the leaderboard (find one by name or rank). Add up to four. Each plays as a ghost with its line through the map, from a third-person camera, and the replay bar, speeds, seeking and stage jumps keep working as usual.
+While you watch any replay, **Cinematic** on the replay bar switches to its third-person camera, including for a single run. **Add run** adds your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (find one by name or rank). Adding a run also enables the camera. The replay bar, speeds, seeking and stage jumps keep working as usual.
 
-- The row above the replay bar lists each run with its time and how far this run is behind (red) or ahead (teal) of it at this point. × takes a run out; without any, the replay goes back to first person.
-- **Real time** (the default) races the runs on the clock. **Side by side** keeps them at the same place on the route instead: the faster runs are slowed down, so you see where the lines differ.
+- The run chips show each time and how far this run is behind (red) or ahead (teal) at this point. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
+- **Real time** (the default) aligns the runs to their final native start-zone departure, including fractional ticks and a return to the start zone during prestrafe. **Side by side** matches places along the route instead, adjusting playback to show where the lines differ; it is not a real-time race.
 - The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
 - Each run keeps its colour when another is removed. Its line has a soft comet tail and a quieter preview ahead; the streaks follow replay time, so pausing freezes them and seeking restores them.
 - **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
 - With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
 
-Adding a run re-simulates it and takes a second or two. Nothing runs until you add one.
+Preparing a run re-simulates it and plans its camera. Nothing runs until you enable Cinematic or add a run. The limit is four extras (five runs total): a readability and colour-palette policy, not a measured engine limit. Every extra adds simulation, track storage, route matching and drawing work.
 
 ### What's kept
 

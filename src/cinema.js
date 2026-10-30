@@ -4,10 +4,8 @@
 // jumps work as usual; each added run follows it by the clock (Real time) or
 // by place on the route (Side by side).
 //
-// Nothing here runs until a run is added: no timers, listeners, observers or
-// frame work. With ghosts it wraps the game's map renderer, listens for drags
-// on the game canvas and checks each frame that the replay still plays;
-// removing the last ghost or close() puts all of it back.
+// Nothing runs until cinematic viewing is enabled (directly or by adding a
+// run). Solo and group shots use the same camera; close() restores the game.
 import {createTrack, recordTrack, trackPoint, trackYaw} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
@@ -51,66 +49,93 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     return !!adapter?.cinema?.renderer?.()?.qolScene && !!replay && !!map && replay.mapId === map.id && replay.mapVersion === map.version;
   }
 
-  // Runs added while another is loading wait their turn, so tracks and plans are made one at a time.
-  let queue = Promise.resolve();
-  function add(run) {
-    if (!available()) return Promise.reject(new Error('Ghosts need a replay of the loaded map.'));
+  const owns = current => state === current && playing() === current.replay;
+  function currentState() {
+    if (!available()) throw new Error('Cinematic viewing needs a replay of the loaded map.');
     const replay = playing();
     if (state && state.replay !== replay) close();
-    state ??= createState(replay);
-    const current = state;
+    return state ??= createState(replay);
+  }
+  async function setEnabled(enabled) {
+    if (!enabled) { close(); return false; }
+    const current = currentState();
+    return current.enabling ??= (async () => {
+      try {
+        await prepare(current);
+        if (!owns(current)) return false;
+        if (!current.renderer) await show(current, current.sync, current.focus);
+        return owns(current) && !!current.renderer;
+      } catch (error) {
+        if (state === current && !current.renderer && !current.loading.length) close();
+        throw error;
+      }
+    })().finally(() => { current.enabling = null; });
+  }
+  function add(run) {
+    let current;
+    try { current = currentState(); } catch (error) { return Promise.reject(error); }
     if (current.runs.some(item => item.id === run.id) || current.loading.some(item => item.id === run.id)) return Promise.resolve(false);
     if (current.runs.length + current.loading.length >= MAX_GHOSTS) return Promise.reject(new Error(`Up to ${MAX_GHOSTS} runs alongside this one.`));
-    current.loading.push({id: run.id, label: run.label});
+    const used = new Set([...current.runs, ...current.loading].map(item => item.colorIndex));
+    let colorIndex = 1;
+    while (used.has(colorIndex)) colorIndex++;
+    const pending = {id: run.id, label: run.label, colorIndex};
+    const cancelled = new Promise(resolve => { pending.cancel = () => resolve(false); });
+    current.loading.push(pending);
     notify();
-    const step = queue.then(() => load(current, run));
-    queue = step.catch(() => {});
+    const step = current.queue.then(() => Promise.race([load(current, run, pending), cancelled]));
+    current.queue = step.catch(() => {});
     return step.finally(() => {
       if (state !== current) return;
-      current.loading = current.loading.filter(item => item.id !== run.id);
-      if (!current.runs.length && !current.loading.length) close();
+      current.loading = current.loading.filter(item => item !== pending);
+      if (!current.renderer && !current.runs.length && !current.loading.length) close();
       else notify();
     });
   }
   function createState(replay) {
     // sync and focus are the shown camera's: Real time or Side by side, and
     // null for the group shot, 'played' or a run's id for one run alone.
-    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], sync: 'time', focus: null, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
+    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined};
   }
-  async function load(current, run) {
-    const owned = () => state === current && playing() === current.replay;
-    const adapter = getAdapter(), session = adapter.getSession();
-    const replay = await run.load();
-    if (!owned()) return false;
-    if (!replay) throw new Error('That run’s replay isn’t available.');
-    // Replays carry no run id: the run being watched is known by its contents.
-    current.fingerprint ??= routeFingerprint(current.replay);
-    if (replay === current.replay || replay.commands?.length === current.replay.commands.length && routeFingerprint(replay) === current.fingerprint)
-      throw new Error('That’s the run you’re watching.');
-    current.track ??= await record({adapter, session, replay: current.replay, isCurrent: owned, yieldTask: loadIdle});
-    if (!owned()) return false;
-    if (!current.track) throw new Error('This replay can’t have ghosts.');
-    const track = await record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle});
-    if (!owned()) return false;
-    if (!track) throw new Error('That run couldn’t be read on this map.');
-    if (current.trace === undefined) {
+  function prepare(current) {
+    return current.ready ??= (async () => {
+      const adapter = getAdapter(), session = adapter.getSession();
+      current.track = await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle});
+      if (!owns(current)) return;
+      if (!current.track) throw new Error('This replay can’t use cinematic viewing.');
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
         return hit.startSolid || hit.allSolid ? 1 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
-    }
-    const entry = {id: run.id, label: run.label, track, maps: {time: alignByTime(current.track, track), place: null}, time: track.time};
-    const runs = [...current.runs, entry];
-    const plan = await planFor(current, runs, current.sync, current.focus, owned);
-    if (!owned() || !plan) return false;
-    current.runs = runs;
-    current.plans = {[planKey(current.sync, current.focus)]: plan};
-    current.plan = plan;
-    if (!current.renderer) start(current);
-    else rebuild(current);
-    return true;
+    })().catch(error => { current.ready = null; throw error; });
+  }
+  async function load(current, run, pending) {
+    const owned = () => owns(current) && current.loading.includes(pending);
+    if (!owned()) return false;
+    const replay = await run.load();
+    if (!owned()) return false;
+    if (!replay) throw new Error('That run’s replay isn’t available.');
+    current.fingerprint ??= routeFingerprint(current.replay);
+    const fingerprint = routeFingerprint(replay);
+    if (replay === current.replay || replay.commands?.length === current.replay.commands.length && fingerprint === current.fingerprint)
+      throw new Error('That’s the run you’re watching.');
+    if (current.runs.some(entry => entry.fingerprint === fingerprint)) throw new Error('That run is already added.');
+    await prepare(current);
+    if (!owned()) return false;
+    const adapter = getAdapter(), session = adapter.getSession();
+    const track = await record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle});
+    if (!owned()) return false;
+    if (!track) throw new Error('That run couldn’t be read on this map.');
+    const entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track,
+      maps: {time: alignByTime(current.track, track), place: alignByPlace(current.track, track)}, time: track.time};
+    current.runs = [...current.runs, entry];
+    current.plans = {};
+    if (current.renderer) rebuild(current);
+    const request = current.pending;
+    await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus);
+    return owned();
   }
   const planKey = (sync, focus) => `${sync}|${focus ?? ''}`;
   async function planFor(current, runs, sync, focus, owned) {
@@ -129,43 +154,55 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     for (let tick = 0; tick < clock.count; tick++) {
       const at = map[tick], nearest = Math.round(Math.max(0, Math.min(track.count - 1, at)));
       trackPoint(track, at, point);
-      out.position.set([point.x, point.y, point.z], tick * 3);
+      out.position[tick * 3] = point.x; out.position[tick * 3 + 1] = point.y; out.position[tick * 3 + 2] = point.z;
       out.yaw[tick] = trackYaw(track, at);
       out.ducked[tick] = track.ducked[nearest];
       out.normal.set(track.normal.subarray(nearest * 3, nearest * 3 + 3), tick * 3);
-      if (tick) for (let k = Math.floor(map[tick - 1]) + 1; k <= Math.ceil(at) && !out.cut[tick]; k++) out.cut[tick] = track.cut[k] ?? 0;
+      if (tick) for (let k = Math.floor(map[tick - 1]) + 1; k <= Math.floor(at) && !out.cut[tick]; k++) out.cut[tick] = track.cut[k] ?? 0;
     }
     return out;
   }
   function remove(id) {
     const current = state;
-    if (!current?.runs.some(run => run.id === id)) return;
-    current.runs = current.runs.filter(run => run.id !== id);
-    if (!current.runs.length) { close(); return; }
-    current.plans = {};
-    rebuild(current);
-    void show(current, current.sync, current.focus === id ? null : current.focus, true);
-  }
-  // Shows the camera for these choices, planning it first if it's new; until
-  // then the camera keeps the last one.
-  async function show(current, sync, focus, fresh = false) {
-    const key = planKey(sync, focus);
-    if (current.plans[key] && !fresh) {
-      Object.assign(current, {sync, focus, plan: current.plans[key], pending: null});
-      notify();
+    if (!current) return;
+    const before = current.loading.length;
+    for (const pending of current.loading) if (pending.id === id) pending.cancel();
+    current.loading = current.loading.filter(run => run.id !== id);
+    if (!current.runs.some(run => run.id === id)) {
+      if (!current.renderer && !current.runs.length && !current.loading.length) { close(); return; }
+      if (current.loading.length !== before) notify();
       return;
     }
-    const runs = current.runs, owned = () => state === current && current.runs === runs && current.pending === key;
-    current.pending = key;
+    current.runs = current.runs.filter(run => run.id !== id);
+    current.plans = {};
+    rebuild(current);
+    const request = current.pending;
+    const focus = request ? request.focus : current.focus;
+    return show(current, request?.sync ?? current.sync, focus === id ? null : focus).catch(() => { if (owns(current)) close(); });
+  }
+  // A unique request token prevents an older plan (even for the same choices)
+  // from replacing a newer selection after an idle-time yield.
+  async function show(current, sync, focus) {
+    const key = planKey(sync, focus), runs = current.runs;
+    const request = {sync, focus};
+    current.pending = request;
+    const owned = () => owns(current) && current.runs === runs && current.pending === request;
     notify();
-    const plan = await planFor(current, runs, sync, focus, owned);
-    if (!owned() || !plan) return;
-    current.plans[key] = plan;
-    Object.assign(current, {sync, focus, plan, pending: null});
-    notify();
+    try {
+      const plan = current.plans[key] ?? await planFor(current, runs, sync, focus, owned);
+      if (!owned() || !plan) return;
+      current.plans[key] = plan;
+      Object.assign(current, {sync, focus, plan, pending: null});
+      if (!current.renderer) start(current);
+      notify();
+    } catch (error) {
+      if (owned()) { current.pending = null; notify(); }
+      if (owns(current) && !current.renderer) close();
+      throw error;
+    }
   }
 
-  // From the first ghost until stop(): the renderer wrap, the canvas listeners
+  // While cinematic viewing is enabled: the renderer wrap, canvas listeners
   // and a check each frame that the replay still plays.
   function start(current) {
     attach(current, getAdapter().cinema.renderer());
@@ -186,12 +223,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.checking = requestAnimationFrame(check);
   }
   function attach(current, renderer) {
-    current.scene = createScene(renderer, [{track: current.track}, ...current.runs.map(run => ({track: run.track}))]);
+    current.scene = createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
     current.renderer = renderer;
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
       try { return original.call(this, frame(current, view) ?? view); }
-      catch (error) { if (state === current) queueMicrotask(close); throw error; }
+      catch (error) { queueMicrotask(() => { if (state === current) close(); }); throw error; }
     };
   }
   function detach(current) {
@@ -203,19 +240,22 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   function rebuild(current) {
     const renderer = current.renderer;
     detach(current);
-    attach(current, renderer);
+    try { attach(current, renderer); } catch (error) { if (state === current) close(); throw error; }
   }
 
   // The played run's fractional index from the frame's state and interpolation.
   function frame(current, view) {
-    if (playing() !== current.replay) { queueMicrotask(close); return null; }
+    if (playing() !== current.replay) { queueMicrotask(() => { if (state === current) close(); }); return null; }
     const a = current.track, plan = current.plan, sync = current.sync;
     if (!plan) return null;
-    const tick = Math.max(0, Math.min(a.count - 1, (view.state?.tick ?? current.base) - current.base - 1 + (Number.isFinite(view.qolAlpha) ? view.qolAlpha : 1)));
+    let tick = Math.max(0, Math.min(a.count - 1, (view.state?.tick ?? current.base) - current.base - 1 + (Number.isFinite(view.qolAlpha) ? Math.max(0, Math.min(1, view.qolAlpha)) : 1)));
+    // Native teleports set previous=current, so they bypass interpolation.
+    if (a.cut[Math.ceil(tick)]) tick = Math.ceil(tick);
     const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
     current.at.length = current.runs.length + 1;
     current.at[0] = tick;
-    for (const [index, run] of current.runs.entries()) {
+    for (let index = 0; index < current.runs.length; index++) {
+      const run = current.runs[index];
       const map = run.maps[sync] ?? run.maps.time;
       current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
     }
@@ -287,20 +327,22 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   async function setSync(sync) {
     const current = state;
     if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
-    await show(current, sync, current.focus);
+    await show(current, sync, current.pending ? current.pending.focus : current.focus);
   }
   // null for the group shot, 'played' for the watched run, or an added run's id;
   // choosing the focused run again goes back to the group.
   async function setFocus(focus) {
     const current = state;
     if (!current?.renderer || focus !== null && focus !== 'played' && !current.runs.some(run => run.id === focus)) return;
-    await show(current, current.sync, focus === current.focus ? null : focus);
+    const shown = current.pending ? current.pending.focus : current.focus;
+    await show(current, current.pending?.sync ?? current.sync, focus !== null && focus === shown ? null : focus);
   }
 
   function close() {
     const current = state;
     if (!current) return;
     state = null;
+    for (const pending of current.loading) pending.cancel();
     current.unlisten?.();
     cancelAnimationFrame(current.checking);
     detach(current);
@@ -309,17 +351,19 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
 
   return {
     available,
+    setEnabled,
     add,
     remove,
     close,
     resetView,
     setSync,
     setFocus,
-    // True while ghosts play: the renderer is Compare's.
+    // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
+    get comparing() { return !!state?.renderer && state.runs.length > 0; },
     // For the dev console: the watched track, then each added run's.
     get tracks() { return state?.track ? [state.track, ...state.runs.map(run => run.track)] : null; },
-    // What the UI shows, null with no ghosts: the watched run first, then each
+    // What the UI shows, null while cinematic viewing is disabled: the watched run first, then each
     // added run with its colour, time and gap at this point (by place, in both
     // modes: in Real time the clocks match by definition), runs still loading,
     // where each ghost's name goes, and whether the view was moved.
@@ -327,14 +371,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const current = state;
       if (!current) return null;
       const tick = current.tick ?? 0;
-      const runs = current.runs.map((run, index) => {
-        run.maps.place ??= alignByPlace(current.track, run.track);
-        return {id: run.id, label: run.label, color: colorOf(index + 1), time: run.time, gap: gapAt(current.track, run.track, run.maps.place, tick)};
-      });
+      const runs = current.runs.map(run => ({
+        id: run.id, label: run.label, colorIndex: run.colorIndex, color: colorOf(run.colorIndex),
+        time: run.time, gap: gapAt(current.track, run.track, run.maps.place, tick),
+      }));
       let labels = [];
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
-      return {active: !!current.renderer, played: {color: colorOf(0), time: current.track?.time ?? null}, runs, loading: current.loading.slice(),
-        sync: current.sync, focus: current.focus, pending: current.pending?.split('|')[0] ?? null, adjusted: current.adjusted, labels};
+      return {active: !!current.renderer, played: {colorIndex: 0, color: colorOf(0), time: current.track?.time ?? null}, runs,
+        loading: current.loading.map(({id, label, colorIndex}) => ({id, label, colorIndex, color: colorOf(colorIndex)})),
+        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
     },
     destroy() { close(); },
   };

@@ -67,8 +67,8 @@ const replayControl = createReplayControl({
     reset: tick => { metrics.reset({replayGap: tick > 0}); start.reset(); }
   },
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
-  // While other runs play alongside, the timeline's touches and locs step aside.
-  ghosts: () => cinema.active,
+  // Multiple runs have different touches and savelocs; a solo camera keeps its own.
+  ghosts: () => cinema.comparing,
   // A PB/WR you open from the Runs view reuses its comparison analysis; any
   // other replay is named by its contents, so the same run is analysed once.
   boardsFor: ({ replay, session, analysis, isCurrent }) => replay.commands.length > MAX_COMMANDS ? null : replayStore.acquire({

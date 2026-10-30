@@ -65,13 +65,13 @@ function lowest(values, radius, segment) {
 // ({b, map} for a single one). group frames every run together; without it
 // the camera is on run a alone, the others passing through its shot.
 // Returns {count, eye, target, segment}: one entry every STEP ticks of run a.
-export async function planCamera({a, b = null, map = null, others = [{track: b, map}], group = true, trace = null, yieldTask = null, isCurrent = () => true}) {
+export async function planCamera({a, b = null, map = null, others = b ? [{track: b, map}] : [], group = true, trace = null, yieldTask = null, isCurrent = () => true}) {
   const count = Math.ceil(a.count / STEP) + 1;
   const sampleTick = s => Math.min(a.count - 1, s * STEP);
   const seconds = value => value / (a.dt * STEP);
   const focus = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
   const span = new Float32Array(count), speed = new Float32Array(count), side = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
-  const segment = new Uint32Array(count);
+  const segment = new Uint32Array(count), cutTick = new Uint32Array(count);
   // Positions of the played run and each other run, and how much each other run counts in the framing.
   const runs = [a, ...others.map(other => other.track)].map(() => new Float32Array(count * 3));
   const shares = others.map(() => new Float32Array(count));
@@ -80,18 +80,24 @@ export async function planCamera({a, b = null, map = null, others = [{track: b, 
   for (let s = 0; s < count; s++) {
     const tick = sampleTick(s), previous = s ? sampleTick(s - 1) : 0;
     let cut = false;
-    for (let k = previous + 1; k <= tick && !cut; k++) cut = a.cut[k] === 1;
+    for (let k = previous + 1; k <= tick && !cut; k++) {
+      cut = a.cut[k] === 1;
+      if (cut) cutTick[s] = k;
+    }
     for (const {track, map: where} of others)
-      for (let k = Math.floor(s ? where[previous] : where[tick]) + 1; k <= Math.ceil(where[tick]) && !cut; k++) cut = track.cut[k] === 1;
+      for (let k = Math.floor(s ? where[previous] : where[tick]) + 1; k <= Math.floor(where[tick]) && !cut; k++) {
+        cut = track.cut[k] === 1;
+        if (cut) cutTick[s] = tick;
+      }
     if (s && cut) cutAt++;
     segment[s] = cutAt;
     trackPoint(a, tick, point);
-    runs[0].set([point.x, point.y, point.z], s * 3);
+    runs[0][s * 3] = point.x; runs[0][s * 3 + 1] = point.y; runs[0][s * 3 + 2] = point.z;
     let fx = point.x, fy = point.y, fz = point.z, total = 1;
     for (const [index, {track, map: where}] of others.entries()) {
       const ax = runs[0][s * 3], ay = runs[0][s * 3 + 1], az = runs[0][s * 3 + 2];
       trackPoint(track, where[tick], point);
-      runs[index + 1].set([point.x, point.y, point.z], s * 3);
+      runs[index + 1][s * 3] = point.x; runs[index + 1][s * 3 + 1] = point.y; runs[index + 1][s * 3 + 2] = point.z;
       // Far off (another line, a skipped stage), a run stops pulling the framing.
       const weight = group ? 1 - smoothstep(GROUP_NEAR, GROUP_FAR, Math.hypot(point.x - ax, point.y - ay, point.z - az)) : 0;
       shares[index][s] = weight;
@@ -227,7 +233,7 @@ export async function planCamera({a, b = null, map = null, others = [{track: b, 
     closest = closest.map((value, s) => Math.min(value, closer[s]));
     shot = compose(weight, closest);
   }
-  return {count, eye: shot.eye, target: shot.target, segment};
+  return {count, eye: shot.eye, target: shot.target, segment, cutTick};
 }
 
 // Angles kept continuous within a segment, so blurring never spins the long way.
@@ -242,14 +248,16 @@ function unwrap(angles, segment) {
 // The planned eye and target at a fractional tick of run a, into out.
 export function shotAt(plan, tick, out = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}) {
   const at = clamp(tick / STEP, 0, plan.count - 1), low = Math.floor(at), high = Math.min(plan.count - 1, low + 1);
-  const t = plan.segment[high] === plan.segment[low] ? at - low : 0;
-  for (const [name, array] of [['eye', plan.eye], ['target', plan.target]]) {
-    const point = out[name];
-    point.x = array[low * 3] + (array[high * 3] - array[low * 3]) * t;
-    point.y = array[low * 3 + 1] + (array[high * 3 + 1] - array[low * 3 + 1]) * t;
-    point.z = array[low * 3 + 2] + (array[high * 3 + 2] - array[low * 3 + 2]) * t;
-  }
+  const t = plan.segment[high] === plan.segment[low] ? at - low : tick >= (plan.cutTick?.[high] ?? high * STEP) ? 1 : 0;
+  interpolatePoint(plan.eye, low, high, t, out.eye);
+  interpolatePoint(plan.target, low, high, t, out.target);
   return out;
+}
+
+function interpolatePoint(array, low, high, t, point) {
+  point.x = array[low * 3] + (array[high * 3] - array[low * 3]) * t;
+  point.y = array[low * 3 + 1] + (array[high * 3 + 1] - array[low * 3 + 1]) * t;
+  point.z = array[low * 3 + 2] + (array[high * 3 + 2] - array[low * 3 + 2]) * t;
 }
 
 // The player's own adjustment on top of the plan: turned round the ghosts by

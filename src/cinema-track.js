@@ -11,14 +11,14 @@ const defer = () => new Promise(resolve => typeof requestIdleCallback === 'funct
 const idleLeft = deadline => !!deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
 // A move this far within one tick is a teleport, never movement: the camera cuts there.
 const JUMP_UNITS = 600;
-const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'start-return', 'stage-return']);
+const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'stage-return']);
 
 // Positions of index i are the state after i commands, so a track has one
 // more entry than the replay has commands.
 export function createTrack(count, dt) {
   // elapsed is the game's own run clock on each tick, 0 before the start.
   return {dt, count, position: new Float32Array(count * 3), yaw: new Float32Array(count), ducked: new Uint8Array(count), elapsed: new Float64Array(count),
-    normal: new Float32Array(count * 3), cut: new Uint8Array(count), start: 0, finish: count - 1, splits: [], time: null};
+    normal: new Float32Array(count * 3), cut: new Uint8Array(count), start: 0, startTick: null, finish: count - 1, splits: [], time: null};
 }
 
 // Linear interpolation at a fractional index, into out {x, y, z}.
@@ -62,7 +62,9 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
   const dt = Number.isFinite(shadow.config?.dt) && shadow.config.dt > 0 ? shadow.config.dt : 0.015;
   const groundNormal = Number.isFinite(shadow.config?.groundNormal) ? shadow.config.groundNormal : 0.7;
   const track = createTrack(replay.commands.length + 1, dt);
-  let index = 0, normal = null, active = null, started = false, splits = 0;
+  track.phase = new Uint8Array(track.count);
+  const base = shadow.state.tick ?? replay.initialState?.tick ?? 0;
+  let index = 0, normal = null, active = null, startTick = null, splits = 0;
   const keep = at => {
     const state = shadow.state, p = state.position, o = at * 3;
     track.position[o] = p.x; track.position[o + 1] = p.y; track.position[o + 2] = p.z;
@@ -70,6 +72,21 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
     track.ducked[at] = state.ducked ? 1 : 0;
     if (normal) { track.normal[o] = normal.x; track.normal[o + 1] = normal.y; track.normal[o + 2] = normal.z; }
     if (at && Math.hypot(p.x - track.position[o - 3], p.y - track.position[o - 2], p.z - track.position[o - 1]) > JUMP_UNITS) track.cut[at] = 1;
+    const timer = shadow.timer?.state;
+    if (Number.isFinite(timer?.elapsed)) track.elapsed[at] = timer.elapsed;
+    track.phase[at] = timer?.phase === 'finished' ? 2 : timer?.phase === 'running' ? 1 : 0;
+    if (track.phase[at] && (startTick !== timer.startTick || track.startTick === null)) {
+      startTick = timer.startTick;
+      track.startTick = Number.isFinite(startTick) ? startTick - base : at;
+      track.start = Math.max(0, Math.min(track.count - 1, Math.ceil(track.startTick)));
+      track.finish = track.count - 1;
+      track.time = null;
+      track.splits.length = splits = 0;
+    }
+    const count = Array.isArray(timer?.splits) ? timer.splits.length : 0;
+    while (splits < count) { splits++; track.splits.push(at); }
+    if (timer?.phase === 'finished' && track.time === null) { track.finish = at; track.time = timer.elapsed; }
+    if (timer?.phase === 'ready') startTick = null;
   };
   // Only ramp contacts are wanted, so the other observer callbacks do nothing.
   const contacts = {begin() {}, end() {}, acceleration() {}, reset() {},
@@ -88,12 +105,8 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
         const events = shadow.step(replay.commands[index++]);
         keep(index);
         if (events.some(event => TELEPORTS.has(event))) track.cut[index] = 1;
-        const timer = shadow.timer?.state;
-        if (Number.isFinite(timer?.elapsed)) track.elapsed[index] = timer.elapsed;
-        if (!started && timer?.phase === 'running') { started = true; track.start = index; }
-        const count = Array.isArray(timer?.splits) ? timer.splits.length : 0;
-        while (splits < count) { splits++; track.splits.push(index); }
-        if (timer?.phase === 'finished' && track.time === null) { track.finish = index; track.time = timer.elapsed; }
+        // A start-zone re-entry resets only the clock, not the physics path.
+        // keep() follows the final departure, including sub-tick startTick.
       }
     } finally {
       active = null;

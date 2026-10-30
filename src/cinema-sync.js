@@ -72,17 +72,20 @@ export function alignByPlace(a, b) {
 // b's index at the same time since each run's start.
 export function alignByTime(a, b) {
   const out = new Float32Array(a.count), ratio = a.dt / b.dt;
-  for (let tick = 0; tick < a.count; tick++) out[tick] = Math.max(0, Math.min(b.count - 1, b.start + (tick - a.start) * ratio));
+  const startA = a.startTick ?? a.start, startB = b.startTick ?? b.start;
+  for (let tick = 0; tick < a.count; tick++) out[tick] = Math.max(0, Math.min(b.count - 1, startB + (tick - startA) * ratio));
   return out;
 }
 
 // A centred moving average inside [from, to], then kept non-decreasing.
 function ease(values, radius, from, to) {
   const copy = values.slice();
+  let total = 0, left = from, right = from - 1;
   for (let i = from; i <= to; i++) {
-    let total = 0, n = 0;
-    for (let k = Math.max(from, i - radius); k <= Math.min(to, i + radius); k++) { total += copy[k]; n++; }
-    values[i] = total / n;
+    const low = Math.max(from, i - radius), high = Math.min(to, i + radius);
+    while (right < high) total += copy[++right];
+    while (left < low) total -= copy[left++];
+    values[i] = total / (right - left + 1);
   }
   for (let i = 1; i < values.length; i++) if (values[i] < values[i - 1]) values[i] = values[i - 1];
   return values;
@@ -91,13 +94,20 @@ function ease(values, radius, from, to) {
 // Each run's clock where it is, as the game's timer read it.
 function clock(track, at) {
   const index = Math.max(0, Math.min(track.finish, at)), low = Math.floor(index), high = Math.min(track.count - 1, low + 1);
+  if (track.phase && (track.startTick === null || index < track.startTick || !track.phase[low] && !track.phase[high])) return null;
+  // The first running sample includes only the remainder of its start tick.
+  // Interpolating it from zero would incorrectly stretch that fraction.
+  if (track.startTick !== null && index >= track.startTick) {
+    return Math.min(track.time ?? Infinity, (index - track.startTick) * track.dt);
+  }
   return track.elapsed[low] + (track.elapsed[high] - track.elapsed[low]) * (index - low);
 }
 // The other run's time to this place minus the played run's, in seconds:
 // negative when the other run got here sooner.
 export function gapAt(a, b, map, tick) {
   const index = Math.max(0, Math.min(a.count - 1, tick));
-  if (index < a.start) return null;
+  if (index < (a.startTick ?? a.start)) return null;
   const low = Math.floor(index), high = Math.min(a.count - 1, low + 1);
-  return clock(b, map[low] + (map[high] - map[low]) * (index - low)) - clock(a, index);
+  const other = clock(b, map[low] + (map[high] - map[low]) * (index - low)), played = clock(a, index);
+  return played === null || other === null ? null : other - played;
 }
