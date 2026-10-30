@@ -39,6 +39,9 @@ export const cinemaStyles = `
 .cn-btn svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
 .cn-run{display:inline-flex;align-items:center;gap:7px;min-width:0;padding:5px 4px 5px 9px;font-variant-numeric:tabular-nums}
 .cn-run.played{padding-right:10px}
+.cn-run[data-focus]{cursor:pointer}
+.cn-run[data-focus]:hover{border-color:#ffffff60}
+.cn-run.on{border-color:var(--run);background:color-mix(in srgb,var(--run) 16%,rgba(18,18,18,.9))}
 .cn-run i{flex:none;width:4px;height:14px;border-radius:1.5px;transform:skewX(-18deg);background:var(--run)}
 .cn-run b{max-width:16ch;overflow:hidden;text-overflow:ellipsis}
 .cn-run .t{color:#a8a8a8;font-weight:400}
@@ -78,7 +81,8 @@ export const cinemaStyles = `
 .cn-none{display:block;padding:10px 8px;color:#7a7a7a}
 .cn-error{margin:6px 2px 0;color:var(--bad)}
 .cn-tag{position:absolute;left:0;top:0;padding:2px 7px;border-radius:6px;background:rgba(14,14,14,.7);color:var(--run);font-size:11.5px;font-weight:700;
-  white-space:nowrap;will-change:transform;box-shadow:inset 0 -2px 0 var(--run)}
+  white-space:nowrap;will-change:transform;box-shadow:inset 0 -2px 0 var(--run);pointer-events:auto;cursor:pointer}
+.cn-tag.on{background:var(--run);color:#141414}
 .cn-hint{position:absolute;left:50%;top:18px;transform:translateX(-50%);margin:0;padding:5px 11px;border-radius:8px;background:rgba(14,14,14,.66);
   color:#cfcfcf;white-space:nowrap;transition:opacity .6s;opacity:0}
 .cn-hint.on{opacity:1}
@@ -154,12 +158,19 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
 
   section.addEventListener('click', event => {
     const button = event.target.closest('button');
+    // A run's chip or name puts the camera on that run; again, back on everyone.
+    const runFocus = !button && event.target.closest('[data-focus]');
+    if (runFocus) { void cinema.setFocus(runFocus.dataset.focus); return; }
     if (!button || button.disabled) return;
     if (button.dataset.cn === 'add') openPicker(!picking);
     else if (button.dataset.cn === 'reset') cinema.resetView();
     else if (button.dataset.remove) cinema.remove(button.dataset.remove);
     else if (button.dataset.sync) void cinema.setSync(button.dataset.sync);
     else if (button.dataset.run) choose(button.dataset.run);
+  });
+  section.addEventListener('keydown', event => {
+    const runFocus = (event.key === 'Enter' || event.key === ' ') && event.target.closest?.('[data-focus]');
+    if (runFocus) { event.preventDefault(); event.stopPropagation(); void cinema.setFocus(runFocus.dataset.focus); }
   });
   section.addEventListener('input', event => {
     if (!event.target.matches?.('.cn-find')) return;
@@ -211,11 +222,13 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   }
   function paintRow(status) {
     const key = JSON.stringify([status?.active, status?.runs.map(run => [run.id, run.label, run.color, run.time]), status?.loading.map(run => run.id),
-      status?.played.time, status?.sync, status?.pending, status?.adjusted]);
+      status?.played.time, status?.sync, status?.focus, status?.pending, status?.adjusted]);
     if (key === drawn) return;
     drawn = key;
-    const played = status?.active ? `<span class="cn-run played" style="--run:${colorOf(0)}"><i aria-hidden="true"></i><b>This run</b><span class="t">${escape(Number.isFinite(status.played.time) ? formatTime(status.played.time) : '')}</span></span>` : '';
-    runs.innerHTML = played + (status?.runs ?? []).map((run, index) => `<span class="cn-run" data-ghost="${index}" style="--run:${run.color}"><i aria-hidden="true"></i><b>${escape(run.label)}</b><span class="t">${escape(Number.isFinite(run.time) ? formatTime(run.time) : '')}</span><span class="g"></span><button type="button" class="cn-x" data-remove="${escape(run.id)}" aria-label="Remove ${escape(run.label)}" title="Remove from this replay">${CLOSE}</button></span>`).join('') +
+    const focus = (id, label) => ` data-focus="${escape(id)}" role="button" tabindex="0" aria-pressed="${status?.focus === id}" title="${status?.focus === id ? 'Back to everyone' : `Follow ${escape(label)}`}"`;
+    const on = id => status?.focus === id ? ' on' : '';
+    const played = status?.active ? `<span class="cn-run played${on('played')}" style="--run:${colorOf(0)}"${focus('played', 'this run')}><i aria-hidden="true"></i><b>This run</b><span class="t">${escape(Number.isFinite(status.played.time) ? formatTime(status.played.time) : '')}</span></span>` : '';
+    runs.innerHTML = played + (status?.runs ?? []).map((run, index) => `<span class="cn-run${on(run.id)}" data-ghost="${index}" style="--run:${run.color}"${focus(run.id, run.label)}><i aria-hidden="true"></i><b>${escape(run.label)}</b><span class="t">${escape(Number.isFinite(run.time) ? formatTime(run.time) : '')}</span><span class="g"></span><button type="button" class="cn-x" data-remove="${escape(run.id)}" aria-label="Remove ${escape(run.label)}" title="Remove from this replay">${CLOSE}</button></span>`).join('') +
       (status?.loading ?? []).map((run, index) => `<span class="cn-run loading" style="--run:${colorOf(status.runs.length + index + 1)}"><i aria-hidden="true"></i>${escape(run.label)}…</span>`).join('');
     const ghosts = !!status?.active;
     seg.hidden = !ghosts;
@@ -225,8 +238,8 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     }
     reset.hidden = !status?.adjusted;
     add.disabled = (status?.runs.length ?? 0) + (status?.loading.length ?? 0) >= MAX_GHOSTS;
-    const labels = ghosts ? ['This run', ...status.runs.map(run => run.label)] : [];
-    tagLayer.innerHTML = labels.map((label, index) => `<span class="cn-tag" style="--run:${colorOf(index)}" hidden>${escape(label)}</span>`).join('');
+    const labels = ghosts ? [['played', 'This run'], ...status.runs.map(run => [run.id, run.label])] : [];
+    tagLayer.innerHTML = labels.map(([id, label], index) => `<span class="cn-tag${on(id)}" style="--run:${colorOf(index)}" data-focus="${escape(id)}" title="${status.focus === id ? 'Back to everyone' : `Follow ${escape(label)}`}" hidden>${escape(label)}</span>`).join('');
     tags = [...tagLayer.children];
     if (picking) paintPicker();
   }

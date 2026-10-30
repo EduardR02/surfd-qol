@@ -154,11 +154,16 @@ describe('the planned camera', () => {
     expect(viewAngles(shot.eye, shot.target).yaw).toBeCloseTo(90);
   });
   test('frames several runs at once, each counting while it stays near', async () => {
-    const a = straight(), near = straight({y: 120}), far = straight({y: 5000});
+    const a = straight(), near = straight({y: 120}), far = straight({y: 9000});
     const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}, {track: far, map: alignByTime(a, far)}]});
     const {target} = shotAt(planned, 200);
     expect(target.y).toBeGreaterThan(30);
     expect(target.y).toBeLessThan(90);
+  });
+  test('focused on one run, the others don’t pull the framing', async () => {
+    const a = straight(), near = straight({y: 400});
+    const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}], group: false});
+    expect(Math.abs(shotAt(planned, 200).target.y)).toBeLessThan(5);
   });
   test('samples every STEP ticks', async () => {
     const {a, plan: planned} = await plan(null);
@@ -259,6 +264,19 @@ describe('ghosts are idle until a run is added', () => {
     cinema.remove('wr');
     expect(cinema.status().runs.map(item => item.id)).toEqual(['pb']);
     expect(counts().scenes).toBe(2);
+  });
+  test('a run’s chip follows that run alone; choosing it again goes back to everyone', async () => {
+    const {cinema} = rig();
+    await cinema.add(run('wr'));
+    await cinema.setFocus('wr');
+    expect(cinema.status().focus).toBe('wr');
+    await cinema.setFocus('played');
+    expect(cinema.status().focus).toBe('played');
+    await cinema.setFocus('played');
+    expect(cinema.status().focus).toBeNull();
+    await cinema.setFocus('wr');
+    cinema.remove('wr');
+    expect(cinema.status()).toBeNull();
   });
   test('the run being watched can’t be added to itself', async () => {
     const {cinema, control} = rig();

@@ -17,7 +17,10 @@ const MAX_SWING = 50 * Math.PI / 180;
 const ELEVATION = 15 * Math.PI / 180, ELEVATION_AIR = 12 * Math.PI / 180;
 // The camera stays back far enough to keep the map around the ghosts in view;
 // only walls bring it nearer than BASE_DISTANCE. Speed and flights widen it.
-const BASE_DISTANCE = 300, MAX_DISTANCE = 1400, MIN_DISTANCE = 70, SPEED_DISTANCE = 0.07, AIR_DISTANCE = 0.18;
+const BASE_DISTANCE = 300, MAX_DISTANCE = 2400, MIN_DISTANCE = 70, SPEED_DISTANCE = 0.07, AIR_DISTANCE = 0.18;
+// The group shot keeps a run in frame until it's this far from the others
+// (fading out between the two), so the camera only leaves one far behind.
+const GROUP_NEAR = 2500, GROUP_FAR = 6000;
 // The view the plan frames for, in the game's horizontal (4:3) degrees.
 export const FOV = 74;
 const EYE_HEIGHT = 40;               // aim at the body, not the feet
@@ -59,9 +62,10 @@ function lowest(values, radius, segment) {
 
 // trace(from, to) is the clear fraction of the way, 1 when nothing is hit.
 // others: [{track, map}], each run and where it is for each of a's ticks
-// ({b, map} for a single one). Returns {count, eye, target, segment}: one
-// entry every STEP ticks of run a.
-export async function planCamera({a, b = null, map = null, others = [{track: b, map}], trace = null, yieldTask = null, isCurrent = () => true}) {
+// ({b, map} for a single one). group frames every run together; without it
+// the camera is on run a alone, the others passing through its shot.
+// Returns {count, eye, target, segment}: one entry every STEP ticks of run a.
+export async function planCamera({a, b = null, map = null, others = [{track: b, map}], group = true, trace = null, yieldTask = null, isCurrent = () => true}) {
   const count = Math.ceil(a.count / STEP) + 1;
   const sampleTick = s => Math.min(a.count - 1, s * STEP);
   const seconds = value => value / (a.dt * STEP);
@@ -89,7 +93,7 @@ export async function planCamera({a, b = null, map = null, others = [{track: b, 
       trackPoint(track, where[tick], point);
       runs[index + 1].set([point.x, point.y, point.z], s * 3);
       // Far off (another line, a skipped stage), a run stops pulling the framing.
-      const weight = 1 - smoothstep(800, 1800, Math.hypot(point.x - ax, point.y - ay, point.z - az));
+      const weight = group ? 1 - smoothstep(GROUP_NEAR, GROUP_FAR, Math.hypot(point.x - ax, point.y - ay, point.z - az)) : 0;
       shares[index][s] = weight;
       fx += point.x * weight; fy += point.y * weight; fz += point.z * weight; total += weight;
     }
@@ -100,8 +104,8 @@ export async function planCamera({a, b = null, map = null, others = [{track: b, 
       reach = Math.max(reach, shares[index][s] * Math.hypot(r[o] - focus[0][s], r[o + 1] - focus[1][s], r[o + 2] + EYE_HEIGHT - focus[2][s]));
     }
     span[s] = reach * 2;
-    // Each run surfing a ramp votes for its open side.
-    for (const [track, at] of [[a, tick], ...others.map(({track: other, map: where}) => [other, Math.round(where[tick])])]) {
+    // Each run in the shot surfing a ramp votes for its open side.
+    for (const [track, at] of [[a, tick], ...group ? others.map(({track: other, map: where}) => [other, Math.round(where[tick])]) : []]) {
       const o = clamp(at, 0, track.count - 1) * 3;
       const nx = track.normal[o], ny = track.normal[o + 1], length = Math.hypot(nx, ny);
       if (length > 1e-3) { side[0][s] += nx / length; side[1][s] += ny / length; side[2][s] += 1; }
