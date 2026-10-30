@@ -1,5 +1,6 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createCinemaUi} from '../src/cinema-ui.js';
+import {DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
 
 const restorers = [];
 afterEach(() => { while (restorers.length) restorers.pop()(); });
@@ -12,7 +13,7 @@ function globalValue(name, value) {
 // The static controls expose the DOM operations the UI uses. Dynamic chip/tag
 // markup is deliberately not parsed here: these tests cover user actions and
 // lifecycle transitions, not strings or a second implementation of HTML.
-function rig(initial = null) {
+function rig(initial = null, getSources = () => ({})) {
   let root;
   function node(dataset = {}) {
     const attributes = new Map(), classes = new Set(), listeners = new Map();
@@ -22,7 +23,11 @@ function rig(initial = null) {
       removeAttribute: name => attributes.delete(name), hasAttribute: name => attributes.has(name),
       toggleAttribute(name, value) { value ? attributes.set(name, '') : attributes.delete(name); },
       addEventListener: (name, listener) => listeners.set(name, listener),
-      emit(name, target) { listeners.get(name)?.({target}); },
+      emit(name, target, values = {}) {
+        const event = {target, ...values, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }};
+        listeners.get(name)?.(event);
+        return event;
+      },
       querySelector: () => null, querySelectorAll: () => [],
       prepend(child) { child.parentElement = this; }, remove() { this.parentElement = null; },
       contains(target) { return target != null && (target === this || target.parentElement === this); },
@@ -38,11 +43,14 @@ function rig(initial = null) {
   globalValue('addEventListener', () => {}); globalValue('removeEventListener', () => {});
   globalValue('ResizeObserver', undefined);
   const section = node(), row = node(), strip = node(), runs = node(), pick = node(), tags = node(), hint = node();
-  const enable = node({cn: 'enable'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node();
+  const enable = node({cn: 'enable'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node(), style = node();
   const sync = [node({sync: 'time'}), node({sync: 'place'})];
   seg.querySelectorAll = () => sync;
   row.parentElement = section;
-  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint,
+  for (const element of [enable, add, reset, seg, style]) element.parentElement = row;
+  strip.parentElement = section;
+  row.querySelectorAll = () => [enable, add, reset, ...sync, style];
+  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint, '.cn-style': style,
     '[data-cn="enable"]': enable, '[data-cn="add"]': add, '[data-cn="reset"]': reset};
   section.querySelector = row.querySelector = selector => selectors[selector];
   const native = node(), custom = node(), nativeTools = node(), customTools = node();
@@ -52,12 +60,14 @@ function rig(initial = null) {
   const cinema = {available: () => true, get active() { return !!status?.active; }, status: () => status,
     async setEnabled(value) { calls.push(['enabled', value]); status = value ? solo() : null; },
     async setFocus(value) { calls.push(['focus', value]); }, async setSync(value) { calls.push(['sync', value]); },
+    get trailStyle() { return status?.trailStyle ?? DEFAULT_TRAIL_STYLE; },
+    setTrailStyle(id) { calls.push(['style', id]); status = {...status, trailStyle: id}; },
     async add(source) { calls.push(['add', source.id]); await source.load(); },
     remove(id) { calls.push(['remove', id]); status = solo(); }, resetView() { calls.push(['reset']); }};
-  const ui = createCinemaUi({root, cinema, storage: {getItem: () => '1'}});
+  const ui = createCinemaUi({root, cinema, getSources, storage: {getItem: () => '1'}});
   const click = button => row.emit('click', button);
   restorers.push(() => ui.destroy());
-  return {ui, cinema, calls, root, section, row, strip, seg, enable, add, pick, sync, nativeTools, customTools, click,
+  return {ui, cinema, calls, root, section, row, strip, runs, seg, style, enable, add, pick, sync, native, custom, nativeTools, customTools, click,
     setStatus(value) { status = value; }};
 }
 const solo = () => ({active: true, played: {time: 41.233}, runs: [], loading: [], sync: 'time', focus: null, labels: []});
@@ -132,4 +142,54 @@ describe('cinematic replay controls', () => {
     r.ui.render({visible: true, held: false});
     expect(r.strip.hidden).toBe(false);
   });
+
+
+  test('mouse wheels scroll overflowing chips horizontally without stealing trackpad scrolling', () => {
+    const r = rig({...solo(), runs: [{id: 'wr', label: 'WR', color: '#9ccfd8'}]});
+    r.ui.render({visible: true, custom: true});
+    Object.assign(r.runs, {scrollWidth: 1200, clientWidth: 300, scrollLeft: 0});
+    const wheel = r.strip.emit('wheel', r.runs, {deltaX: 0, deltaY: 3, deltaMode: 1});
+    expect(wheel.defaultPrevented).toBe(true);
+    expect(r.runs.scrollLeft).toBe(48);
+    const trackpad = r.strip.emit('wheel', r.runs, {deltaX: 60, deltaY: 2, deltaMode: 0});
+    expect(trackpad.defaultPrevented).toBe(false);
+    r.runs.scrollWidth = 200;
+    const fitting = r.strip.emit('wheel', r.runs, {deltaX: 0, deltaY: 100, deltaMode: 0});
+    expect(fitting.defaultPrevented).toBe(false);
+  });
+
+  test('hovering or focusing relocated chips and controls holds idle until interaction ends', () => {
+    const r = rig({...solo(), runs: [{id: 'wr', label: 'WR', color: '#9ccfd8'}]});
+    r.ui.render({visible: true, custom: true});
+    expect(r.ui.holding).toBe(false);
+    r.strip.emit('pointerenter');
+    expect(r.ui.holding).toBe(true);
+    r.strip.emit('pointerleave');
+    expect(r.ui.holding).toBe(false);
+    r.style.focus();
+    expect(r.ui.holding).toBe(true);
+    r.root.activeElement = null;
+    r.row.emit('pointerenter');
+    expect(r.ui.holding).toBe(true);
+    r.ui.render({visible: false});
+    expect(r.strip.hidden).toBe(true);
+    expect(r.ui.holding).toBe(false);
+  });
+
+  test('trail selection is active-only, follows runtime state and keeps native select keys out of playback', async () => {
+    const r = rig();
+    r.ui.render({visible: true, custom: true});
+    expect(r.style.hidden).toBe(true);
+    r.setStatus({...solo(), trailStyle: 'silk'});
+    r.ui.render({visible: true, custom: true});
+    expect(r.style.hidden).toBe(false);
+    expect(r.style.value).toBe('silk');
+    for (const name of ['ArrowLeft', 'ArrowRight', ' ', 'Enter']) {
+      const event = key('keydown', name, [r.style]);
+      expect(r.ui.handleKey(event)).toBe(true);
+      expect(event.stopped).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+    }
+  });
+
 });

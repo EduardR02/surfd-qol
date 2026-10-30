@@ -153,8 +153,9 @@ if (params.has('pop')) setTimeout(() => {
 }, 50);
 if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
-// ?cinema=off|solo|group|focus|full|error uses the real cinematic controls with
+// ?cinema=off|solo|group|focus|many|error uses the real cinematic controls with
 // UI-only fixture state. ?pick opens Add run; this does not exercise rendering.
+// ?trail=filament|silk|meteor starts its live trail selector on that treatment.
 if (params.has('pick')) setTimeout(() => document.getElementById('surfd-qol').shadowRoot.querySelector('[data-cn="add"]')?.click(), 80);
 // With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
 // other replays, ?reset asks to reset the averages. These press the panel's own buttons.

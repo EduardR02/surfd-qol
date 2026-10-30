@@ -19,8 +19,9 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `panel=display\|feedback\|compare\|controls\|history` | Opens the settings panel on that section |
 | `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s, native transport and extras fade together; custom mode retains its timeline |
 | `set.customReplayUi=true` | Opt into the existing custom bar; otherwise native transport plus graded touch marks, saved locs and tools is shown |
-| `cinema=off\|solo\|group\|focus\|full\|error` | With `state=watching`: cinematic controls disabled, one run, several runs, one focused run, all five runs, or an activation error |
+| `cinema=off\|solo\|group\|focus\|many\|error` | With `state=watching`: cinematic controls disabled, one run, several runs, one focused run, twelve extras, or an activation error |
 | `pick`, `adjusted` | With `cinema`: open Add run, or show Reset view after a camera adjustment |
+| `trail=filament\|silk\|meteor` | With `cinema`: initial trail-style selection; this fixture does not render trails |
 | `parked=true`, `indexing` | Show Return to server, or partial native indexing reach |
 | `locs=<0–20>`, `at=<tick>`, `speed=<0.25–8>` | With `state=watching`: locs on the timeline (default 3), the start position and the speed |
 | `notice=saved\|full\|<text>` | With `state=watching`: a control notice, as after saving a loc |

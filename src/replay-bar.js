@@ -112,7 +112,7 @@ export const replayBarStyles = `
 /* Controls on one row, the timeline under them at most of the screen's width
    (like the game's own bar, short of its edges). */
 .rb{--rose:var(--accent);--loc:#f2f2f2;--rb-edge:rgba(8,8,8,.78);--ink:rgba(18,18,18,.9);position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
-  width:min(calc(100vw - 32px),max(1248px,86vw),2400px);display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;row-gap:2px;column-gap:12px;
+  width:min(calc(100vw - 32px),max(1248px,86vw),2400px);display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;row-gap:2px;column-gap:10px;
   pointer-events:auto;color:var(--paper);font-size:13px;line-height:1.2;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"case" 1;
   -webkit-text-stroke:1.25px var(--rb-edge);paint-order:stroke fill;text-shadow:0 1px 2px rgba(0,0,0,.5);isolation:isolate}
 /* No box: a pool of shade under the bar keeps it legible on snow and neon alike. */
@@ -168,7 +168,7 @@ export const replayBarStyles = `
   white-space:nowrap;font-size:12.5px;font-weight:700;color:var(--loc)}
 .rb-notice:empty{display:none}
 
-.rb-tools{grid-column:4;grid-row:1;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px;max-width:calc(100vw - 150px)}
+.rb-tools{grid-column:4;grid-row:1;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:4px;min-width:0}
 .rb-speed,.rb-save{min-width:44px;font-size:13.5px}
 .rb-leave{height:28px;min-height:28px;white-space:nowrap;font-size:12px;padding-inline:7px}
 .rb-speed.off{color:var(--warn)}
@@ -199,6 +199,12 @@ export const replayBarStyles = `
 .rb.rest .rb-pins button{pointer-events:none}
 
 @media (max-width:1750px){.rb-runs span{display:none}.rb-runs{padding:0 9px}}
+@media (max-width:1100px){
+  .rb{grid-template-columns:auto auto minmax(0,1fr)}
+  .rb-tools{grid-column:1/-1;grid-row:2;justify-content:flex-start;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#ffffff30 transparent;padding:2px}
+  .rb-tools>*{flex-shrink:0}
+  .rb-line{grid-row:3}
+}
 @media (prefers-reduced-motion:reduce){.rb *,.rb::before{transition:none!important}}
 `;
 
@@ -219,13 +225,15 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   const attr = (element, name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
   const toggleClass = (element, name, on) => { if (element.classList.contains(name) !== on) element.classList.toggle(name, on); };
 
-  let status = null, frame = 0, open = null, lastActivity = now(), dragging = false, hovering = false;
+  let status = null, frame = 0, open = null, lastActivity = now(), dragging = false, hovering = false, overBar = false;
   let pendingSeek = null, seekFrame = 0, marks = [], bindsKey = null, bindsAge = 0, binds = savelocBinds(null);
   let progress = -1, playState = '', speedShown = null, totalShown = '', reserve = 0, sections = [], drawn = null, ariaAge = 0;
   const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { reserve = 0; drawn = null; }) : null;
   sizes?.observe(bar);
 
   const wake = () => { lastActivity = now(); };
+  bar.addEventListener('pointerenter', () => { overBar = true; wake(); });
+  bar.addEventListener('pointerleave', () => { overBar = false; wake(); });
   function readBinds() {
     let value = null;
     try { value = getBindings?.(); } catch { /* unavailable */ }
@@ -442,7 +450,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     if (total.title !== (status.title ?? '')) total.title = status.title ?? '';
     write(notice, status.notice || (status.complete === false ? `Indexing ${Math.floor(reach * 100)}%` : ''));
     if (++bindsAge > 30) { bindsAge = 0; readBinds(); }
-    const rest = status.playing && !dragging && !hovering && !open && !held() && !bar.contains(root.activeElement) && !status.notice && now() - lastActivity > REST_MS;
+    const rest = status.playing && !dragging && !hovering && !overBar && !open && !held() && !bar.contains(root.activeElement) && !status.notice && now() - lastActivity > REST_MS;
     toggleClass(bar, 'rest', rest);
   }
   function loop() {
@@ -473,7 +481,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     bar.hidden = true;
     closePopover();
     tip.hidden = true;
-    dragging = hovering = false;
+    dragging = hovering = overBar = false;
     status = null;
     reserve = 0;
     window.removeEventListener('pointermove', onMove);

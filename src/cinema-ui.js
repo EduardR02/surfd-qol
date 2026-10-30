@@ -1,8 +1,9 @@
-// Cinematic actions share the replay's existing tools. Only added runs need
-// a separate strip; names follow the runners without repainting the controls.
+// Cinematic actions and added runs share the replay's existing control row;
+// names follow the runners without repainting the controls.
 import {formatTime} from './hud-model.js';
 import {boardSource, ghostSources} from './ghost-sources.js';
-import {MAX_GHOSTS, colorOf} from './cinema.js';
+import {colorOf} from './cinema.js';
+import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from './cinema-scene.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
 const CLOSE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
@@ -20,6 +21,7 @@ export const cinemaMarkup = `<section id="cinema" class="cn" aria-label="Ghosts"
       <button type="button" data-sync="time" aria-pressed="false" title="Runs on the clock, as a race">Real time</button>
       <button type="button" data-sync="place" aria-pressed="false" title="Runs at the same place on the route: the faster one is slowed down">Side by side</button>
     </div>
+    <select class="cn-btn cn-style" aria-label="Trail style" title="Trail style" hidden>${TRAIL_STYLES.map(style => `<option value="${style.id}">${style.label}</option>`).join('')}</select>
     <button type="button" class="cn-btn" data-cn="reset" title="Back to the planned camera (or double-click the view)" hidden>Reset view</button>
   </div>
   <div class="cn-pick" role="dialog" aria-label="Add a run" hidden></div>
@@ -31,12 +33,24 @@ export const cinemaStyles = `
 .cn-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;pointer-events:auto;-webkit-text-stroke:0;text-shadow:none}
 .cn-strip{position:absolute;left:14px;right:14px;pointer-events:auto;transition:opacity .25s}
 .cn-strip.idle{opacity:0;pointer-events:none}
-.cn-runs{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#ffffff30 transparent;padding:2px}
+.cn-runs{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#ffffff30 transparent;padding:2px}
 .cn-btn,.cn-run,.cn-seg{font-family:inherit;font-weight:700;font-size:12px;line-height:1.2;color:var(--paper);border:1px solid #ffffff30;border-radius:8px;background:rgba(18,18,18,.88);white-space:nowrap}
 .cn-row .cn-btn{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px;cursor:pointer}
 .cn-btn:hover,.cn-btn[aria-expanded=true]{border-color:var(--accent)}
 .cn-btn[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .rb-tools .cn-row{order:-1}
+.cn-style{max-width:104px;cursor:pointer}
+.cn-style option{background:#121212;color:var(--paper)}
+.rb .cn-row{flex-wrap:nowrap;gap:2px;-webkit-text-stroke:inherit;text-shadow:inherit}
+.rb .cn-row .cn-btn,.rb .cn-row .cn-seg button{height:34px;min-height:34px;padding:0 7px;border:0;border-radius:10px;background:transparent;font:inherit;font-weight:700;line-height:1.2;color:inherit}
+.rb .cn-row .cn-btn{display:inline-flex}
+.rb .cn-row .cn-btn:hover,.rb .cn-row .cn-btn[aria-expanded=true],.rb .cn-row .cn-seg button:hover{background:rgba(255,255,255,.14)}
+.rb .cn-row .cn-btn[aria-pressed=true],.rb .cn-row .cn-seg button[aria-pressed=true]{color:var(--accent);background:rgba(255,255,255,.08)}
+.rb .cn-seg{padding:0;gap:0;border:0;background:transparent}
+.rb>.cn-strip{position:static;grid-column:3;grid-row:1;min-width:0;overflow:hidden;transition:opacity .35s}
+.rb .cn-run{background:transparent;border-color:#ffffff24;-webkit-text-stroke:0;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.rb .cn-run.on{background:color-mix(in srgb,var(--run) 10%,transparent);border-color:var(--run)}
+.rb.rest>.cn-strip{opacity:0;pointer-events:none}
 .cn-btn:disabled{opacity:.45;cursor:default;border-color:#ffffff30}
 .cn-btn svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
 .cn-run{display:inline-flex;align-items:center;gap:4px;flex:none;min-width:0;padding:0 3px 0 0;font-variant-numeric:tabular-nums}
@@ -57,12 +71,12 @@ export const cinemaStyles = `
 .cn-x:hover{background:rgba(255,255,255,.1);color:var(--paper)}
 .cn-x svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
 .cn-seg{display:flex;padding:2px;gap:2px}
-.cn [hidden],.cn-row[hidden],.cn-row [hidden]{display:none}
+.cn [hidden],.cn-row[hidden],.cn-row [hidden],.cn-strip[hidden]{display:none}
 .cn-row .cn-seg button{font:inherit;color:#a8a8a8;border:0;border-radius:6px;min-height:22px;padding:3px 7px;background:none;cursor:pointer}
 .cn-row .cn-seg button:hover{color:var(--paper)}
 .cn-row .cn-seg button[aria-pressed=true]{background:rgba(255,255,255,.14);color:var(--paper)}
 .cn-seg button[aria-busy=true]{opacity:.6}
-.cn :focus-visible,.cn-row :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.cn :focus-visible,.cn-row :focus-visible,.cn-strip :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .cn-pick{position:absolute;width:300px;max-width:calc(100vw - 28px);box-sizing:border-box;padding:10px;border-radius:12px;pointer-events:auto;
   background:rgba(18,18,18,.94);box-shadow:0 0 0 1px #ffffff26,0 18px 50px rgba(0,0,0,.55);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
 .cn-pick h4{margin:0 2px 8px;font-size:12px;font-weight:700;letter-spacing:.04em;color:#a8a8a8}
@@ -108,9 +122,11 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   const row = section.querySelector('.cn-row'), strip = section.querySelector('.cn-strip'), runs = section.querySelector('.cn-runs');
   const add = row.querySelector('[data-cn="add"]'), enable = row.querySelector('[data-cn="enable"]');
   const seg = row.querySelector('.cn-seg'), reset = row.querySelector('[data-cn="reset"]'), pick = section.querySelector('.cn-pick');
+  const style = row.querySelector('.cn-style');
   const tagLayer = section.querySelector('.cn-tags'), hint = section.querySelector('.cn-hint');
   let frame = 0, shown = false, drawn = '', hintTimer = 0, named = true, picking = false, filter = '', error = '', tags = [], hinted = false;
-  let toolbar = null, layout = null, gapCells = [], widths = [], busy = false, escapeHeld = false, controls = '';
+  let toolbar = null, layout = null, customLayout = false, gapCells = [], widths = [], busy = false, escapeHeld = false, controls = '';
+  const hovered = new Set();
   const write = (element, text) => { if (element.textContent !== text) element.textContent = text; };
   const attr = (element, name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
   const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
@@ -127,10 +143,10 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     return new Set([...(status?.runs ?? []).map(run => run.id), ...(status?.loading ?? []).map(run => run.id)]);
   }
   function paintPicker(listOnly = false) {
-    const {fixed, entries} = choices(), used = taken(), full = used.size >= MAX_GHOSTS;
+    const {fixed, entries} = choices(), used = taken();
     const needle = filter.trim().toLowerCase().replace(/^#/, '');
     const listed = entries.filter(entry => !needle || entry.label.toLowerCase().replace(/^#/, '').includes(needle));
-    const why = source => used.has(source.id) ? 'Already in this replay' : full ? `Up to ${MAX_GHOSTS} runs alongside this one` : source.reason ?? '';
+    const why = source => used.has(source.id) ? 'Already in this replay' : source.reason ?? '';
     const list = listed.length ? listed.map(source => `<button type="button" data-run="${escape(source.id)}"${why(source) ? ` disabled title="${escape(why(source))}"` : ''}>
       <span class="r">${escape(source.label.split(' ')[0])}</span><span class="n">${escape(source.label.slice(source.label.indexOf(' ') + 1))}</span><span class="t">${escape(formatTime(source.time))}</span></button>`).join('') : '<span class="cn-none">No one by that name</span>';
     if (listOnly) { const target = pick.querySelector('.cn-list'); if (target) target.innerHTML = list; return; }
@@ -191,6 +207,19 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   };
   section.addEventListener('click', click);
   row.addEventListener('click', event => { if (row.parentElement !== section) click(event); });
+  strip.addEventListener('click', event => { if (strip.parentElement !== section) click(event); });
+  strip.addEventListener('wheel', event => {
+    if (Math.abs(event.deltaX) >= Math.abs(event.deltaY) || runs.scrollWidth <= runs.clientWidth) return;
+    event.preventDefault();
+    runs.scrollLeft += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? runs.clientWidth : 1);
+  }, {passive: false});
+  row.addEventListener('change', event => {
+    if (event.target === style) void perform(() => cinema.setTrailStyle(style.value));
+  });
+  for (const element of [row, strip, pick]) {
+    element.addEventListener('pointerenter', () => hovered.add(element));
+    element.addEventListener('pointerleave', () => hovered.delete(element));
+  }
   section.addEventListener('input', event => {
     if (!event.target.matches?.('.cn-find')) return;
     filter = event.target.value.slice(0, 40);
@@ -206,7 +235,7 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       if (escapeHeld) { openPicker(false); add.focus({preventScroll: true}); }
       return true;
     }
-    if (path.includes(pick) || (event.key === ' ' || event.key === 'Enter') && path.some(node => node?.matches?.('.cn-row button,.cn-focus,.cn-tag'))) {
+    if (path.includes(pick) || path.includes(style) || (event.key === ' ' || event.key === 'Enter') && path.some(node => node?.matches?.('.cn-row button,.cn-focus,.cn-x,.cn-tag'))) {
       event.stopImmediatePropagation();
       return true;
     }
@@ -269,10 +298,14 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       }
       if (picking) paintPicker();
     }
-    const controlKey = JSON.stringify([active, status?.sync, status?.focus, status?.pending, status?.adjusted, extras.length, loading.length]);
+    const controlKey = JSON.stringify([active, status?.sync, status?.focus, status?.pending, status?.adjusted, status?.trailStyle, extras.length, loading.length]);
     if (!changed && controlKey === controls) return false;
     controls = controlKey;
     attr(enable, 'aria-pressed', String(active));
+    style.hidden = !active;
+    const selectedStyle = TRAIL_STYLES.find(item => item.id === (status?.trailStyle ?? cinema.trailStyle)) ?? TRAIL_STYLES.find(item => item.id === DEFAULT_TRAIL_STYLE);
+    if (style.value !== selectedStyle.id) style.value = selectedStyle.id;
+    if (style.title !== selectedStyle.description) style.title = selectedStyle.description;
     seg.hidden = !extras.length;
     for (const button of seg.querySelectorAll('[data-sync]')) {
       attr(button, 'aria-pressed', String(status?.sync === button.dataset.sync));
@@ -280,7 +313,6 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       if (button.hasAttribute('aria-busy') !== pending) button.toggleAttribute('aria-busy', pending);
     }
     reset.hidden = !active || !status?.adjusted;
-    add.disabled = extras.length + loading.length >= MAX_GHOSTS;
     for (const button of [...runs.querySelectorAll('[data-focus]'), ...tags]) {
       const on = status?.focus === button.dataset.focus;
       attr(button, 'aria-pressed', String(on));
@@ -292,19 +324,21 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   }
   function place() {
     if (!shown || !layout) return;
+    if (customLayout && !picking) return;
     const rect = layout.getBoundingClientRect(), toolsRect = toolbar.getBoundingClientRect();
-    strip.style.left = `${Math.max(14, Math.round(rect.left))}px`;
-    strip.style.right = `${Math.max(14, Math.round(innerWidth - rect.right))}px`;
     const bottom = Math.round(innerHeight - Math.min(rect.top, toolsRect.top) + 7);
-    strip.style.bottom = `${bottom}px`;
+    if (!customLayout) {
+      strip.style.left = `${Math.max(14, Math.round(rect.left))}px`;
+      strip.style.right = `${Math.max(14, Math.round(innerWidth - rect.right))}px`;
+      strip.style.bottom = `${bottom}px`;
+    }
     if (!picking) return;
-    const trigger = add.getBoundingClientRect();
+    const trigger = add.getBoundingClientRect(), stripHeight = !customLayout && !strip.hidden ? strip.offsetHeight : 0;
     pick.style.left = `${Math.round(Math.max(14, Math.min(trigger.left, innerWidth - pick.offsetWidth - 14)))}px`;
-    // Above the whole bar/run strip: never cover matching controls or Runs.
-    const available = Math.max(80, innerHeight - bottom - (strip.hidden ? 0 : strip.offsetHeight) - 22);
-    pick.style.maxHeight = `${available}px`;
+    // Clear the whole bar, including the native run strip when present.
+    pick.style.maxHeight = `${Math.max(80, innerHeight - bottom - stripHeight - 22)}px`;
     pick.style.overflowY = 'auto';
-    pick.style.bottom = `${bottom + (strip.hidden ? 0 : strip.offsetHeight) + 8}px`;
+    pick.style.bottom = `${bottom + stripHeight + 8}px`;
   }
   function showHint() {
     let seen = false;
@@ -317,7 +351,8 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   function hide() {
     if (!shown) return;
     shown = false;
-    section.hidden = row.hidden = true;
+    section.hidden = row.hidden = strip.hidden = true;
+    hovered.clear();
     openPicker(false);
     cancelAnimationFrame(frame); frame = 0;
     clearTimeout(hintTimer); hint.classList.remove('on');
@@ -328,8 +363,8 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   }
 
   return {
-    // Actions are reparented into the active replay tools; only the optional
-    // run strip and picker need geometry, on resize or structural changes.
+    // Custom chips live in the control row. Only the native strip and picker
+    // need geometry, measured on resize or structural changes.
     render({visible, custom = false, idle = false, tags: showTags = true, held = false}) {
       const status = cinema.status();
       if (!visible || !status && !cinema.available()) { hide(); return; }
@@ -339,13 +374,17 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       if (!shown) { shown = true; section.hidden = row.hidden = false; addEventListener('resize', place, {passive: true}); }
       let moved = false;
       if (toolbar !== target) {
-        toolbar = target; layout = bar; target.prepend(row); moved = true;
+        toolbar = target; layout = bar; customLayout = custom; target.prepend(row);
+        (custom ? bar : section).prepend(strip);
+        strip.style.left = strip.style.right = strip.style.bottom = '';
+        for (const button of row.querySelectorAll('button,select')) button.classList.toggle('rb-btn', custom);
+        moved = true;
         sizes?.disconnect(); sizes?.observe(bar); sizes?.observe(target);
       }
       const changed = paintRow(status);
       strip.hidden = held || !(status?.runs.length || status?.loading.length);
       if (changed || moved) place();
-      strip.classList.toggle('idle', idle && !picking && !held && !strip.contains(root.activeElement));
+      strip.classList.toggle('idle', !custom && idle && !picking && !held && !hovered.has(strip) && !strip.contains(root.activeElement));
       if (held && picking) openPicker(false);
       named = showTags && !held;
       if (status?.active) {
@@ -356,8 +395,8 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     hide,
     handleKey,
     get picking() { return picking; },
-    get holding() { return picking || section.contains(root.activeElement); },
+    get holding() { return picking || hovered.size > 0 || section.contains(root.activeElement) || row.contains(root.activeElement) || strip.contains(root.activeElement); },
     get shown() { return shown; },
-    destroy() { hide(); sizes?.disconnect(); row.remove(); },
+    destroy() { hide(); sizes?.disconnect(); row.remove(); strip.remove(); },
   };
 }

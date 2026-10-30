@@ -118,14 +118,15 @@ Seeking to an unvisited section can leave feedback grey: the game’s keyframe h
 
 While you watch any replay, **Cinematic** on the replay bar switches to its third-person camera, including for a single run. **Add run** adds your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (find one by name or rank). Adding a run also enables the camera. The replay bar, speeds, seeking and stage jumps keep working as usual.
 
-- The run chips show each time and how far this run is behind (red) or ahead (teal) at this point. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
+- The run chips show each time and how far this run is behind (red) or ahead (teal) at this point. In the custom replay bar they share the playback-control row and fade with it when idle; additional runs scroll horizontally. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
 - **Real time** (the default) aligns the runs to their final native start-zone departure, including fractional ticks and a return to the start zone during prestrafe. Playback and seeking follow the native frame's actual interpolation state. **Side by side** matches places along the route instead, adjusting playback to show where the lines differ; it is not a real-time race.
 - The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
 - Each run keeps its colour when another is removed. Its line has a soft comet tail and a quieter preview ahead; the streaks follow replay time, so pausing freezes them and seeking restores them.
+- **Trail style** switches live between **Filament** (twin wires and a pearl centre), **Silk** (a folded satin ribbon), and **Meteor** (a spine with staggered sparks). It reuses the existing geometry and materials.
 - **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
 - With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
 
-Preparing a run re-simulates it and plans its camera. Nothing runs until you enable Cinematic or add a run. The limit is four extras (five runs total): a readability and colour-palette policy, not a measured engine limit. Every extra adds simulation, track storage, route matching and drawing work.
+Preparing a run re-simulates it and plans its camera. Nothing runs until you enable Cinematic or add a run. There is no run-count limit: the map, geometry and lighting are shared. Each additional run still needs its own simulation, track storage, matching, ghost and trail drawing; remove runs if playback becomes slow on your hardware.
 
 ### What's kept
 

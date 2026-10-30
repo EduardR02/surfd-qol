@@ -4,7 +4,8 @@
 // hand to the UI.
 import {SPEEDS, MAX_SPOTS} from '../src/replay-control.js';
 import {referenceTone} from '../src/hud-model.js';
-import {MAX_GHOSTS, colorOf} from '../src/cinema.js';
+import {colorOf} from '../src/cinema.js';
+import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
 
 const DT = 0.015;
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -183,6 +184,14 @@ export function createLeaderboardReferences(params) {
       {runId: 'jose', rank: 3, username: 'Jose', timeUs: 40884000},
       {runId: 'david', rank: 5, username: 'david', timeUs: 41186000},
       {runId: 'benji', rank: 8, username: 'benji', timeUs: 40909000},
+      {runId: 'ari', rank: 9, username: 'Ari', timeUs: 41210000},
+      {runId: 'lena', rank: 12, username: 'Lena', timeUs: 41380000},
+      {runId: 'kai', rank: 14, username: 'Kai', timeUs: 41425000},
+      {runId: 'noah', rank: 18, username: 'Noah', timeUs: 41570000},
+      {runId: 'skye', rank: 21, username: 'Skye', timeUs: 41710000},
+      {runId: 'remy', rank: 24, username: 'Remy', timeUs: 41920000},
+      {runId: 'tess', rank: 28, username: 'Tess', timeUs: 42160000},
+      {runId: 'eli', rank: 31, username: 'Eli', timeUs: 42400000},
     ];
     return {boardId: 'utopia:3:default', mapName: 'Utopia', record: entries[0], entries,
       loadReplay: async () => {
@@ -377,22 +386,37 @@ export function createReplayControl({params, active, ghosts = () => false}) {
 }
 
 // UI-only cinematic states: no renderer, physics or alignment is simulated.
-// ?cinema=off|solo|group|focus|full|error starts the real controls in that state.
+// ?cinema=off|solo|group|focus|many|error starts the real controls in that state.
 export function createCinemaFixture({params, replayControl}) {
   const mode = params.get('cinema');
   let enabled = mode != null && mode !== 'off' && mode !== 'error', focus = mode === 'focus' ? 'run:jose' : null, sync = 'time', adjusted = params.has('adjusted');
+  let trailStyle = TRAIL_STYLES.find(style => style.id === params.get('trail'))?.id ?? DEFAULT_TRAIL_STYLE;
   const initial = [
     {id: 'run:site-wr', label: 'Site WR', time: 40.533},
     {id: 'run:jose', label: '#3 Jose', time: 40.884},
     {id: 'run:david', label: '#5 david', time: 41.186},
     {id: 'run:benji', label: '#8 benji', time: 40.909},
+    {id: 'run:ari', label: '#9 Ari', time: 41.210},
+    {id: 'run:lena', label: '#12 Lena', time: 41.380},
+    {id: 'run:kai', label: '#14 Kai', time: 41.425},
+    {id: 'run:noah', label: '#18 Noah', time: 41.570},
+    {id: 'run:skye', label: '#21 Skye', time: 41.710},
+    {id: 'run:remy', label: '#24 Remy', time: 41.920},
+    {id: 'run:tess', label: '#28 Tess', time: 42.160},
+    {id: 'run:eli', label: '#31 Eli', time: 42.400},
   ];
-  let runs = ['group', 'focus', 'full'].includes(mode) ? initial.slice(0, mode === 'full' ? MAX_GHOSTS : 2).map((run, index) => ({...run, colorIndex: index + 1})) : [];
+  let runs = ['group', 'focus', 'many'].includes(mode) ? initial.slice(0, mode === 'many' ? initial.length : 2).map((run, index) => ({...run, colorIndex: index + 1})) : [];
   let loading = [];
   const fixture = {
     available: () => replayControl.active,
     get active() { return enabled && replayControl.active; },
     get comparing() { return fixture.active && runs.length > 0; },
+    get trailStyle() { return trailStyle; },
+    setTrailStyle(id) {
+      if (!TRAIL_STYLES.some(style => style.id === id)) return false;
+      trailStyle = id;
+      return true;
+    },
     async setEnabled(value) {
       if (value && mode === 'error') throw new Error('This replay’s route is unavailable.');
       enabled = value;
@@ -400,9 +424,10 @@ export function createCinemaFixture({params, replayControl}) {
       return true;
     },
     async add(source) {
-      if (runs.length + loading.length >= MAX_GHOSTS || [...runs, ...loading].some(run => run.id === source.id)) return false;
+      if ([...runs, ...loading].some(run => run.id === source.id)) return false;
       const used = new Set([...runs, ...loading].map(run => run.colorIndex));
-      const colorIndex = Array.from({length: MAX_GHOSTS}, (_, index) => index + 1).find(index => !used.has(index));
+      let colorIndex = 1;
+      while (used.has(colorIndex)) colorIndex++;
       const entry = {id: source.id, label: source.label, colorIndex};
       loading = [...loading, entry];
       try {
@@ -421,9 +446,9 @@ export function createCinemaFixture({params, replayControl}) {
       if (!enabled && !loading.length || !replayControl.active) return null;
       const status = replayControl.status();
       return {active: fixture.active, played: {label: 'This run', time: 41.233, colorIndex: 0, color: colorOf(0)},
-        runs: runs.map((run, index) => ({...run, color: colorOf(run.colorIndex), gap: [.267, -.084, -.211, .189][index]})),
-        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted,
-        labels: [0, ...runs].map((_, index) => ({x: innerWidth * (.32 + index * .11), y: innerHeight * .43 + Math.sin((status?.index ?? 0) / 160 + index) * 18}))};
+        runs: runs.map((run, index) => ({...run, color: colorOf(run.colorIndex), gap: [.267, -.084, -.211, .189][index % 4]})),
+        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted, trailStyle,
+        labels: [0, ...runs].map((_, index, all) => ({x: innerWidth * (.18 + index * .64 / Math.max(1, all.length - 1)), y: innerHeight * .43 + Math.sin((status?.index ?? 0) / 160 + index) * 18}))};
     },
   };
   return fixture;
