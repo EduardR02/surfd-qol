@@ -159,6 +159,7 @@ export function createCinemaUi({root, cinema, storage = null}) {
       if (!frame) frame = requestAnimationFrame(follow);
     },
     hide,
+    get shown() { return shown; },
     destroy() { hide(); },
   };
 }

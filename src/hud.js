@@ -261,7 +261,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     panel.setStatus(model.status);
     const reserve = `${replayBar?.render(replayVisible) ?? 0}px`;
     replayBar?.setRunsOpen(runs.open);
-    if (cinemaUi) {
+    // Closed, Compare costs this one check; its overlay hides once on the way out.
+    if (cinemaUi && (cinema.active || cinemaUi.shown)) {
       const transport = document.getElementById('replay-transport');
       cinemaUi.render({visible: replayVisible && !!replayBar?.visible, anchor: replayBar?.visible ? replayBar.anchor() : null,
         custom: settings.customReplayUi === true, idle: settings.customReplayUi !== true && !!transport?.classList.contains('rt-idle'),
