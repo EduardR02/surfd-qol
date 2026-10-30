@@ -158,6 +158,7 @@ export const runsStyles = `
 .rn-metric-head{grid-column:3/5}
 .rn-caption{display:flex;align-items:baseline;gap:12px;margin:0 20px 6px;font-size:12px;color:var(--text-2)}
 .rn-caption span{flex:1}
+.rn-explain{display:block;text-wrap:pretty}
 .rn-reset{flex:none;padding:4px 10px;border:0;border-radius:8px;background:rgba(255,255,255,.07);color:var(--text-2)!important;font-size:12px;font-weight:700}
 .rn-reset:hover:not(:disabled){background:rgba(255,255,255,.12);color:var(--text)!important}
 .rn-reset:disabled{opacity:.5}

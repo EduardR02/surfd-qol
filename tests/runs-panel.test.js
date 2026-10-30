@@ -179,8 +179,12 @@ describe('runs panel', () => {
       expect(rig.body.innerHTML).toContain('<span class="rn-hero warn"');
       expect(rig.body.innerHTML).toContain('>+0.3°</span>');
       expect(rig.body.innerHTML).toContain('within 0.5°');
+      expect(rig.body.innerHTML).toContain('<p class="rn-caption rn-explain">Angle: how far your landing was from parallel to the ramp. 0°&nbsp;loses no speed on touch.</p>');
+      rig.action({ramp: 'a'});
+      expect(rig.body.innerHTML).toContain('<span role="rowheader" title="Angle: how far your landing was from parallel to the ramp. 0° loses no speed on touch.">angle</span>');
       rig.action({rampMetric: 'speedIn'});
       expect(rig.body.innerHTML).toContain('within 2.0 u/s');
+      expect(rig.body.innerHTML).not.toContain('rn-explain');
     } finally { rig.panel.destroy(); }
   });
 
@@ -478,7 +482,7 @@ describe('runs panel', () => {
     const calls = [], resets = [];
     rig.history.view = (key, {rampMode = 'best'} = {}) => {
       calls.push([key, rampMode]);
-      return {...data, ramps: data.ramps.map(ramp => ({...ramp, board: rampMode === 'best' ? 2 : 8, counts: {board: 3, down: 0, up: 1}}))};
+      return {...data, ramps: data.ramps.map(ramp => ({...ramp, board: rampMode === 'best' ? 2 : 8, ...rampMode === 'best' ? {} : {counts: {board: 3, down: 0, up: 1}, crashes: 2}}))};
     };
     rig.history.resetRampAverages = async key => { resets.push(key); };
     rig.panel.show();
@@ -486,7 +490,7 @@ describe('runs panel', () => {
     rig.action({rampMode: 'recent'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'recent']);
     rig.action({ramp: 'ramp'});
-    expect(rig.body.innerHTML).toContain('3 runs');
+    expect(rig.body.innerHTML).toContain('3 runs · 2 crashes left out');
     rig.action({rampMode: 'average'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'average']);
     rig.action({resetAverages: 'ask'});
@@ -500,6 +504,7 @@ describe('runs panel', () => {
     expect(calls.at(-1)[1]).toBe('average');
     rig.action({rampMode: 'best'});
     expect(calls.at(-1)[1]).toBe('best');
+    expect(rig.body.innerHTML).not.toContain('left out');
     rig.panel.destroy();
   });
 

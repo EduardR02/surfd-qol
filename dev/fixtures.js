@@ -111,7 +111,7 @@ function touchStatsFor(map, mode) {
     const theirs = ramp.clean ? 3 : angle;
     const reference = factor => ({speedIn: round(speed + 8 * factor - noise(n + factor) * 20), speedOut: round(out(speed + 8 * factor, theirs * (1 - 0.15 * factor))),
       angle: round(theirs * (1 - 0.15 * factor) + (noise(n * 3 + factor) - 0.5) * 0.8)});
-    return {key: ramp.key, index: n, checkpoint: ramp.checkpoint, reach,
+    return {key: ramp.key, index: n, checkpoint: ramp.checkpoint, reach, crashes: n === 5 ? 3 : n === 2 ? 1 : 0,
       speedIn: stat(speed + 30, -42), speedOut: stat(out(speed + 30, angle), -48),
       angle: runs ? {best: round(angle), last10: round(angle + 0.9 + noise(n + 3) * 0.6), avg: round(angle + 1.2 + noise(n + 5) * 0.5)} : {best: null, last10: null, avg: null},
       pb: n === 4 || n === 8 ? null : reference(1), wr: n === 8 ? null : reference(2.2)};
@@ -151,6 +151,8 @@ export function createHistory({settings, empty = false, current = 'utopia:3', to
           result.counts[field] = count;
           result[field] = count ? round(ramp[field] + (rampMode === 'recent' ? 2 : 4) + noise(n) * 4) : null;
         }
+        // Ramp 6 is where runs crash into the edge now and then.
+        result.crashes = resetMaps.has(key) ? 0 : n === 5 ? 2 : n === 2 ? 1 : 0;
         return result;
       });
       return {key, name: map.name, kind: map.kind, totals: map.totals, pb: map.pb, latest: map.runs[0] ?? null, recent: recentOf(map),

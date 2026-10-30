@@ -162,10 +162,12 @@ export function scaleBars(entries, floor = 5) {
   });
 }
 
+// The angle in plain words, under the legend and on the open table's angle row.
+export const ANGLE_HELP = 'Angle: how far your landing was from parallel to the ramp. 0° loses no speed on touch.';
 // What the Ramps view's one column can show for every ramp: [key, label, what it is].
 export const RAMP_METRICS = [['surf', 'Surf', 'The whole ramp, touch included'], ['board', 'Touch', 'Speed lost as you touched the ramp'],
-  ['angle', 'Angle', 'How far your path was off the ramp’s surface. 0° loses nothing'], ['down', 'Down', 'The way down, touch included'],
-  ['up', 'Up', 'The way up'], ['speedIn', 'In', 'Speed as you touched the ramp'], ['speedOut', 'Out', 'Speed right after the touch']];
+  ['angle', 'Angle', 'How far your landing was from parallel to the ramp. 0° loses no speed on touch'], ['down', 'Down', 'The way down, touch included'],
+  ['up', 'Up', 'The way up'], ['speedIn', 'In', 'Speed as you touched the ramp'], ['speedOut', 'Out', 'Speed as you left the ramp']];
 const TOUCH_METRICS = new Set(['angle', 'speedIn', 'speedOut']);
 
 // One ramp's value for a metric: its difference from the reference when the
@@ -197,10 +199,10 @@ export function detailRows({ramp, reference = null, touch = null, touchReference
     return {label, sub, you: value.text, ref: Number.isFinite(other) ? formatDelta(-other, 1) : '—', diff: value.diff, tone: value.diff ? value.tone : 'muted'};
   };
   const cells = touch ? touchCells(touch, mode, touchReference, tolerance) : null;
-  const measured = (label, cell, other, sub = false) => ({label, sub, you: cell.text, ref: other, diff: cell.diff, tone: cell.diff ? cell.tone : 'muted'});
+  const measured = (label, cell, other, sub = false, title = '') => ({label, sub, title, you: cell.text, ref: other, diff: cell.diff, tone: cell.diff ? cell.tone : 'muted'});
   return [
     loss('Touch', 'board'),
-    ...cells ? [measured('angle', cells.angle, Number.isFinite(touchReference?.angle) ? `${touchReference.angle.toFixed(1)}°` : '—', true)] : [],
+    ...cells ? [measured('angle', cells.angle, Number.isFinite(touchReference?.angle) ? `${touchReference.angle.toFixed(1)}°` : '—', true, ANGLE_HELP)] : [],
     loss('Surf', 'surf'),
     ...split ? [loss('down', 'down', true), loss('up', 'up', true)] : [],
     ...cells ? [measured('Speed in', cells.speedIn, fixed(touchReference?.speedIn, 0)), measured('Speed out', cells.speedOut, fixed(touchReference?.speedOut, 0))] : [],
@@ -455,11 +457,12 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       const rows = detailRows({ramp, reference: referenceOf(ramp), touch, touchReference: ready ? touch?.[selected.name] ?? null : null,
         mode: rampMode, tolerance, split: !net});
       const count = samples(ramp);
-      const line = [counted ? count ? plural(count, 'run') : 'No runs yet' : '', reach !== '—' ? `reached in ${reach} of runs` : ''].filter(Boolean).join(' · ');
+      const crashes = counted && ramp.crashes > 0 ? `${ramp.crashes} crash${ramp.crashes === 1 ? '' : 'es'} left out` : '';
+      const line = [counted ? count ? plural(count, 'run') : 'No runs yet' : '', crashes, reach !== '—' ? `reached in ${reach} of runs` : ''].filter(Boolean).join(' · ');
       return `<div class="rn-detail" role="row"><div id="rn-play-${escape(encodeURIComponent(ramp.key))}" class="rn-detail-in" role="cell">
         <div class="rn-x${ready ? '' : ' solo'}" role="table" aria-label="${escape(`${ramp.label}${ready ? ` against ${picked.label}` : ''}`)}">
           <div class="rn-xr rn-xh" role="row"><span role="columnheader"></span><span role="columnheader">You</span>${ready ? `<span role="columnheader">${escape(picked.label)}</span><span role="columnheader">Δ</span>` : ''}</div>
-          ${rows.map(row => `<div class="rn-xr${row.sub ? ' sub' : ''}" role="row"><span role="rowheader">${row.label}</span><b role="cell">${row.you}</b>${
+          ${rows.map(row => `<div class="rn-xr${row.sub ? ' sub' : ''}" role="row"><span role="rowheader"${row.title ? ` title="${escape(row.title)}"` : ''}>${row.label}</span><b role="cell">${row.you}</b>${
             ready ? `<span role="cell">${row.ref}</span><b role="cell" class="${row.tone}">${row.diff || ''}</b>` : ''}</div>`).join('')}
         </div>
         ${line ? `<p class="rn-x-note">${line.charAt(0).toUpperCase()}${line.slice(1)}</p>` : ''}
@@ -477,7 +480,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
         <span role="cell"><button type="button" class="rn-more" data-ramp="${escape(ramp.key)}" aria-expanded="${open}"${
         open ? ` aria-controls="rn-play-${escape(encodeURIComponent(ramp.key))}"` : ''} aria-label="${escape(`${ramp.label}: details and other replays`)}" title="Details and other replays">${CHEVRON}</button></span></div>${open ? detail(ramp) : ''}`;
     };
-    return rampControls(compare, metric) + `${note ? `<p class="rn-note">${note}</p>` : legend}
+    return rampControls(compare, metric) + `${note ? `<p class="rn-note">${note}</p>` : legend}${metric === 'angle' ? `<p class="rn-caption rn-explain">${ANGLE_HELP.replace('0° ', '0°&nbsp;')}</p>` : ''}
       <div class="rn-ramps" role="table" aria-label="Ramp measurements">
         <div class="rn-rr rn-rh" role="row"><span role="columnheader"></span><span role="columnheader">${[...touches?.values() ?? []].some(touch => Number.isFinite(touch.reach)) ? 'reach' : ''}</span><span class="rn-metric-head" role="columnheader">${metricLabel}${ready ? ` vs ${escape(picked.label)}` : ''}</span><span role="columnheader"></span></div>
         ${sections.map(section => `<div class="rn-sec" role="row"><span role="rowheader"><i aria-hidden="true"></i>${escape(section.label)}</span></div>
