@@ -8,14 +8,11 @@ const LINE_STEP = 2;
 // The native ghost normally fades near the first-person camera. Cinema needs
 // it solid even in tight rooms, so pass a camera farther along the same ray.
 const SOLID_FROM = 140;
-const TAIL_SECONDS = 6;
-const HEAD_BLEND_SECONDS = 0.65;
-
-export const DEFAULT_TRAIL_STYLE = 'filament';
+export const DEFAULT_TRAIL_STYLE = 'comet';
 export const TRAIL_STYLES = [
-  {id: 'filament', label: 'Filament', description: 'Twin coloured wires, an ink channel and a fine pearl centre.'},
-  {id: 'silk', label: 'Silk', description: 'A satin ribbon with a travelling fold and a silvered hem.'},
-  {id: 'meteor', label: 'Meteor', description: 'A continuous spine with staggered, tapered sparks along its shoulders.'},
+  {id: 'comet', label: 'Comet', description: 'A brilliant pearl head pulling a long, tapered tail of colour.'},
+  {id: 'pearl', label: 'Pearl', description: 'A crisp white bead with a fine, luminous thread trailing behind.'},
+  {id: 'wake', label: 'Wake', description: 'A soft pool of light flowing into a broad, translucent wake.'},
 ];
 const lineVertex = `
 uniform vec2 resolution;
@@ -27,11 +24,8 @@ attribute vec3 prev;
 attribute vec3 next;
 attribute float side;
 attribute float tick;
-attribute float along;
 varying float vSide;
 varying float vBehind;
-varying float vAlong;
-varying float vTaper;
 void main(){
   vec4 here=projectionMatrix*modelViewMatrix*vec4(position,1.0);
   vec3 a=(modelViewMatrix*vec4(prev,1.0)).xyz;
@@ -47,79 +41,82 @@ void main(){
   vec2 dir=(pb.xy/pb.w-pa.xy/pa.w)*resolution;
   float magnitude=length(dir);
   dir=magnitude>1e-5?dir/magnitude:vec2(1.0,0.0);
-  float behind=(head-tick)/rate;
-  float tail=1.0-smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},max(behind,0.0));
-  float join=smoothstep(-${HEAD_BLEND_SECONDS},0.0,behind);
-  float taper=0.56+0.44*tail*join;
-  here.xy+=vec2(-dir.y,dir.x)*side*width*taper/resolution*here.w;
-  vSide=side;vBehind=behind;vAlong=along;vTaper=taper;
+  here.xy+=vec2(-dir.y,dir.x)*side*width/resolution*here.w;
+  vSide=side;
+  vBehind=(head-tick)/rate;
   gl_Position=here;
 }`;
 const lineFragment = `
 uniform vec3 color;
 uniform vec3 pale;
 uniform float opacity;
-uniform float time;
 uniform float glow;
 uniform float width;
 uniform float style;
 varying float vSide;
 varying float vBehind;
-varying float vAlong;
-varying float vTaper;
-// The solid ribbon is nine CSS pixels wide at the head. Profiles are authored
-// in those pixels, with a constant 0.55px antialias fringe even as it tapers.
-float stroke(float x,float centre,float radius,float aa){
-  return 1.0-smoothstep(max(0.0,radius-aa),radius+aa,abs(x-centre));
+// All cross-sections stay centred on the recorded route. The head/tail
+// envelope is evaluated per fragment, not per sample, so its taper stays
+// smooth even on a fast, sparsely sampled stretch. Distances are CSS pixels.
+float stroke(float x,float radius){
+  return 1.0-smoothstep(max(0.0,radius-0.5),radius+0.5,x);
 }
 void main(){
-  float d=abs(vSide);
-  float tail=1.0-smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},max(vBehind,0.0));
-  float comet=tail*smoothstep(-${HEAD_BLEND_SECONDS},0.0,vBehind);
+  float age=max(vBehind,0.0);
+  float ahead=max(-vBehind,0.0);
+  float decay=1.05;
+  float reach=4.5;
+  float nose=0.12;
+  float breadth=2.8;
+  float coreWidth=0.65;
+  float haloStrength=0.32;
+  if(style>0.5&&style<1.5){
+    decay=1.65;reach=6.0;nose=0.085;
+    breadth=1.65;coreWidth=0.42;haloStrength=0.18;
+  }else if(style>1.5){
+    decay=1.4;reach=5.5;nose=0.19;
+    breadth=4.3;coreWidth=0.85;haloStrength=0.23;
+  }
+  // One asymmetric travelling envelope: a short rounded nose, a brilliant
+  // head at the player, then an uninterrupted exponential tail behind.
+  // No wall clock or periodic phase: pause and seek reproduce the same light.
+  float frontDistance=ahead/nose;
+  float front=exp(-frontDistance*frontDistance);
+  float tail=exp(-age/decay)*(1.0-smoothstep(reach*0.7,reach,age))*front;
+  float headDistance=vBehind/nose;
+  float head=exp(-headDistance*headDistance);
+  float x=abs(vSide)*width*0.5;
   if(glow>0.5){
-    // Light supports the drawn detail; it must never fill the ink channels.
-    gl_FragColor=vec4(color,pow(1.0-d,3.0)*comet*0.035*opacity);
+    float radius=1.8+breadth*2.0*sqrt(tail);
+    float haze=exp(-2.8*pow(x/radius,2.0));
+    float edge=1.0-smoothstep(0.75,1.0,abs(vSide));
+    gl_FragColor=vec4(mix(color,pale,head*0.35),
+      haze*edge*(tail*0.65+head*0.35)*haloStrength*opacity);
   }else{
-    float x=vSide*width*0.5;
-    float aa=0.55/vTaper;
-    float edge=stroke(x,0.0,3.65,aa);
-    float phase=6.2831853*(vAlong/240.0-time*0.35);
-    vec3 ink=color*0.23;
-    vec3 tint=ink;
-    float coverage=edge*0.72;
-    if(style<0.5){
-      // Two 1.05px wires enclose a dark channel; the pearl centre is 0.8px.
-      float rails=stroke(abs(x),2.45,0.525,aa);
-      float spine=stroke(x,0.0,0.4,aa);
-      float glint=pow(0.5+0.5*cos(phase),12.0)*comet;
-      tint=mix(ink,color,rails*0.94);
-      tint=mix(tint,mix(color,pale,0.68+0.18*glint),spine);
-      coverage=max(coverage,max(rails,spine));
-    }else if(style<1.5){
-      // A broad satin face folds around a moving, 1.1px silvered hem.
-      // Its offset 1.3px ink crease makes this a folded surface, not a tube.
-      float fold=1.65*sin(phase);
-      float hem=stroke(x,fold,0.55,aa);
-      float crease=stroke(x,fold-1.45,0.65,aa);
-      float satin=0.5+0.5*sin(x*0.65+phase);
-      tint=mix(color*0.42,color,0.24+0.48*satin);
-      tint=mix(tint,ink,crease*0.85);
-      tint=mix(tint,mix(color,pale,0.66),hem*0.9);
-      coverage=edge*0.94;
-    }else{
-      // An unbroken 1.3px spine anchors two staggered trains of sparks.
-      // Each spark swells from a fine tip to a 1.5px shoulder, then releases.
-      float spine=stroke(x,0.0,0.65,aa);
-      float cycle=fract(vAlong/110.0-time*0.7+(x<0.0?0.5:0.0));
-      float spark=smoothstep(0.06,0.23,cycle)*(1.0-smoothstep(0.42,0.9,cycle));
-      float shoulder=stroke(abs(x),2.45,0.15+0.6*spark,aa)*spark;
-      tint=mix(ink,color*0.9,spine);
-      tint=mix(tint,mix(color,pale,0.78),shoulder);
-      coverage=max(edge*0.5,max(spine,shoulder));
+    // A quiet route guide survives before and long after the comet. Keeping
+    // it fine, coloured and separate from the light makes travel unmistakable.
+    float guide=stroke(x,0.55);
+    float history=smoothstep(-0.2,0.2,vBehind);
+    float guideAlpha=guide*mix(0.25,0.4,history);
+    float radius=0.35+breadth*pow(tail,0.65);
+    float body=stroke(x,radius)*tail;
+    float core=stroke(x,coreWidth+head*0.5);
+    vec3 tint=mix(color*0.68,color,tail);
+    float light=core*(tail*0.48+head*0.5)+head*body*0.36;
+    float alpha=max(guideAlpha,body*0.9);
+    if(style>0.5&&style<1.5){
+      // Pearl: a sharply resolved bead, then a long hairline of white light.
+      light=core*(tail*0.83+head*0.17);
+      alpha=max(guideAlpha,max(body*0.7,core*tail*0.95));
+    }else if(style>1.5){
+      // Wake: a continuous soft shoulder around a narrower bright centre.
+      float velvet=exp(-2.4*pow(x/max(radius,0.35),2.0));
+      body=velvet*tail;
+      light=core*(tail*0.32+head*0.6);
+      alpha=max(guideAlpha,body*0.8);
     }
-    // Both sides of the head use this same continuous envelope. The 5px
-    // preview keeps the construction legible without a bright head seam.
-    gl_FragColor=vec4(tint,coverage*mix(0.46,0.96,comet)*opacity);
+    tint=mix(tint,pale,clamp(light,0.0,1.0));
+    gl_FragColor=vec4(tint,alpha*opacity);
   }
   if(gl_FragColor.a<0.004)discard;
   #include <colorspace_fragment>
@@ -304,11 +301,9 @@ function createLine(three, track, colors, style) {
     after[i] = neighbor;
   }
   const position = new Float32Array(n * 6), prev = new Float32Array(n * 6), next = new Float32Array(n * 6);
-  const side = new Float32Array(n * 2), tick = new Float32Array(n * 2), along = new Float32Array(n * 2);
+  const side = new Float32Array(n * 2), tick = new Float32Array(n * 2);
   const indices = [];
-  let travelled = 0;
   for (let i = 0; i < n; i++) {
-    travelled += distance[i];
     for (let k = 0; k < 2; k++) {
       const vertex = i * 2 + k;
       for (let axis = 0; axis < 3; axis++) {
@@ -318,7 +313,6 @@ function createLine(three, track, colors, style) {
       }
       side[vertex] = k ? -1 : 1;
       tick[vertex] = points[i];
-      along[vertex] = travelled;
     }
     // Zero-length spans draw no pixels, and must not form degenerate joins.
     if (linked[i] && distance[i] > 1e-5) {
@@ -334,10 +328,9 @@ function createLine(three, track, colors, style) {
     geometry.setAttribute('next', new three.Attribute(next, 3));
     geometry.setAttribute('side', new three.Attribute(side, 1));
     geometry.setAttribute('tick', new three.Attribute(tick, 1));
-    geometry.setAttribute('along', new three.Attribute(along, 1));
     geometry.setIndex(indices);
     const uniforms = {color: {value: new three.Color(colors.line)}, pale: {value: new three.Color(colors.pale)}, style,
-      head: {value: 0}, rate: {value: 1 / track.dt}, time: {value: 0}, nearPlane: {value: 0.1},
+      head: {value: 0}, rate: {value: 1 / track.dt}, nearPlane: {value: 0.1},
       resolution: {value: {x: 1, y: 1, isVector2: true}}};
     const material = (opacity, depthTest, width, glow = 0) => {
       const result = new three.Material({
@@ -349,7 +342,7 @@ function createLine(three, track, colors, style) {
       materials.push(result);
       return result;
     };
-    const solid = material(1, true, 9), xray = material(0.16, false, 9), halo = material(1, true, 18, 1);
+    const solid = material(1, true, 12), xray = material(0.16, false, 12), halo = material(1, true, 28, 1);
     const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, halo), new three.Mesh(geometry, solid)];
     for (let i = 0; i < meshes.length; i++) {
       meshes[i].renderOrder = 30 + i;
@@ -361,7 +354,6 @@ function createLine(three, track, colors, style) {
       meshes,
       set(head, width, height, near = 0.1) {
         uniforms.head.value = head;
-        uniforms.time.value = head * track.dt;
         uniforms.nearPlane.value = near;
         uniforms.resolution.value.x = Math.max(1, width);
         uniforms.resolution.value.y = Math.max(1, height);

@@ -115,7 +115,9 @@ describe('cinematic path geometry', () => {
     expect(spans(geometry)).toEqual([[0, 2], [6, 8]]);
     expect(vertexAt(geometry, 'prev', 4)[0]).toBe(0);
     expect(vertexAt(geometry, 'next', 4)[0]).toBe(20);
-    expect([...geometry.getAttribute('along').array].every(Number.isFinite)).toBe(true);
+    for (const attribute of ['position', 'prev', 'next']) {
+      expect([...geometry.getAttribute(attribute).array].every(Number.isFinite)).toBe(true);
+    }
     cinema.dispose();
   });
 
@@ -123,6 +125,35 @@ describe('cinematic path geometry', () => {
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: trackAt([1, 1, 1])}]);
     expect(rig.lines().every(mesh => !mesh.visible)).toBe(true);
     expect(spans(rig.lines()[0].geometry)).toEqual([]);
+    cinema.dispose();
+  });
+
+  test('keeps both ribbon edges on the recorded three-dimensional centreline before projection', () => {
+    const track = trackAt([0, 12, 24, 36, 48]);
+    track.position.set([24, 30, 40], 6);
+    track.position.set([48, 80, 10], 12);
+    const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track}]);
+    const geometry = rig.lines()[0].geometry;
+    const positions = geometry.getAttribute('position').array;
+    expect([...positions]).toEqual([
+      0, 20, -0, 0, 20, -0,
+      24, 60, -30, 24, 60, -30,
+      48, 30, -80, 48, 30, -80,
+    ]);
+    expect([...geometry.getAttribute('side').array]).toEqual([1, -1, 1, -1, 1, -1]);
+    expect(spans(geometry)).toEqual([[0, 2], [2, 4]]);
+    expect(vertexAt(geometry, 'prev', 2)).toEqual([0, 20, -0]);
+    expect(vertexAt(geometry, 'next', 2)).toEqual([48, 30, -80]);
+    const materials = rig.lines().map(mesh => mesh.material);
+    cinema.update([2], 1280, 720);
+    cinema.update([3.75], 640, 360);
+    expect(geometry.getAttribute('position').array).toBe(positions);
+    expect([...positions]).toEqual([
+      0, 20, -0, 0, 20, -0,
+      24, 60, -30, 24, 60, -30,
+      48, 30, -80, 48, 30, -80,
+    ]);
+    expect(rig.lines().map(mesh => mesh.material)).toEqual(materials);
     cinema.dispose();
   });
 });
@@ -196,18 +227,49 @@ describe('cinematic scene playback', () => {
     reordered.dispose();
   });
 
-  test('freezes paused streaks and restores their phase when seeking back', () => {
+  test('freezes the comet at the interpolated player position and restores it when seeking back', () => {
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: trackAt([0, 10, 20, 30, 40])}]);
-    const phase = () => rig.lines().map(mesh => mesh.material.uniforms.time.value);
+    const state = () => ({
+      clocks: rig.lines().map(mesh => {
+        const {head, rate} = mesh.material.uniforms;
+        return {tick: head.value, seconds: head.value / rate.value};
+      }),
+      player: rig.ghosts[0].updates.at(-1).frame.x,
+    });
     cinema.update([2.5], 1280, 720);
-    const first = phase();
-    expect(first).toEqual([0.25, 0.25, 0.25]);
+    const first = state();
+    expect(first).toEqual({
+      clocks: Array.from({length: 3}, () => ({tick: 2.5, seconds: 0.25})),
+      player: 25,
+    });
     cinema.update([2.5], 1280, 720);
-    expect(phase()).toEqual(first);
+    expect(state()).toEqual(first);
     cinema.update([3.5], 1280, 720);
-    expect(phase()[0]).toBeCloseTo(0.35);
+    expect(state().player).toBe(35);
+    expect(state().clocks[0].seconds).toBeCloseTo(0.35);
     cinema.update([2.5], 1280, 720);
-    expect(phase()).toEqual(first);
+    expect(state()).toEqual(first);
+    cinema.dispose();
+  });
+
+  test('uses each run’s sample rate and clamps comet and player together at either endpoint', () => {
+    const fast = trackAt(Array.from({length: 41}, (_, index) => index * 10));
+    fast.dt = 0.05;
+    const slow = trackAt(Array.from({length: 41}, (_, index) => index * 20));
+    const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: fast}, {track: slow}]);
+    const clocks = () => rig.lines().map(mesh => {
+      const {head, rate} = mesh.material.uniforms;
+      return head.value / rate.value;
+    });
+    cinema.update([15, 7.5], 1280, 720);
+    expect(clocks()).toEqual(Array(6).fill(0.75));
+    expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([150, 150]);
+    cinema.update([-10, 80], 1280, 720);
+    expect(clocks()).toEqual([0, 0, 0, 4, 4, 4]);
+    expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([0, 800]);
+    cinema.update([15, 7.5], 1280, 720);
+    expect(clocks()).toEqual(Array(6).fill(0.75));
+    expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([150, 150]);
     cinema.dispose();
   });
 
@@ -237,7 +299,7 @@ describe('cinematic live trail treatments', () => {
     const states = meshes.map(mesh => ({
       geometry: mesh.geometry, material: mesh.material,
       position: mesh.geometry.getAttribute('position').array,
-      head: mesh.material.uniforms.head.value, time: mesh.material.uniforms.time.value,
+      head: mesh.material.uniforms.head.value, rate: mesh.material.uniforms.rate.value,
     }));
     expect(sharedStyle.value).toBe(TRAIL_STYLES.findIndex(style => style.id === DEFAULT_TRAIL_STYLE));
     const treatments = new Set();
@@ -254,7 +316,7 @@ describe('cinematic live trail treatments', () => {
         expect(mesh.geometry.getAttribute('position').array).toBe(states[index].position);
         expect(mesh.material.uniforms.style).toBe(sharedStyle);
         expect(mesh.material.uniforms.head.value).toBe(states[index].head);
-        expect(mesh.material.uniforms.time.value).toBe(states[index].time);
+        expect(mesh.material.uniforms.rate.value).toBe(states[index].rate);
       }
     }
     expect(treatments.size).toBe(3);
@@ -265,7 +327,7 @@ describe('cinematic live trail treatments', () => {
     cinema.update([2.5, 1.25], 1440, 900);
     for (const [index, mesh] of meshes.entries()) {
       expect(mesh.material.uniforms.head.value).toBe(states[index].head);
-      expect(mesh.material.uniforms.time.value).toBe(states[index].time);
+      expect(mesh.material.uniforms.rate.value).toBe(states[index].rate);
       expect(mesh.material.uniforms.style).toBe(sharedStyle);
     }
     expect(spans(meshes[0].geometry)).toEqual([[0, 2], [3, 4]]);
