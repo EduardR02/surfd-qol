@@ -316,7 +316,7 @@ describe('cinematic replay lifecycle', () => {
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
-        return {update(at) { positions = at.slice(); }, labels: () => [], dispose() { disposed++; }};
+        return {update(at) { positions = at.slice(); }, labels: () => [], setTrailStyle() {}, dispose() { disposed++; }};
       }});
     return {cinema, renderer, native, listeners, control, counts: () => ({disposed, scenes, recorded, colors, positions})};
   }
@@ -436,12 +436,18 @@ describe('cinematic replay lifecycle', () => {
     expect(await cinema.setEnabled(true)).toBe(true);
     cinema.close();
   });
-  test('the conservative four-extra cap counts both loaded and queued runs', async () => {
+  test('queued and loaded runs can exceed the old palette-sized limit', async () => {
     const {cinema} = rig();
-    const additions = ['one', 'two', 'three', 'four'].map(id => cinema.add(run(id)));
-    await expect(cinema.add(run('five'))).rejects.toThrow('Up to 4');
-    expect(await Promise.all(additions)).toEqual([true, true, true, true]);
-    expect(cinema.status().runs).toHaveLength(4);
+    const ids = Array.from({length: 9}, (_, index) => `run-${index}`);
+    await Promise.all(ids.map(id => cinema.add(run(id))));
+    const colors = new Map(cinema.status().runs.map(run => [run.id, run.color]));
+    expect([...colors.keys()]).toEqual(ids);
+    await cinema.remove(ids[3]);
+    await cinema.add(run('replacement'));
+    for (const entry of cinema.status().runs) {
+      if (entry.id !== 'replacement') expect(entry.color).toBe(colors.get(entry.id));
+    }
+    expect(cinema.status().runs.find(entry => entry.id === 'replacement').colorIndex).toBe(4);
     cinema.close();
   });
   test('rendering and seeks use the native fractional clock relative to a clipped initial tick', async () => {

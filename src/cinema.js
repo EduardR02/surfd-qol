@@ -9,7 +9,7 @@
 import {createTrack, recordTrack, trackPoint, trackYaw} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
-import {createCinemaScene, RUN_COLORS} from './cinema-scene.js';
+import {createCinemaScene, runColors, TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from './cinema-scene.js';
 import {routeFingerprint} from './replay-store.js';
 
 // Brush contents the camera can see through: player clips, grates, glass.
@@ -17,12 +17,10 @@ const SOLID = 0x1, SEE_THROUGH = 0x10000000 | 0x8;
 const PROBE = {min: {x: -6, y: -6, z: -6}, max: {x: 6, y: 6, z: 6}};
 const DRAG_RADIANS = 0.005;
 const ZOOM_STEP = 1.12;
-// The watched run and up to this many others: more stops being readable.
-export const MAX_GHOSTS = RUN_COLORS.length - 1;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 
-export const colorOf = index => RUN_COLORS[index]?.line ?? '#ffffff';
+export const colorOf = index => runColors(index).line;
 
 // The game's collision world without what the camera sees through.
 function cameraWorld(session) {
@@ -39,7 +37,7 @@ function cameraWorld(session) {
 // load() giving its replay. record and createScene stand in for the game in tests.
 export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene}) {
   // The watched replay and its track, the added runs, and what's being added.
-  let state = null;
+  let state = null, trailStyle = DEFAULT_TRAIL_STYLE;
   const notify = () => { try { onChange(); } catch { /* UI only */ } };
   const playing = () => { try { return getAdapter?.()?.replay?.playback?.()?.replay ?? null; } catch { return null; } };
 
@@ -75,7 +73,6 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     let current;
     try { current = currentState(); } catch (error) { return Promise.reject(error); }
     if (current.runs.some(item => item.id === run.id) || current.loading.some(item => item.id === run.id)) return Promise.resolve(false);
-    if (current.runs.length + current.loading.length >= MAX_GHOSTS) return Promise.reject(new Error(`Up to ${MAX_GHOSTS} runs alongside this one.`));
     const used = new Set([...current.runs, ...current.loading].map(item => item.colorIndex));
     let colorIndex = 1;
     while (used.has(colorIndex)) colorIndex++;
@@ -224,6 +221,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   function attach(current, renderer) {
     current.scene = createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+    current.scene.setTrailStyle(trailStyle);
     current.renderer = renderer;
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
@@ -353,6 +351,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     detach(current);
     notify();
   }
+  function setTrailStyle(id) {
+    if (!TRAIL_STYLES.some(style => style.id === id) || id === trailStyle) return;
+    state?.scene?.setTrailStyle(id);
+    trailStyle = id;
+    notify();
+  }
+
 
   return {
     available,
@@ -363,6 +368,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     resetView,
     setSync,
     setFocus,
+    setTrailStyle,
+    get trailStyle() { return trailStyle; },
     // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
     get comparing() { return !!state?.renderer && state.runs.length > 0; },
@@ -384,7 +391,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
       return {active: !!current.renderer, played: {colorIndex: 0, color: colorOf(0), time: current.track?.time ?? null}, runs,
         loading: current.loading.map(({id, label, colorIndex}) => ({id, label, colorIndex, color: colorOf(colorIndex)})),
-        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
+        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, trailStyle, labels};
     },
     destroy() { close(); },
   };
