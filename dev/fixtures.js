@@ -4,6 +4,7 @@
 // hand to the UI.
 import {SPEEDS, MAX_SPOTS} from '../src/replay-control.js';
 import {referenceTone} from '../src/hud-model.js';
+import {colorOf} from '../src/cinema.js';
 
 const DT = 0.015;
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -169,12 +170,34 @@ export function createHistory({settings, empty = false, current = 'utopia:3', to
 export const createReplays = ({empty = false} = {}) => ({
   usage: () => empty ? {bytes: 0, count: 0} : {bytes: 1.6 * 1024 * 1024, count: 26},
   subscribe: () => () => {}, clearMap: async () => {}, has: () => true,
+  get: async () => ({mapId: 'utopia', mapVersion: 3, commands: Array(2800).fill({})}),
 });
 
 // ?pb=official exercises native PB metadata independently of local history;
 // ?pb=partial leaves later checkpoint references unavailable.
 export function createLeaderboardReferences(params) {
   const mode = params.get('pb');
+  if (params.has('cinema') && mode !== 'official' && mode !== 'partial') {
+    const entries = [
+      {runId: 'site-wr', rank: 1, username: 'Mira', timeUs: 40533000},
+      {runId: 'jose', rank: 3, username: 'Jose', timeUs: 40884000},
+      {runId: 'david', rank: 5, username: 'david', timeUs: 41186000},
+      {runId: 'benji', rank: 8, username: 'benji', timeUs: 40909000},
+      {runId: 'ari', rank: 9, username: 'Ari', timeUs: 41210000},
+      {runId: 'lena', rank: 12, username: 'Lena', timeUs: 41380000},
+      {runId: 'kai', rank: 14, username: 'Kai', timeUs: 41425000},
+      {runId: 'noah', rank: 18, username: 'Noah', timeUs: 41570000},
+      {runId: 'skye', rank: 21, username: 'Skye', timeUs: 41710000},
+      {runId: 'remy', rank: 24, username: 'Remy', timeUs: 41920000},
+      {runId: 'tess', rank: 28, username: 'Tess', timeUs: 42160000},
+      {runId: 'eli', rank: 31, username: 'Eli', timeUs: 42400000},
+    ];
+    return {boardId: 'utopia:3:default', mapName: 'Utopia', record: entries[0], entries,
+      loadReplay: async () => {
+        await new Promise(done => setTimeout(done, 250));
+        return {mapId: 'utopia', mapVersion: 3, commands: Array(2800).fill({})};
+      }};
+  }
   if (mode !== 'official' && mode !== 'partial') return null;
   const own = {runId: 'utopia-official-pb', timeUs: 40800000,
     splitsUs: mode === 'partial' ? [10000000] : [10000000, 21233000, 31100000], createdAt: '2026-10-24T18:00:00'};
@@ -267,7 +290,7 @@ export function createBinds(params) {
 // Playback over a fixture run: the controls work and the playhead moves; only
 // the game behind them is still. ?play=paused|ended, ?locs=<n>, ?notice=<preset or text>.
 const NOTICES = {saved: 'Saved location #3 · 00:21.233.', full: `You can keep up to ${MAX_SPOTS} locations in a replay; delete one first.`};
-export function createReplayControl({params, active}) {
+export function createReplayControl({params, active, ghosts = () => false}) {
   const length = 3082, ownStart = 333, ownMarkers = [1008, 1748, 2391];
   const other = params.get('title') === 'other';
   let title = other ? 'Watching a replay on Utopia' : 'Your run on Utopia · finished in 00:41.233';
@@ -322,10 +345,11 @@ export function createReplayControl({params, active}) {
     status() {
       if (closed || !active()) return null;
       tick();
+      const comparing = ghosts();
       return {title, index: Math.round(index), length, start: external ? 0 : ownStart, dt: DT, playing, ended: index >= length, speed,
         parked: params.get('parked') === 'true', indexed: params.has('indexing') ? Math.round(length * .65) : length,
-        reachable: params.has('indexing') ? Math.round(length * .65) : length, complete: !params.has('indexing'),
-        markers: ownMarkers, ramps: visible ? ramps : ramps.map(ramp => ({...ramp, tone: 'muted'})), spots: spots.slice(), lastSpot,
+        reachable: params.has('indexing') ? Math.round(length * .65) : length, complete: !params.has('indexing'), ghosts: comparing,
+        markers: ownMarkers, ramps: comparing ? [] : visible ? ramps : ramps.map(ramp => ({...ramp, tone: 'muted'})), spots: comparing ? [] : spots.slice(), lastSpot: comparing ? null : lastSpot,
         notice: notice && (params.has('notice') || performance.now() - noticeAt < 4000) ? notice : '', run};
     },
     play() { if (index >= length) index = ownStart - 66; playing = true; },
@@ -338,6 +362,7 @@ export function createReplayControl({params, active}) {
     faster() { speed = SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(speed) + 1)]; },
     slower() { speed = SPEEDS[Math.max(0, SPEEDS.indexOf(speed) - 1)]; },
     saveSpot() {
+      if (ghosts()) return false;
       const at = Math.round(index);
       if (!spots.includes(at)) {
         if (spots.length >= MAX_SPOTS) { say(NOTICES.full); return false; }
@@ -357,4 +382,66 @@ export function createReplayControl({params, active}) {
     exit() { closed = true; },
     returnToServer() { closed = true; },
   };
+}
+
+// UI-only cinematic states: no renderer, physics or alignment is simulated.
+// ?cinema=off|solo|group|focus|many|error starts the real controls in that state.
+export function createCinemaFixture({params, replayControl}) {
+  const mode = params.get('cinema');
+  let enabled = mode != null && mode !== 'off' && mode !== 'error', focus = mode === 'focus' ? 'run:jose' : null, sync = 'time', adjusted = params.has('adjusted');
+  const initial = [
+    {id: 'run:site-wr', label: 'Site WR', time: 40.533},
+    {id: 'run:jose', label: '#3 Jose', time: 40.884},
+    {id: 'run:david', label: '#5 david', time: 41.186},
+    {id: 'run:benji', label: '#8 benji', time: 40.909},
+    {id: 'run:ari', label: '#9 Ari', time: 41.210},
+    {id: 'run:lena', label: '#12 Lena', time: 41.380},
+    {id: 'run:kai', label: '#14 Kai', time: 41.425},
+    {id: 'run:noah', label: '#18 Noah', time: 41.570},
+    {id: 'run:skye', label: '#21 Skye', time: 41.710},
+    {id: 'run:remy', label: '#24 Remy', time: 41.920},
+    {id: 'run:tess', label: '#28 Tess', time: 42.160},
+    {id: 'run:eli', label: '#31 Eli', time: 42.400},
+  ];
+  let runs = ['group', 'focus', 'many'].includes(mode) ? initial.slice(0, mode === 'many' ? initial.length : 2).map((run, index) => ({...run, colorIndex: index + 1})) : [];
+  let loading = [];
+  const fixture = {
+    available: () => replayControl.active,
+    get active() { return enabled && replayControl.active; },
+    get comparing() { return fixture.active && runs.length > 0; },
+    async setEnabled(value) {
+      if (value && mode === 'error') throw new Error('This replay’s route is unavailable.');
+      enabled = value;
+      if (!value) { runs = []; loading = []; focus = null; adjusted = false; }
+      return true;
+    },
+    async add(source) {
+      if ([...runs, ...loading].some(run => run.id === source.id)) return false;
+      const used = new Set([...runs, ...loading].map(run => run.colorIndex));
+      let colorIndex = 1;
+      while (used.has(colorIndex)) colorIndex++;
+      const entry = {id: source.id, label: source.label, colorIndex};
+      loading = [...loading, entry];
+      try {
+        await source.load();
+        if (!loading.includes(entry)) return false;
+        enabled = true;
+        runs = [...runs, {...entry, time: initial.find(run => run.id === entry.id)?.time ?? 41.233}];
+        return true;
+      } finally { loading = loading.filter(run => run !== entry); }
+    },
+    remove(id) { runs = runs.filter(run => run.id !== id); loading = loading.filter(run => run.id !== id); if (focus === id) focus = null; },
+    async setFocus(id) { focus = id === focus ? null : id; },
+    async setSync(value) { sync = value; },
+    resetView() { adjusted = false; },
+    status() {
+      if (!enabled && !loading.length || !replayControl.active) return null;
+      const status = replayControl.status();
+      return {active: fixture.active, played: {label: 'This run', time: 41.233, colorIndex: 0, color: colorOf(0)},
+        runs: runs.map((run, index) => ({...run, color: colorOf(run.colorIndex), gap: [.267, -.084, -.211, .189][index % 4]})),
+        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted,
+        labels: [0, ...runs].map((_, index, all) => ({x: innerWidth * (.18 + index * .64 / Math.max(1, all.length - 1)), y: innerHeight * .43 + Math.sin((status?.index ?? 0) / 160 + index) * 18}))};
+    },
+  };
+  return fixture;
 }

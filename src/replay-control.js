@@ -15,6 +15,8 @@ import {mapKey} from './run-history.js';
 export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 export const MAX_SPOTS = 20;
 const NOTICE_MS = 4000;
+// Bars cache annotation geometry by identity, including while it is suppressed.
+const EMPTY_MARKS = Object.freeze([]);
 // The game keeps this many savelocs per bank, dropping the oldest.
 const BANK_SIZE = 20;
 // The furthest a seek may skip ahead to a keyframe the analysis then steps to.
@@ -33,8 +35,10 @@ const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'sh
 // boardsFor({replay, session, analysis, isCurrent}) acquires the analysis of a
 // replay you didn't record (a store handle: {result, promise, release}), whose
 // ramp boards then mark the timeline; analysis {key, entry} names a PB/WR.
+// ghosts() is true while other runs play alongside this one: the timeline's
+// touches and locs are this run's alone, so they and saving step aside.
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
-  grade = null, teach = null, rampNumber = null, coaching = null, boardsFor = null, settings = {}, clock = () => performance.now()}) {
+  grade = null, teach = null, rampNumber = null, coaching = null, boardsFor = null, settings = {}, clock = () => performance.now(), ghosts = () => false}) {
   let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null;
   let detached = null, watches = 0;
   const analysisSettings = ANALYSIS_SETTINGS.map(key => settings[key]);
@@ -440,12 +444,14 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
           parked = !!t.host?.parked?.(); reachable = t.index?.reachable ?? 0;
         }
       } catch { /* the player changed shape */ }
+      let others = false;
+      try { others = ghosts() === true; } catch { /* none */ }
       return {
-        title: watched.title, index: position(watched), length, start: Math.min(watched.start ?? 0, length), dt: watched.dt,
+        title: watched.title, index: position(watched), length, start: Math.min(watched.start ?? 0, length), dt: watched.dt, ghosts: others,
         playing: !!t && !paused && !ended, ended, speed, parked, reachable,
         indexed: t?.index?.indexed ?? reachable, complete: t?.index?.complete ?? false,
-        markers: watched.markers, ramps: ramps(watched),
-        spots: watched.spots, lastSpot: watched.lastSpot,
+        markers: watched.markers, ramps: others ? EMPTY_MARKS : ramps(watched),
+        spots: others ? EMPTY_MARKS : watched.spots, lastSpot: others ? null : watched.lastSpot,
         notice: notice && clock() - notice.at < NOTICE_MS ? notice.text : '', run: watched.run,
       };
     },
@@ -465,6 +471,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     // Saves the current tick as a spot, also kept for practice; false when there is no room.
     saveSpot() {
       const watched = current();
+      try { if (ghosts() === true) return false; } catch { /* saving as usual */ }
       if (!watched) return false;
       const tick = position(watched);
       if (!watched.spots.includes(tick)) {

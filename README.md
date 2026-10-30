@@ -114,6 +114,20 @@ Prefer the extension’s timeline? Enable **QoL → History → Custom replay ba
 
 Seeking to an unvisited section can leave feedback grey: the game’s keyframe has movement state, but not the extension’s analysis of the earlier ramp or flight. Incomplete segments are excluded rather than shown as complete measurements.
 
+### Runs alongside a replay
+
+While you watch any replay, **Cinematic** on the replay bar switches to its third-person camera, including for a single run. **Add run** adds your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (find one by name or rank). Adding a run also enables the camera. The replay bar, speeds, seeking and stage jumps keep working as usual.
+
+- Run chips share a row with the cinematic tools and fade with the controls when idle; additional runs scroll horizontally. The custom bar keeps this in its playback row. The native bar also uses its playback row above 1000 px wide; narrower native layouts use one compact extras row rather than squeeze the controls into unreadable slivers. **Add run** is the leftmost cinematic tool. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
+- **Real time** (the default) aligns the runs to their final native start-zone departure, including fractional ticks and a return to the start zone during prestrafe. Playback and seeking follow the native frame's actual interpolation state. **Side by side** matches places along the route instead, adjusting playback to show where the lines differ; it is not a real-time race.
+- Each added run's chip shows **that run's** gap to **This run**: **negative/teal** means it reached this point sooner; **positive/red** means it reached it later. Start, checkpoint and finish matches remain fixed while the route between them is smoothed, so a close finish keeps the correct sign.
+- The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
+- Each run keeps its colour when another is removed. Its original comet trail has a pale core, coloured band and glow, with flowing streaks in a six-second tapering tail, faint history and a transparent preview ahead. Flow follows replay time, so pausing freezes it and seeking restores it.
+- **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
+- With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
+
+Preparing a run re-simulates it and plans its camera. Nothing runs until you enable Cinematic or add a run. There is no run-count limit: the map, geometry and lighting are shared. Each additional run still needs its own simulation, track storage, matching, ghost and trail drawing; remove runs if playback becomes slow on your hardware.
+
 ### What's kept
 
 Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Each run includes its replay. Your best recorded finish, best splits and ramp bests stay even after older attempts are removed.
@@ -164,6 +178,8 @@ You only need [Bun](https://bun.sh) to work on the source; no other dependencies
 bun run build   # writes the unpacked extension to dist/
 bun test
 ```
+
+The cinematic tests use synthetic tracks, sessions and renderer fixtures, not the live site or downloaded game code. The optional UI screenshot harness also runs locally with fixture data.
 
 Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 

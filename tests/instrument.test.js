@@ -56,12 +56,29 @@ function nativeWatch(load) {
   return load().then(data=>watch(data,()=>true,'native',token));
 }
 ${nativePracticePanelSource}
+class Group{}
+function ghostFactory(scene){const group=new Group;group.name="record-ghost",group.visible=!1,scene.add(group);return{update(){},dispose(){}}}
+function mapRenderer(){const scene={children:[],add(object){this.children.push(object)}},camera={fov:0,updateProjectionMatrix(){}},ghost=ghostFactory(scene);let lastFov=-1;
+  const resize=()=>{},api={resize:resize,setQuality:()=>{},render(view){view.fov!==lastFov&&(camera.fov=2*Math.atan(Math.tan(view.fov*Math.PI/360)*.75)*180/Math.PI,camera.updateProjectionMatrix(),lastFov=view.fov);api.lastView=view}};return api}
+let renderer=mapRenderer();
+const recordGhost={frame:(state,alpha)=>({state,alpha})};
+function drawFrame(state,alpha,spectating=false,inReplay=false){renderer.render({state:state,eyePosition:{x:0,y:0,z:0},fov:90,ghost:spectating||inReplay?null:recordGhost.frame(state,alpha)})}
 `;
+
+// Replay-only fixtures deliberately omit private rooms. Keep unexpected
+// compatibility warnings visible without logging this known optional omission.
+function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms unavailable:']) {
+  const warn = console.warn;
+  try {
+    console.warn = (...args) => { if (!expected.includes(args[0])) warn(...args); };
+    return instrumentGame(source);
+  } finally { console.warn = warn; }
+}
 
 function fixture() {
   let adapter;
-  const runtime = new Function('globalThis', instrumentGame(nativeSource) + `
-    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},
+  const runtime = new Function('globalThis', instrumentReplayFixture(nativeSource) + `
+    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},drawFrame,replaceRenderer:()=>{renderer=mapRenderer();},
       setOwner:id=>{client.session=id?{user:{id}}:null;},
       sessions:()=>sessions,restart,setStart:(key,start)=>{starts[key]=start;},
       setRules:rule=>{settings.rule=rule;},setReplayMap:map=>{replayMap=map;}};
@@ -133,6 +150,39 @@ describe('optional camera preview instrumentation', () => {
   });
 });
 
+describe('optional Compare view instrumentation', () => {
+  test('the map renderer exposes its scene, camera and ghost factory, and frames carry their interpolation', () => {
+    const {adapter, runtime} = fixture();
+    const renderer = adapter.cinema.renderer();
+    expect(renderer.qolScene.children.map(child => child.name)).toEqual(['record-ghost']);
+    renderer.qolGhost();
+    expect(renderer.qolScene.children).toHaveLength(2);
+    runtime.drawFrame({tick: 4}, 0.25);
+    expect(renderer.qolCamera.fov).toBeGreaterThan(0);
+    expect(renderer.lastView).toMatchObject({qolAlpha: 0.25, ghost: {alpha: 0.25}});
+    runtime.drawFrame({tick: 5}, 0.5, false, true);
+    expect(renderer.lastView).toMatchObject({qolAlpha: 0.5, ghost: null});
+  });
+  test('a renderer the game replaces is the one the adapter returns', () => {
+    const {adapter, runtime} = fixture();
+    const first = adapter.cinema.renderer();
+    runtime.replaceRenderer();
+    expect(adapter.cinema.renderer()).not.toBe(first);
+    expect(adapter.cinema.renderer().qolScene).toBeTruthy();
+  });
+  test('an unrecognised renderer leaves Compare out and the rest of the adapter working', () => {
+    const originalWarn = console.warn;
+    let adapter;
+    console.warn = () => {};
+    try {
+      const changed = nativeSource.replace('group.name="record-ghost"', 'group.name="other"');
+      new Function('globalThis', instrumentGame(changed))({__SURFD_QOL__: {attach: value => {adapter = value;}}});
+    } finally { console.warn = originalWarn; }
+    expect(adapter.cinema).toBeUndefined();
+    expect(adapter.replay.playback).toBeTypeOf('function');
+  });
+});
+
 describe('native practice destinations', () => {
   test('a legacy replay uses Restart’s current rules and format without constructing or changing a Session', () => {
     const {adapter, runtime} = fixture();
@@ -171,7 +221,10 @@ describe('native practice destinations', () => {
   test('without a recognisable start loader, savelocs still file and keep the replay’s start position', () => {
     let adapter;
     const source = nativeSource.replace('return saved&&session.setStartPosition(saved),session;', 'return session;');
-    new Function('globalThis', instrumentGame(source))({__SURFD_QOL__: {attach: value => { adapter = value; }}});
+    new Function('globalThis', instrumentReplayFixture(source, [
+      '[Surfd QoL] Private rooms unavailable:',
+      '[Surfd QoL] Savelocs from replays keep the replay’s start position:',
+    ]))({__SURFD_QOL__: {attach: value => { adapter = value; }}});
     const destination = adapter.practice.destination();
     expect(destination.key).toBe(JSON.stringify(['map', 1, 'current', 8]));
     expect('startPosition' in destination).toBe(false);
@@ -511,7 +564,7 @@ describe('optional native private room instrumentation', () => {
   });
 
   test('old adapters require fresh source', () => {
-    expect(isCurrentInstrumented(instrumentGame(nativeSource))).toBe(true);
+    expect(isCurrentInstrumented(instrumentReplayFixture(nativeSource))).toBe(true);
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
   });
 
@@ -1031,7 +1084,7 @@ function sharedPracticeFixture() {
     createElement: () => ({}),
   };
   let adapter;
-  const runtime = new Function('globalThis', 'document', instrumentGame(sharedPracticeSource) +
+  const runtime = new Function('globalThis', 'document', instrumentReplayFixture(sharedPracticeSource) +
     ';return {bank,save,nativeLoad,nativeCycle,messages,effects,panel};')(
     {__SURFD_QOL__: {attach(value) { adapter = value; }}}, document);
   return {adapter, runtime, node: id => document.getElementById(id)};

@@ -501,6 +501,8 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     if (panel.hidden || busy && replayControl?.adopting) return;
     if (replayCache) syncReplayCache();
     if (navigationContext && navigationContext !== rampContext()) cancelRampNavigation();
+    // Opened before the game loaded a map: show that map once it has.
+    if (!key && history.currentMap) key = history.currentMap;
     let data = null;
     try { data = key ? history.view(key, {rampMode}) : null; } catch { /* unavailable */ }
     scheduleExpiry(data?.recentBest);

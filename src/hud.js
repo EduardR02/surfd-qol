@@ -8,26 +8,27 @@ import {hudMarkup, createHudView, installFonts} from './hud-view.js';
 import {hudStyles} from './hud-styles.js';
 import {panelStyles} from './panel-styles.js';
 import {launcherMarkup, zenMarkup, panelMarkup, createSettingsPanel} from './settings-panel.js';
-import {runsLauncherMarkup, runsMarkup, createRunsPanel} from './runs-panel.js';
+import {runsLauncherMarkup, runsMarkup, createRunsPanel, bestFinish} from './runs-panel.js';
 import {runsStyles} from './runs-styles.js';
 import {replayBarMarkup, replayBarStyles} from './replay-bar.js';
 import {createReplayUi, nativeExtrasMarkup, nativeExtrasStyles} from './native-replay-ui.js';
 import {defaults} from './settings.js';
 import {strafePreviewMarkup, strafePreviewStyles, createStrafePreviewIndicator} from './strafe-preview-ui.js';
+import {cinemaMarkup, cinemaStyles, createCinemaUi} from './cinema-ui.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback;
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, strafePreview = null, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, strafePreview = null, cinema = null, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
   const root = host.attachShadow({mode: 'open'});
-  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}${strafePreviewStyles}</style>
+  root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}${strafePreviewStyles}${cinemaStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>${strafePreviewMarkup}
-    ${replayBarMarkup}${nativeExtrasMarkup}
+    ${replayBarMarkup}${nativeExtrasMarkup}${cinemaMarkup}
     <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
@@ -99,12 +100,23 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, onSettings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
+  let cinemaUi = null;
   const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
-    getCustom: () => settings.customReplayUi === true,
+    getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.comparing,
     getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
-    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open}) : null;
+    onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open || !!cinemaUi?.holding}) : null;
 
-  function onKey(event) { panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
+  // The runs a replay can have alongside it, from the loaded map's history and leaderboard.
+  const ghostInputs = () => {
+    const key = history?.currentMap ?? null, refs = getReferences?.() ?? null;
+    let data = null;
+    try { data = key ? history.view(key) : null; } catch { /* none yet */ }
+    return {best: bestFinish(data, {key, session: getSession?.(), refs}), recentBest: data?.recentBest ?? null, refs, archive: replays,
+      canWatch: run => { try { return !!replayControl?.canWatch?.(run); } catch { return false; } }};
+  };
+  cinemaUi = cinema ? createCinemaUi({root, cinema, getSources: ghostInputs, storage: (() => { try { return localStorage; } catch { return null; } })()}) : null;
+
+  function onKey(event) { if (cinemaUi?.handleKey(event)) return; panel.handleKey(event); runs.handleKey(event); replayBar?.handleKey(event); }
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKey, true);
   function onPointer(event) { replayBar?.handlePointer(event); }
@@ -146,7 +158,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     if (inMenu) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
-    setOverlayHidden(settings.hud === false || !inSurf || !hasState);
+    // Compare shows its own legend in the HUD's place.
+    setOverlayHidden(settings.hud === false || !inSurf || !hasState || !!cinema?.active);
     // Keep native in-run telemetry suppressed behind open menus while the
     // custom HUD is enabled; disabling the custom HUD restores it.
     nativeStyle.disabled = settings.hud === false || snapshot == null;
@@ -256,6 +269,13 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     panel.setStatus(model.status);
     const reserve = `${replayBar?.render(replayVisible) ?? 0}px`;
     replayBar?.setRunsOpen(runs.open);
+    // Cinematic actions share the active replay tools. Geometry is measured
+    // only when their layout changes, rather than polled on the HUD tick.
+    if (cinemaUi && (replayVisible || cinemaUi.shown)) {
+      const custom = settings.customReplayUi === true;
+      cinemaUi.render({visible: replayVisible && !!replayBar?.visible, custom,
+        held: runs.open, tags: !finishScreen || finishScreen.hidden});
+    }
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }
 
@@ -271,6 +291,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       refreshMenu();
     },
     observeFinish() { references.observeFinish(); },
+    cinemaChanged() { render(); },
     // Dev harness hook: open the panel on a given section.
     showSettings(page) { panel.show(page); },
     // Dev harness hooks: the Runs panel (optionally on a map, with the map list
@@ -288,6 +309,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       runs.destroy();
       previewIndicator.destroy();
       replayBar?.destroy();
+      cinemaUi?.destroy();
       replayStore.destroy?.();
       menuObserver.disconnect();
       document.removeEventListener('pointerlockchange', onPointerLockChange);

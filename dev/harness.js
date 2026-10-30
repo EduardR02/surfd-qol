@@ -7,7 +7,7 @@
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
-import {NOW, createHistory, createReplays, createReplayControl, createRampReference, createLeaderboardReferences, createBinds, createStrafePreview, skipBail} from './fixtures.js';
+import {NOW, createHistory, createReplays, createReplayControl, createCinemaFixture, createRampReference, createLeaderboardReferences, createBinds, createStrafePreview, skipBail} from './fixtures.js';
 import {startStrafePreview} from '../src/strafe-preview-ui.js';
 import {mountNativeTransport} from './native-transport.js';
 
@@ -81,7 +81,9 @@ const emptyHistory = params.get('history') === 'empty';
 if (params.get('bail') === 'none') skipBail();
 const history = createHistory({settings, empty: emptyHistory, touch: params.get('touch')});
 const replays = createReplays({empty: emptyHistory});
-const replayControl = createReplayControl({params, active: () => scenario.watching === true});
+let cinema = null;
+const replayControl = createReplayControl({params, active: () => scenario.watching === true, ghosts: () => cinema?.comparing === true});
+cinema = createCinemaFixture({params, replayControl});
 const rampReference = createRampReference({params, settings});
 const leaderboardReferences = createLeaderboardReferences(params);
 const binds = createBinds(params);
@@ -128,6 +130,7 @@ const hud = mountHud({
   replayControl,
   rampReference,
   strafePreview,
+  cinema,
   bindings: {release() {}, setKey: code => !['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(code), status: () => 'Crouch-jump ready on Space'},
   services: {
     replayStore: {destroy() {}},
@@ -150,6 +153,9 @@ if (params.has('pop')) setTimeout(() => {
 }, 50);
 if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
+// ?cinema=off|solo|group|focus|many|error uses the real cinematic controls with
+// UI-only fixture state. ?pick opens Add run; this does not exercise rendering.
+if (params.has('pick')) setTimeout(() => document.getElementById('surfd-qol').shadowRoot.querySelector('[data-cn="add"]')?.click(), 80);
 // With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
 // other replays, ?reset asks to reset the averages. These press the panel's own buttons.
 if (runsMap !== null && params.get('view') === 'ramps') {
@@ -170,7 +176,7 @@ const select = (label, options, current, key) => {
 };
 select('Scenario', Object.keys(scenarios), name, 'state');
 select('Backdrop', backdrops, bg, 'bg');
-window.__harness = {hud, settings, replayControl, nativeTransport, scenario: name, note: scenario.note};
+window.__harness = {hud, settings, replayControl, cinema, nativeTransport, scenario: name, note: scenario.note};
 
 // Design experiments: ?css=<rules> is appended to the HUD's shadow root.
 if (params.has('css')) {

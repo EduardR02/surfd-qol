@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v18:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v19:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -303,6 +303,31 @@ function previewViewHook(source, input) {
   }
 }
 
+// Compare's cinematic view, optional. The map renderer is a plain object the
+// game calls once per frame with a view (eye, yaw, pitch, ghost): it also
+// exposes its scene, camera and the record ghost's factory, so two ghosts can
+// share the game's own ghost look. The extension wraps render() only while the
+// view is open; the frame's interpolation is passed along for smooth ghosts.
+function cinemaHooks(source) {
+  try {
+    const factory = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=new ${identifier};\\3\\.name="record-ghost"`, 'g'), 'record ghost')[1];
+    const scene = unique(source, new RegExp(`(${identifier})=${literal(factory)}\\((${identifier})\\)`, 'g'), 'record ghost scene')[2];
+    const camera = unique(source, new RegExp(`\\.fov!==${identifier}&&\\((${identifier})\\.fov=2\\*Math\\.atan`, 'g'), 'map camera')[1];
+    const object = unique(source, new RegExp(`(${identifier})=\\{resize:(${identifier}),setQuality:`, 'g'), 'map renderer');
+    const call = unique(source, new RegExp(`(${identifier})\\.render\\(\\{state:${identifier},eyePosition:`, 'g'), 'frame render')[1];
+    const ghost = unique(source, new RegExp(`ghost:(${identifier})\\|\\|(${identifier})\\?null:(${identifier})\\.frame\\((${identifier}),(${identifier})\\)\\}\\)`, 'g'), 'frame interpolation');
+    source = source.replace(object[0], () => `${object[1]}={qolScene:${scene},qolCamera:${camera},qolGhost:()=>${factory}(${scene}),resize:${object[2]},setQuality:`);
+    source = source.replace(ghost[0], () => `${ghost[0].slice(0, -2)},qolAlpha:${ghost[5]}})`);
+    return {source, adapter: `
+    cinema: {
+      renderer: () => ${call} ?? null,
+    },`};
+  } catch (error) {
+    console.warn('[Surfd QoL] Compare view unavailable:', error.message);
+    return {source, adapter: ''};
+  }
+}
+
 // Append access to existing lexical objects; no original movement statement is rewritten.
 // Fail open when the private game layout changes instead of guessing at another class.
 export function instrumentGame(source) {
@@ -329,6 +354,8 @@ export function instrumentGame(source) {
   source = rooms.source;
   const practice = practiceHooks(source, sessionClass, state);
   source = practice.source;
+  const cinema = cinemaHooks(source);
+  source = cinema.source;
   return source + `${ADAPTER_MARKER} native community rooms and optional room transport */
 ${practice.setup}
 ;(() => {
@@ -341,7 +368,7 @@ ${practice.setup}
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${previewViewHook(source, binding[1])}${replayHooks(source)}${practice.adapter}${noticeHook(source)}${rooms.adapter}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${previewViewHook(source, binding[1])}${replayHooks(source)}${practice.adapter}${noticeHook(source)}${cinema.adapter}${rooms.adapter}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;
@@ -353,7 +380,7 @@ ${practice.setup}
       const mapInfo = ${client}.config.maps.find(entry => entry.id === session.map.id);
       const recordSlug = mapInfo?.slug ?? session.map.slug;
       const record = refs?.entries?.find(entry => entry.rank === 1) ?? null;
-      return {ownerKey, boardId: board?.boardId ?? null, own: refs?.own ?? null, record, mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
+      return {ownerKey, boardId: board?.boardId ?? null, own: refs?.own ?? null, record, entries: refs?.entries ?? [], mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
         loadReplay: runId => ${client}.replay(runId),
         loadRecordRoute: () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
     }
