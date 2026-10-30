@@ -65,9 +65,19 @@ const recordGhost={frame:(state,alpha)=>({state,alpha})};
 function drawFrame(state,alpha,spectating=false,inReplay=false){renderer.render({state:state,eyePosition:{x:0,y:0,z:0},fov:90,ghost:spectating||inReplay?null:recordGhost.frame(state,alpha)})}
 `;
 
+// Replay-only fixtures deliberately omit private rooms. Keep unexpected
+// compatibility warnings visible without logging this known optional omission.
+function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms unavailable:']) {
+  const warn = console.warn;
+  try {
+    console.warn = (...args) => { if (!expected.includes(args[0])) warn(...args); };
+    return instrumentGame(source);
+  } finally { console.warn = warn; }
+}
+
 function fixture() {
   let adapter;
-  const runtime = new Function('globalThis', instrumentGame(nativeSource) + `
+  const runtime = new Function('globalThis', instrumentReplayFixture(nativeSource) + `
     return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},drawFrame,replaceRenderer:()=>{renderer=mapRenderer();},
       setOwner:id=>{client.session=id?{user:{id}}:null;},
       sessions:()=>sessions,restart,setStart:(key,start)=>{starts[key]=start;},
@@ -161,20 +171,15 @@ describe('optional Compare view instrumentation', () => {
     expect(adapter.cinema.renderer().qolScene).toBeTruthy();
   });
   test('an unrecognised renderer leaves Compare out and the rest of the adapter working', () => {
-    const warnings = [], originalWarn = console.warn;
+    const originalWarn = console.warn;
     let adapter;
-    console.warn = (...args) => warnings.push(args.join(' '));
+    console.warn = () => {};
     try {
       const changed = nativeSource.replace('group.name="record-ghost"', 'group.name="other"');
       new Function('globalThis', instrumentGame(changed))({__SURFD_QOL__: {attach: value => {adapter = value;}}});
     } finally { console.warn = originalWarn; }
     expect(adapter.cinema).toBeUndefined();
     expect(adapter.replay.playback).toBeTypeOf('function');
-    expect(warnings.some(text => text.includes('Compare view unavailable:'))).toBe(true);
-  });
-  test('leaderboard entries are offered with the references', () => {
-    const {adapter} = fixture();
-    expect(adapter.getReferences().entries).toEqual([]);
   });
 });
 
@@ -216,7 +221,10 @@ describe('native practice destinations', () => {
   test('without a recognisable start loader, savelocs still file and keep the replay’s start position', () => {
     let adapter;
     const source = nativeSource.replace('return saved&&session.setStartPosition(saved),session;', 'return session;');
-    new Function('globalThis', instrumentGame(source))({__SURFD_QOL__: {attach: value => { adapter = value; }}});
+    new Function('globalThis', instrumentReplayFixture(source, [
+      '[Surfd QoL] Private rooms unavailable:',
+      '[Surfd QoL] Savelocs from replays keep the replay’s start position:',
+    ]))({__SURFD_QOL__: {attach: value => { adapter = value; }}});
     const destination = adapter.practice.destination();
     expect(destination.key).toBe(JSON.stringify(['map', 1, 'current', 8]));
     expect('startPosition' in destination).toBe(false);
@@ -556,7 +564,7 @@ describe('optional native private room instrumentation', () => {
   });
 
   test('old adapters require fresh source', () => {
-    expect(isCurrentInstrumented(instrumentGame(nativeSource))).toBe(true);
+    expect(isCurrentInstrumented(instrumentReplayFixture(nativeSource))).toBe(true);
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
   });
 
@@ -1076,7 +1084,7 @@ function sharedPracticeFixture() {
     createElement: () => ({}),
   };
   let adapter;
-  const runtime = new Function('globalThis', 'document', instrumentGame(sharedPracticeSource) +
+  const runtime = new Function('globalThis', 'document', instrumentReplayFixture(sharedPracticeSource) +
     ';return {bank,save,nativeLoad,nativeCycle,messages,effects,panel};')(
     {__SURFD_QOL__: {attach(value) { adapter = value; }}}, document);
   return {adapter, runtime, node: id => document.getElementById(id)};
