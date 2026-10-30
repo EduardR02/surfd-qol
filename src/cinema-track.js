@@ -9,7 +9,7 @@ const SLICE_COMMANDS = 64;
 const defer = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 const idleLeft = deadline => !!deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
-// A move this far within one tick is a teleport, never movement: the camera cuts there.
+// A move this far within one tick is treated as a teleport: the camera cuts there.
 const JUMP_UNITS = 600;
 const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'stage-return']);
 
@@ -40,7 +40,7 @@ export function trackYaw(track, at) {
   return a + delta * (track.cut[high] ? 0 : index - low);
 }
 
-// Native surf planes have 0 < normal.z < groundNormal.
+// Native surf planes have normal.z above a small floor and below groundNormal.
 function rampNormal(contacts, from, groundNormal) {
   for (let i = from; i < contacts.length; i++) {
     const normal = contacts[i]?.normal;
