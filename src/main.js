@@ -13,6 +13,7 @@ import { mountHud } from './hud.js';
 import { applySettings as applySettingsTo, colorKeys, defaults, storageKey, storageLimitKeys } from './settings.js';
 import { createPrivateRooms } from './private-rooms/index.js';
 import { createStrafePreview } from './strafe-preview.js';
+import { createCinema } from './cinema.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -87,6 +88,7 @@ let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
 const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
 const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
+const cinema = createCinema({getAdapter: () => api.adapter, replayControl, onChange: () => hud?.cinemaChanged?.()});
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
@@ -110,6 +112,7 @@ const api = {
   settings,
   privateRooms,
   strafePreview,
+  cinema,
   attach(adapter) {
     if (destroyed || api.adapter) return;
     try {
@@ -153,6 +156,7 @@ const api = {
     destroyed = true;
     clearInterval(bindingTimer);
     strafePreview.destroy();
+    cinema.destroy();
     privateRooms.destroy();
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
@@ -213,7 +217,7 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings, history, replays, replayControl, rampReference, strafePreview,
+    settings, onSettings, bindings, history, replays, replayControl, rampReference, strafePreview, cinema,
     services: { replayStore, strafePreview },
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
