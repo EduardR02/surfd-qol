@@ -260,6 +260,11 @@ describe('ghosts are idle until a run is added', () => {
     expect(cinema.status().runs.map(item => item.id)).toEqual(['pb']);
     expect(counts().scenes).toBe(2);
   });
+  test('the run being watched can’t be added to itself', async () => {
+    const {cinema, control} = rig();
+    await expect(cinema.add({id: 'same', label: 'same', load: async () => ({...control.playback.replay})})).rejects.toThrow('That’s the run you’re watching.');
+    expect(cinema.status()).toBeNull();
+  });
   test('leaving the replay ends the ghosts on the next frame', async () => {
     const {cinema, renderer, native, control} = rig();
     await cinema.add(run('wr'));

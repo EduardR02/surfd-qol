@@ -12,6 +12,7 @@ import {recordTrack} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
 import {createCinemaScene, RUN_COLORS} from './cinema-scene.js';
+import {routeFingerprint} from './replay-store.js';
 
 // Brush contents the camera can see through: player clips, grates, glass.
 const SOLID = 0x1, SEE_THROUGH = 0x10000000 | 0x8;
@@ -81,6 +82,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const replay = await run.load();
     if (!owned()) return false;
     if (!replay) throw new Error('That run’s replay isn’t available.');
+    // Replays carry no run id: the run being watched is known by its contents.
+    current.fingerprint ??= routeFingerprint(current.replay);
+    if (replay === current.replay || replay.commands?.length === current.replay.commands.length && routeFingerprint(replay) === current.fingerprint)
+      throw new Error('That’s the run you’re watching.');
     current.track ??= await record({adapter, session, replay: current.replay, isCurrent: owned, yieldTask: loadIdle});
     if (!owned()) return false;
     if (!current.track) throw new Error('This replay can’t have ghosts.');
