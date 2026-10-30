@@ -36,7 +36,7 @@ void main(){
 // The line the run has left is solid: a pale core in a band of the run's
 // colour with a dark edge, like the game's own ghost trail, brightest over the
 // last few seconds with a pulse running towards the ghost. Ahead it's a faint
-// dashed preview of where the run goes.
+// see-through preview of where the run goes, with no glow.
 const lineFragment = `
 uniform vec3 color;
 uniform vec3 edge;
@@ -56,6 +56,7 @@ void main(){
   if(glow>0.5){
     float halo=pow(1.0-d,2.0);
     float recent=vAhead<=0.0?exp(vAhead/rate/2.5):0.0;
+    if(vAhead>0.0)discard;
     gl_FragColor=vec4(color,halo*(0.08+0.32*recent)*opacity);
     if(gl_FragColor.a<.004)discard;
     #include <colorspace_fragment>
@@ -69,8 +70,7 @@ void main(){
     alpha=mix(0.62,1.0,recent)*mix(rim*0.7,1.0,band);
   }else{
     float ahead=vAhead/rate;
-    float dash=step(0.45,fract(ahead*3.0));
-    alpha=(0.55-0.4*smoothstep(0.0,6.0,ahead))*dash*band;
+    alpha=(0.4-0.28*smoothstep(0.0,6.0,ahead))*mix(rim*0.5,1.0,band);
   }
   gl_FragColor=vec4(tint,alpha*opacity);
   if(gl_FragColor.a<.004)discard;
