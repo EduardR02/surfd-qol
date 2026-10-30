@@ -12,67 +12,67 @@ const LINE_STEP = 2;
 // told the camera is at least this far away, along the same line of sight.
 const SOLID_FROM = 140;
 
+// Each run's line is a comet: the last few seconds behind its ghost are a
+// tapering ribbon of light, a pale core in the run's colour with streaks
+// flowing along it towards the ghost, and the rest of the path is a thin,
+// faint thread. Ahead is a thinner see-through preview of where the run goes.
+// Only the tail is bright, so the lines show where each run has just been
+// without covering the map.
+const TAIL_SECONDS = 6;
 const lineVertex = `
 uniform vec2 resolution;
 uniform float width;
 uniform float head;
+uniform float rate;
 attribute vec3 prev;
 attribute vec3 next;
 attribute float side;
 attribute float tick;
+attribute float along;
 varying float vSide;
 varying float vAhead;
+varying float vAlong;
 void main(){
   vec4 here=projectionMatrix*modelViewMatrix*vec4(position,1.0);
   vec4 a=projectionMatrix*modelViewMatrix*vec4(prev,1.0);
   vec4 b=projectionMatrix*modelViewMatrix*vec4(next,1.0);
   vec2 dir=(b.xy/max(b.w,1e-3)-a.xy/max(a.w,1e-3))*resolution;
   dir=length(dir)>1e-5?normalize(dir):vec2(1.0,0.0);
-  float w=width*(tick<=head?1.0:0.5);
-  here.xy+=vec2(-dir.y,dir.x)*side*w/resolution*here.w;
-  vSide=side;vAhead=tick-head;
+  float behind=(head-tick)/rate;
+  float taper=behind<0.0?0.28:mix(1.0,0.22,smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},behind));
+  here.xy+=vec2(-dir.y,dir.x)*side*width*taper/resolution*here.w;
+  vSide=side;vAhead=tick-head;vAlong=along;
   gl_Position=here;
 }`;
-// The line the run has left is solid: a pale core in a band of the run's
-// colour with a dark edge, like the game's own ghost trail, brightest over the
-// last few seconds with a pulse running towards the ghost. Ahead it's a faint
-// see-through preview of where the run goes, with no glow.
 const lineFragment = `
 uniform vec3 color;
-uniform vec3 edge;
 uniform float opacity;
 uniform float rate;
 uniform float time;
 uniform float glow;
 varying float vSide;
 varying float vAhead;
+varying float vAlong;
 void main(){
   float d=abs(vSide);
-  float core=1.0-smoothstep(0.0,0.3,d);
-  float band=1.0-smoothstep(0.55,0.78,d);
-  float rim=1.0-smoothstep(0.86,1.0,d);
-  vec3 tint=mix(edge,mix(color,vec3(1.0),core*0.75),band);
-  float alpha;
-  if(glow>0.5){
-    float halo=pow(1.0-d,2.0);
-    float recent=vAhead<=0.0?exp(vAhead/rate/2.5):0.0;
-    if(vAhead>0.0)discard;
-    gl_FragColor=vec4(color,halo*(0.08+0.32*recent)*opacity);
-    if(gl_FragColor.a<.004)discard;
-    #include <colorspace_fragment>
-    return;
-  }
-  if(vAhead<=0.0){
-    float behind=-vAhead/rate;
-    float recent=exp(-behind/3.0);
-    float pulse=0.5+0.5*sin(behind*5.0-time*7.0);
-    tint*=1.0+0.35*recent*pulse*band;
-    alpha=mix(0.62,1.0,recent)*mix(rim*0.7,1.0,band);
-  }else{
+  float soft=1.0-smoothstep(0.25,1.0,d);
+  if(vAhead>0.0){
+    if(glow>0.5)discard;
     float ahead=vAhead/rate;
-    alpha=(0.4-0.28*smoothstep(0.0,6.0,ahead))*mix(rim*0.5,1.0,band);
+    gl_FragColor=vec4(color,(0.3-0.2*smoothstep(0.0,6.0,ahead))*soft*opacity);
+  }else{
+    float behind=-vAhead/rate;
+    float tail=1.0-smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},behind);
+    float flow=fract(vAlong/260.0-time*1.4);
+    float streak=smoothstep(0.0,0.08,flow)*(1.0-smoothstep(0.08,0.55,flow))*tail;
+    if(glow>0.5){
+      gl_FragColor=vec4(color,pow(1.0-d,2.2)*tail*(0.22+0.2*streak)*opacity);
+    }else{
+      float core=1.0-smoothstep(0.0,0.4,d);
+      vec3 tint=mix(color,vec3(1.0),core*(0.25+0.5*tail+0.25*streak));
+      gl_FragColor=vec4(tint*(1.0+0.45*streak),soft*mix(0.26,0.95,tail)*opacity);
+    }
   }
-  gl_FragColor=vec4(tint,alpha*opacity);
   if(gl_FragColor.a<.004)discard;
   #include <colorspace_fragment>
 }`;
@@ -115,7 +115,7 @@ export function createCinemaScene(renderer, runs) {
     outline.material.uniforms.outlineColor.value.set(colors.outline);
     three ??= {Mesh: body.constructor, Geometry: body.geometry.constructor, Attribute: body.geometry.getAttribute('position').constructor,
       Material: body.material.constructor, Color: body.material.uniforms.deepColor.value.constructor, Vector: body.position.constructor};
-    const line = createLine(three, run.track, colors.line, colors.outline);
+    const line = createLine(three, run.track, colors.line);
     for (const mesh of line.meshes) scene.add(mesh);
     parts.push({run, ghost, label, trail, line, frame: {x: 0, y: 0, z: 0, yaw: 0, ducked: false, opacity: 1, trail: new Float32Array(0), trailCount: 0, label: ''}, point: {x: 0, y: 0, z: 0}});
     disposers.push(() => { ghost.dispose(); for (const mesh of line.meshes) scene.remove(mesh); line.dispose(); });
@@ -154,26 +154,30 @@ export function createCinemaScene(renderer, runs) {
   };
 }
 
-// One run's path as a ribbon a fixed number of pixels wide, drawn twice: once
-// depth-tested, and once faintly through walls so a line behind a ramp is
-// still there to follow.
-function createLine(three, track, color, edge) {
+// One run's path as a ribbon a fixed number of pixels wide at its ghost, drawn
+// three times: depth-tested, as a soft glow, and faintly through walls so a
+// line behind a ramp is still there to follow.
+function createLine(three, track, color) {
   const points = [];
   for (let tick = 0; tick < track.count; tick += LINE_STEP) points.push(tick);
   if (points.at(-1) !== track.count - 1) points.push(track.count - 1);
   const n = points.length, point = {x: 0, y: 0, z: 0};
   const position = new Float32Array(n * 6), prev = new Float32Array(n * 6), next = new Float32Array(n * 6);
-  const side = new Float32Array(n * 2), tick = new Float32Array(n * 2);
+  const side = new Float32Array(n * 2), tick = new Float32Array(n * 2), along = new Float32Array(n * 2);
   const at = i => { trackPoint(track, points[i], point); return [point.x, point.z + LINE_HEIGHT, -point.y]; };
   const world = points.map((_, i) => at(i));
+  // How far along the path each point is, so the tail's streaks are spaced evenly through the map.
+  let travelled = 0;
   for (let i = 0; i < n; i++) {
     const before = world[Math.max(0, i - 1)], after = world[Math.min(n - 1, i + 1)];
+    if (i) { const step = Math.hypot(world[i][0] - before[0], world[i][1] - before[1], world[i][2] - before[2]); travelled += step < 600 ? step : 0; }
     for (let k = 0; k < 2; k++) {
       position.set(world[i], (i * 2 + k) * 3);
       prev.set(before, (i * 2 + k) * 3);
       next.set(after, (i * 2 + k) * 3);
       side[i * 2 + k] = k ? -1 : 1;
       tick[i * 2 + k] = points[i];
+      along[i * 2 + k] = travelled;
     }
   }
   // A teleport breaks the line instead of drawing straight across the map.
@@ -191,15 +195,16 @@ function createLine(three, track, color, edge) {
   geometry.setAttribute('next', new three.Attribute(next, 3));
   geometry.setAttribute('side', new three.Attribute(side, 1));
   geometry.setAttribute('tick', new three.Attribute(tick, 1));
+  geometry.setAttribute('along', new three.Attribute(along, 1));
   geometry.setIndex(indices);
   const material = (opacity, depthTest, width, glow = 0) => new three.Material({
     vertexShader: lineVertex, fragmentShader: lineFragment, transparent: true, depthWrite: false, depthTest,
-    uniforms: {color: {value: new three.Color(color)}, edge: {value: new three.Color(edge)}, opacity: {value: opacity}, width: {value: width},
+    uniforms: {color: {value: new three.Color(color)}, opacity: {value: opacity}, width: {value: width},
       head: {value: 0}, rate: {value: 1 / track.dt}, time: {value: 0}, glow: {value: glow}, resolution: {value: {x: 1, y: 1, isVector2: true}}},
     // The halo adds light (Three's AdditiveBlending), so it brightens what's behind it without hiding it.
     ...glow ? {blending: 2} : {},
   });
-  const solid = material(1, true, 7), xray = material(0.22, false, 4), halo = material(1, true, 22, 1);
+  const solid = material(1, true, 8), xray = material(0.18, false, 5), halo = material(1, true, 26, 1);
   const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, halo), new three.Mesh(geometry, solid)];
   meshes[0].renderOrder = 30; meshes[1].renderOrder = 31; meshes[2].renderOrder = 32;
   for (const mesh of meshes) { mesh.frustumCulled = false; mesh.name = 'surfd-qol-compare-line'; }
