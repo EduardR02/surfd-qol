@@ -274,7 +274,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     if (cinemaUi && (replayVisible || cinemaUi.shown)) {
       const custom = settings.customReplayUi === true;
       cinemaUi.render({visible: replayVisible && !!replayBar?.visible, custom,
-        idle: replayBar?.idle ?? false, held: runs.open, tags: !finishScreen || finishScreen.hidden});
+        held: runs.open, tags: !finishScreen || finishScreen.hidden});
     }
     if (overlay.style.getPropertyValue('--reserve') !== reserve) overlay.style.setProperty('--reserve', reserve);
   }

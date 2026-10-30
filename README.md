@@ -118,11 +118,12 @@ Seeking to an unvisited section can leave feedback grey: the game’s keyframe h
 
 While you watch any replay, **Cinematic** on the replay bar switches to its third-person camera, including for a single run. **Add run** adds your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (find one by name or rank). Adding a run also enables the camera. The replay bar, speeds, seeking and stage jumps keep working as usual.
 
-- The run chips show each time and how far this run is behind (red) or ahead (teal) at this point. In the custom replay bar they share the playback-control row and fade with it when idle; additional runs scroll horizontally. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
+- Run chips share a row with the cinematic tools and fade with the controls when idle; additional runs scroll horizontally. The custom bar keeps this in its playback row. The native bar also uses its playback row above 1000 px wide; narrower native layouts use one compact extras row rather than squeeze the controls into unreadable slivers. **Add run** is the leftmost cinematic tool. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
 - **Real time** (the default) aligns the runs to their final native start-zone departure, including fractional ticks and a return to the start zone during prestrafe. Playback and seeking follow the native frame's actual interpolation state. **Side by side** matches places along the route instead, adjusting playback to show where the lines differ; it is not a real-time race.
+- Chip deltas are from **This run's** perspective: **positive/red** means it is slower to this point; **negative/teal** means it is faster. Start, checkpoint and finish matches remain fixed while the route between them is smoothed, so a close finish keeps the correct sign.
 - The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
-- Each run keeps its colour when another is removed. Its line has a soft comet tail and a quieter preview ahead; the streaks follow replay time, so pausing freezes them and seeking restores them.
-- **Trail style** switches live between **Filament** (twin wires and a pearl centre), **Silk** (a folded satin ribbon), and **Meteor** (a spine with staggered sparks). It reuses the existing geometry and materials.
+- Each run keeps its colour when another is removed. A bright comet head follows its replay position along the exact path, leaving a smooth tapering tail over a quieter route guide. Pausing freezes it and seeking restores the same shape; no weave or spark pattern changes the apparent route.
+- **Trail style** switches live between **Comet**, **Pearl**, and **Wake**: three smooth, centred treatments of the moving head and tail. Switching reuses the existing geometry and materials.
 - **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
 - With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
 
@@ -178,6 +179,8 @@ You only need [Bun](https://bun.sh) to work on the source; no other dependencies
 bun run build   # writes the unpacked extension to dist/
 bun test
 ```
+
+The cinematic tests use synthetic tracks, sessions and renderer fixtures, not the live site or downloaded game code. The optional UI screenshot harness also runs locally with fixture data.
 
 Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 

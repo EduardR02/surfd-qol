@@ -15,8 +15,8 @@ export const cinemaMarkup = `<section id="cinema" class="cn" aria-label="Ghosts"
   <div class="cn-tags"></div>
   <div class="cn-strip" role="group" aria-label="Runs in this replay" hidden><div class="cn-runs"></div></div>
   <div class="cn-row" role="group" aria-label="Cinematic controls" hidden>
-    <button type="button" class="cn-btn" data-cn="enable" aria-pressed="false" title="Watch this replay with a cinematic camera">Cinematic</button>
     <button type="button" class="cn-btn cn-add" data-cn="add" aria-haspopup="dialog" aria-expanded="false" title="Play another run of this map alongside this one">${PLUS}Add run</button>
+    <button type="button" class="cn-btn" data-cn="enable" aria-pressed="false" title="Watch this replay with a cinematic camera">Cinematic</button>
     <div class="cn-seg" role="group" aria-label="Match runs" hidden>
       <button type="button" data-sync="time" aria-pressed="false" title="Runs on the clock, as a race">Real time</button>
       <button type="button" data-sync="place" aria-pressed="false" title="Runs at the same place on the route: the faster one is slowed down">Side by side</button>
@@ -31,8 +31,7 @@ export const cinemaMarkup = `<section id="cinema" class="cn" aria-label="Ghosts"
 export const cinemaStyles = `
 .cn{position:fixed;inset:0;pointer-events:none;color:var(--paper);font-size:12px;z-index:1}
 .cn-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;pointer-events:auto;-webkit-text-stroke:0;text-shadow:none}
-.cn-strip{position:absolute;left:14px;right:14px;pointer-events:auto;transition:opacity .25s}
-.cn-strip.idle{opacity:0;pointer-events:none}
+.cn-strip{min-width:0;overflow:hidden;pointer-events:auto}
 .cn-runs{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#ffffff30 transparent;padding:2px}
 .cn-btn,.cn-run,.cn-seg{font-family:inherit;font-weight:700;font-size:12px;line-height:1.2;color:var(--paper);border:1px solid #ffffff30;border-radius:8px;background:rgba(18,18,18,.88);white-space:nowrap}
 .cn-row .cn-btn{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:4px 8px;cursor:pointer}
@@ -106,8 +105,8 @@ export const cinemaStyles = `
 @media(prefers-reduced-motion:reduce){.cn-strip,.cn-hint{transition:none}.cn-run.loading i{animation:none}}
 `;
 
-// This run's distance from another at this point: gap is the other run's
-// time to here minus this one's, so positive means this run is behind.
+// Input is the other run's time to this place minus the watched run's.
+// Display the watched run's deficit: positive/red behind, negative/teal ahead.
 export function gapText(gap) {
   if (!Number.isFinite(gap)) return {value: '', tone: '', title: ''};
   const behind = -gap;
@@ -125,7 +124,7 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   const style = row.querySelector('.cn-style');
   const tagLayer = section.querySelector('.cn-tags'), hint = section.querySelector('.cn-hint');
   let frame = 0, shown = false, drawn = '', hintTimer = 0, named = true, picking = false, filter = '', error = '', tags = [], hinted = false;
-  let toolbar = null, layout = null, customLayout = false, gapCells = [], widths = [], busy = false, escapeHeld = false, controls = '';
+  let toolbar = null, layout = null, gapCells = [], widths = [], busy = false, escapeHeld = false, controls = '';
   const hovered = new Set();
   const write = (element, text) => { if (element.textContent !== text) element.textContent = text; };
   const attr = (element, name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
@@ -323,22 +322,14 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     return changed;
   }
   function place() {
-    if (!shown || !layout) return;
-    if (customLayout && !picking) return;
+    if (!shown || !layout || !picking) return;
     const rect = layout.getBoundingClientRect(), toolsRect = toolbar.getBoundingClientRect();
     const bottom = Math.round(innerHeight - Math.min(rect.top, toolsRect.top) + 7);
-    if (!customLayout) {
-      strip.style.left = `${Math.max(14, Math.round(rect.left))}px`;
-      strip.style.right = `${Math.max(14, Math.round(innerWidth - rect.right))}px`;
-      strip.style.bottom = `${bottom}px`;
-    }
-    if (!picking) return;
-    const trigger = add.getBoundingClientRect(), stripHeight = !customLayout && !strip.hidden ? strip.offsetHeight : 0;
+    const trigger = add.getBoundingClientRect();
     pick.style.left = `${Math.round(Math.max(14, Math.min(trigger.left, innerWidth - pick.offsetWidth - 14)))}px`;
-    // Clear the whole bar, including the native run strip when present.
-    pick.style.maxHeight = `${Math.max(80, innerHeight - bottom - stripHeight - 22)}px`;
+    pick.style.maxHeight = `${Math.max(80, innerHeight - bottom - 22)}px`;
     pick.style.overflowY = 'auto';
-    pick.style.bottom = `${bottom + stripHeight + 8}px`;
+    pick.style.bottom = `${bottom + 8}px`;
   }
   function showHint() {
     let seen = false;
@@ -363,20 +354,18 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   }
 
   return {
-    // Custom chips live in the control row. Only the native strip and picker
-    // need geometry, measured on resize or structural changes.
-    render({visible, custom = false, idle = false, tags: showTags = true, held = false}) {
+    // Both chip strips flow with their toolbar; only the picker needs geometry.
+    render({visible, custom = false, tags: showTags = true, held = false}) {
       const status = cinema.status();
       if (!visible || !status && !cinema.available()) { hide(); return; }
-      const target = root.querySelector(custom ? '.rb-tools' : '.nr-tools');
-      const bar = custom ? root.getElementById('replay') : root.getElementById('native-replay-extras');
+      const target = root.querySelector(custom ? '.rb-tools' : '.nr-actions');
+      const bar = custom ? root.getElementById('replay') : root.querySelector('.nr-tools');
       if (!target || !bar) { hide(); return; }
       if (!shown) { shown = true; section.hidden = row.hidden = false; addEventListener('resize', place, {passive: true}); }
       let moved = false;
       if (toolbar !== target) {
-        toolbar = target; layout = bar; customLayout = custom; target.prepend(row);
-        (custom ? bar : section).prepend(strip);
-        strip.style.left = strip.style.right = strip.style.bottom = '';
+        toolbar = target; layout = bar; target.prepend(row);
+        bar.prepend(strip);
         for (const button of row.querySelectorAll('button,select')) button.classList.toggle('rb-btn', custom);
         moved = true;
         sizes?.disconnect(); sizes?.observe(bar); sizes?.observe(target);
@@ -384,7 +373,6 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       const changed = paintRow(status);
       strip.hidden = held || !(status?.runs.length || status?.loading.length);
       if (changed || moved) place();
-      strip.classList.toggle('idle', !custom && idle && !picking && !held && !hovered.has(strip) && !strip.contains(root.activeElement));
       if (held && picking) openPicker(false);
       named = showTags && !held;
       if (status?.active) {
@@ -395,7 +383,7 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     hide,
     handleKey,
     get picking() { return picking; },
-    get holding() { return picking || hovered.size > 0 || section.contains(root.activeElement) || row.contains(root.activeElement) || strip.contains(root.activeElement); },
+    get holding() { return shown && (picking || hovered.size > 0 || section.contains(root.activeElement) || row.contains(root.activeElement) || strip.contains(root.activeElement)); },
     get shown() { return shown; },
     destroy() { hide(); sizes?.disconnect(); row.remove(); strip.remove(); },
   };

@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createCinemaUi} from '../src/cinema-ui.js';
-import {DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
+import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
 
 const restorers = [];
 afterEach(() => { while (restorers.length) restorers.pop()(); });
@@ -29,7 +29,15 @@ function rig(initial = null, getSources = () => ({})) {
         return event;
       },
       querySelector: () => null, querySelectorAll: () => [],
-      prepend(child) { child.parentElement = this; }, remove() { this.parentElement = null; },
+      prepend(child) {
+        if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child);
+        this.children = [child, ...this.children.filter(item => item !== child)];
+        child.parentElement = this;
+      },
+      remove() {
+        if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(item => item !== this);
+        this.parentElement = null;
+      },
       contains(target) { return target != null && (target === this || target.parentElement === this); },
       getBoundingClientRect: () => ({left: 20, right: 1000, top: 600, bottom: 630}),
       offsetWidth: 300, offsetHeight: 28,
@@ -53,8 +61,10 @@ function rig(initial = null, getSources = () => ({})) {
   const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint, '.cn-style': style,
     '[data-cn="enable"]': enable, '[data-cn="add"]': add, '[data-cn="reset"]': reset};
   section.querySelector = row.querySelector = selector => selectors[selector];
-  const native = node(), custom = node(), nativeTools = node(), customTools = node();
-  root = {activeElement: null, getElementById: id => ({cinema: section, replay: custom, 'native-replay-extras': native})[id], querySelector: selector => selector === '.rb-tools' ? customTools : nativeTools};
+  const native = node(), custom = node(), nativeTools = node(), nativeActions = node(), customTools = node();
+  native.prepend(nativeTools); nativeTools.prepend(nativeActions); custom.prepend(customTools);
+  root = {activeElement: null, getElementById: id => ({cinema: section, replay: custom, 'native-replay-extras': native})[id],
+    querySelector: selector => ({'.rb-tools': customTools, '.nr-tools': nativeTools, '.nr-actions': nativeActions})[selector]};
   let status = initial;
   const calls = [];
   const cinema = {available: () => true, get active() { return !!status?.active; }, status: () => status,
@@ -67,7 +77,7 @@ function rig(initial = null, getSources = () => ({})) {
   const ui = createCinemaUi({root, cinema, getSources, storage: {getItem: () => '1'}});
   const click = button => row.emit('click', button);
   restorers.push(() => ui.destroy());
-  return {ui, cinema, calls, root, section, row, strip, runs, seg, style, enable, add, pick, sync, native, custom, nativeTools, customTools, click,
+  return {ui, cinema, calls, root, section, row, strip, runs, seg, style, enable, add, pick, sync, native, custom, nativeTools, nativeActions, customTools, click,
     setStatus(value) { status = value; }};
 }
 const solo = () => ({active: true, played: {time: 41.233}, runs: [], loading: [], sync: 'time', focus: null, labels: []});
@@ -92,6 +102,23 @@ describe('cinematic replay controls', () => {
     expect(r.row.hidden && r.section.hidden).toBe(true);
   });
 
+  test('picker remains keyboard-operable across native/custom switches', async () => {
+    const r = rig({...solo(), runs: [{id: 'wr', label: 'WR', color: '#9ccfd8'}]});
+    for (const custom of [false, true, false, true]) {
+      r.ui.render({visible: true, custom});
+      r.click(r.add);
+      expect(r.ui.picking).toBe(true);
+      const escape = key('keydown', 'Escape', [r.pick]);
+      r.ui.handleKey(escape);
+      r.ui.handleKey(key('keyup', 'Escape', [r.add]));
+      expect(r.pick.hidden).toBe(true);
+      expect(r.root.activeElement).toBe(r.add);
+    }
+    r.ui.hide();
+    expect(r.ui.holding).toBe(false);
+    expect(r.row.hidden && r.strip.hidden && r.pick.hidden).toBe(true);
+  });
+
   test('shows matching only with extras and returns to solo after the last removal', async () => {
     const r = rig({...solo(), runs: [{id: 'wr', label: 'Site WR', color: '#9ccfd8', time: 40.533}], focus: 'wr'});
     r.ui.render({visible: true});
@@ -103,7 +130,7 @@ describe('cinematic replay controls', () => {
     expect(r.root.activeElement).toBe(r.add);
   });
 
-  test('picker Escape consumes both halves, restores focus, and button Space does not reach playback', () => {
+  test('picker Escape consumes both halves, restores focus, and button Space/Enter do not reach playback', () => {
     const r = rig();
     r.ui.render({visible: true}); r.click(r.add);
     expect(r.pick.hidden).toBe(false);
@@ -114,10 +141,14 @@ describe('cinematic replay controls', () => {
     }
     expect(r.pick.hidden).toBe(true);
     expect(r.root.activeElement).toBe(r.add);
-    const space = key('keydown', ' ', [r.enable]);
-    expect(r.ui.handleKey(space)).toBe(true);
-    expect(space.stopped).toBe(true);
-    expect(space.defaultPrevented).toBe(false);
+    for (const name of [' ', 'Enter']) {
+      for (const type of ['keydown', 'keyup']) {
+        const event = key(type, name, [r.enable]);
+        expect(r.ui.handleKey(event)).toBe(true);
+        expect(event.stopped).toBe(true);
+        expect(event.defaultPrevented).toBe(false);
+      }
+    }
     expect(r.calls).toEqual([]);
   });
 
@@ -176,14 +207,15 @@ describe('cinematic replay controls', () => {
     expect(r.ui.holding).toBe(false);
   });
 
-  test('trail selection is active-only, follows runtime state and keeps native select keys out of playback', async () => {
+  test('trail selection is active-only, follows runtime state and keeps native select keys out of playback', () => {
     const r = rig();
     r.ui.render({visible: true, custom: true});
     expect(r.style.hidden).toBe(true);
-    r.setStatus({...solo(), trailStyle: 'silk'});
+    const selected = TRAIL_STYLES.at(-1);
+    r.setStatus({...solo(), trailStyle: selected.id});
     r.ui.render({visible: true, custom: true});
     expect(r.style.hidden).toBe(false);
-    expect(r.style.value).toBe('silk');
+    expect(r.style.value).toBe(selected.id);
     for (const name of ['ArrowLeft', 'ArrowRight', ' ', 'Enter']) {
       const event = key('keydown', name, [r.style]);
       expect(r.ui.handleKey(event)).toBe(true);
