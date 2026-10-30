@@ -6,7 +6,6 @@
 import {formatTime, formatDelta, formatSplitDelta, referenceTone} from './hud-model.js';
 import {mapKey} from './run-history.js';
 import {analysisKey, referenceIdentity, sessionKey} from './references.js';
-import {createComparePicker} from './compare-panel.js';
 
 const ERROR_MS = 6000;
 const MAX_METER = 12;
@@ -32,10 +31,9 @@ export const runsMarkup = `
     <button id="rn-map" class="rn-map" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="rn-maps" title="Other maps you’ve played">
       <span id="rn-name">Runs</span>${CHEVRON}
     </button>
-    <div class="rn-views" role="tablist" aria-label="Runs, ramps or compare">
+    <div class="rn-views" role="tablist" aria-label="Runs or ramps">
       <button id="rn-tab-runs" type="button" role="tab" aria-selected="true" aria-controls="rn-body" data-view="runs">Runs</button>
       <button id="rn-tab-ramps" type="button" role="tab" aria-selected="false" aria-controls="rn-body" data-view="ramps" tabindex="-1">Ramps</button>
-      <button id="rn-tab-compare" type="button" role="tab" aria-selected="false" aria-controls="rn-body" data-view="compare" tabindex="-1">Compare</button>
     </div>
     <button id="rn-close" class="rn-close" type="button" aria-label="Close runs">${CLOSE}</button>
   </header>
@@ -227,7 +225,7 @@ function describe(run) {
 const tags = run => `${run.practice ? '<span class="rn-tag practice" title="Practice runs don’t count for your bests">practice</span>' : ''}${
   run.invalid ? `<span class="rn-tag invalid" title="${escape(typeof run.invalid === 'string' && run.invalid ? `Invalid: ${run.invalid}` : 'Invalid run')}">invalid</span>` : ''}`;
 
-export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, cinema = null, getSession = () => null, getReferences = () => null, settings = {}, onSettings = null, onOpen, onOpenSettings, now = () => Date.now()}) {
+export function createRunsPanel({root, host, history, replays = null, replayControl = null, rampReference = null, getSession = () => null, getReferences = () => null, settings = {}, onSettings = null, onOpen, onOpenSettings, now = () => Date.now()}) {
   const node = id => root.getElementById(id);
   const panel = node('runs-panel'), opener = node('runs-open'), close = node('rn-close');
   const mapButton = node('rn-map'), mapName = node('rn-name'), mapList = node('rn-maps'), body = node('rn-body'), status = node('rn-status');
@@ -237,8 +235,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   let unsubscribe = [], rendered = '', watchRequest = 0, replayCache = null, referenceContext = '', referenceSession = null;
   let rampMode = 'best', expandedRamp = null, playbackSource = null, confirmReset = false, resetting = false;
   let expiryTimer = 0, expiryAt = null, comparisonSlot = null, navigationContext = null;
-  const picker = createComparePicker({settings, cinema, getReferences, archive: replays, canWatch: run => canWatch(run),
-    onStarted: () => closePanel(), onError: text => { showError(text); render(true); }});
 
   function scheduleExpiry(run) {
     const at = Number.isFinite(run?.expiresAt) ? run.expiresAt : null;
@@ -510,8 +506,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     let data = null;
     try { data = key ? history.view(key, {rampMode}) : null; } catch { /* unavailable */ }
     scheduleExpiry(data?.recentBest);
-    // The loaded map can be compared, or have an official PB, before you've recorded a run on it.
-    if (!data && (currentBest(null)?.official || key === history.currentMap && comparable())) data = {name: history.currentMapName, splits: [], recent: [], ramps: []};
+    if (!data && currentBest(null)?.official) data = {name: history.currentMapName, splits: [], recent: [], ramps: []};
     if (!data || view !== 'ramps') rampConsumer?.release();
     const maps = safeMaps();
     write(mapName, data?.name ?? maps.find(map => map.key === key)?.name ?? (key && key === history.currentMap ? history.currentMapName : null) ?? 'Runs');
@@ -523,7 +518,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       tab.disabled = !data;
     }
     panel.classList.toggle('blank', !data);
-    const html = !data ? empty() : view === 'ramps' ? ramps(data) : view === 'compare' ? picker.html(compareView(data)) : overview(data);
+    const html = !data ? empty() : view === 'ramps' ? ramps(data) : overview(data);
     if (!force && html === rendered) return;
     rendered = html;
     const scroll = body.scrollTop, active = root.activeElement;
@@ -537,18 +532,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       replacement?.focus({preventScroll: true});
     }
     body.scrollTop = scroll;
-    // The leaderboard filter keeps its focus and caret as the list under it changes.
-    if (focused && 'compareFind' in focused) {
-      const find = body.querySelector('[data-compare-find]');
-      find?.focus({preventScroll: true});
-      find?.setSelectionRange?.(find.value.length, find.value.length);
-    }
-  }
-  function comparable() {
-    try { const refs = getReferences(); return !!(refs?.record || refs?.entries?.length || typeof refs?.loadRecordRoute === 'function'); } catch { return false; }
-  }
-  function compareView(data) {
-    return {name: data?.name ?? history.currentMapName, here: key === history.currentMap, best: currentBest(data), recentBest: data?.recentBest ?? null};
   }
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   function safeMaps() { try { return history.maps() ?? []; } catch { return []; } }
@@ -685,12 +668,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
       if (row) { cancelRampNavigation(); expandedRamp = expandedRamp === row.dataset.ramp ? null : row.dataset.ramp; playbackSource = null; render(); }
       return;
     }
-    if (view === 'compare') {
-      let data = null;
-      try { data = history.view(key); } catch { /* none yet */ }
-      if (picker.click(target, compareView(data))) render(true);
-      return;
-    }
     if (target.dataset.watch) return watch(target.dataset.watch);
     // A chip names its replay and plays it in one click.
     if (target.dataset.rampWatch && 'playSource' in target.dataset) {
@@ -711,7 +688,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     else if (target.dataset.playSource) { cancelRampNavigation(); playbackSource = target.dataset.playSource; render(); }
     else if (target.dataset.rampWatch) return watchRamp(target.dataset.rampWatch);
   });
-  body.addEventListener('input', event => { if (view === 'compare' && picker.input(event.target)) render(); });
   for (const tab of tabs) tab.addEventListener('click', () => { cancelRampNavigation(); rampConsumer?.release(); view = tab.dataset.view; toggleMaps(false); render(); body.scrollTop = 0; });
   mapButton.addEventListener('click', () => toggleMaps());
   mapList.addEventListener('click', event => {
@@ -753,7 +729,6 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     clearTimeout(expiryTimer); expiryAt = null;
     confirmReset = false; expandedRamp = null; playbackSource = null;
     navigationContext = null; comparisonSlot = null;
-    picker.reset();
     if (panel.hidden) return;
     panel.hidden = true;
     referenceSession = null;
@@ -775,7 +750,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     setContext(next) {
       menu = !!next.menu; replay = !!next.replay;
       if (opener.hidden === menu) opener.hidden = !menu;
-      if ((busy || picker.starting) && replayControl?.adopting) return;
+      if (busy && replayControl?.adopting) return;
       if (replayCache && !panel.hidden) syncReplayCache();
       if (!panel.hidden && !menu && !(replay && panel.classList.contains('over-replay'))) closePanel();
       if (!panel.hidden && menu && panel.classList.contains('over-replay')) closePanel();
@@ -791,9 +766,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     show(mapKey, anchor) { openPanel(mapKey, anchor); },
     toggle(mapKey, anchor) { if (!panel.hidden) closePanel(); else openPanel(mapKey, anchor); },
     showMaps() { if (!panel.hidden) toggleMaps(true); },
-    showView(next) { cancelRampNavigation(); rampConsumer?.release(); view = ['ramps', 'compare'].includes(next) ? next : 'runs'; render(true); },
-    // Compare's progress changes what its button says.
-    refresh() { if (view === 'compare') render(); },
+    showView(next) { cancelRampNavigation(); rampConsumer?.release(); view = next === 'ramps' ? 'ramps' : 'runs'; render(true); },
     handleKey(event) {
       if (panel.hidden) return;
       const inside = event.composedPath().includes(panel);

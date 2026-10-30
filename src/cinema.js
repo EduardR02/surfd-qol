@@ -1,11 +1,13 @@
-// Compare: two runs through the map at once, as ghosts with their lines, from
-// a planned third-person camera. The first run plays in the game's own replay
-// player, so its bar, speeds, seeking and stage jumps all work as usual; the
-// second follows it, matched by place (Side by side) or by clock (Real time).
+// Ghosts in a replay: other runs of the map played alongside the one you're
+// watching, with their lines, from a planned third-person camera. The watched
+// run stays in the game's own player, so its bar, speeds, seeking and stage
+// jumps work as usual; each added run follows it by the clock (Real time) or
+// by place on the route (Side by side).
 //
-// Nothing here runs until open(): no timers, listeners, observers or frame
-// work. While open it wraps the game's map renderer and listens for drags on
-// the game canvas; close() puts both back.
+// Nothing here runs until a run is added: no timers, listeners, observers or
+// frame work. With ghosts it wraps the game's map renderer, listens for drags
+// on the game canvas and checks each frame that the replay still plays;
+// removing the last ghost or close() puts all of it back.
 import {recordTrack} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
@@ -16,6 +18,8 @@ const SOLID = 0x1, SEE_THROUGH = 0x10000000 | 0x8;
 const PROBE = {min: {x: -6, y: -6, z: -6}, max: {x: 6, y: 6, z: 6}};
 const DRAG_RADIANS = 0.005;
 const ZOOM_STEP = 1.12;
+// The watched run and up to this many others: more stops being readable.
+export const MAX_GHOSTS = RUN_COLORS.length - 1;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 
@@ -32,74 +36,109 @@ function cameraWorld(session) {
   } catch { return world; }
 }
 
-// getAdapter() is the game adapter; replayControl starts and watches the
-// played run. Each run given to open() is {label, load()} with load() giving a replay.
-// record and createScene stand in for the game in tests.
-export function createCinema({getAdapter, replayControl, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene}) {
-  let state = null, request = 0;
+// getAdapter() is the game adapter. A run given to add() is {id, label, load()},
+// load() giving its replay. record and createScene stand in for the game in tests.
+export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene}) {
+  // The watched replay and its track, the added runs, and what's being added.
+  let state = null;
   const notify = () => { try { onChange(); } catch { /* UI only */ } };
+  const playing = () => { try { return getAdapter?.()?.replay?.playback?.()?.replay ?? null; } catch { return null; } };
 
-  async function open(runs) {
-    close();
-    const id = ++request, adapter = getAdapter?.(), session = adapter?.getSession?.();
-    if (!adapter?.cinema?.renderer?.()?.qolScene) throw new Error('Compare isn’t supported by this version of Surfd.');
-    if (!session?.map) throw new Error('Load the map first.');
-    const current = state = {phase: 'loading', runs: runs.map(({label}) => ({label})), id};
-    const owned = () => state === current && request === id;
+  // A replay can have ghosts when this build exposes the map renderer and the replay is of the loaded map.
+  function available() {
+    const adapter = getAdapter?.(), replay = playing(), map = adapter?.getSession?.()?.map;
+    return !!adapter?.cinema?.renderer?.()?.qolScene && !!replay && !!map && replay.mapId === map.id && replay.mapVersion === map.version;
+  }
+
+  // Runs added while another is loading wait their turn, so tracks and plans are made one at a time.
+  let queue = Promise.resolve();
+  function add(run) {
+    if (!available()) return Promise.reject(new Error('Ghosts need a replay of the loaded map.'));
+    const replay = playing();
+    if (state && state.replay !== replay) close();
+    state ??= createState(replay);
+    const current = state;
+    if (current.runs.some(item => item.id === run.id) || current.loading.some(item => item.id === run.id)) return Promise.resolve(false);
+    if (current.runs.length + current.loading.length >= MAX_GHOSTS) return Promise.reject(new Error(`Up to ${MAX_GHOSTS} runs alongside this one.`));
+    current.loading.push({id: run.id, label: run.label});
     notify();
-    try {
-      const replays = await Promise.all(runs.map(run => run.load()));
-      if (!owned()) return false;
-      if (replays.some(replay => !replay)) throw new Error('A replay isn’t available.');
-      current.phase = 'preparing';
-      notify();
-      const tracks = [];
-      for (const replay of replays) {
-        const track = await record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle});
-        if (!owned()) return false;
-        if (!track) throw new Error('A run couldn’t be read on this map.');
-        tracks.push(track);
-      }
-      const [a, b] = tracks;
-      current.tracks = tracks;
-      current.maps = {place: alignByPlace(a, b), time: null};
-      current.sync = 'place';
+    const step = queue.then(() => load(current, run));
+    queue = step.catch(() => {});
+    return step.finally(() => {
+      if (state !== current) return;
+      current.loading = current.loading.filter(item => item.id !== run.id);
+      if (!current.runs.length && !current.loading.length) close();
+      else notify();
+    });
+  }
+  function createState(replay) {
+    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], sync: 'time', plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
+      room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined};
+  }
+  async function load(current, run) {
+    const owned = () => state === current && playing() === current.replay;
+    const adapter = getAdapter(), session = adapter.getSession();
+    const replay = await run.load();
+    if (!owned()) return false;
+    if (!replay) throw new Error('That run’s replay isn’t available.');
+    current.track ??= await record({adapter, session, replay: current.replay, isCurrent: owned, yieldTask: loadIdle});
+    if (!owned()) return false;
+    if (!current.track) throw new Error('This replay can’t have ghosts.');
+    const track = await record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle});
+    if (!owned()) return false;
+    if (!track) throw new Error('That run couldn’t be read on this map.');
+    if (current.trace === undefined) {
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
         return hit.startSolid || hit.allSolid ? 1 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
-      current.plans = {place: await planCamera({a, b, map: current.maps.place, trace: current.trace, yieldTask: loadIdle, isCurrent: owned}), time: null};
-      if (!owned() || !current.plans.place) return false;
-      current.times = tracks.map(track => track.time);
-      const played = replays[0];
-      const started = await replayControl.watchLoaded(async () => played, {title: `${runs[0].label} and ${runs[1].label}`, isCurrent: owned});
-      if (!owned() || started === false) return false;
-      start(current, played);
-      return true;
-    } catch (error) {
-      if (!owned()) return false;
-      close();
-      throw error;
     }
+    const entry = {id: run.id, label: run.label, track, maps: {time: alignByTime(current.track, track), place: null}, time: track.time};
+    const runs = [...current.runs, entry];
+    const plan = await planFor(current, runs, current.sync, owned);
+    if (!owned() || !plan) return false;
+    current.runs = runs;
+    current.plans = {[current.sync]: plan};
+    if (!current.renderer) start(current);
+    else rebuild(current);
+    return true;
+  }
+  async function planFor(current, runs, sync, owned) {
+    for (const run of runs) run.maps[sync] ??= sync === 'place' ? alignByPlace(current.track, run.track) : alignByTime(current.track, run.track);
+    return planCamera({a: current.track, others: runs.map(run => ({track: run.track, map: run.maps[sync]})), trace: current.trace, yieldTask: loadIdle, isCurrent: owned});
+  }
+  function remove(id) {
+    const current = state;
+    if (!current?.runs.some(run => run.id === id)) return;
+    current.runs = current.runs.filter(run => run.id !== id);
+    if (!current.runs.length) { close(); return; }
+    current.plans = {};
+    rebuild(current);
+    void replan(current, current.sync);
+  }
+  // A new plan for the runs there are now; until it's ready the camera keeps the last one.
+  async function replan(current, sync) {
+    const runs = current.runs, owned = () => state === current && current.runs === runs;
+    current.pending = sync;
+    notify();
+    const plan = await planFor(current, runs, sync, owned);
+    if (!owned() || !plan) return;
+    current.plans[sync] = plan;
+    current.sync = sync;
+    current.pending = null;
+    notify();
   }
 
-  // From here until stop(): the renderer wrap, the canvas listeners and a
-  // check each frame that the replay still plays.
-  function start(current, replay) {
-    current.replay = replay;
-    current.base = replay.initialState?.tick ?? 0;
-    current.view = {yaw: 0, pitch: 0, zoom: 1};
-    current.room = Infinity;
-    current.shot = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}};
-    current.at = [0, 0];
-    current.phase = 'playing';
+  // From the first ghost until stop(): the renderer wrap, the canvas listeners
+  // and a check each frame that the replay still plays.
+  function start(current) {
     attach(current, getAdapter().cinema.renderer());
     listen(current);
     const check = () => {
       if (state !== current) return;
       const adapter = getAdapter?.();
-      if (adapter?.replay?.playback?.()?.replay !== current.replay) { close(); return; }
+      if (playing() !== current.replay) { close(); return; }
       // The game makes a new renderer when it reloads the map, as Watch from the menu can.
       const renderer = adapter.cinema?.renderer?.();
       if (renderer !== current.renderer) {
@@ -110,10 +149,9 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
       current.checking = requestAnimationFrame(check);
     };
     current.checking = requestAnimationFrame(check);
-    notify();
   }
   function attach(current, renderer) {
-    current.scene = createScene(renderer, current.tracks.map(track => ({track})));
+    current.scene = createScene(renderer, [{track: current.track}, ...current.runs.map(run => ({track: run.track}))]);
     current.renderer = renderer;
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
@@ -126,17 +164,26 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
     try { current.scene?.dispose(); } catch { /* the map was unloaded with it */ }
     current.renderer = current.scene = null;
   }
+  // The scene holds one ghost per run, so a change of runs builds it again.
+  function rebuild(current) {
+    const renderer = current.renderer;
+    detach(current);
+    attach(current, renderer);
+  }
 
   // The played run's fractional index from the frame's state and interpolation.
   function frame(current, view) {
-    const playback = getAdapter?.()?.replay?.playback?.();
-    if (playback?.replay !== current.replay) { queueMicrotask(close); return null; }
-    const [a, b] = current.tracks;
+    if (playing() !== current.replay) { queueMicrotask(close); return null; }
+    const a = current.track, plan = current.plans[current.sync] ?? Object.values(current.plans)[0];
+    if (!plan) return null;
     const tick = Math.max(0, Math.min(a.count - 1, (view.state?.tick ?? current.base) - current.base - 1 + (Number.isFinite(view.qolAlpha) ? view.qolAlpha : 1)));
-    const map = current.maps[current.sync], plan = current.plans[current.sync];
-    const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
+    const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1), sync = current.plans[current.sync] ? current.sync : Object.keys(current.plans)[0];
+    current.at.length = current.runs.length + 1;
     current.at[0] = tick;
-    current.at[1] = map[low] + (map[high] - map[low]) * (tick - low);
+    for (const [index, run] of current.runs.entries()) {
+      const map = run.maps[sync] ?? run.maps.time;
+      current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
+    }
     current.tick = tick;
     const shot = adjust(shotAt(plan, tick, current.shot), current.view);
     if (current.adjusted && current.trace) {
@@ -151,10 +198,9 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
       }
     }
     const angles = viewAngles(shot.eye, shot.target);
-    const width = innerWidth, height = innerHeight;
-    // The camera is placed here too so the ghosts fade and size their outlines for this frame's view.
+    // The camera is placed here too so the ghosts size their outlines for this frame's view.
     current.renderer.qolCamera.position.set(shot.eye.x, shot.eye.z, -shot.eye.y);
-    current.scene.update(current.at, width, height);
+    current.scene.update(current.at, innerWidth, innerHeight);
     return {...view, eyePosition: {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z}, yaw: angles.yaw, pitch: angles.pitch, fov: FOV,
       ghost: null, remotePlayers: [], showPlayers: false};
   }
@@ -174,20 +220,18 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
       current.view.yaw -= (event.clientX - drag.x) * DRAG_RADIANS;
       current.view.pitch += (event.clientY - drag.y) * DRAG_RADIANS;
       drag.x = event.clientX; drag.y = event.clientY;
-      current.adjusted = true;
+      if (!current.adjusted) { current.adjusted = true; notify(); }
     };
     const onUp = event => {
       if (!drag || event.pointerId !== drag.id) return;
       event.preventDefault(); event.stopImmediatePropagation();
       drag = null;
-      notify();
     };
     const onWheel = event => {
       if (event.target !== canvas || event.ctrlKey) return;
       event.preventDefault(); event.stopImmediatePropagation();
       current.view.zoom = Math.max(0.35, Math.min(3, current.view.zoom * (event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
-      current.adjusted = true;
-      notify();
+      if (!current.adjusted) { current.adjusted = true; notify(); }
     };
     const onDouble = event => { if (event.target === canvas) { event.preventDefault(); event.stopImmediatePropagation(); resetView(); } };
     // The game also listens for clicks on its canvas; a drag here is the camera's alone.
@@ -199,68 +243,57 @@ export function createCinema({getAdapter, replayControl, onChange = () => {}, lo
   }
 
   function resetView() {
-    if (state?.phase !== 'playing') return;
+    if (!state?.renderer) return;
     state.view = {yaw: 0, pitch: 0, zoom: 1};
     state.adjusted = false;
     state.room = Infinity;
     notify();
   }
-
-  // Real time's alignment and camera are made the first time it is chosen.
   async function setSync(sync) {
     const current = state;
-    if (current?.phase !== 'playing' || !['place', 'time'].includes(sync) || current.sync === sync) return;
-    if (!current.plans[sync]) {
-      const [a, b] = current.tracks;
-      current.maps[sync] ??= alignByTime(a, b);
-      current.pending = sync;
-      notify();
-      const plan = await planCamera({a, b, map: current.maps[sync], trace: current.trace, yieldTask: loadIdle, isCurrent: () => state === current});
-      if (state !== current || !plan) return;
-      current.plans[sync] = plan;
-      current.pending = null;
-    }
-    current.sync = sync;
-    notify();
+    if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
+    if (current.plans[sync]) { current.sync = sync; current.pending = null; notify(); return; }
+    await replan(current, sync);
   }
 
-  function stop() {
+  function close() {
     const current = state;
     if (!current) return;
+    state = null;
     current.unlisten?.();
     cancelAnimationFrame(current.checking);
     detach(current);
-    state = null;
-  }
-  function close() {
-    if (!state) return;
-    request++;
-    stop();
     notify();
   }
 
   return {
-    open,
+    available,
+    add,
+    remove,
     close,
     resetView,
     setSync,
-    get active() { return state?.phase === 'playing'; },
-    // What the UI shows: the phase, both runs (label, colour, time) and, while
-    // playing, the gap here, where each ghost's name goes, and whether the view was moved.
+    // True while ghosts play: the renderer is Compare's.
+    get active() { return !!state?.renderer; },
+    // For the dev console: the watched track, then each added run's.
+    get tracks() { return state?.track ? [state.track, ...state.runs.map(run => run.track)] : null; },
+    // What the UI shows, null with no ghosts: the watched run first, then each
+    // added run with its colour, time and gap at this point (by place, in both
+    // modes: in Real time the clocks match by definition), runs still loading,
+    // where each ghost's name goes, and whether the view was moved.
     status() {
       const current = state;
       if (!current) return null;
-      const runs = current.runs.map((run, index) => ({...run, color: colorOf(index), time: current.times?.[index] ?? null}));
-      if (current.phase !== 'playing') return {phase: current.phase, runs};
-      const [a, b] = current.tracks;
-      // The gap is by place in both modes: in Real time the clocks match by definition.
-      const gap = gapAt(a, b, current.maps.place, current.tick ?? 0);
-      let labels = [null, null];
-      try { labels = current.scene.labels(innerWidth, innerHeight); } catch { /* none this frame */ }
-      return {phase: 'playing', runs, sync: current.sync, pending: current.pending ?? null, gap, labels, adjusted: !!current.adjusted};
+      const tick = current.tick ?? 0;
+      const runs = current.runs.map((run, index) => {
+        run.maps.place ??= alignByPlace(current.track, run.track);
+        return {id: run.id, label: run.label, color: colorOf(index + 1), time: run.time, gap: gapAt(current.track, run.track, run.maps.place, tick)};
+      });
+      let labels = [];
+      try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
+      return {active: !!current.renderer, played: {color: colorOf(0), time: current.track?.time ?? null}, runs, loading: current.loading.slice(),
+        sync: current.sync, pending: current.pending, adjusted: current.adjusted, labels};
     },
     destroy() { close(); },
-    // For the dev console: the prepared tracks.
-    get tracks() { return state?.tracks ?? null; },
   };
 }

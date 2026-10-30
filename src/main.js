@@ -67,6 +67,8 @@ const replayControl = createReplayControl({
     reset: tick => { metrics.reset({replayGap: tick > 0}); start.reset(); }
   },
   rampNumber: (mapKey, rampKey) => history.rampNumber(mapKey, rampKey),
+  // While other runs play alongside, the timeline's touches and locs step aside.
+  ghosts: () => cinema.active,
   // A PB/WR you open from the Runs view reuses its comparison analysis; any
   // other replay is named by its contents, so the same run is analysed once.
   boardsFor: ({ replay, session, analysis, isCurrent }) => replay.commands.length > MAX_COMMANDS ? null : replayStore.acquire({
@@ -88,7 +90,7 @@ let destroyed = false;
 const bindings = createBindings(() => api.adapter, settings, onSettings);
 const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
 const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
-const cinema = createCinema({getAdapter: () => api.adapter, replayControl, onChange: () => hud?.cinemaChanged?.()});
+const cinema = createCinema({getAdapter: () => api.adapter, onChange: () => hud?.cinemaChanged?.()});
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);

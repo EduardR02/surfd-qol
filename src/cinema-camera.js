@@ -15,7 +15,9 @@ import {trackPoint, trackYaw} from './cinema-track.js';
 export const STEP = 2;               // ticks per planned sample
 const MAX_SWING = 50 * Math.PI / 180;
 const ELEVATION = 15 * Math.PI / 180, ELEVATION_AIR = 12 * Math.PI / 180;
-const BASE_DISTANCE = 230, MAX_DISTANCE = 1300, MIN_DISTANCE = 70;
+// The camera stays back far enough to keep the map around the ghosts in view;
+// only walls bring it nearer than BASE_DISTANCE. Speed and flights widen it.
+const BASE_DISTANCE = 300, MAX_DISTANCE = 1400, MIN_DISTANCE = 70, SPEED_DISTANCE = 0.07, AIR_DISTANCE = 0.18;
 // The view the plan frames for, in the game's horizontal (4:3) degrees.
 export const FOV = 74;
 const EYE_HEIGHT = 40;               // aim at the body, not the feet
@@ -56,35 +58,50 @@ function lowest(values, radius, segment) {
 }
 
 // trace(from, to) is the clear fraction of the way, 1 when nothing is hit.
-// Returns {count, eye, target, segment}: one entry every STEP ticks of run a.
-export async function planCamera({a, b, map, trace = null, yieldTask = null, isCurrent = () => true}) {
+// others: [{track, map}], each run and where it is for each of a's ticks
+// ({b, map} for a single one). Returns {count, eye, target, segment}: one
+// entry every STEP ticks of run a.
+export async function planCamera({a, b = null, map = null, others = [{track: b, map}], trace = null, yieldTask = null, isCurrent = () => true}) {
   const count = Math.ceil(a.count / STEP) + 1;
   const sampleTick = s => Math.min(a.count - 1, s * STEP);
   const seconds = value => value / (a.dt * STEP);
   const focus = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
   const span = new Float32Array(count), speed = new Float32Array(count), side = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
-  const segment = new Uint32Array(count), shares = new Float32Array(count);
-  const runs = [new Float32Array(count * 3), new Float32Array(count * 3)];
-  const pa = {x: 0, y: 0, z: 0}, pb = {x: 0, y: 0, z: 0};
+  const segment = new Uint32Array(count);
+  // Positions of the played run and each other run, and how much each other run counts in the framing.
+  const runs = [a, ...others.map(other => other.track)].map(() => new Float32Array(count * 3));
+  const shares = others.map(() => new Float32Array(count));
+  const point = {x: 0, y: 0, z: 0};
   let cutAt = 0;
   for (let s = 0; s < count; s++) {
-    const tick = sampleTick(s), other = map[tick], previous = s ? sampleTick(s - 1) : 0;
+    const tick = sampleTick(s), previous = s ? sampleTick(s - 1) : 0;
     let cut = false;
     for (let k = previous + 1; k <= tick && !cut; k++) cut = a.cut[k] === 1;
-    for (let k = Math.floor(s ? map[previous] : other) + 1; k <= Math.ceil(other) && !cut; k++) cut = b.cut[k] === 1;
+    for (const {track, map: where} of others)
+      for (let k = Math.floor(s ? where[previous] : where[tick]) + 1; k <= Math.ceil(where[tick]) && !cut; k++) cut = track.cut[k] === 1;
     if (s && cut) cutAt++;
     segment[s] = cutAt;
-    trackPoint(a, tick, pa); trackPoint(b, other, pb);
-    // Far apart (a different line, a skipped stage), frame the played run alone.
-    const apart = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z), share = 0.5 * (1 - smoothstep(800, 1800, apart));
-    runs[0].set([pa.x, pa.y, pa.z], s * 3); runs[1].set([pb.x, pb.y, pb.z], s * 3);
-    shares[s] = share;
-    focus[0][s] = pa.x + (pb.x - pa.x) * share;
-    focus[1][s] = pa.y + (pb.y - pa.y) * share;
-    focus[2][s] = pa.z + (pb.z - pa.z) * share + EYE_HEIGHT;
-    span[s] = apart * share * 2;
+    trackPoint(a, tick, point);
+    runs[0].set([point.x, point.y, point.z], s * 3);
+    let fx = point.x, fy = point.y, fz = point.z, total = 1;
+    for (const [index, {track, map: where}] of others.entries()) {
+      const ax = runs[0][s * 3], ay = runs[0][s * 3 + 1], az = runs[0][s * 3 + 2];
+      trackPoint(track, where[tick], point);
+      runs[index + 1].set([point.x, point.y, point.z], s * 3);
+      // Far off (another line, a skipped stage), a run stops pulling the framing.
+      const weight = 1 - smoothstep(800, 1800, Math.hypot(point.x - ax, point.y - ay, point.z - az));
+      shares[index][s] = weight;
+      fx += point.x * weight; fy += point.y * weight; fz += point.z * weight; total += weight;
+    }
+    focus[0][s] = fx / total; focus[1][s] = fy / total; focus[2][s] = fz / total + EYE_HEIGHT;
+    let reach = Math.hypot(runs[0][s * 3] - focus[0][s], runs[0][s * 3 + 1] - focus[1][s], runs[0][s * 3 + 2] + EYE_HEIGHT - focus[2][s]);
+    for (let index = 0; index < others.length; index++) {
+      const o = s * 3, r = runs[index + 1];
+      reach = Math.max(reach, shares[index][s] * Math.hypot(r[o] - focus[0][s], r[o + 1] - focus[1][s], r[o + 2] + EYE_HEIGHT - focus[2][s]));
+    }
+    span[s] = reach * 2;
     // Each run surfing a ramp votes for its open side.
-    for (const [track, at] of [[a, tick], [b, Math.round(other)]]) {
+    for (const [track, at] of [[a, tick], ...others.map(({track: other, map: where}) => [other, Math.round(where[tick])])]) {
       const o = clamp(at, 0, track.count - 1) * 3;
       const nx = track.normal[o], ny = track.normal[o + 1], length = Math.hypot(nx, ny);
       if (length > 1e-3) { side[0][s] += nx / length; side[1][s] += ny / length; side[2][s] += 1; }
@@ -124,7 +141,7 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
     const behind = Math.atan2(-fy, -fx);
     azimuth[s] = behind + MAX_SWING * lean;
     elevation[s] = ELEVATION + ELEVATION_AIR * (1 - Math.abs(lean));
-    distance[s] = clamp(Math.max(BASE_DISTANCE + smoothSpeed[s] * 0.035, smoothSpan[s] * 0.5 / Math.tan(halfView) * 1.3 + 140), BASE_DISTANCE, MAX_DISTANCE);
+    distance[s] = clamp(Math.max((BASE_DISTANCE + smoothSpeed[s] * SPEED_DISTANCE) * (1 + AIR_DISTANCE * (1 - Math.abs(lean))), smoothSpan[s] * 0.5 / Math.tan(halfView) * 1.3 + 140), BASE_DISTANCE, MAX_DISTANCE);
   }
   unwrap(azimuth, segment);
   const swing = new Float32Array(count), rise = new Float32Array(count), limit = new Float32Array(count).fill(MAX_DISTANCE);
@@ -155,10 +172,13 @@ export async function planCamera({a, b, map, trace = null, yieldTask = null, isC
   const compose = (weight, limitTo) => {
     const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
     for (let s = 0; s < count; s++) {
-      const k = shares[s] * weight[s], o = s * 3;
-      fx[s] = runs[0][o] + (runs[1][o] - runs[0][o]) * k;
-      fy[s] = runs[0][o + 1] + (runs[1][o + 1] - runs[0][o + 1]) * k;
-      fz[s] = runs[0][o + 2] + (runs[1][o + 2] - runs[0][o + 2]) * k + EYE_HEIGHT;
+      const o = s * 3;
+      let x = runs[0][o], y = runs[0][o + 1], z = runs[0][o + 2], total = 1;
+      for (let index = 0; index < others.length; index++) {
+        const k = shares[index][s] * weight[s], r = runs[index + 1];
+        x += r[o] * k; y += r[o + 1] * k; z += r[o + 2] * k; total += k;
+      }
+      fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
     }
     const cx = blur(fx, seconds(0.12), segment), cy = blur(fy, seconds(0.12), segment), cz = blur(fz, seconds(0.2), segment);
     const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);

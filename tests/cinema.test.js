@@ -4,7 +4,7 @@ import {alignByPlace, alignByTime, gapAt} from '../src/cinema-sync.js';
 import {adjust, blur, planCamera, shotAt, STEP, viewAngles} from '../src/cinema-camera.js';
 import {createCinema} from '../src/cinema.js';
 import {gapText, createCinemaUi} from '../src/cinema-ui.js';
-import {compareSources, difference} from '../src/compare-panel.js';
+import {boardSource, ghostSources} from '../src/ghost-sources.js';
 
 // A run along +x at `speed` units per tick, starting after `lead` ticks in the start zone.
 function straight({count = 400, speed = 20, lead = 20, dt = 0.015, y = 0, normal = null} = {}) {
@@ -91,8 +91,9 @@ describe('matching the runs', () => {
     const gap = gapAt(slow, fast, alignByPlace(slow, fast), 220);
     // 200 ticks of the slow run cover what the fast one does in 100.
     expect(gap).toBeCloseTo(-100 * slow.dt, 1);
-    expect(gapText(gap)).toMatchObject({label: 'behind', tone: 'loss'});
-    expect(gapText(-gap)).toMatchObject({label: 'ahead', tone: 'good'});
+    // Shown from the watched run: it is 1.5 s behind here.
+    expect(gapText(gap)).toMatchObject({value: `+${(-gap).toFixed(3)}`, tone: 'loss'});
+    expect(gapText(-gap)).toMatchObject({value: `−${(-gap).toFixed(3)}`, tone: 'good'});
     expect(gapAt(slow, fast, alignByPlace(slow, fast), 5)).toBeNull();
   });
 });
@@ -152,6 +153,13 @@ describe('the planned camera', () => {
     expect(shot.eye.y).toBeCloseTo(-200);
     expect(viewAngles(shot.eye, shot.target).yaw).toBeCloseTo(90);
   });
+  test('frames several runs at once, each counting while it stays near', async () => {
+    const a = straight(), near = straight({y: 120}), far = straight({y: 5000});
+    const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}, {track: far, map: alignByTime(a, far)}]});
+    const {target} = shotAt(planned, 200);
+    expect(target.y).toBeGreaterThan(30);
+    expect(target.y).toBeLessThan(90);
+  });
   test('samples every STEP ticks', async () => {
     const {a, plan: planned} = await plan(null);
     expect(planned.count).toBe(Math.ceil(a.count / STEP) + 1);
@@ -159,90 +167,103 @@ describe('the planned camera', () => {
 });
 
 describe('picking runs', () => {
-  const refs = {record: {runId: 'wr', username: 'fast', timeUs: 40e6}, loadReplay: async id => ({id}), loadRecordRoute: async () => ({ksf: true})};
+  const refs = {record: {runId: 'wr', username: 'fast', timeUs: 40e6}, loadReplay: async id => ({id}), loadRecordRoute: async () => ({ksf: true}),
+    entries: [{rank: 1, runId: 'wr', username: 'fast', timeUs: 40e6}]};
   test('offers your PB, recent best and both records, saying why one is missing', () => {
-    const list = compareSources({best: null, recentBest: null, refs});
-    expect(list.map(source => source.id)).toEqual(['pb', 'wr', 'ksf']);
+    const list = ghostSources({best: null, recentBest: null, refs});
+    expect(list.map(source => source.label)).toEqual(['PB', 'Site WR', 'KSF WR']);
     expect(list[0]).toMatchObject({load: null, reason: 'No finish on this map yet'});
-    const official = compareSources({best: {official: true, runId: 'mine', time: 42}, refs});
-    expect(official[0]).toMatchObject({label: 'PB', time: 42});
+    expect(ghostSources({best: {official: true, runId: 'mine', time: 42}, refs})[0]).toMatchObject({label: 'PB', time: 42});
   });
-  test('names the faster run and by how much', () => {
-    expect(difference({short: 'Your PB', time: 42.5}, {short: 'Site WR', time: 40})).toBe('<b>Site WR</b> is 2.500 s faster');
-    expect(difference({time: 40}, {time: null})).toBe('');
+  test('the site WR and the leaderboard’s #1 are the same run', () => {
+    expect(ghostSources({refs})[1].id).toBe(boardSource(refs.entries[0], refs).id);
   });
 });
 
-// Standing rule: while Compare isn't open it does nothing at all.
-describe('Compare is idle until opened', () => {
+// Standing rule: until a run is added, ghosts cost nothing.
+describe('ghosts are idle until a run is added', () => {
   const originals = {};
   const calls = [];
-  const spy = (target, name) => { originals[name] = target[name]; target[name] = (...args) => { calls.push(name); return originals[name]?.(...args); }; };
-  afterEach(() => { for (const [name, value] of Object.entries(originals)) globalThis[name] = value; calls.length = 0; });
-  test('no timers, frames, listeners, observers or fetches before open() or after close()', async () => {
-    for (const name of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'requestIdleCallback', 'fetch', 'addEventListener']) spy(globalThis, name);
+  const keep = (...names) => { for (const name of names) if (!(name in originals)) originals[name] = globalThis[name]; };
+  const spy = name => { keep(name); const original = originals[name]; globalThis[name] = (...args) => { calls.push(name); return original?.(...args); }; };
+  afterEach(() => {
+    for (const [name, value] of Object.entries(originals)) globalThis[name] = value;
+    for (const name of Object.keys(originals)) delete originals[name];
+    calls.length = 0;
+  });
+  test('no timers, frames, listeners, observers or fetches without ghosts', () => {
+    for (const name of ['setTimeout', 'setInterval', 'requestAnimationFrame', 'requestIdleCallback', 'fetch', 'addEventListener']) spy(name);
+    keep('MutationObserver');
     const observed = [];
-    originals.MutationObserver = globalThis.MutationObserver;
     globalThis.MutationObserver = class { constructor() { observed.push('MutationObserver'); } observe() {} disconnect() {} };
-    const renderer = {qolScene: {}, render() {}};
-    const cinema = createCinema({getAdapter: () => ({cinema: {renderer: () => renderer}, getSession: () => ({map: {}})}), replayControl: {}});
-    const section = {hidden: true, addEventListener: () => calls.push('ui listener'), querySelectorAll: () => [], querySelector: () => ({classList: {add() {}, remove() {}, toggle() {}}, style: {}})};
+    const renderer = {qolScene: {}, render() {}}, native = renderer.render;
+    const cinema = createCinema({getAdapter: () => ({cinema: {renderer: () => renderer}, getSession: () => ({map: {}}), replay: {playback: () => ({replay: null})}})});
+    const node = () => ({hidden: true, classList: {add() {}, remove() {}, toggle() {}}, style: {}, setAttribute() {}, querySelectorAll: () => [], querySelector: () => null,
+      addEventListener: () => calls.push('ui listener')});
+    const section = {...node(), querySelector: node, querySelectorAll: () => []};
     const ui = createCinemaUi({root: {getElementById: () => section}, cinema});
     calls.length = 0;
-    for (let i = 0; i < 20; i++) { ui.render({visible: true}); ui.render({visible: false}); cinema.status(); }
+    for (let i = 0; i < 20; i++) { ui.render({visible: true, track: {left: 0, top: 0, bottom: 0}}); ui.render({visible: false}); cinema.status(); }
     expect(cinema.active).toBe(false);
     expect(cinema.status()).toBeNull();
-    expect(renderer.render).toBe(renderer.render);
+    expect(renderer.render).toBe(native);
     cinema.close();
     expect(calls).toEqual([]);
     expect(observed).toEqual([]);
     expect(section.hidden).toBe(true);
   });
-  test('open() wraps the renderer and listens on the canvas; close() undoes both', async () => {
+
+  function rig() {
+    const tracks = [straight({count: 60, lead: 5}), straight({count: 60, lead: 5, y: 30}), straight({count: 60, lead: 5, y: -30})];
     const listeners = new Map();
-    for (const name of ['addEventListener', 'removeEventListener', 'document', 'innerWidth', 'innerHeight', 'requestAnimationFrame', 'cancelAnimationFrame']) originals[name] = globalThis[name];
-    globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
+    keep('addEventListener', 'removeEventListener', 'document', 'innerWidth', 'innerHeight', 'requestAnimationFrame', 'cancelAnimationFrame');
     globalThis.addEventListener = (type, listener) => listeners.set(type, listener);
     globalThis.removeEventListener = type => listeners.delete(type);
     globalThis.document = {querySelector: () => ({})};
     globalThis.innerWidth = 1280; globalThis.innerHeight = 720;
+    globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
     const native = function (view) { this.drawn = view; };
     const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
-    const played = {commands: new Array(59).fill({}), initialState: {tick: 0}};
-    let playback = null, disposed = 0;
-    const adapter = {cinema: {renderer: () => renderer}, getSession: () => ({map: {id: 'm', version: 1}}), replay: {playback: () => playback}};
-    const tracks = [straight({count: 60, lead: 5}), straight({count: 60, lead: 5, y: 30})];
+    const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
+    let disposed = 0, scenes = 0;
+    const control = {playback: {replay: played}};
+    const adapter = {cinema: {renderer: () => renderer}, getSession: () => ({map: {id: 'm', version: 1}}), replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, loadIdle: async () => null, record: async () => tracks.shift(),
-      createScene: () => ({update() {}, labels: () => [null, null], dispose() { disposed++; }}),
-      replayControl: {watchLoaded: async load => { playback = {replay: await load()}; return true; }}});
-    expect(await cinema.open([{label: 'A', load: async () => played}, {label: 'B', load: async () => ({commands: []})}])).toBe(true);
+      createScene: (_, runs) => { scenes = runs.length; return {update() {}, labels: () => [], dispose() { disposed++; }}; }});
+    return {cinema, renderer, native, listeners, control, counts: () => ({disposed, scenes})};
+  }
+  const run = id => ({id, label: id, load: async () => ({commands: []})});
+  test('adding a run wraps the renderer and listens on the canvas; removing the last undoes both', async () => {
+    const {cinema, renderer, native, listeners, counts} = rig();
+    expect(cinema.available()).toBe(true);
+    expect(await cinema.add(run('wr'))).toBe(true);
     expect(cinema.active).toBe(true);
     expect(renderer.render).not.toBe(native);
     expect(listeners.has('pointerdown') && listeners.has('wheel')).toBe(true);
     renderer.render({state: {tick: 30}, qolAlpha: 0.5, eyePosition: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0, fov: 90, ghost: {}, remotePlayers: [{}]});
     expect(renderer.drawn).toMatchObject({ghost: null, remotePlayers: []});
-    expect(renderer.drawn.eyePosition.x).toBeLessThan(29 * 20);
-    expect(cinema.status()).toMatchObject({phase: 'playing', sync: 'place', runs: [{label: 'A'}, {label: 'B'}]});
-    cinema.close();
+    expect(cinema.status()).toMatchObject({active: true, sync: 'time', runs: [{id: 'wr', label: 'wr'}]});
+    cinema.remove('wr');
     expect(renderer.render).toBe(native);
     expect(listeners.size).toBe(0);
-    expect(disposed).toBe(1);
+    expect(counts().disposed).toBe(1);
     expect(cinema.status()).toBeNull();
   });
-  test('leaving the replay ends Compare on the next frame', async () => {
-    for (const name of ['addEventListener', 'removeEventListener', 'document', 'innerWidth', 'innerHeight', 'requestAnimationFrame', 'cancelAnimationFrame']) originals[name] = globalThis[name];
-    globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
-    globalThis.addEventListener = () => {}; globalThis.removeEventListener = () => {};
-    globalThis.document = {querySelector: () => ({})};
-    const native = () => {};
-    const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
-    let playback = null;
-    const tracks = [straight({count: 60}), straight({count: 60})];
-    const cinema = createCinema({getAdapter: () => ({cinema: {renderer: () => renderer}, getSession: () => ({map: {}}), replay: {playback: () => playback}}),
-      loadIdle: async () => null, record: async () => tracks.shift(), createScene: () => ({update() {}, labels: () => [], dispose() {}}),
-      replayControl: {watchLoaded: async load => { playback = {replay: await load()}; return true; }}});
-    await cinema.open([{label: 'A', load: async () => ({commands: []})}, {label: 'B', load: async () => ({commands: []})}]);
-    playback = {replay: null};
+  test('more runs join the same replay; the same run twice is ignored', async () => {
+    const {cinema, counts} = rig();
+    await cinema.add(run('wr'));
+    expect(await cinema.add(run('wr'))).toBe(false);
+    expect(await cinema.add(run('pb'))).toBe(true);
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['wr', 'pb']);
+    expect(counts().scenes).toBe(3);
+    cinema.remove('wr');
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['pb']);
+    expect(counts().scenes).toBe(2);
+  });
+  test('leaving the replay ends the ghosts on the next frame', async () => {
+    const {cinema, renderer, native, control} = rig();
+    await cinema.add(run('wr'));
+    control.playback = {replay: null};
     renderer.render({state: {tick: 3}});
     await Promise.resolve();
     expect(renderer.render).toBe(native);
