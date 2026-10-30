@@ -90,8 +90,14 @@ export function createCinemaUi({root, cinema, storage = null}) {
     frame = 0;
     const status = shown ? cinema.status() : null;
     if (!status || status.phase !== 'playing') return;
+    const spots = tags.map((_, index) => named ? status.labels?.[index] : null);
+    // Ghosts side by side would put one name over the other: lift the higher one clear.
+    if (spots[0] && spots[1] && Math.abs(spots[0].x - spots[1].x) < (tags[0].offsetWidth + tags[1].offsetWidth) / 2 + 6 && Math.abs(spots[0].y - spots[1].y) < 24) {
+      const [high, low] = spots[0].y <= spots[1].y ? [0, 1] : [1, 0];
+      spots[high] = {x: spots[high].x, y: spots[low].y - 24};
+    }
     for (const [index, tag] of tags.entries()) {
-      const at = named ? status.labels?.[index] : null;
+      const at = spots[index];
       if (tag.hidden !== !at) tag.hidden = !at;
       if (at) tag.style.transform = `translate(${at.x.toFixed(1)}px,${(at.y - 6).toFixed(1)}px) translate(-50%,-100%)`;
     }

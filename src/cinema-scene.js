@@ -9,6 +9,10 @@ const LINE_HEIGHT = 20;
 const LINE_STEP = 2;
 // The path ahead of a ghost stays faintly visible this far; behind it is solid.
 const AHEAD_SECONDS = 6;
+// The game's ghost fades out as the camera nears it, for racing it in first
+// person. Compare's camera is often that close in tight rooms, so the ghost is
+// told the camera is at least this far away, along the same line of sight.
+const SOLID_FROM = 140;
 
 const lineVertex = `
 uniform vec2 resolution;
@@ -88,6 +92,7 @@ export function createCinemaScene(renderer, runs) {
     disposers.push(() => { ghost.dispose(); for (const mesh of line.meshes) scene.remove(mesh); line.dispose(); });
   }
   const projected = new three.Vector();
+  const far = {position: new three.Vector(), projectionMatrix: camera.projectionMatrix};
   return {
     // at: each run's fractional track index; height: the canvas's CSS height.
     update(at, width, height) {
@@ -97,7 +102,10 @@ export function createCinemaScene(renderer, runs) {
         Object.assign(part.frame, part.point);
         part.frame.yaw = trackYaw(track, tick);
         part.frame.ducked = track.ducked[Math.round(Math.max(0, Math.min(track.count - 1, tick)))] === 1;
-        part.ghost.update(part.frame, camera, height);
+        const eye = camera.position, gx = part.point.x, gy = part.point.z + 36, gz = -part.point.y;
+        const away = Math.max(1, SOLID_FROM / (Math.hypot(eye.x - gx, eye.y - gy, eye.z - gz) || 1));
+        far.position.set(gx + (eye.x - gx) * away, gy + (eye.y - gy) * away, gz + (eye.z - gz) * away);
+        part.ghost.update(part.frame, far, height);
         // Names are drawn by the extension's overlay instead, in each run's colour.
         if (part.label) part.label.visible = false;
         if (part.trail) part.trail.visible = false;
