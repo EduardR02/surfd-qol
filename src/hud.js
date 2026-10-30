@@ -42,6 +42,11 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   nativeStyle.textContent = '#telemetry,#center-speed-hud,#split-comparison{display:none!important}';
   document.head.append(nativeStyle);
   nativeStyle.disabled = true;
+  // The game's crosshair marks first-person aim; the cinematic camera has none.
+  const cinemaStyle = document.createElement('style');
+  cinemaStyle.textContent = '#crosshair{visibility:hidden!important}';
+  document.head.append(cinemaStyle);
+  cinemaStyle.disabled = true;
   // Replay hull state lives inside the game's own key display, styled to match it.
   const nativeKeys = document.getElementById('keys');
   const hullState = nativeKeys ? document.createElement('span') : null;
@@ -158,8 +163,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     if (inMenu) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
-    // Compare shows its own legend in the HUD's place.
+    // The cinematic view labels its ghosts instead of showing the HUD.
     setOverlayHidden(settings.hud === false || !inSurf || !hasState || !!cinema?.active);
+    cinemaStyle.disabled = !cinema?.active;
     // Keep native in-run telemetry suppressed behind open menus while the
     // custom HUD is enabled; disabling the custom HUD restores it.
     nativeStyle.disabled = settings.hud === false || snapshot == null;
@@ -320,6 +326,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       hullState?.remove();
       hullStyle.remove();
       nativeStyle.remove();
+      cinemaStyle.remove();
       host.remove();
       removeFonts();
     },
