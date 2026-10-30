@@ -3,7 +3,6 @@
 import {formatTime} from './hud-model.js';
 import {boardSource, ghostSources} from './ghost-sources.js';
 import {colorOf} from './cinema.js';
-import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from './cinema-scene.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
 const CLOSE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
@@ -21,7 +20,6 @@ export const cinemaMarkup = `<section id="cinema" class="cn" aria-label="Ghosts"
       <button type="button" data-sync="time" aria-pressed="false" title="Runs on the clock, as a race">Real time</button>
       <button type="button" data-sync="place" aria-pressed="false" title="Runs at the same place on the route: the faster one is slowed down">Side by side</button>
     </div>
-    <select class="cn-btn cn-style" aria-label="Trail style" title="Trail style" hidden>${TRAIL_STYLES.map(style => `<option value="${style.id}">${style.label}</option>`).join('')}</select>
     <button type="button" class="cn-btn" data-cn="reset" title="Back to the planned camera (or double-click the view)" hidden>Reset view</button>
   </div>
   <div class="cn-pick" role="dialog" aria-label="Add a run" hidden></div>
@@ -38,8 +36,6 @@ export const cinemaStyles = `
 .cn-btn:hover,.cn-btn[aria-expanded=true]{border-color:var(--accent)}
 .cn-btn[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .rb-tools .cn-row{order:-1}
-.cn-style{max-width:104px;cursor:pointer}
-.cn-style option{background:#121212;color:var(--paper)}
 .rb .cn-row{flex-wrap:nowrap;gap:2px;-webkit-text-stroke:inherit;text-shadow:inherit}
 .rb .cn-row .cn-btn,.rb .cn-row .cn-seg button{height:34px;min-height:34px;padding:0 7px;border:0;border-radius:10px;background:transparent;font:inherit;font-weight:700;line-height:1.2;color:inherit}
 .rb .cn-row .cn-btn{display:inline-flex}
@@ -105,14 +101,12 @@ export const cinemaStyles = `
 @media(prefers-reduced-motion:reduce){.cn-strip,.cn-hint{transition:none}.cn-run.loading i{animation:none}}
 `;
 
-// Input is the other run's time to this place minus the watched run's.
-// Display the watched run's deficit: positive/red behind, negative/teal ahead.
+// The added run's time to this place minus the watched run's time.
 export function gapText(gap) {
   if (!Number.isFinite(gap)) return {value: '', tone: '', title: ''};
-  const behind = -gap;
-  if (Math.abs(behind) < 0.0005) return {value: '±0.000', tone: '', title: 'Level here'};
-  return {value: `${behind > 0 ? '+' : '−'}${Math.abs(behind).toFixed(3)}`, tone: behind > 0 ? 'loss' : 'good',
-    title: `This run is ${Math.abs(behind).toFixed(3)} s ${behind > 0 ? 'behind' : 'ahead'} here`};
+  if (Math.abs(gap) < 0.0005) return {value: '±0.000', tone: '', title: 'Level here'};
+  return {value: `${gap > 0 ? '+' : '−'}${Math.abs(gap).toFixed(3)}`, tone: gap > 0 ? 'loss' : 'good',
+    title: `${Math.abs(gap).toFixed(3)} s ${gap > 0 ? 'behind' : 'ahead of'} the watched run here`};
 }
 
 // getSources() gives the inputs of ghostSources (best, recentBest, refs, canWatch, archive) for the loaded map.
@@ -121,7 +115,6 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
   const row = section.querySelector('.cn-row'), strip = section.querySelector('.cn-strip'), runs = section.querySelector('.cn-runs');
   const add = row.querySelector('[data-cn="add"]'), enable = row.querySelector('[data-cn="enable"]');
   const seg = row.querySelector('.cn-seg'), reset = row.querySelector('[data-cn="reset"]'), pick = section.querySelector('.cn-pick');
-  const style = row.querySelector('.cn-style');
   const tagLayer = section.querySelector('.cn-tags'), hint = section.querySelector('.cn-hint');
   let frame = 0, shown = false, drawn = '', hintTimer = 0, named = true, picking = false, filter = '', error = '', tags = [], hinted = false;
   let toolbar = null, layout = null, gapCells = [], widths = [], busy = false, escapeHeld = false, controls = '';
@@ -212,9 +205,6 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
     event.preventDefault();
     runs.scrollLeft += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? runs.clientWidth : 1);
   }, {passive: false});
-  row.addEventListener('change', event => {
-    if (event.target === style) void perform(() => cinema.setTrailStyle(style.value));
-  });
   for (const element of [row, strip, pick]) {
     element.addEventListener('pointerenter', () => hovered.add(element));
     element.addEventListener('pointerleave', () => hovered.delete(element));
@@ -234,7 +224,7 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       if (escapeHeld) { openPicker(false); add.focus({preventScroll: true}); }
       return true;
     }
-    if (path.includes(pick) || path.includes(style) || (event.key === ' ' || event.key === 'Enter') && path.some(node => node?.matches?.('.cn-row button,.cn-focus,.cn-x,.cn-tag'))) {
+    if (path.includes(pick) || (event.key === ' ' || event.key === 'Enter') && path.some(node => node?.matches?.('.cn-row button,.cn-focus,.cn-x,.cn-tag'))) {
       event.stopImmediatePropagation();
       return true;
     }
@@ -297,14 +287,10 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       }
       if (picking) paintPicker();
     }
-    const controlKey = JSON.stringify([active, status?.sync, status?.focus, status?.pending, status?.adjusted, status?.trailStyle, extras.length, loading.length]);
+    const controlKey = JSON.stringify([active, status?.sync, status?.focus, status?.pending, status?.adjusted, extras.length, loading.length]);
     if (!changed && controlKey === controls) return false;
     controls = controlKey;
     attr(enable, 'aria-pressed', String(active));
-    style.hidden = !active;
-    const selectedStyle = TRAIL_STYLES.find(item => item.id === (status?.trailStyle ?? cinema.trailStyle)) ?? TRAIL_STYLES.find(item => item.id === DEFAULT_TRAIL_STYLE);
-    if (style.value !== selectedStyle.id) style.value = selectedStyle.id;
-    if (style.title !== selectedStyle.description) style.title = selectedStyle.description;
     seg.hidden = !extras.length;
     for (const button of seg.querySelectorAll('[data-sync]')) {
       attr(button, 'aria-pressed', String(status?.sync === button.dataset.sync));

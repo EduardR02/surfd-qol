@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {createCinemaScene, DEFAULT_TRAIL_STYLE, RUN_COLORS, TRAIL_STYLES, runColors} from '../src/cinema-scene.js';
+import {createCinemaScene, RUN_COLORS, runColors} from '../src/cinema-scene.js';
 import {createTrack} from '../src/cinema-track.js';
 
 function trackAt(xs) {
@@ -105,6 +105,7 @@ describe('cinematic path geometry', () => {
     expect(vertexAt(geometry, 'prev', 3)).toEqual(vertexAt(geometry, 'position', 3));
     expect(vertexAt(geometry, 'next', 4)).toEqual(vertexAt(geometry, 'position', 4));
     expect(vertexAt(geometry, 'prev', 5)).toEqual(vertexAt(geometry, 'position', 5));
+    expect([...geometry.getAttribute('along').array]).toEqual([0, 0, 20, 20, 20, 20, 30, 30, 30, 30, 40, 40, 50, 50]);
     cinema.dispose();
   });
 
@@ -115,6 +116,7 @@ describe('cinematic path geometry', () => {
     expect(spans(geometry)).toEqual([[0, 2], [6, 8]]);
     expect(vertexAt(geometry, 'prev', 4)[0]).toBe(0);
     expect(vertexAt(geometry, 'next', 4)[0]).toBe(20);
+    expect([...geometry.getAttribute('along').array]).toEqual([0, 0, 10, 10, 10, 10, 10, 10, 20, 20]);
     for (const attribute of ['position', 'prev', 'next']) {
       expect([...geometry.getAttribute(attribute).array].every(Number.isFinite)).toBe(true);
     }
@@ -231,15 +233,15 @@ describe('cinematic scene playback', () => {
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: trackAt([0, 10, 20, 30, 40])}]);
     const state = () => ({
       clocks: rig.lines().map(mesh => {
-        const {head, rate} = mesh.material.uniforms;
-        return {tick: head.value, seconds: head.value / rate.value};
+        const {head, rate, time} = mesh.material.uniforms;
+        return {tick: head.value, seconds: head.value / rate.value, flow: time.value};
       }),
       player: rig.ghosts[0].updates.at(-1).frame.x,
     });
     cinema.update([2.5], 1280, 720);
     const first = state();
     expect(first).toEqual({
-      clocks: Array.from({length: 3}, () => ({tick: 2.5, seconds: 0.25})),
+      clocks: Array.from({length: 3}, () => ({tick: 2.5, seconds: 0.25, flow: 0.25})),
       player: 25,
     });
     cinema.update([2.5], 1280, 720);
@@ -258,8 +260,9 @@ describe('cinematic scene playback', () => {
     const slow = trackAt(Array.from({length: 41}, (_, index) => index * 20));
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: fast}, {track: slow}]);
     const clocks = () => rig.lines().map(mesh => {
-      const {head, rate} = mesh.material.uniforms;
-      return head.value / rate.value;
+      const {head, rate, time} = mesh.material.uniforms;
+      expect(time.value).toBeCloseTo(head.value / rate.value);
+      return time.value;
     });
     cinema.update([15, 7.5], 1280, 720);
     expect(clocks()).toEqual(Array(6).fill(0.75));
@@ -287,48 +290,32 @@ describe('cinematic scene playback', () => {
   });
 });
 
-describe('cinematic live trail treatments', () => {
-  test('changes every existing pass in place without replaying ghosts or replacing GPU resources', () => {
+describe('cinematic replay resource reuse', () => {
+  test('seeks across teleports without replacing geometry, attributes or materials', () => {
     const track = trackAt([0, 10, 20, 1000, 1010]);
     track.cut[3] = 1;
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track}, {track, colorIndex: 7}]);
     cinema.update([2.5, 1.25], 1440, 900);
     const meshes = rig.lines();
     const geometries = rig.geometries.slice(), materials = rig.materials.slice();
-    const sharedStyle = meshes[0].material.uniforms.style;
     const states = meshes.map(mesh => ({
       geometry: mesh.geometry, material: mesh.material,
       position: mesh.geometry.getAttribute('position').array,
+      along: mesh.geometry.getAttribute('along').array,
       head: mesh.material.uniforms.head.value, rate: mesh.material.uniforms.rate.value,
     }));
-    expect(sharedStyle.value).toBe(TRAIL_STYLES.findIndex(style => style.id === DEFAULT_TRAIL_STYLE));
-    const treatments = new Set();
-    for (const style of TRAIL_STYLES) {
-      cinema.setTrailStyle(style.id);
-      treatments.add(sharedStyle.value);
-      expect(rig.lines()).toEqual(meshes);
-      expect(rig.geometries).toEqual(geometries);
-      expect(rig.materials).toEqual(materials);
-      expect(rig.ghosts.every(ghost => ghost.updates.length === 1)).toBe(true);
-      for (const [index, mesh] of meshes.entries()) {
-        expect(mesh.geometry).toBe(states[index].geometry);
-        expect(mesh.material).toBe(states[index].material);
-        expect(mesh.geometry.getAttribute('position').array).toBe(states[index].position);
-        expect(mesh.material.uniforms.style).toBe(sharedStyle);
-        expect(mesh.material.uniforms.head.value).toBe(states[index].head);
-        expect(mesh.material.uniforms.rate.value).toBe(states[index].rate);
-      }
-    }
-    expect(treatments.size).toBe(3);
-    const selected = sharedStyle.value;
-    cinema.setTrailStyle('unknown');
-    expect(sharedStyle.value).toBe(selected);
     cinema.update([4, 3], 1920, 1080);
     cinema.update([2.5, 1.25], 1440, 900);
+    expect(rig.lines()).toEqual(meshes);
+    expect(rig.geometries).toEqual(geometries);
+    expect(rig.materials).toEqual(materials);
     for (const [index, mesh] of meshes.entries()) {
+      expect(mesh.geometry).toBe(states[index].geometry);
+      expect(mesh.material).toBe(states[index].material);
+      expect(mesh.geometry.getAttribute('position').array).toBe(states[index].position);
+      expect(mesh.geometry.getAttribute('along').array).toBe(states[index].along);
       expect(mesh.material.uniforms.head.value).toBe(states[index].head);
       expect(mesh.material.uniforms.rate.value).toBe(states[index].rate);
-      expect(mesh.material.uniforms.style).toBe(sharedStyle);
     }
     expect(spans(meshes[0].geometry)).toEqual([[0, 2], [3, 4]]);
     cinema.dispose();

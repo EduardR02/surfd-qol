@@ -5,7 +5,6 @@
 import {SPEEDS, MAX_SPOTS} from '../src/replay-control.js';
 import {referenceTone} from '../src/hud-model.js';
 import {colorOf} from '../src/cinema.js';
-import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
 
 const DT = 0.015;
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -390,7 +389,6 @@ export function createReplayControl({params, active, ghosts = () => false}) {
 export function createCinemaFixture({params, replayControl}) {
   const mode = params.get('cinema');
   let enabled = mode != null && mode !== 'off' && mode !== 'error', focus = mode === 'focus' ? 'run:jose' : null, sync = 'time', adjusted = params.has('adjusted');
-  let trailStyle = TRAIL_STYLES.find(style => style.id === params.get('trail'))?.id ?? DEFAULT_TRAIL_STYLE;
   const initial = [
     {id: 'run:site-wr', label: 'Site WR', time: 40.533},
     {id: 'run:jose', label: '#3 Jose', time: 40.884},
@@ -411,12 +409,6 @@ export function createCinemaFixture({params, replayControl}) {
     available: () => replayControl.active,
     get active() { return enabled && replayControl.active; },
     get comparing() { return fixture.active && runs.length > 0; },
-    get trailStyle() { return trailStyle; },
-    setTrailStyle(id) {
-      if (!TRAIL_STYLES.some(style => style.id === id)) return false;
-      trailStyle = id;
-      return true;
-    },
     async setEnabled(value) {
       if (value && mode === 'error') throw new Error('This replay’s route is unavailable.');
       enabled = value;
@@ -447,7 +439,7 @@ export function createCinemaFixture({params, replayControl}) {
       const status = replayControl.status();
       return {active: fixture.active, played: {label: 'This run', time: 41.233, colorIndex: 0, color: colorOf(0)},
         runs: runs.map((run, index) => ({...run, color: colorOf(run.colorIndex), gap: [.267, -.084, -.211, .189][index % 4]})),
-        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted, trailStyle,
+        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted,
         labels: [0, ...runs].map((_, index, all) => ({x: innerWidth * (.18 + index * .64 / Math.max(1, all.length - 1)), y: innerHeight * .43 + Math.sin((status?.index ?? 0) / 160 + index) * 18}))};
     },
   };

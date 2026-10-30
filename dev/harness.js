@@ -155,7 +155,6 @@ if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns()
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
 // ?cinema=off|solo|group|focus|many|error uses the real cinematic controls with
 // UI-only fixture state. ?pick opens Add run; this does not exercise rendering.
-// ?trail=<style id> starts its live selector on any exported scene treatment.
 if (params.has('pick')) setTimeout(() => document.getElementById('surfd-qol').shadowRoot.querySelector('[data-cn="add"]')?.click(), 80);
 // With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
 // other replays, ?reset asks to reset the averages. These press the panel's own buttons.

@@ -1,6 +1,5 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createCinemaUi} from '../src/cinema-ui.js';
-import {TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from '../src/cinema-scene.js';
 
 const restorers = [];
 afterEach(() => { while (restorers.length) restorers.pop()(); });
@@ -51,14 +50,14 @@ function rig(initial = null, getSources = () => ({})) {
   globalValue('addEventListener', () => {}); globalValue('removeEventListener', () => {});
   globalValue('ResizeObserver', undefined);
   const section = node(), row = node(), strip = node(), runs = node(), pick = node(), tags = node(), hint = node();
-  const enable = node({cn: 'enable'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node(), style = node();
+  const enable = node({cn: 'enable'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node();
   const sync = [node({sync: 'time'}), node({sync: 'place'})];
   seg.querySelectorAll = () => sync;
   row.parentElement = section;
-  for (const element of [enable, add, reset, seg, style]) element.parentElement = row;
+  for (const element of [enable, add, reset, seg]) element.parentElement = row;
   strip.parentElement = section;
-  row.querySelectorAll = () => [enable, add, reset, ...sync, style];
-  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint, '.cn-style': style,
+  row.querySelectorAll = () => [enable, add, reset, ...sync];
+  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint,
     '[data-cn="enable"]': enable, '[data-cn="add"]': add, '[data-cn="reset"]': reset};
   section.querySelector = row.querySelector = selector => selectors[selector];
   const native = node(), custom = node(), nativeTools = node(), nativeActions = node(), customTools = node();
@@ -70,15 +69,12 @@ function rig(initial = null, getSources = () => ({})) {
   const cinema = {available: () => true, get active() { return !!status?.active; }, status: () => status,
     async setEnabled(value) { calls.push(['enabled', value]); status = value ? solo() : null; },
     async setFocus(value) { calls.push(['focus', value]); }, async setSync(value) { calls.push(['sync', value]); },
-    get trailStyle() { return status?.trailStyle ?? DEFAULT_TRAIL_STYLE; },
-    setTrailStyle(id) { calls.push(['style', id]); status = {...status, trailStyle: id}; },
     async add(source) { calls.push(['add', source.id]); await source.load(); },
     remove(id) { calls.push(['remove', id]); status = solo(); }, resetView() { calls.push(['reset']); }};
   const ui = createCinemaUi({root, cinema, getSources, storage: {getItem: () => '1'}});
   const click = button => row.emit('click', button);
   restorers.push(() => ui.destroy());
-  return {ui, cinema, calls, root, section, row, strip, runs, seg, style, enable, add, pick, sync, native, custom, nativeTools, nativeActions, customTools, click,
-    setStatus(value) { status = value; }};
+  return {ui, cinema, calls, root, section, row, strip, runs, seg, enable, add, pick, sync, native, custom, nativeTools, nativeActions, customTools, click};
 }
 const solo = () => ({active: true, played: {time: 41.233}, runs: [], loading: [], sync: 'time', focus: null, labels: []});
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -197,7 +193,7 @@ describe('cinematic replay controls', () => {
     expect(r.ui.holding).toBe(true);
     r.strip.emit('pointerleave');
     expect(r.ui.holding).toBe(false);
-    r.style.focus();
+    r.enable.focus();
     expect(r.ui.holding).toBe(true);
     r.root.activeElement = null;
     r.row.emit('pointerenter');
@@ -205,23 +201,6 @@ describe('cinematic replay controls', () => {
     r.ui.render({visible: false});
     expect(r.strip.hidden).toBe(true);
     expect(r.ui.holding).toBe(false);
-  });
-
-  test('trail selection is active-only, follows runtime state and keeps native select keys out of playback', () => {
-    const r = rig();
-    r.ui.render({visible: true, custom: true});
-    expect(r.style.hidden).toBe(true);
-    const selected = TRAIL_STYLES.at(-1);
-    r.setStatus({...solo(), trailStyle: selected.id});
-    r.ui.render({visible: true, custom: true});
-    expect(r.style.hidden).toBe(false);
-    expect(r.style.value).toBe(selected.id);
-    for (const name of ['ArrowLeft', 'ArrowRight', ' ', 'Enter']) {
-      const event = key('keydown', name, [r.style]);
-      expect(r.ui.handleKey(event)).toBe(true);
-      expect(event.stopped).toBe(true);
-      expect(event.defaultPrevented).toBe(false);
-    }
   });
 
 });

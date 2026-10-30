@@ -150,9 +150,9 @@ describe('matching the runs', () => {
     const gap = gapAt(slow, fast, alignByPlace(slow, fast), 220);
     // 200 ticks of the slow run cover what the fast one does in 100.
     expect(gap).toBeCloseTo(-100 * slow.dt, 1);
-    // Shown from the watched run: it is 1.5 s behind here.
-    expect(gapText(gap)).toMatchObject({value: `+${(-gap).toFixed(3)}`, tone: 'loss'});
-    expect(gapText(-gap)).toMatchObject({value: `−${(-gap).toFixed(3)}`, tone: 'good'});
+    // The faster added run's chip shows its lead over the watched run.
+    expect(gapText(gap)).toMatchObject({value: `−${(-gap).toFixed(3)}`, tone: 'good'});
+    expect(gapText(-gap)).toMatchObject({value: `+${(-gap).toFixed(3)}`, tone: 'loss'});
     expect(gapAt(slow, fast, alignByPlace(slow, fast), 5)).toBeNull();
   });
   test('close finish deltas retain the correct sign and colour through route smoothing', () => {
@@ -163,9 +163,9 @@ describe('matching the runs', () => {
     expect(map[watched.finish]).toBe(slower.finish);
     const gap = gapAt(watched, slower, map, watched.finish);
     expect(gap).toBeCloseTo(0.09, 6);
-    expect(gapText(gap)).toMatchObject({value: '−0.090', tone: 'good'});
+    expect(gapText(gap)).toMatchObject({value: '+0.090', tone: 'loss'});
     const reverse = gapAt(slower, watched, alignByPlace(slower, watched), slower.finish);
-    expect(gapText(reverse)).toMatchObject({value: '+0.090', tone: 'loss'});
+    expect(gapText(reverse)).toMatchObject({value: '−0.090', tone: 'good'});
   });
 
   test('route smoothing preserves checkpoints and stays monotonic between anchors', () => {
@@ -330,7 +330,7 @@ describe('cinematic replay lifecycle', () => {
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
-        return {update(at) { positions = at.slice(); }, labels: () => [], setTrailStyle() {}, dispose() { disposed++; }};
+        return {update(at) { positions = at.slice(); }, labels: () => [], dispose() { disposed++; }};
       }});
     return {cinema, renderer, native, listeners, control, counts: () => ({disposed, scenes, recorded, colors, positions})};
   }

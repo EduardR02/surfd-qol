@@ -9,7 +9,7 @@
 import {createTrack, recordTrack, trackPoint, trackYaw} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
-import {createCinemaScene, runColors, TRAIL_STYLES, DEFAULT_TRAIL_STYLE} from './cinema-scene.js';
+import {createCinemaScene, runColors} from './cinema-scene.js';
 import {routeFingerprint} from './replay-store.js';
 
 // Brush contents the camera can see through: player clips, grates, glass.
@@ -37,7 +37,7 @@ function cameraWorld(session) {
 // load() giving its replay. record and createScene stand in for the game in tests.
 export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene}) {
   // The watched replay and its track, the added runs, and what's being added.
-  let state = null, trailStyle = DEFAULT_TRAIL_STYLE;
+  let state = null;
   const notify = () => { try { onChange(); } catch { /* UI only */ } };
   const playing = () => { try { return getAdapter?.()?.replay?.playback?.()?.replay ?? null; } catch { return null; } };
 
@@ -221,7 +221,6 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   function attach(current, renderer) {
     current.scene = createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
-    current.scene.setTrailStyle(trailStyle);
     current.renderer = renderer;
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
@@ -351,13 +350,6 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     detach(current);
     notify();
   }
-  function setTrailStyle(id) {
-    if (!TRAIL_STYLES.some(style => style.id === id) || id === trailStyle) return;
-    state?.scene?.setTrailStyle(id);
-    trailStyle = id;
-    notify();
-  }
-
 
   return {
     available,
@@ -368,8 +360,6 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     resetView,
     setSync,
     setFocus,
-    setTrailStyle,
-    get trailStyle() { return trailStyle; },
     // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
     get comparing() { return !!state?.renderer && state.runs.length > 0; },
@@ -391,7 +381,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
       return {active: !!current.renderer, played: {colorIndex: 0, color: colorOf(0), time: current.track?.time ?? null}, runs,
         loading: current.loading.map(({id, label, colorIndex}) => ({id, label, colorIndex, color: colorOf(colorIndex)})),
-        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, trailStyle, labels};
+        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
     },
     destroy() { close(); },
   };
