@@ -14,8 +14,7 @@ const SIGN_IN = 'Sign in to host a room.';
 const BAD_CODE = 'Check the room code.';
 const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
-// How long the meeting point has to answer for relay credentials, how long
-// before they expire they are renewed, and how often a failed renewal retries.
+// Relay credentials: time to get an answer, lead time before expiry to renew, retry delay after a failed renewal.
 const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
 const VISIBILITY_KEY = 'surfd-qol-room-visibility';
@@ -39,7 +38,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
   let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
-  // Finishes the game sent for verification wait for the site's verdict, by attempt id.
+  // Finishes sent for verification, waiting on the site's verdict, by attempt id.
   const pendingRuns = new Map();
   let queuedRun, stopVerdicts = null;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };

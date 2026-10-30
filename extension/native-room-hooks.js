@@ -8,8 +8,8 @@ function unique(source, pattern, label) {
   return matches[0];
 }
 
-// These optional hooks change native behavior, not DOM structure or presentation.
-// Keep each unit atomic so a changed native signature cannot leave half a hook.
+// Each hook is optional. Match everything before replacing, so a changed native
+// signature skips the whole unit instead of leaving half a hook.
 export function nativeRoomHooks(source, hook, lobby) {
   let adapter = '';
   try {
@@ -79,7 +79,6 @@ function friendHooks(source, hook, lobby) {
   source = source.replace(ownRoom[0], () => `myRoom:()=>{const id=${native}?.connected()?${native}.roomId():null;return ${community('id')}&&${hook}?.roomInfo?.(id)?.visibility!=="public"?null:id}`);
   source = source.replace(note[0], () => `noteOf(${note[1]}){const ${note[2]}=${community(`${note[1]}.roomId`)}?__qolNativeRoomName(${note[1]}.roomId):${note[3]}[${note[1]}.roomId??"eu"]?.name??"Surfd EU"`);
   source = source.replace(fallback[0], () => `${roomName[4]}=${fallback[1]}=>${community(fallback[1])}?__qolNativeRoomName(${fallback[1]}):${fallback[2]}[${fallback[1]}]?.name??"Surfd "+${fallback[1]}.toUpperCase()`);
-  // Server presence is authored by the official server. Native deliberately sends
-  // null while connected: do not invent a successful client presence publication.
+  // No presence hook: the official server authors server presence, and native sends null while connected.
   return source + `\nasync function __qolNativeJoin(id){try{return await ${hook}?.join(id)}catch(error){${invite[6]}.toast(error?.message??"Couldn't reach the room service. Try again in a moment.")}}\nfunction __qolNativeRoomName(id){const room=${hook}?.roomInfo?.(id);return room?.visibility==="public"?room.name:"Private room"}\nfunction __qolNativeRoomMap(id){return ${hook}?.roomInfo?.(id)?.mapTitle??"connecting"}\n`;
 }

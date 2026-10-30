@@ -6,7 +6,7 @@ const ROOM = 'p-abcdefghjkmn';
 const listing = {name: "Host's room", mapId: 'surf_utopia', players: 1, capacity: 16,
   roster: [{name: 'Host_1', guest: false, userId: '123e4567-e89b-12d3-a456-426614174000'}]};
 
-test('directory refreshes share requests, reject failures and expire', async () => {
+test('concurrent directory reads share one Lobby request, a failure gives 503, and the cached answer goes stale', async () => {
   let now = Date.now() + 100000;
   const clock = spyOn(Date, 'now').mockImplementation(() => now);
   const requests = [];
@@ -31,10 +31,10 @@ test('directory refreshes share requests, reject failures and expire', async () 
       expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
       expect((await response.json()).rooms[0]).toEqual({id: ROOM, ...listing});
     }
-    now += 9999;
+    now += 1000;
     expect((await worker.fetch(request(), env)).status).toBe(200);
     expect(requests).toHaveLength(2);
-    now++;
+    now += 60000;
     const refresh = worker.fetch(request(), env);
     expect(requests).toHaveLength(3);
     requests[2](Response.json({rooms: []}));

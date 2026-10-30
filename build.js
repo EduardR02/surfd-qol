@@ -7,7 +7,7 @@ await copyFile('docs/fonts/OFL.txt', 'dist/InstrumentSans-OFL.txt');
 await copyFile('LICENSE', 'dist/LICENSE');
 await copyFile('src/private-rooms/chat-filter-notice.txt', 'dist/chat-filter-notice.txt');
 // Only the replay-analysis dependency closure invalidates saved PB/WR results.
-// Keep this list in sync with replay-store.js and its analysis imports.
+// Keep this list in sync with replay-store.js and its analysis imports, so a change to any of them invalidates saved results.
 const sources = ['metrics.js', 'observer.js', 'replay-store.js', 'start.js', 'surfaces.js'];
 const hash = createHash('sha256');
 for (const name of sources) hash.update(name).update(await readFile(`src/${name}`));

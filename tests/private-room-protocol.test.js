@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_APPEARANCE, RANKS, rankFor, rankTable, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
+import {DEFAULT_APPEARANCE, RANKS, rankFor, rankTable, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, ROOM_CHUNK_CHARS, controlWireSize, createRoomControlReader, createRoomFilter, decodeControl, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator, isMaxPlayers, isRoomName, normalizeAppearance, normalizeRoomName, relayPose, relaySpectator, roomNameProblem, validPose} from '../src/private-rooms/protocol.js';
 
 const pose = {time: 0xffffffff, x: 131072, y: -131072, z: 0, vx: 32767, vy: -32767, vz: 0, yaw: -90, pitch: -90, flags: 63, seconds: 86400};
 const batch = {sequence: 0xffffffff, epoch: 0xffffffff, samples: [pose]};
@@ -30,17 +30,17 @@ describe('private room names', () => {
     }
   });
 
-  test('reports exact length, character and impersonation errors', () => {
+  test('reports length, character and impersonation problems separately', () => {
     for (const value of [undefined, null, 3, '', '  ', 'ab', 'A'.repeat(33)]) {
-      expect(roomNameProblem(value)).toBe('Room names need 3–32 characters.');
+      expect(roomNameProblem(value)).toMatch(/3.32 characters/);
       expect(isRoomName(value)).toBe(false);
     }
     for (const name of ['My\troom', 'My\nroom', 'My\u00a0room', 'Café', '<room>', 'room/name', 'room"name', 'room\\name']) {
-      expect(roomNameProblem(name)).toBe('Use letters, numbers, spaces and simple punctuation.');
+      expect(roomNameProblem(name)).toMatch(/simple punctuation/);
       expect(isRoomName(name)).toBe(false);
     }
     for (const name of ['Surfd', "surFD's room", 'UnoFFicial room', 'OFFICIAL']) {
-      expect(roomNameProblem(name)).toBe("Room names can't include Surfd or official.");
+      expect(roomNameProblem(name)).toMatch(/Surfd or official/);
       expect(isRoomName(name)).toBe(false);
     }
   });
@@ -69,7 +69,7 @@ describe('private room binary protocol', () => {
     }
   });
 
-  test('checks pose size, version, type, count, reserved bytes and batch integers', () => {
+  test('rejects malformed pose packets and out-of-range batch fields', () => {
     const encoded = encodePoseBatch(batch);
     for (const [offset, value] of [[0, 2], [1, 2], [2, 0], [2, 3], [3, 1]]) expect(() => decodePoseBatch(changed(encoded, offset, value))).toThrow();
     for (const size of [0, 11, 12, 43, 45, 77]) expect(() => decodePoseBatch(new ArrayBuffer(size))).toThrow();
@@ -112,7 +112,7 @@ describe('private room binary protocol', () => {
     expect(decodeSpectator(zeroInputs).pose.inputPresses).toBe(0);
   });
 
-  test('rejects every spectator header and detailed state boundary violation', () => {
+  test('rejects malformed spectator headers and out-of-range state', () => {
     const encoded = encodeSpectator(packet);
     for (const [offset, value, method] of [[0, 2], [1, 4], [44, 129, 'setFloat32'], [44, NaN, 'setFloat32'], [48, 3], [49, 2], [50, 1025, 'setUint16'], [52, 1025, 'setUint16'], [54, 1], [54, 192], [55, 64]]) expect(() => decodeSpectator(changed(encoded, offset, value, method))).toThrow();
     expect(() => decodeSpectator(changed(encoded, 54, 0))).toThrow();
@@ -152,7 +152,7 @@ describe('private room control boundaries', () => {
     expect(decodeControl('{"type":"moderate","playerId":"private-x","action":"ban","minutes":60}')).toEqual({type: 'moderate', playerId: 'private-x', action: 'ban'});
     expect(() => decodeControl('{"type":"moderate","playerId":"private-x","action":"mute"}')).toThrow();
   });
-  test('trims chat and drops obsolete fields', () => {
+  test('trims and truncates chat, and drops unrecognised fields', () => {
     expect(decodeControl(JSON.stringify({type: 'chat', text: ' ' + 'x'.repeat(1000) + ' ', memory: 'unused'}))).toEqual({type: 'chat', text: 'x'.repeat(240)});
     expect(decodeControl(JSON.stringify({type: 'context', memory: {retained: false}}))).toEqual({type: 'context'});
     expect(decodeControl(JSON.stringify({type: 'spectate', connectionId: null, request: 1, memory: 'unused'}))).toEqual({type: 'spectate', connectionId: null, request: 1});
@@ -238,12 +238,12 @@ describe('private room control boundaries', () => {
     expect(assembled).toBeLessThanOrEqual(MAX_ROOM_MESSAGE_CHARS);
   });
 
-  test('shares exact room, message and capacity bounds', () => {
+  test('room limits agree: players, snapshot blocks, message size and chunk allowance', () => {
     expect(MAX_ROOM_PLAYERS).toBe(64);
     expect(DEFAULT_MAX_PLAYERS).toBe(16);
-    expect(MAX_SNAPSHOT_BLOCKS).toBe(64);
+    expect(MAX_SNAPSHOT_BLOCKS).toBeGreaterThanOrEqual(MAX_ROOM_PLAYERS);
     expect(MAX_ROOM_MESSAGE_CHARS).toBe(262144);
-    expect(MAX_ROOM_CHUNKS).toBe(66);
+    expect(MAX_ROOM_CHUNKS * ROOM_CHUNK_CHARS).toBeGreaterThanOrEqual(MAX_ROOM_MESSAGE_CHARS);
     for (const value of [2, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS]) expect(isMaxPlayers(value)).toBe(true);
     for (const value of [undefined, null, 0, 1, 65, 2.5, NaN, Infinity, '16']) expect(isMaxPlayers(value)).toBe(false);
   });

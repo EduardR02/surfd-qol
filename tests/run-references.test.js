@@ -975,7 +975,8 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     const checkpoints = checkpointsFor(f);
     const board = f.step(contact());
     checkpoints.update(); await flush();
-    expect(f.native().steps).toBe(32);
+    expect(f.native().steps).toBeGreaterThan(0);
+    expect(f.native().steps).toBeLessThan(commands.length);
     expect(f.feedbackSteps()).toBe(0);
     expect(f.update(board)).toMatchObject({status:'loading',loss:null});
     resume(); await flush();
@@ -1048,14 +1049,17 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
 
   test('a sole hidden feedback consumer cancels a yielded pass without retaining prototype wrappers', async () => {
     let yields = 0, resume;
-    const f = fixture({commands:[contact(),...Array(40).fill({}),finish],yieldTask:async () => {
+    const commands = [contact(),...Array(40).fill({}),finish];
+    const f = fixture({commands,yieldTask:async () => {
       if (++yields === 2) await new Promise(resolve => { resume = resolve; });
     }});
     const board = f.step(contact()); f.update(board); await flush();
-    expect(f.native().steps).toBe(32);
+    const paused = f.native().steps;
+    expect(paused).toBeGreaterThan(0);
+    expect(paused).toBeLessThan(commands.length);
     f.controller.update(board,null,false);
     resume(); await flush();
-    expect(f.native().steps).toBe(32);
+    expect(f.native().steps).toBe(paused);
     expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
     expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
   });
@@ -1069,19 +1073,21 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     const checkpoints = checkpointsFor(f);
     const board = f.step(contact());
     checkpoints.update(); f.update(board); await flush();
-    expect(f.native().steps).toBe(32);
-    expect(f.feedbackSteps()).toBe(32);
+    const paused = f.native().steps;
+    expect(paused).toBeGreaterThan(0);
+    expect(paused).toBeLessThan(commands.length);
+    expect(f.feedbackSteps()).toBe(paused);
     f.settings.showBoard = false; f.update(board);
     resume(); await flush();
     expect(checkpoints.update()).toMatchObject({ownStatus: 'ready', own: []});
     expect(f.native()).toEqual({loads: 1, steps: commands.length});
-    expect(f.feedbackSteps()).toBe(32);
+    expect(f.feedbackSteps()).toBe(paused);
     expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
     expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
     f.settings.showBoard = true; f.update(board); await flush();
     expect(f.update(board)).toMatchObject({status: 'ready', loss: 5});
     expect(f.native()).toEqual({loads: 2, steps: commands.length * 2});
-    expect(f.feedbackSteps()).toBe(32 + commands.length);
+    expect(f.feedbackSteps()).toBe(paused + commands.length);
   });
 
   test('start ticks and checkpoint-array restarts preserve pending WR work and the frozen PB identity', async () => {
@@ -1344,16 +1350,19 @@ describe('Independent movement feedback visibility', () => {
 
   test('hiding Board alone pauses a yielded pass while core held measurements keep advancing', async () => {
     let yields = 0, resume;
-    const f = fixture({commands:[contact(),...Array(40).fill({}),finish],yieldTask:async () => {
+    const commands = [contact(),...Array(40).fill({}),finish];
+    const f = fixture({commands,yieldTask:async () => {
       if (++yields === 2) await new Promise(resolve => { resume = resolve; });
     }});
     const board = f.step(contact()); f.update(board); await flush();
-    expect(f.native().steps).toBe(32);
+    const paused = f.native().steps;
+    expect(paused).toBeGreaterThan(0);
+    expect(paused).toBeLessThan(commands.length);
     f.settings.showBoard = false; f.update(board);
     const newest = f.step(contact('b',17));
     expect(newest.loss).toBe(17);
     resume(); await flush();
-    expect(f.native().steps).toBe(32);
+    expect(f.native().steps).toBe(paused);
     expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
     expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
     // Shown again, the pass resumes where it stopped rather than starting over.

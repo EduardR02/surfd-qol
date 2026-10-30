@@ -294,7 +294,7 @@ export function createReplayControl({params, active, ghosts = () => false}) {
   const length = 3082, ownStart = 333, ownMarkers = [1008, 1748, 2391];
   const other = params.get('title') === 'other';
   let title = other ? 'Watching a replay on Utopia' : 'Your run on Utopia · finished in 00:41.233';
-  // Ramp boards along the route, graded the way the lead's tone() does.
+  // Ramp boards along the route, with fixed tones in place of the grading the real bar does against the PB.
   const ramps = maps['utopia:3'].ramps.map((ramp, n) => {
     const section = [ownStart, ...ownMarkers, length - 40];
     const from = section[ramp.checkpoint], to = section[ramp.checkpoint + 1];

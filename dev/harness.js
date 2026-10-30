@@ -2,8 +2,9 @@
 // over a real gameplay backdrop. Everything is chosen by URL parameters:
 //   ?state=ramp&bg=snow&scale=1&y=82&palette=custom&panel=feedback&shot
 //   set.<settingKey>=<value> overrides any setting.
-// Only the game and the reference loaders are faked; model, view, fast path
-// and settings panel are the shipping code.
+// Only inputs are faked (game session, run history, replay playback, references,
+// cinematic state: dev/fixtures.js); model, view, fast path and settings panel
+// are the shipping code.
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';

@@ -125,10 +125,10 @@ const api = {
         },
         onTick(session, command, events) {
           if (strafePreview.active) strafePreview.check();
-          // The Start flash costs nothing while hidden; a stale flash ages out.
+          // Skip the Start flash while it is hidden.
           if (settings.hud !== false && settings.showStart !== false) start.observe(session, events);
           if (events.includes('finish')) void privateRooms.observeFinish(session, history);
-          // Recording off costs nothing per tick.
+          // Skip recording while it is off.
           if (settings.keepHistory !== false) history.observe(session, events);
           if (events.includes('finish')) hud?.observeFinish();
           replayControl.tick(session);
@@ -162,7 +162,8 @@ const api = {
     privateRooms.destroy();
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
     bindings.release();
-    // Remove the replay restore wrapper before the observer it wraps.
+    // Unwrap replay control first: it sits over the observer's restorePractice
+    // wrapper, which only unwraps while it is still outermost.
     replayControl.destroy();
     observer?.destroy();
     hud?.destroy();
@@ -195,10 +196,10 @@ function receiveRelease(event) {
 }
 window.addEventListener('surfd-qol-release', receiveRelease);
 const bindingTimer = setInterval(() => { try { bindings.update(); } catch (error) { fail(error); } }, 250);
-// Chrome treats mouse buttons 3 and 4 as Back and Forward. The game cancels
-// that only while the pointer is locked, so a bind on a side button left the
-// page from menus and replays. Cancel it whenever that button has a bind; the
-// game still receives the press.
+// Chrome maps mouse buttons 3 and 4 to Back and Forward. The game cancels that
+// only while the pointer is locked, so a bound side button would leave the page
+// from menus and replays. Cancel it whenever the button has a bind; the game
+// still receives the press.
 const SIDE_BUTTON_EVENTS = ['mousedown', 'mouseup', 'pointerup', 'auxclick'];
 function keepSideButtons(event) {
   if (event.button !== 3 && event.button !== 4) return;

@@ -1,4 +1,4 @@
-// Only the native practice snapshot schema crosses the room boundary. Never clone wire objects.
+// Only the native practice snapshot schema crosses the room boundary. The result is rebuilt field by field, so nothing unvalidated from the wire survives.
 const MAX_ITEMS = 1024, MAX_TICK = 0x7fffffff, MAX_SNAPSHOT_BYTES = 32768;
 const encoder = new TextEncoder();
 // Each player keeps 20 saves per map; a room holds at most 64 players' worth.

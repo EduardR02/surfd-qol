@@ -13,7 +13,7 @@ const contexts = [
 ];
 
 describe('Surf context visibility', () => {
-  test('active gameplay remains visible when informational vote or scoreboard UI is not a blocker', () => {
+  test('active gameplay is visible whether or not the pointer is locked', () => {
     const snapshot = { active: true, playback: false, state };
     expect(isSurfContext(snapshot, null, null, clearUi)).toBe(true);
     expect(isSurfContext(snapshot, null, null, { ...clearUi, pointerLocked: true })).toBe(true);

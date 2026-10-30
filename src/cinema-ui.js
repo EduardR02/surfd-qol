@@ -276,8 +276,7 @@ export function createCinemaUi({root, cinema, getSources = () => ({}), storage =
       gapCells = [...runs.querySelectorAll('.g')];
       tagLayer.innerHTML = labels.map(run => `<button type="button" class="cn-tag" style="--run:${run.color}" ${focus(run)} hidden>${escape(run.label)}</button>`).join('');
       tags = [...tagLayer.children];
-      // Hidden projected labels still have a stable text width; measure once,
-      // not offsetWidth (and forced layout) for every runner on every frame.
+      // Label widths only change with the text: measure once, since offsetWidth forces layout.
       for (const tag of tags) { tag.hidden = false; tag.style.visibility = 'hidden'; }
       widths = tags.map(tag => tag.offsetWidth);
       for (const tag of tags) { tag.hidden = true; tag.style.visibility = ''; }

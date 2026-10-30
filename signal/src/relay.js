@@ -2,7 +2,7 @@
 // traffic so that no player ever sees another's IP address. Kept apart from
 // the Workers runtime so it can be tested anywhere; worker.js passes the env.
 
-// Renew before an hour ends instead of leaving reusable credentials alive for four.
+// Short-lived, so a reusable credential stops working soon; clients renew it before it ends.
 export const RELAY_TTL = 60 * 60;
 export const RELAY_TIMEOUT_MS = 5000;
 const API = 'https://rtc.live.cloudflare.com/v1/turn/keys';
@@ -21,7 +21,8 @@ export function turnServers(body) {
 
 // Every provider request needs both the per-client allowance and a committed
 // global reservation. Its issuance deadline bounds the reservation's lifetime.
-// Failures deliberately burn reservations; no provider answers or secrets log.
+// A failed request keeps its reservation, as the provider may still have counted it.
+// Nothing is logged: errors and answers can carry the API token or credentials.
 export function createRelay({env, allow, reserve, fetch = (...args) => globalThis.fetch(...args), now = () => Date.now()}) {
   return async client => {
     try {

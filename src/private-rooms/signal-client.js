@@ -10,8 +10,7 @@
 // 'unreachable' or 'lost'), once and last. A host whose socket drops
 // reconnects with its key; existing peer connections do not depend on the relay.
 
-// The deployed Worker (see signal/README.md). A public address: players
-// connect anonymously, and deploying needs the owner's own Wrangler login.
+// The deployed signalling Worker (see signal/README.md). Public, as players connect anonymously.
 export const SIGNAL_URL = 'https://surfd-signal.lightconelabs.workers.dev';
 // Matches signal/src/room.js, and the ids ids.js makes.
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';

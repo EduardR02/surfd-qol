@@ -3,8 +3,8 @@ import { analysisKey, referenceIdentity } from './references.js';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const copyEntry = entry => referenceIdentity(entry) ? {runId: entry.runId, timeUs: entry.timeUs, splitsUs: entry.splitsUs.slice()} : null;
 
-// Only completed native replays supply baselines; local runs and checkpoint
-// maxima are intentionally not substitutes for an official personal best.
+// Only completed native replays supply baselines: a local finish or checkpoint
+// maxima are not an official personal best.
 export function createRunReferences({getSession, getReferences, getAdapter, replayStore, settings = {}, yieldTask = defer}) {
   const ownsStore = !replayStore;
   replayStore ??= createReferenceReplayStore({getAdapter, yieldTask});
@@ -119,8 +119,8 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
       return result();
     }
     const timer = session.timer.state;
-    // Configs and maps are immutable native identities. Do not stringify the
-    // entire config on each render; rebuild the context only at its boundaries.
+    // Configs and maps are immutable native identities: compare them by identity
+    // and rebuild the context only on change, not by stringifying the config every update.
     if (session !== live || nextAdapter !== adapter || session.map !== map || session.config !== config ||
       session.replayFormat !== format || refs?.boardId !== boardId || session.map.id !== mapId || session.map.version !== mapVersion) {
       invalidate();

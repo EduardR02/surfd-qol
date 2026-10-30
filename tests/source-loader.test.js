@@ -23,7 +23,7 @@ test('current and unmodified modules keep their response body', async () => {
   }
 });
 
-test('failed refresh leaves stale code unusable', async () => {
+test('a failed or still-patched refetch throws instead of returning stale code', async () => {
   await expect(loadGameSource(url, null, async () => ({ok: false, status: 503}))).rejects.toThrow('HTTP 503');
   await expect(loadGameSource(url, null, async () => ({ok: true, text: async () => 'old\n/* surfd-qol-adapter-v1: old */'}))).rejects.toThrow('unmodified');
 });

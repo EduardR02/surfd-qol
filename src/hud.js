@@ -99,8 +99,8 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   });
   const runs = createRunsPanel({root, host, history, replays, replayControl, rampReference, getSession, getReferences, settings, onSettings, now: services.now, onOpen: () => panel.close(),
     onOpenSettings: page => { runs.close(); panel.show(page); }});
-  // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
   let cinemaUi = null;
+  // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
   const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
     getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.comparing,
     getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
@@ -214,7 +214,6 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       const speed = spectator ? Math.hypot(pose?.vx, pose?.vy) : Math.hypot(state?.velocity?.x, state?.velocity?.y);
       hud.setSpeed(Number.isFinite(speed) ? speed.toFixed(0) : '—');
       if (energyOn) {
-        // Opt-in only: nothing here runs while the tint is off.
         const sample = energySample(state, session?.config?.dt ?? 0.015, spectator);
         const result = sample
           ? trend.sample(sample, session?.config?.gravity ?? 800, settings.speedEnergyRamps !== true && lastMotion === 'surf', energyLive)

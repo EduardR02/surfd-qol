@@ -1,4 +1,4 @@
-// Curated from severity 3/4 source entries, plus the common `shit` entry rated severity 2.
+// Severity 3/4 entries of the list credited in chat-filter-notice.txt, plus `shit` (severity 2).
 export const CHAT_FILTER_WORDS = Object.freeze([
   'clusterfuck',
   'cunt', 'cunts', 'kunt', 'kunts',

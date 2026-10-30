@@ -279,7 +279,7 @@ describe('native shared snapshot safety', () => {
     expect(() => sanitizeSaveloc(value, {...map, teleportZones: []})).toThrow();
   });
 
-  test('structural filtering canonicalizes messages and rejects hostile host snapshots before runtime', () => {
+  test('the guest filter strips extra fields from saveloc messages and rejects hostile host snapshots', () => {
     const {room, connect} = fixture();
     try {
       const peer = connect(), filter = createRoomFilter({roomId: room.state.roomId, maps: [{id: 'one'}, {id: 'two'}]});

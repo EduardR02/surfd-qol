@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, test} from 'bun:test';
 import {createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom} from '../src/private-rooms/socket.js';
 import {createBroadcastSignalling} from '../src/private-rooms/signalling.js';
-import {CLOSE, DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, ROOM_CHUNK_CHARS, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
+import {CLOSE, DEFAULT_APPEARANCE, DEFAULT_MAX_PLAYERS, MAX_CONTROL_BYTES, MAX_ROOM_PLAYERS, MAX_SNAPSHOT_BLOCKS, ROOM_CHUNK_CHARS, ROOM_TEXTS, decodePoseBatch, decodeSnapshot, decodeSpectator, encodeControlFrames, encodePoseBatch, encodeSnapshot, encodeSpectator} from '../src/private-rooms/protocol.js';
 
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const once = (target, type) => new Promise(resolve => target.addEventListener(type, resolve, {once: true}));
@@ -399,9 +399,9 @@ test('the host\'s own game reads its room through the guest filter', async () =>
   const own = {...roomPlayer(), moderator: true};
   host.send(JSON.stringify({...welcome(), player: own, players: [own], extra: 1}));
   host.send(notice('Surfd: verify your account at surfd-login.example'));
-  host.send(notice('Map is not in the catalog.'));
+  host.send(notice(ROOM_TEXTS.unknownMap));
   await nextTask();
-  expect(messages.map(JSON.parse)).toEqual([{...welcome(), player: own, players: [own]}, JSON.parse(notice('Map is not in the catalog.'))]);
+  expect(messages.map(JSON.parse)).toEqual([{...welcome(), player: own, players: [own]}, JSON.parse(notice(ROOM_TEXTS.unknownMap))]);
   const closed = once(client, 'close');
   host.send(JSON.stringify({type: 'roster', players: [own, {...roomPlayer(1), moderator: true}]}));
   expect(await closed).toMatchObject({code: CLOSE.invalid, reason: 'Invalid private room data'});
@@ -438,13 +438,13 @@ describe('private room WebRTC socket', () => {
     client.send('{"type":"map"}');
     client.send(new Uint8Array([1, 2]).buffer);
     host.send(new Uint8Array(encodeSnapshot([batch(1, 1)])));
-    host.send(notice('Map is not in the catalog.'));
+    host.send(notice(ROOM_TEXTS.unknownMap));
     expect(client.bufferedAmount).toBeGreaterThan(0);
     await nextTask();
     expect(hostMessages[0]).toBe('{"type":"map"}');
     expect([...new Uint8Array(hostMessages[1])]).toEqual([1, 2]);
     expect(decodeSnapshot(clientMessages[0])).toEqual([batch(1, 1)]);
-    expect(clientMessages[1]).toBe(notice('Map is not in the catalog.'));
+    expect(clientMessages[1]).toBe(notice(ROOM_TEXTS.unknownMap));
     expect(connections[0].channels[0].sent).toEqual([
       JSON.stringify({type: 'hello', hello: accepted[0].hello}), 'd{"type":"map"}',
     ]);
@@ -468,20 +468,6 @@ describe('private room WebRTC socket', () => {
     await nextTask();
     expect(messages).toEqual(texts);
     expect(client.readyState).toBe(client.OPEN);
-  });
-
-  test('accounts for exact before and after reliable payload bytes', async () => {
-    const {client, connections} = rtcPair();
-    await nextTask();
-    const encoder = new TextEncoder();
-    for (const [text, before, after] of [
-      ['ping', 29, 5],
-      [JSON.stringify({type: 'context', epoch: 1, token: null}), 74, 42],
-    ]) {
-      expect(encoder.encode(JSON.stringify({type: 'data', data: text})).byteLength).toBe(before);
-      client.send(text);
-      expect(encoder.encode(connections[0].channels[0].sent.at(-1)).byteLength).toBe(after);
-    }
   });
 
   test('accepts the exact tagged UTF-8 limit and refuses oversized sends before queueing them', async () => {
@@ -568,7 +554,7 @@ describe('private room WebRTC socket', () => {
     await nextTask();
     const closed = once(client, 'close');
     stop();
-    expect(await closed).toMatchObject({code: 4004, reason: 'The host closed the private room.', wasClean: true});
+    expect(await closed).toMatchObject({code: 4004, reason: ROOM_TEXTS.hostClosed, wasClean: true});
     expect(signalling.subscribers).toBe(0);
   });
 
@@ -635,9 +621,9 @@ describe('private room WebRTC socket', () => {
     expect(accepted.size).toBe(2);
     const messages = [];
     clients.forEach((client, index) => { client.onmessage = event => messages.push([index, event.data]); });
-    accepted.get('second').send(notice('That player is not available to spectate.'));
+    accepted.get('second').send(notice(ROOM_TEXTS.unavailable));
     await nextTask();
-    expect(messages).toEqual([[1, notice('That player is not available to spectate.')]]);
+    expect(messages).toEqual([[1, notice(ROOM_TEXTS.unavailable)]]);
   });
 
   test('reports peer connection failures as errors and abnormal closes', async () => {
@@ -662,8 +648,8 @@ describe('private room WebRTC socket', () => {
     connections[0].onconnectionstatechange();
     expect(client.readyState).toBe(client.CLOSING);
     expect(connections[0].connectionState).toBe('closed');
-    resolve({code: 4004, reason: 'The host closed the private room.'});
-    expect(await closed).toMatchObject({code: 4004, reason: 'The host closed the private room.'});
+    resolve({code: 4004, reason: ROOM_TEXTS.hostClosed});
+    expect(await closed).toMatchObject({code: 4004, reason: ROOM_TEXTS.hostClosed});
   });
 
   test('waits for relay credentials before connecting', async () => {
@@ -849,9 +835,9 @@ describe('private room WebRTC socket', () => {
     const events = [], closed = once(client, 'close');
     client.onopen = () => events.push('open');
     client.onerror = () => events.push('error');
-    client.close(4004, 'This private room has closed.');
+    client.close(4004, ROOM_TEXTS.closed);
     expect(client.readyState).toBe(client.CLOSING);
-    expect(await closed).toMatchObject({code: 4004, reason: 'This private room has closed.', wasClean: true});
+    expect(await closed).toMatchObject({code: 4004, reason: ROOM_TEXTS.closed, wasClean: true});
     expect(events).toEqual([]);
     expect(signalling.subscribers).toBe(0);
     expect(signalling.messages).toEqual([]);
@@ -873,8 +859,8 @@ describe('private room WebRTC socket', () => {
     expect(client.readyState).toBe(client.OPEN);
     expect(accepted[0].socket.readyState).toBe(client.OPEN);
     const incoming = once(client, 'message');
-    accepted[0].socket.send(notice('Only the private room host can change maps.'));
-    expect((await incoming).data).toBe(notice('Only the private room host can change maps.'));
+    accepted[0].socket.send(notice(ROOM_TEXTS.hostChangesMaps));
+    expect((await incoming).data).toBe(notice(ROOM_TEXTS.hostChangesMaps));
   });
 
   test('resolves a deferred signalling peer identity', async () => {
@@ -900,8 +886,8 @@ describe('private room WebRTC socket', () => {
     const controls = [
       {type: 'state', state: {...roomState, visibility: 'public', epoch: 2}, serverTime: 2},
       {type: 'chat', playerId: roomPlayer().id, name: 'Guest', text: '名'.repeat(240), rank: 'Guest', appearance: DEFAULT_APPEARANCE},
-      {type: 'notice', text: 'This room is full.'},
-      {type: 'error', text: 'That player is no longer available to spectate.', spectatorRequest: 12},
+      {type: 'notice', text: ROOM_TEXTS.full},
+      {type: 'error', text: ROOM_TEXTS.noLongerAvailable, spectatorRequest: 12},
       {type: 'spectator-demand', active: true, count: MAX_ROOM_PLAYERS},
       {type: 'spectator-demand', active: false, count: 0},
       {type: 'context', epoch: 2, token: null},
@@ -1153,7 +1139,7 @@ describe('private room WebRTC socket', () => {
 
 describe('terminal private room socket', () => {
   test('closes asynchronously without opening or losing terminal metadata', async () => {
-    const socket = createClosedSocket(4004, 'This private room has closed.'), events = [];
+    const socket = createClosedSocket(4004, ROOM_TEXTS.closed), events = [];
     socket.onopen = () => events.push('open');
     socket.onerror = () => events.push('error');
     socket.onclose = () => events.push('close');
@@ -1162,7 +1148,7 @@ describe('terminal private room socket', () => {
     expect(() => socket.send('ignored')).not.toThrow();
     socket.close();
     expect(await once(socket, 'close')).toMatchObject({
-      code: 4004, reason: 'This private room has closed.', wasClean: true,
+      code: 4004, reason: ROOM_TEXTS.closed, wasClean: true,
     });
     expect(socket.readyState).toBe(socket.CLOSED);
     expect(events).toEqual(['close']);

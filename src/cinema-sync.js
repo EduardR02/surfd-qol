@@ -1,12 +1,12 @@
 // Where the other run is while the played run is at a given tick. Side by
-// side matches places along the route, so the faster run is slowed down and
-// both stay together and the gap reads as time; Real time matches the clock.
+// side matches places along the route, slowing the faster run so both stay
+// together and the gap reads as time; Real time matches the clock.
 import {trackPoint} from './cinema-track.js';
 
 // Each stretch between shared checkpoints is matched on at most this many
 // samples per run: about 360k cells, a few milliseconds.
 const MAX_SAMPLES = 600;
-// The match is eased over this long, so the slowed run never stutters.
+// The match is smoothed over this long to avoid stutter in the slowed run.
 const EASE_SECONDS = 0.35;
 
 // Dynamic time warping between run a's [a0, a1] and run b's [b0, b1]: the

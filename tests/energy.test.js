@@ -84,7 +84,7 @@ describe('energy trend', () => {
     const s = state(0, { x: 0, y: 0, z: 0 }, { x: 1000, y: 0, z: 0 });
     trend.sample(energySample(s, dt, false), gravity);
     expect(run(trend, s, 30, s => { s.tick++; s.position.x += 15; s.velocity.x += 20 * dt; }).tone).toBe('good');
-    // One coasting tick between strafes decays the rate but stays above EXIT.
+    // One coasting tick between strafes decays the rate, but not enough to drop the tone.
     expect(run(trend, s, 1, s => { s.tick++; s.position.x += 15; }).tone).toBe('good');
     expect(run(trend, s, 60, s => { s.tick++; s.position.x += 15; }).tone).toBe('neutral');
   });

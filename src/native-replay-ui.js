@@ -34,8 +34,8 @@ export const nativeExtrasStyles = `
 @media(prefers-reduced-motion:reduce){.nr{transition:none}}
 `;
 
-// One route for game-configured saveloc binds, independent of which UI is up.
-// Playback keys deliberately have no extension mapping.
+// One route for the game's saveloc binds, whichever UI is up. Playback keys
+// stay with the game's document handler, so they have no mapping here.
 function replaySavelocAction(control, action) {
   if (action === 'save') control.saveSpot();
   else if (action === 'load') control.goToSpot();

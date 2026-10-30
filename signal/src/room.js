@@ -5,7 +5,7 @@
 // A host claims a room with a secret key; guests then join, and the relay
 // passes JSON envelopes between the host and each guest, {to, type, data} in
 // and {from, type, data} out. Guests only ever talk to the host. The relay
-// never reads what a message carries, and nothing here logs it; the
+// never reads an envelope's data, and nothing here logs it; the
 // exceptions are a host's listing, which is for the public directory, and
 // requests for TURN relay credentials, which the relay answers itself.
 import {listingFrom} from './lobby.js';
@@ -115,7 +115,7 @@ export function createRoom({record: stored = null, save, wake, sockets, peerOf, 
   else record = stored;
   // Message counts per connection live in memory: a room only hibernates
   // after a quiet spell, which would have reset them anyway.
-  // Keep late-operation guards only while their socket is still reachable.
+  // departed, hashing and issuing guard async work that can finish after its socket is gone.
   const rates = new Map(), departed = new WeakSet(), hashing = new Set(), issuing = new Set();
   const post = (socket, message) => { try { socket.send(JSON.stringify(message)); } catch { /* closing */ } };
   const shut = (socket, reason) => { try { socket.close(CLOSE[reason], reason); } catch { /* closed */ } };

@@ -23,8 +23,8 @@ export function installFonts() {
   return () => { for (const face of faces) document.fonts.delete(face); };
 }
 
-// Numbers are split into a whole part and a smaller fraction: the eye lands
-// on "−14" or "01:12" first, and the fastest-changing digits stay quiet.
+// Numbers are split into a whole part and a fraction drawn smaller (times keep
+// full size), so the eye lands on "−14" first and the fast-changing digits stay quiet.
 const num = (key, className, initial = '—') => `<b class="${className}" data-num="${key}"><span>${initial}</span><span class="f"></span></b>`;
 const label = (key, initial) => `<span class="lab" data-text="${key}">${initial}</span>`;
 
@@ -61,7 +61,7 @@ export const hudMarkup = `
       `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${text}</span></div>`).join('')}</div>
   </div>`;
 
-// A new ramp's board alone never fills less of the bar than this many u/s would.
+// While a ramp is new the bar spans at least this many u/s, so a small board doesn't fill it.
 const MIN_SPAN = 50;
 // The meter bar in px from the speed's centre. It always has the same width,
 // centred under the speed: the last flight, then the ramp, share it in

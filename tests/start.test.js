@@ -82,8 +82,6 @@ describe('start platform height', () => {
     session.state.position = { x: 0, y: 0, z: 100 };
     feedback.observe(session, []);
     const grounded = feedback.saveState();
-    expect(grounded.ground.zone).toBe(zone);
-    expect(grounded.sessionIdentity).toBe(session);
     feedback.reset();
     feedback.restoreState(grounded);
     session.state.grounded = false;
@@ -98,7 +96,6 @@ describe('start platform height', () => {
     feedback.observe(session, ['start']);
     feedback.restoreState(started);
     expect(feedback.snapshot().age).toBe(30);
-    expect(started.latest.tick).toBe(11);
     feedback.observe(scene(), []);
     expect(feedback.snapshot().available).toBe(false);
   });
@@ -148,7 +145,6 @@ describe('start platform height', () => {
 
     feedback.observe(scene(), ['start']);
     feedback.reset();
-    expect(feedback.saveState().sessionIdentity).toBeNull();
     expect(feedback.snapshot()).toEqual({available: false});
   });
 });

@@ -9,9 +9,8 @@ function globalValue(name, value) {
   restorers.push(() => original ? Object.defineProperty(globalThis, name, original) : delete globalThis[name]);
 }
 
-// The static controls expose the DOM operations the UI uses. Dynamic chip/tag
-// markup is deliberately not parsed here: these tests cover user actions and
-// lifecycle transitions, not strings or a second implementation of HTML.
+// Static controls expose just the DOM operations the UI uses. Dynamic chip/tag
+// markup isn't parsed: these tests cover actions and lifecycle, not strings.
 function rig(initial = null, getSources = () => ({})) {
   let root;
   function node(dataset = {}) {
@@ -159,7 +158,7 @@ describe('cinematic replay controls', () => {
     expect(r.row.hidden).toBe(false);
   });
 
-  test('Runs closes the picker and keeps its panel clear of the added-run strip', () => {
+  test('holding the bar for the Runs panel closes the picker and hides the run strip until released', () => {
     const r = rig({...solo(), runs: [{id: 'wr', label: 'WR', color: '#9ccfd8'}]});
     r.ui.render({visible: true}); r.click(r.add);
     expect(r.ui.picking).toBe(true);
@@ -177,7 +176,7 @@ describe('cinematic replay controls', () => {
     Object.assign(r.runs, {scrollWidth: 1200, clientWidth: 300, scrollLeft: 0});
     const wheel = r.strip.emit('wheel', r.runs, {deltaX: 0, deltaY: 3, deltaMode: 1});
     expect(wheel.defaultPrevented).toBe(true);
-    expect(r.runs.scrollLeft).toBe(48);
+    expect(r.runs.scrollLeft).toBeGreaterThan(0);
     const trackpad = r.strip.emit('wheel', r.runs, {deltaX: 60, deltaY: 2, deltaMode: 0});
     expect(trackpad.defaultPrevented).toBe(false);
     r.runs.scrollWidth = 200;

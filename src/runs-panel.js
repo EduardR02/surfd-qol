@@ -59,7 +59,7 @@ export function reached(run) {
   return count ? `CP${count}` : 'Before CP1';
 }
 // Native own is scoped to the loaded map/version; historical maps only have
-// their locally recorded best finish. Both carry cumulative checkpoint times.
+// their locally recorded best finish.
 export function bestFinish(data, {key = data?.key, session = null, refs = null} = {}) {
   const own = refs?.own;
   if (session?.map && key === mapKey(session.map) && referenceIdentity(own)) {
@@ -353,7 +353,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   }
   const RAMP_MODES = [['best', 'Best', 'Your best on each ramp'], ['recent', 'Last 10', 'Mean of your last 10 valid runs on each ramp.'],
     ['average', 'Average', 'Mean of every valid run since you last reset.']];
-  // One toolbar: what to show (left) and what to compare it with (right).
+  // One toolbar: the statistic, what to compare it with, and the metric shown.
   // Below it, one caption line: what the statistic means, and Reset for the means.
   function rampControls(compare = '', metric = null) {
     const [, , note] = RAMP_MODES.find(([mode]) => mode === rampMode);
