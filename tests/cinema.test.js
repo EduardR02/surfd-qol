@@ -200,60 +200,131 @@ describe('matching the runs', () => {
 });
 
 describe('the planned camera', () => {
-  const plan = async (normal, trace = null) => {
+  // Where the camera is round the ghosts at a tick: degrees from behind the
+  // travel (+x) towards its right (-y), and above them.
+  const angles = (planned, tick) => {
+    const {eye, target} = shotAt(planned, tick), dx = eye.x - target.x, dy = eye.y - target.y, dz = eye.z - target.z;
+    return {swing: Math.atan2(-dy, -dx) * 180 / Math.PI, elevation: Math.asin(dz / Math.hypot(dx, dy, dz)) * 180 / Math.PI};
+  };
+  // A run along +x surfing ramps between the given ticks, each open to the
+  // right of travel (the face looks to -y).
+  const surfing = (spans, options = {}) => {
+    const track = straight({count: 900, ...options});
+    for (const [from, to] of spans) for (let i = from; i <= to; i++) track.normal.set([0, -0.8, 0.6], i * 3);
+    return track;
+  };
+  const plan = async (normal, trace = null, style) => {
     const a = straight({normal}), b = straight({normal, y: 40});
-    return {a, plan: await planCamera({a, b, map: alignByPlace(a, b), trace})};
+    return {a, plan: await planCamera({a, b, map: alignByPlace(a, b), trace, style})};
   };
   const at = (result, tick) => shotAt(result.plan, tick);
-  test('sits behind and above the ghosts between ramps', async () => {
-    const result = await plan(null);
-    const {eye, target} = at(result, 200);
-    expect(eye.x).toBeLessThan(target.x - 100);
-    expect(Math.abs(eye.y - target.y)).toBeLessThan(30);
-    expect(eye.z).toBeGreaterThan(target.z + 40);
+  for (const style of ['cinematic', 'follow']) describe(style, () => {
+    test('sits behind and above the ghosts between ramps', async () => {
+      const result = await plan(null, null, style);
+      const {eye, target} = at(result, 200);
+      expect(eye.x).toBeLessThan(target.x - 100);
+      expect(Math.abs(eye.y - target.y)).toBeLessThan(30);
+      expect(eye.z).toBeGreaterThan(target.z + 40);
+    });
+    test('looks onto the open side of the ramp they surf', async () => {
+      // Travelling +x, a face whose normal points -y faces the runners' right.
+      const result = await plan([0, -0.8, 0.6], null, style);
+      const {eye, target} = at(result, 200);
+      expect(eye.y).toBeLessThan(target.y - 60);
+      const other = at(await plan([0, 0.8, 0.6], null, style), 200);
+      expect(other.eye.y).toBeGreaterThan(other.target.y + 60);
+    });
+    test('keeps out of walls: blocked spots turn or pull the camera in before it gets there', async () => {
+      // Everything further than 90 units from the ghosts is solid.
+      const trace = (from, to) => Math.min(1, 90 / Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z));
+      const result = await plan(null, trace, style);
+      const {eye, target} = at(result, 200);
+      expect(Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z)).toBeLessThan(260);
+    });
+    test('with a wall between the two lines, the camera stays on the played run’s side', async () => {
+      const a = straight(), b = straight({y: 600});
+      // A solid slab from y 200 to 400; a trace that starts inside it is ignored, as the game's startSolid is.
+      const trace = (from, to) => {
+        if (from.y > 200 && from.y < 400) return 1;
+        const crossing = [200, 400].map(y => (y - from.y) / (to.y - from.y)).filter(t => t > 0 && t < 1);
+        return crossing.length ? Math.min(...crossing) : 1;
+      };
+      const planned = await planCamera({a, b, map: alignByPlace(a, b), trace, style});
+      expect(shotAt(planned, 200).eye.y).toBeLessThan(200);
+    });
+    test('an odd-tick teleport changes the camera at the cut, not the following sample', async () => {
+      const a = straight({count: 12, lead: 0});
+      for (let i = 3; i < a.count; i++) a.position[i * 3] += 5000;
+      a.cut[3] = 1;
+      const planned = await planCamera({a, others: [], style});
+      expect(shotAt(planned, 2.9).target.x).toBeLessThan(1000);
+      expect(shotAt(planned, 3).target.x).toBeGreaterThan(4000);
+    });
+    test('frames several runs at once, each counting while it stays near', async () => {
+      const a = straight(), near = straight({y: 120}), far = straight({y: 9000});
+      const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}, {track: far, map: alignByTime(a, far)}], style});
+      const {target} = shotAt(planned, 200);
+      expect(target.y).toBeGreaterThan(30);
+      expect(target.y).toBeLessThan(90);
+    });
+    test('focused on one run, the others don’t pull the framing', async () => {
+      const a = straight(), near = straight({y: 400});
+      const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}], group: false, style});
+      expect(Math.abs(shotAt(planned, 200).target.y)).toBeLessThan(5);
+    });
+    test('another run’s teleport doesn’t cut the shot: that run eases out of the framing around it', async () => {
+      const a = straight(), b = straight({y: 200});
+      for (let i = 200; i < b.count; i++) b.position[i * 3 + 1] += 3000;
+      b.cut[200] = 1;
+      const planned = await planCamera({a, others: [{track: b, map: alignByTime(a, b)}], style});
+      expect([...planned.segment].every(segment => segment === 0)).toBe(true);
+      expect(shotAt(planned, 120).target.y).toBeGreaterThan(70);
+      expect(Math.abs(shotAt(planned, 200).target.y)).toBeLessThan(40);
+      const before = shotAt(planned, 199).target, after = shotAt(planned, 201).target;
+      expect(Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)).toBeLessThan(80);
+    });
   });
-  test('swings to the open side of the ramp they surf, short of side-on', async () => {
-    // Travelling +x, a face whose normal points -y faces the runners' right.
-    const result = await plan([0, -0.8, 0.6]);
-    const {eye, target} = at(result, 200);
-    const angle = Math.atan2(target.y - eye.y, target.x - eye.x) * 180 / Math.PI;
-    expect(eye.y).toBeLessThan(target.y - 60);
-    expect(angle).toBeGreaterThan(25);
-    expect(angle).toBeLessThan(65);
-    const other = at(await plan([0, 0.8, 0.6]), 200);
-    expect(other.eye.y).toBeGreaterThan(other.target.y + 60);
+  test('cinematic gives long ramps shots of their own in turn; follow keeps one', async () => {
+    const a = surfing([[100, 300], [380, 580], [660, 860]]);
+    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
+    const first = angles(cinematic, 200), second = angles(cinematic, 480);
+    expect(Math.abs(first.swing - second.swing) + Math.abs(first.elevation - second.elevation)).toBeGreaterThan(20);
+    // Every shot is still from the open side.
+    for (const tick of [200, 480, 760]) expect(angles(cinematic, tick).swing).toBeGreaterThan(20);
+    const steady = [200, 480, 760].map(tick => angles(follow, tick));
+    for (const shot of steady) {
+      expect(shot.swing).toBeGreaterThan(20);
+      expect(shot.swing).toBeLessThan(60);
+      expect(Math.abs(shot.elevation - steady[0].elevation)).toBeLessThan(3);
+    }
   });
-  test('keeps out of walls: blocked spots turn or pull the camera in before it gets there', async () => {
-    // Everything further than 90 units from the ghosts is solid.
-    const trace = (from, to) => Math.min(1, 90 / Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z));
-    const result = await plan(null, trace);
-    const {eye, target} = at(result, 200);
-    const focus = {x: target.x, y: target.y, z: target.z};
-    expect(Math.hypot(eye.x - focus.x, eye.y - focus.y, eye.z - focus.z)).toBeLessThan(260);
+  test('cinematic drifts round the prestrafe to behind them as they leave; follow waits behind', async () => {
+    const a = straight({lead: 200});
+    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
+    expect(Math.abs(angles(cinematic, 10).swing)).toBeGreaterThan(25);
+    expect(Math.abs(angles(cinematic, 195).swing)).toBeLessThan(10);
+    expect(Math.abs(angles(follow, 10).swing)).toBeLessThan(5);
   });
-  test('with a wall between the two lines, the camera stays on the played run’s side', async () => {
-    const a = straight(), b = straight({y: 600});
-    // A solid slab from y 200 to 400; a trace that starts inside it is ignored, as the game's startSolid is.
-    const trace = (from, to) => {
-      if (from.y > 200 && from.y < 400) return 1;
-      const crossing = [200, 400].map(y => (y - from.y) / (to.y - from.y)).filter(t => t > 0 && t < 1);
-      return crossing.length ? Math.min(...crossing) : 1;
-    };
-    const planned = await planCamera({a, b, map: alignByPlace(a, b), trace});
-    const {eye} = shotAt(planned, 200);
-    expect(eye.y).toBeLessThan(200);
+  test('after a teleport the cinematic camera opens high and wide, then settles; follow cuts straight to its shot', async () => {
+    const a = straight({count: 700});
+    for (let i = 300; i < a.count; i++) a.position[i * 3 + 1] += 20000;
+    a.cut[300] = 1;
+    const distance = (planned, tick) => { const {eye, target} = shotAt(planned, tick); return Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z); };
+    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
+    expect(angles(cinematic, 304).elevation).toBeGreaterThan(angles(cinematic, 500).elevation + 15);
+    expect(distance(cinematic, 304)).toBeGreaterThan(distance(cinematic, 500) * 1.5);
+    expect(Math.abs(angles(follow, 304).elevation - angles(follow, 500).elevation)).toBeLessThan(3);
+  });
+  test('the view widens with speed, more in the cinematic style', async () => {
+    const fov = async (speed, style) => shotAt(await planCamera({a: straight({speed}), style}), 200).fov;
+    expect(await fov(5, 'cinematic')).toBeCloseTo(74);
+    expect(await fov(60, 'cinematic')).toBeGreaterThan(82);
+    expect(await fov(60, 'follow')).toBeGreaterThan(77);
+    expect(await fov(60, 'follow')).toBeLessThan(await fov(60, 'cinematic'));
   });
   test('never blends across a teleport', () => {
     const values = Float32Array.from([0, 0, 0, 100, 100, 100]), segment = Uint32Array.from([0, 0, 0, 1, 1, 1]);
     expect([...blur(values, 2, segment)]).toEqual([0, 0, 0, 100, 100, 100]);
-  });
-  test('an odd-tick teleport changes the camera at the cut, not the following sample', async () => {
-    const a = straight({count: 12, lead: 0});
-    for (let i = 3; i < a.count; i++) a.position[i * 3] += 5000;
-    a.cut[3] = 1;
-    const planned = await planCamera({a, others: []});
-    expect(shotAt(planned, 2.9).target.x).toBeLessThan(1000);
-    expect(shotAt(planned, 3).target.x).toBeGreaterThan(4000);
   });
   test('your own angle turns round the ghosts and zooms without moving them', () => {
     const shot = {eye: {x: -100, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}};
@@ -261,18 +332,6 @@ describe('the planned camera', () => {
     expect(shot.eye.x).toBeCloseTo(0);
     expect(shot.eye.y).toBeCloseTo(-200);
     expect(viewAngles(shot.eye, shot.target).yaw).toBeCloseTo(90);
-  });
-  test('frames several runs at once, each counting while it stays near', async () => {
-    const a = straight(), near = straight({y: 120}), far = straight({y: 9000});
-    const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}, {track: far, map: alignByTime(a, far)}]});
-    const {target} = shotAt(planned, 200);
-    expect(target.y).toBeGreaterThan(30);
-    expect(target.y).toBeLessThan(90);
-  });
-  test('focused on one run, the others don’t pull the framing', async () => {
-    const a = straight(), near = straight({y: 400});
-    const planned = await planCamera({a, others: [{track: near, map: alignByTime(a, near)}], group: false});
-    expect(Math.abs(shotAt(planned, 200).target.y)).toBeLessThan(5);
   });
 });
 
@@ -317,7 +376,8 @@ describe('cinematic replay lifecycle', () => {
     keep('addEventListener', 'removeEventListener', 'document', 'innerWidth', 'innerHeight', 'requestAnimationFrame', 'cancelAnimationFrame');
     globalThis.addEventListener = (type, listener) => listeners.set(type, listener);
     globalThis.removeEventListener = type => listeners.delete(type);
-    globalThis.document = {querySelector: () => ({})};
+    const canvas = {};
+    globalThis.document = {querySelector: () => canvas};
     globalThis.innerWidth = 1280; globalThis.innerHeight = 720;
     globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
     const native = function (view) { this.drawn = view; };
@@ -326,13 +386,13 @@ describe('cinematic replay lifecycle', () => {
     let disposed = 0, scenes = 0, colors = [], positions = [];
     const control = {playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
     const adapter = {cinema: {renderer: () => renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
-    const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null),
+    const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
         return {update(at) { positions = at.slice(); }, labels: () => [], dispose() { disposed++; }};
       }});
-    return {cinema, renderer, native, listeners, control, counts: () => ({disposed, scenes, recorded, colors, positions})};
+    return {cinema, renderer, native, listeners, control, canvas, counts: () => ({disposed, scenes, recorded, colors, positions})};
   }
   const run = id => ({id, label: id, load: async () => ({commands: [{run: id}]})});
   const deferred = () => {
@@ -478,6 +538,43 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().positions).toEqual([10, 10]);
     renderer.render({state: {tick: 111}, qolAlpha: 0.5});
     expect(counts().positions).toEqual([10.5, 10.5]);
+    cinema.close();
+  });
+  test('scroll zoom eases in quickly and the same at any frame rate; the plan sets the fov', async () => {
+    const time = {now: 0};
+    const {cinema, renderer, listeners, canvas} = rig({now: () => time.now});
+    await cinema.setEnabled(true);
+    const eye = () => { renderer.render({state: {tick: 30}, qolAlpha: 1}); return {...renderer.drawn.eyePosition}; };
+    const wheel = deltaY => listeners.get('wheel')({target: canvas, deltaY, preventDefault() {}, stopImmediatePropagation() {}});
+    const start = eye(), moved = point => Math.hypot(point.x - start.x, point.y - start.y, point.z - start.z);
+    expect(renderer.drawn.fov).toBeGreaterThanOrEqual(74);
+    wheel(100);
+    time.now += 16;
+    const early = moved(eye());
+    time.now += 2000;
+    const full = moved(eye());
+    expect(early / full).toBeGreaterThan(0.08);
+    expect(early / full).toBeLessThan(0.3);
+    // Back out in two 8 ms frames: the same share as one 16 ms frame.
+    wheel(-100);
+    time.now += 8; eye();
+    time.now += 8;
+    expect(1 - moved(eye()) / full).toBeCloseTo(early / full, 3);
+    cinema.close();
+  });
+  test('a camera style plans its own shots and is kept with the others', async () => {
+    const {cinema, renderer} = rig();
+    await cinema.setEnabled(true);
+    expect(cinema.status().style).toBe('cinematic');
+    renderer.render({state: {tick: 40}, qolAlpha: 1});
+    const cinematic = {...renderer.drawn.eyePosition};
+    await cinema.setStyle('follow');
+    expect(cinema.status().style).toBe('follow');
+    renderer.render({state: {tick: 40}, qolAlpha: 1});
+    expect(renderer.drawn.eyePosition).not.toEqual(cinematic);
+    await cinema.setStyle('nonsense');
+    await cinema.setSync('place');
+    expect(cinema.status()).toMatchObject({style: 'follow', sync: 'place'});
     cinema.close();
   });
   test('concurrent solo activation shares recording and enables both callers', async () => {

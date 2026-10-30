@@ -8,7 +8,7 @@
 // run). Solo and group shots use the same camera; close() restores the game.
 import {createTrack, recordTrack, trackPoint, trackYaw} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
-import {planCamera, shotAt, adjust, viewAngles, FOV} from './cinema-camera.js';
+import {planCamera, shotAt, adjust, viewAngles} from './cinema-camera.js';
 import {createCinemaScene, runColors} from './cinema-scene.js';
 import {routeFingerprint} from './replay-store.js';
 
@@ -17,6 +17,8 @@ const SOLID = 0x1, SEE_THROUGH = 0x10000000 | 0x8;
 const PROBE = {min: {x: -6, y: -6, z: -6}, max: {x: 6, y: 6, z: 6}};
 const DRAG_RADIANS = 0.005;
 const ZOOM_STEP = 1.12;
+// Scrolling sets the zoom to reach; the view closes on it with this time constant (ms).
+const ZOOM_EASE = 100;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 
@@ -34,8 +36,8 @@ function cameraWorld(session) {
 }
 
 // getAdapter() is the game adapter. A run given to add() is {id, label, load()},
-// load() giving its replay. record and createScene stand in for the game in tests.
-export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene}) {
+// load() giving its replay. record, createScene and now stand in for the game in tests.
+export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene, now = () => performance.now()}) {
   // The watched replay and its track, the added runs, and what's being added.
   let state = null;
   const notify = () => { try { onChange(); } catch { /* UI only */ } };
@@ -90,10 +92,11 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     });
   }
   function createState(replay) {
-    // sync and focus are the shown camera's: Real time or Side by side, and
-    // null for the group shot, 'played' or a run's id for one run alone.
-    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
-      room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined};
+    // sync, focus and style are the shown camera's: Real time or Side by side,
+    // null for the group shot, 'played' or a run's id for one run alone, and
+    // the camera style ('cinematic' or 'follow').
+    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: 'cinematic', plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
+      applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined};
   }
   function prepare(current) {
     return current.ready ??= (async () => {
@@ -134,10 +137,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus);
     return owned();
   }
-  const planKey = (sync, focus) => `${sync}|${focus ?? ''}`;
-  async function planFor(current, runs, sync, focus, owned) {
+  const planKey = (sync, focus, style) => `${sync}|${focus ?? ''}|${style}`;
+  async function planFor(current, runs, sync, focus, style, owned) {
     for (const run of runs) run.maps[sync] ??= sync === 'place' ? alignByPlace(current.track, run.track) : alignByTime(current.track, run.track);
-    const options = {trace: current.trace, yieldTask: loadIdle, isCurrent: owned};
+    const options = {style, trace: current.trace, yieldTask: loadIdle, isCurrent: owned};
     const chosen = runs.find(run => run.id === focus);
     if (!chosen) return planCamera({a: current.track, others: runs.map(run => ({track: run.track, map: run.maps[sync]})), group: focus !== 'played', ...options});
     // An added run is planned on the watched run's clock, so the plan's ticks stay the replay's.
@@ -157,6 +160,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       out.normal.set(track.normal.subarray(nearest * 3, nearest * 3 + 3), tick * 3);
       if (tick) for (let k = Math.floor(map[tick - 1]) + 1; k <= Math.floor(at) && !out.cut[tick]; k++) out.cut[tick] = track.cut[k] ?? 0;
     }
+    // Its start and finish on the watched clock, which the camera's shots follow.
+    const reached = tick => { let at = 0; while (at < clock.count - 1 && map[at] < tick) at++; return at; };
+    if (track.start > 0) out.start = reached(track.start);
+    if (track.finish < track.count - 1) out.finish = reached(track.finish);
     return out;
   }
   function remove(id) {
@@ -179,17 +186,17 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   // A unique request token prevents an older plan (even for the same choices)
   // from replacing a newer selection after an idle-time yield.
-  async function show(current, sync, focus) {
-    const key = planKey(sync, focus), runs = current.runs;
-    const request = {sync, focus};
+  async function show(current, sync, focus, style = current.pending?.style ?? current.style) {
+    const key = planKey(sync, focus, style), runs = current.runs;
+    const request = {sync, focus, style};
     current.pending = request;
     const owned = () => owns(current) && current.runs === runs && current.pending === request;
     notify();
     try {
-      const plan = current.plans[key] ?? await planFor(current, runs, sync, focus, owned);
+      const plan = current.plans[key] ?? await planFor(current, runs, sync, focus, style, owned);
       if (!owned() || !plan) return;
       current.plans[key] = plan;
-      Object.assign(current, {sync, focus, plan, pending: null});
+      Object.assign(current, {sync, focus, style, plan, pending: null});
       if (!current.renderer) start(current);
       notify();
     } catch (error) {
@@ -262,7 +269,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
     }
     current.tick = tick;
-    const shot = adjust(shotAt(plan, tick, current.shot), current.view);
+    // Drag turns the view at once; zoom eases, so a wheel's steps glide without lagging.
+    const time = now(), elapsed = current.drawnAt === null ? 0 : Math.max(0, time - current.drawnAt);
+    current.drawnAt = time;
+    const applied = current.applied;
+    applied.yaw = current.view.yaw; applied.pitch = current.view.pitch;
+    applied.zoom += (current.view.zoom - applied.zoom) * (1 - Math.exp(-elapsed / ZOOM_EASE));
+    const shot = adjust(shotAt(plan, tick, current.shot), applied);
     if (current.adjusted && current.trace) {
       // Your own angle isn't in the plan: keep it out of walls as it plays.
       const clear = current.trace(shot.target, shot.eye);
@@ -278,7 +291,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // The camera is placed here too so the ghosts size their outlines for this frame's view.
     current.renderer.qolCamera.position.set(shot.eye.x, shot.eye.z, -shot.eye.y);
     current.scene.update(current.at, innerWidth, innerHeight);
-    return {...view, eyePosition: {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z}, yaw: angles.yaw, pitch: angles.pitch, fov: FOV,
+    return {...view, eyePosition: {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z}, yaw: angles.yaw, pitch: angles.pitch, fov: shot.fov,
       ghost: null, remotePlayers: [], showPlayers: false};
   }
 
@@ -331,6 +344,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
     await show(current, sync, current.pending ? current.pending.focus : current.focus);
   }
+  // 'cinematic' or 'follow'.
+  async function setStyle(style) {
+    const current = state;
+    if (!current?.renderer || !['cinematic', 'follow'].includes(style) || current.style === style && !current.pending) return;
+    await show(current, current.pending?.sync ?? current.sync, current.pending ? current.pending.focus : current.focus, style);
+  }
   // null for the group shot, 'played' for the watched run, or an added run's id;
   // choosing the focused run again goes back to the group.
   async function setFocus(focus) {
@@ -360,6 +379,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     resetView,
     setSync,
     setFocus,
+    setStyle,
     // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
     get comparing() { return !!state?.renderer && state.runs.length > 0; },
@@ -368,7 +388,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // What the UI shows, null while cinematic viewing is disabled: the watched run first, then each
     // added run with its colour, time and gap at this point (by place, in both
     // modes: in Real time the clocks match by definition), runs still loading,
-    // where each ghost's name goes, and whether the view was moved.
+    // where each ghost's name goes, the camera style and whether the view was moved.
     status() {
       const current = state;
       if (!current) return null;
@@ -381,7 +401,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
       return {active: !!current.renderer, played: {colorIndex: 0, color: colorOf(0), time: current.track?.time ?? null}, runs,
         loading: current.loading.map(({id, label, colorIndex}) => ({id, label, colorIndex, color: colorOf(colorIndex)})),
-        sync: current.sync, focus: current.focus, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
+        sync: current.sync, focus: current.focus, style: current.style, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
     },
     destroy() { close(); },
   };
