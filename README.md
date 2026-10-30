@@ -114,6 +114,18 @@ Prefer the extension’s timeline? Enable **QoL → History → Custom replay ba
 
 Seeking to an unvisited section can leave feedback grey: the game’s keyframe has movement state, but not the extension’s analysis of the earlier ramp or flight. Incomplete segments are excluded rather than shown as complete measurements.
 
+### Compare
+
+**Runs → Compare** plays two runs of the loaded map at once, as ghosts with their lines through the map, from a third-person camera. Pick what to **Play** and what to play it **Against**: your PB, your recent best, the site WR, the KSF WR, or any run on the leaderboard (find one by name or rank). The first run plays in Surfd's own player, so the replay bar, speeds, seeking and stage jumps work as usual.
+
+- **Side by side** (the default) keeps both runs at the same place on the route: the faster run is slowed down, so you see where the lines differ. **Real time** races them on the clock instead.
+- The legend at the top shows both times and how far the first run is behind or ahead of the other at this point.
+- The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, and it turns or comes closer before walls get in the way. It cuts at teleports.
+- **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
+- × in the legend returns to the first-person replay. Savelocs are off while Compare plays.
+
+Preparing a comparison re-simulates both runs and takes a second or two. Compare does nothing until you start it.
+
 ### What's kept
 
 Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Each run includes its replay. Your best recorded finish, best splits and ramp bests stay even after older attempts are removed.
