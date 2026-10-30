@@ -4,7 +4,7 @@
 
 *The compact HUD you surf with, just after a checkpoint. Replays and spectating show everything, and each part can be shown or hidden on its own.*
 
-A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay controls, a crouch-jump bind and nullbinds.
+A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay tools with a cinematic camera and other runs alongside, private rooms, a crouch-jump bind and nullbinds.
 
 Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It never changes physics, maps or your runs: it watches the game's own movement code and reports what happened.
 
@@ -94,39 +94,42 @@ Not sure how fast to turn? Stand still in the start zone, open **QoL → Control
 **Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
 
 - **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each. **Recent best** keeps your fastest retained finish from the last 24 hours.
-- **Ramps:** one row per ramp answers where you lose speed: how many of your runs reach it, and one measurement against your PB or the WR, with a bar on one scale for the map so the costliest ramps stand out; a ramp far past the rest runs off the end of the bar with a break. Pick the measurement (Surf, Touch, Angle, Down, Up, speed In or Out; it's remembered) and switch between your best, last 10 measurements and average. Click a ramp to open it: Touch with its **angle** (how far your landing was from parallel to the ramp, so 0° loses no speed on touch), Surf with Down and Up, and your speed in and as you left the ramp, each next to the reference, plus buttons to watch the ramp in your PB, the WR or your recent best, paused half a second before the touch. If that route skips the ramp, it isn’t available. Reach, angle and speeds count normal timed attempts only. Runs that crash into a ramp's edge or a wall are left out of its last 10 and average, and an open ramp says how many. Angle counts as near within 0.5°. Reset averages separately without losing bests or replays.
+- **Ramps:** one row per ramp, showing where you lose speed: how many of your runs reach it and one measurement against your PB or the WR. The bars share one scale for the map, so the costliest ramps stand out; a ramp far past the rest runs off the end with a break.
+  - Pick the measurement (Surf, Touch, Angle, Down, Up, speed In or Out; it's remembered) and whether to show your best, your last 10 measurements or your average.
+  - Click a ramp to open it: Touch with its **angle** (how far your landing was from parallel to the ramp; 0° loses no speed on touch), Surf with Down and Up, and your speed in and out, each next to the reference. Buttons play the ramp in your PB, the WR or your recent best, paused half a second before the touch, unless that run skips the ramp.
+  - Reach, angle and speeds count normal timed attempts only. Runs that crash into the ramp's edge or a wall are left out of its last 10 and average, and an open ramp says how many. An angle within 0.5° of the reference counts as near.
+  - **Reset averages** clears the averages without touching bests or replays.
 
 Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
 
-The average start leaves out clipped starts, where you landed back in the start zone after your jump, so the game blocked the next hop and you left on the ground. Averages from earlier versions included them, so each map’s average starts over at its next clean start.
+The average start leaves out clipped starts, where you landed back in the start zone after your jump, so the game blocked the next hop and you left on the ground. Averages from earlier versions included them, so each map's average starts over at its next clean start.
 
-The last 10 count measurements of each ramp, not your last 10 runs. Averages start collecting when you update; old recordings aren’t re-analysed. Recent best uses your existing replay allowance, not extra storage.
+The last 10 count measurements of each ramp, not your last 10 runs. Averages start collecting when you update; old recordings aren't re-analysed. Recent best uses your existing replay allowance, not extra storage.
 
 ### Watching replays
 
-▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd’s own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
+▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd's own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
 
-By default, the extension adds Saveloc, Runs and saved-location marks to the game’s replay bar. Ramp touches are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game’s own, so each press acts once.
+By default, the extension adds Saveloc, Runs and saved-location marks to the game's replay bar. Ramp touches are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game's own.
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 
-Prefer the extension’s timeline? Enable **QoL → History → Custom replay bar**. It has the same touch marks and savelocs, drives the same native player, and you can switch while watching. Recording is separate.
+Prefer the extension's timeline? Enable **QoL → History → Custom replay bar**. It has the same touch marks and savelocs, drives the same native player, and you can switch while watching.
 
-Seeking to an unvisited section can leave feedback grey: the game’s keyframe has movement state, but not the extension’s analysis of the earlier ramp or flight. Incomplete segments are excluded rather than shown as complete measurements.
+After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight: the game restores the movement there, but the extension hasn't analysed what came before, so it leaves that measurement out.
 
-### Runs alongside a replay
+### Cinematic replays
 
-While you watch any replay, **Cinematic** on the replay bar switches to its third-person camera, including for a single run. **Add run** adds your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (find one by name or rank). Adding a run also enables the camera. The replay bar, speeds, seeking and stage jumps keep working as usual.
+While you watch any replay, **Cinematic** on the replay bar switches to a third-person camera, even for a single run. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (search by name or rank). Adding a run turns the camera on. The replay bar, seeking and stage jumps work as usual.
 
-- Run chips share a row with the cinematic tools and fade with the controls when idle; additional runs scroll horizontally. The custom bar keeps this in its playback row. The native bar also uses its playback row above 1000 px wide; narrower native layouts use one compact extras row rather than squeeze the controls into unreadable slivers. **Add run** is the leftmost cinematic tool. Select a chip to follow that run; select it again for the group shot. × removes an extra run but keeps the solo camera; turn **Cinematic** off to return to first person.
-- **Real time** (the default) aligns the runs to their final native start-zone departure, including fractional ticks and a return to the start zone during prestrafe. Playback and seeking follow the native frame's actual interpolation state. **Side by side** matches places along the route instead, adjusting playback to show where the lines differ; it is not a real-time race.
-- Each added run's chip shows **that run's** gap to **This run**: **negative/teal** means it reached this point sooner; **positive/red** means it reached it later. Start, checkpoint and finish matches remain fixed while the route between them is smoothed, so a close finish keeps the correct sign.
-- The camera is planned for the whole replay before it plays. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, and turns or comes closer before walls get in the way. It cuts at teleports.
-- Each run keeps its colour when another is removed. Its original comet trail has a pale core, coloured band and glow, with flowing streaks in a six-second tapering tail, faint history and a transparent preview ahead. Flow follows replay time, so pausing freezes it and seeking restores it.
-- **Drag** the view to look from another angle and **scroll** to move closer or further; **Reset view** or a double-click goes back to the planned camera.
-- With runs alongside, the timeline's touches and saved locations step aside and Saveloc is off: they belong to this run alone.
+- **Chips:** each run gets a chip in its colour next to the cinematic tools. Click one to follow that run; click it again to frame everyone. × removes a run. Turn **Cinematic** off to go back to first person.
+- **Real time** (the default) starts each run's clock when it leaves the start zone, from the last exit if a prestrafe pops out and back in. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ; it isn't a race.
+- **Gaps:** an added run's chip shows its gap to the run you're watching at this point: negative (teal) means it got here sooner, positive (red) later.
+- **Camera:** planned for the whole replay before it plays, so it turns before a ramp instead of reacting to it. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, steers around walls and cuts at teleports. **Drag** to look from another angle and **scroll** to zoom; **Reset view** or a double-click goes back to the planned camera.
+- **Trails:** each ghost leaves a comet trail: a bright tail with flowing streaks for the last six seconds, then a faint line of where it has been, and a fainter line ahead. They follow replay time, so pausing freezes them and seeking restores them.
+- With other runs added, the timeline's touch marks and savelocs hide and Saveloc is off, since they belong to the watched run alone.
 
-Preparing a run re-simulates it and plans its camera. Nothing runs until you enable Cinematic or add a run. There is no run-count limit: the map, geometry and lighting are shared. Each additional run still needs its own simulation, track storage, matching, ghost and trail drawing; remove runs if playback becomes slow on your hardware.
+Turning on Cinematic or adding a run re-simulates that run and plans the camera, which takes a moment; nothing runs before that. There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
 
 ### What's kept
 
@@ -179,7 +182,7 @@ bun run build   # writes the unpacked extension to dist/
 bun test
 ```
 
-The cinematic tests use synthetic tracks, sessions and renderer fixtures, not the live site or downloaded game code. The optional UI screenshot harness also runs locally with fixture data.
+Tests run offline against fixtures: none of them load the site, the game's code or the signalling Worker. (`bun signal/check-live.mjs` checks a deployed Worker, by hand.)
 
 Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 
@@ -195,6 +198,8 @@ Source layout:
 - `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.
 - `src/replay-archive.js`, `src/replay-trim.js`: saved replays (compressed, in IndexedDB), trimmed to a few seconds before the start.
 - `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`, `src/native-replay-ui.js`: native-player integration, bounded analysis checkpoints, replay savelocs and the native/custom replay bars.
+- `src/cinema.js` and `src/cinema-*.js`: cinematic replays: runs re-simulated as tracks, matching them in time or place, the planned camera, the ghosts and trails, and their controls.
+- `src/private-rooms/`, `signal/`: private rooms in the browser, and the Cloudflare Worker that connects their players (see `signal/README.md`).
 - `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
 
 ## License
