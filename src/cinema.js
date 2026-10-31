@@ -25,6 +25,7 @@ const ZOOM_EASE = 100;
 // The planned camera's styles; a switch of view flies there over MOVE ms.
 const STYLES = ['steady', 'cinematic'];
 const MOVE = 1000;
+const LOOK_AHEAD = 6, LOOK_BEHIND = 6;
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - (2 - 2 * t) ** 3 / 2;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
@@ -130,12 +131,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         await prepare(current);
         if (!owns(current)) return false;
         const shown = current.pending ?? current;
-        if (!current.renderer || current.style !== view || current.pending || current.warming) await show(current, shown.sync, shown.focus, view);
+        if (!current.renderer || current.style !== view || current.pending || current.warming || current.partialPlan || current.sceneTrack !== current.track) await show(current, shown.sync, shown.focus, view);
         if (!owns(current) || current.enabling !== enabling) return false;
         if (!current.camera) { current.camera = true; retarget(current); notify(); }
         return !!current.renderer;
       } catch (error) {
-        if (state === current && !current.renderer && !current.loading.length) close();
+        current.failed = !current.complete || current.partialPlan || !current.plan;
+        if (state === current && !current.loading.length && current.failed) close();
         throw error;
       }
     })().finally(() => { if (current.enabling === enabling) current.enabling = null; })};
@@ -154,12 +156,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const cancelled = new Promise(resolve => { pending.cancel = () => resolve(false); });
     current.loading.push(pending);
     notify();
-    const step = current.queue.then(() => Promise.race([load(current, run, pending), cancelled]));
+    const activation = setView(preferred);
+    const loading = current.queue.then(() => Promise.race([load(current, run, pending, activation), cancelled]));
+    const step = Promise.race([Promise.all([loading, activation]).then(([added]) => added), cancelled]);
     current.queue = step.catch(() => {});
     return step.finally(() => {
+      pending.cancel();
       if (state !== current) return;
       current.loading = current.loading.filter(item => item !== pending);
-      if (!current.renderer && !current.runs.length && !current.loading.length) close();
+      if ((!current.renderer || current.failed) && !current.runs.length && !current.loading.length) close();
       else notify();
     });
   }
@@ -171,26 +176,73 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // is the view last drawn and move a flight from one pose to the next.
     return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined,
-      camera: false, cameraRequested: false, pose: null, move: null, retired: [], sceneSize: 0};
+      camera: false, cameraRequested: false, pose: null, move: null, retired: [], sceneSize: 0,
+      complete: false, partialPlan: false, planBase: 0, planEnd: Infinity, failed: false};
   }
   function prepare(current) {
     return current.ready ??= (async () => {
       const adapter = getAdapter(), session = adapter.getSession(), cacheWorld = session.movement?.world ?? session.map;
       let cached = recordings.get(current.replay);
       if (cached?.map.deref() !== session.map || cached?.world.deref() !== cacheWorld) cached = null;
-      current.track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle});
-      if (!owns(current)) return;
-      if (!current.track) throw new Error('This replay can’t use cinematic viewing.');
-      if (!cached) recordings.set(current.replay, cached = {map: new WeakRef(session.map), world: new WeakRef(cacheWorld), track: current.track, plans: {}});
-      current.plans = cached.plans;
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
         return hit.startSolid || hit.allSolid ? 1 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
+      const track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle,
+        onProgress: (track, count) => progress(current, track, count)});
+      if (!owns(current)) return;
+      if (!track) throw new Error('This replay can’t use cinematic viewing.');
+      if (current.previewError) throw current.previewError;
+      current.track = track;
+      current.complete = true;
+      if (!cached) recordings.set(current.replay, cached = {map: new WeakRef(session.map), world: new WeakRef(cacheWorld), track, plans: {}});
+      current.plans = cached.plans;
     })().catch(error => { current.ready = null; throw error; });
   }
-  async function load(current, run, pending) {
+  // Publish only recorded positions, growing path geometry geometrically rather
+  // than rebuilding the whole prefix at every physics batch.
+  function progress(current, track, count) {
+    if (!owns(current) || !current.cameraRequested || count === track.count) return;
+    const tick = Math.max(0, Math.floor(getAdapter().replay.playback().index ?? 0));
+    if (count <= tick + Math.ceil(LOOK_AHEAD / track.dt)) return;
+    if (!current.track || count >= current.track.count * 2) {
+      current.track = {...track, count, finish: Math.min(track.finish, count - 1), splits: track.splits.slice()};
+      if (current.renderer) rebuild(current);
+    }
+    if (!current.previewing && !current.pending &&
+        (!current.plan || current.partialPlan && (tick < current.planBase || tick > current.planEnd - LOOK_AHEAD / track.dt / 2))) {
+      preview(current, tick);
+    }
+  }
+  function preview(current, tick) {
+    const track = current.track, style = preferred;
+    const from = Math.max(0, Math.floor((tick - Math.ceil(LOOK_BEHIND / track.dt)) / 4) * 4);
+    const end = Math.min(track.count, tick + Math.ceil(LOOK_AHEAD / track.dt) + 1), count = end - from;
+    if (count < 2) return;
+    const window = {...track, count,
+      start: Math.max(0, Math.min(count - 1, track.start - from)), startTick: track.startTick === null ? null : track.startTick - from,
+      finish: Math.max(0, track.finish - from), splits: track.splits.filter(at => at >= from && at < end).map(at => at - from),
+      position: track.position.subarray(from * 3, end * 3), normal: track.normal.subarray(from * 3, end * 3),
+      yaw: track.yaw.subarray(from, end), cut: track.cut.subarray(from, end), ducked: track.ducked.subarray(from, end),
+      elapsed: track.elapsed.subarray(from, end), phase: track.phase?.subarray(from, end)};
+    const request = current.previewRequest = {};
+    const owned = () => owns(current) && current.previewRequest === request && current.cameraRequested && !current.complete && !current.pending && preferred === style;
+    const preparing = (async () => {
+      if (!current.renderer) start(current);
+      const plan = await planCamera({a: window, style, trace: current.trace, yieldTask: loadIdle, isCurrent: owned});
+      while (owned() && current.warming) await current.warming;
+      if (!owned() || !plan) return;
+      const at = getAdapter().replay.playback().index ?? 0;
+      if (at < from || at >= end) return;
+      Object.assign(current, {plan, style, planBase: from, planEnd: end - 1, partialPlan: true, camera: true});
+      retarget(current);
+      notify();
+    })().catch(error => { if (owned()) current.previewError = error; })
+      .finally(() => { if (current.previewing === preparing) current.previewing = null; });
+    current.previewing = preparing;
+  }
+  async function load(current, run, pending, activation) {
     const owned = () => owns(current) && current.loading.includes(pending);
     if (!owned()) return false;
     const replay = await run.load();
@@ -207,6 +259,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const track = await record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle});
     if (!owned()) return false;
     if (!track) throw new Error('That run couldn’t be read on this map.');
+    // Download and recording run alongside solo activation. Publish the new
+    // group only afterwards, so it cannot supersede the camera's first plan.
+    await activation;
+    if (!owned()) return false;
     const entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track,
       maps: {time: alignByTime(current.track, track), place: alignByPlace(current.track, track)}, time: track.time};
     current.runs = [...current.runs, entry];
@@ -277,13 +333,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const owned = () => owns(current) && current.runs === runs && current.pending === request;
     notify();
     try {
+      // Track geometry is ready; compile its shaders while planning the shot.
+      if (!current.renderer) start(current);
+      else if (current.sceneTrack !== current.track) rebuild(current);
       const plan = current.plans[key] ?? await planFor(current, runs, sync, focus, style, owned);
       if (!owned() || !plan) return;
       current.plans[key] = plan;
       if (!runs.length) recordings.get(current.replay).plans = current.plans;
       const changed = current.plan !== plan;
-      Object.assign(current, {sync, focus, style, plan});
-      if (!current.renderer) start(current);
+      Object.assign(current, {sync, focus, style, plan, partialPlan: false, planBase: 0, planEnd: Infinity});
       // Native POV keeps drawing while the staged scene compiles. A map
       // reload can replace the renderer (and its pending compilation).
       while (owned() && current.warming) await current.warming;
@@ -293,7 +351,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       notify();
     } catch (error) {
       if (owned()) { current.pending = null; notify(); }
-      if (owns(current) && !current.renderer) close();
+      if (owns(current) && !current.plan) close();
       throw error;
     }
   }
@@ -320,7 +378,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   function sceneFor(current, renderer) {
     current.sceneSize = current.runs.length + 1;
-    return createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+    current.sceneTrack = current.track;
+    const scene = createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+    // Preparation may finish before the first plan. Nothing is visible until
+    // frame() has a valid shot and has positioned each ghost and path.
+    for (let index = 0; index < current.sceneSize; index++) scene.show?.(index, false);
+    return scene;
   }
   function attach(current, renderer) {
     current.scene = sceneFor(current, renderer);
@@ -375,12 +438,23 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (playing() !== current.replay) { queueMicrotask(() => { if (state === current) close(); }); return null; }
     const a = current.track, plan = current.plan, sync = current.sync;
     if (!plan) return null;
+    const eye = view.eyePosition ?? {x: 0, y: 0, z: 0};
+    const own = {x: eye.x, y: eye.y, z: eye.z, yaw: view.yaw ?? 0, pitch: view.pitch ?? 0, fov: view.fov ?? 90, eye: true};
     const stateTick = view.state?.tick ?? current.base, previousTick = getAdapter()?.getSession?.()?.previous?.tick;
     // Seeking sets native previous=current but retains its interpolation alpha.
     // Interpolate the actual state pair, not an assumed preceding tick.
     const from = Number.isFinite(previousTick) && previousTick <= stateTick ? previousTick : stateTick - 1;
     const alpha = Number.isFinite(view.qolAlpha) ? Math.max(0, Math.min(1, view.qolAlpha)) : 1;
-    let tick = Math.max(0, Math.min(a.count - 1, from - current.base + (stateTick - from) * alpha));
+    const at = from - current.base + (stateTick - from) * alpha;
+    // An out-of-window seek must never clamp the view to stale geometry.
+    if (current.partialPlan && (at < current.planBase || at > current.planEnd)) {
+      current.previewRequest = null;
+      current.scene.show?.(0, false);
+      current.pose = own;
+      current.move = null;
+      return null;
+    }
+    let tick = Math.max(0, Math.min(a.count - 1, at));
     // Native teleports set previous=current, so they bypass interpolation.
     if (a.cut[Math.ceil(tick)]) tick = Math.ceil(tick);
     const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
@@ -390,16 +464,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const run = current.runs[index];
       const map = run.maps[sync] ?? run.maps.time;
       current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
+      current.scene.show?.(index + 1, true);
     }
     current.tick = tick;
     // Drag turns the view at once; zoom eases, so a wheel's steps glide without lagging.
     const time = now(), elapsed = current.drawnAt === null ? 0 : Math.max(0, time - current.drawnAt);
     current.drawnAt = time;
-    const eye = view.eyePosition ?? {x: 0, y: 0, z: 0};
-    const own = {x: eye.x, y: eye.y, z: eye.z, yaw: view.yaw ?? 0, pitch: view.pitch ?? 0, fov: view.fov ?? 90, eye: true};
     // The first planned frame flies out of the player's own eyes.
     if (!current.pose && current.camera) current.move = {from: own, start: time};
-    let pose = current.camera ? aim(current, plan, tick, elapsed) : own;
+    let pose = current.camera ? aim(current, plan, tick - current.planBase, elapsed) : own;
     const move = current.move, through = move ? Math.min(1, (time - move.start) / MOVE) : 1;
     if (move && through >= 1) current.move = null;
     else if (move) pose = blend(move.from, pose, ease(through));
@@ -484,6 +557,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   async function setSync(sync) {
     const current = state;
     if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
+    if (!current.complete) { await prepare(current); if (!owns(current)) return; }
     await show(current, sync, current.pending ? current.pending.focus : current.focus);
   }
   // 'cinematic' or 'steady'.
@@ -500,6 +574,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const current = state;
     if (!current?.renderer || focus !== null && focus !== 'played' && !current.runs.some(run => run.id === focus)) return;
     current.cameraRequested = true;
+    if (!current.complete) { await prepare(current); if (!owns(current)) return; }
     const shown = current.pending ? current.pending.focus : current.focus, sync = current.pending?.sync ?? current.sync;
     if (current.camera) { await show(current, sync, focus !== null && focus === shown ? null : focus); return; }
     await show(current, sync, focus, preferred);

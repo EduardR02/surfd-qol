@@ -1,7 +1,7 @@
 // A replay as a track: where the player was on every tick, which way they
 // faced, whether they crouched and which ramp they were surfing. Compare plays
-// one run in the game's own player and draws the other from its track; the
-// camera is planned from both before playback starts.
+// one run in the game's own player and draws the others from their tracks;
+// recorded windows can already be viewed while the rest is being simulated.
 import {observePhysics} from './observer.js';
 import {MAX_COMMANDS} from './replay-store.js';
 
@@ -51,7 +51,9 @@ function rampNormal(contacts, from, groundNormal) {
 
 // Re-simulates the replay on the loaded map in idle-time slices. Null when it
 // isn't for this map, is too long, or stops being wanted (isCurrent()).
-export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer}) {
+// onProgress borrows the first `count` recorded positions, never the suffix.
+// It runs between batches, after releasing the shadow physics observer.
+export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null}) {
   if (typeof adapter?.Session !== 'function' || typeof adapter.Movement !== 'function' || !session?.map ||
     !Array.isArray(replay?.commands) || !replay.commands.length || replay.commands.length > MAX_COMMANDS ||
     replay.mapId !== session.map.id || replay.mapVersion !== session.map.version) return null;
@@ -93,6 +95,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
     while (splits < count) { splits++; track.splits.push(at); }
     if (timer?.phase === 'finished' && track.time === null) { track.finish = at; track.time = timer.elapsed; }
     if (timer?.phase === 'ready') startTick = null;
+    if (landed === at) for (let before = 0; before < at; before++) track.position.copyWithin(before * 3, at * 3, at * 3 + 3);
   };
   // Only ramp contacts are wanted, so the other observer callbacks do nothing.
   const contacts = {begin() {}, end() {}, acceleration() {}, reset() {},
@@ -118,10 +121,10 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
       active = null;
       observer.destroy();
     }
+    if (landed !== null && isCurrent()) onProgress?.(track, index + 1);
     if (index < replay.commands.length) deadline = await yieldTask();
   }
   if (!isCurrent()) return null;
-  for (let at = 0; at < (landed ?? 0); at++) track.position.copyWithin(at * 3, landed * 3, landed * 3 + 3);
   // The finish counts as a split in the game's timer; keep checkpoints only.
   if (track.time !== null && track.splits.at(-1) === track.finish) track.splits.pop();
   return track;

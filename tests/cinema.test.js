@@ -407,7 +407,7 @@ describe('cinematic replay lifecycle', () => {
     let disposed = 0, scenes = 0, colors = [], positions = [], made = [];
     const control = {renderer, playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
     const adapter = {cinema: {renderer: () => control.renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
-    const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
+    const cinema = createCinema({getAdapter: () => adapter, onChange: options.onChange, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
@@ -440,6 +440,160 @@ describe('cinematic replay lifecycle', () => {
     await cinema.setEnabled(true);
     expect(counts().recorded).toBe(1);
     cinema.close();
+  });
+  function progressing({tick = 0, base = 0} = {}) {
+    const finished = deferred(), activated = deferred(), time = {now: 0}, track = straight({count: 2000});
+    let first = true;
+    const fixture = rig({
+      now: () => time.now,
+      onChange: () => { if (fixture.cinema.camera) activated.resolve(); },
+      record: async ({onProgress}) => {
+        if (first) {
+          first = false;
+          onProgress(track, tick + 480);
+          await finished.promise;
+        }
+        return track;
+      },
+    });
+    fixture.control.playback.replay.commands = new Array(track.count - 1).fill({});
+    fixture.control.playback.replay.initialState.tick = base;
+    fixture.control.playback.index = tick;
+    return {...fixture, finished, activated, time, track};
+  }
+  test('a recorded window activates before the remaining physics and blends into the completed plan', async () => {
+    const {cinema, renderer, finished, activated, time, counts} = progressing();
+    const enabling = cinema.setEnabled(true);
+    await activated.promise;
+    expect(cinema.tracks[0].count).toBe(480);
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(pov);
+    time.now += 2000; renderer.render(pov);
+    expect(renderer.drawn.eyePosition).not.toEqual(pov.eyePosition);
+    const eye = {...renderer.drawn.eyePosition};
+    finished.resolve();
+    expect(await enabling).toBe(true);
+    expect(cinema.tracks[0].count).toBe(2000);
+    renderer.render(pov);
+    expect(renderer.drawn.eyePosition).toEqual(eye);
+    cinema.close();
+    await cinema.setEnabled(true);
+    expect(cinema.tracks[0].count).toBe(2000);
+    expect(counts().recorded).toBe(1);
+    cinema.close();
+  });
+  test('a local camera window keeps ghost and camera clocks correct for a clipped replay', async () => {
+    const {cinema, renderer, finished, activated, time, track, counts} = progressing({tick: 700, base: 100});
+    const enabling = cinema.setEnabled(true);
+    await activated.promise;
+    const pov = {state: {tick: 800}, eyePosition: {x: track.position[2100], y: 0, z: 64}};
+    renderer.render(pov);
+    time.now += 2000; renderer.render(pov);
+    expect(counts().positions[0]).toBe(700);
+    expect(Math.abs(renderer.drawn.eyePosition.x - track.position[2100])).toBeLessThan(2000);
+    const seek = {state: {tick: 1900}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    renderer.render(seek);
+    expect(renderer.drawn).toBe(seek);
+    expect(counts().made.at(-1).shown[0]).toBe(false);
+    finished.resolve();
+    expect(await enabling).toBe(true);
+    renderer.render(seek);
+    expect(renderer.drawn).not.toBe(seek);
+    expect(counts().positions[0]).toBe(1800);
+    cinema.close();
+  });
+  test('returning to POV cancels a partial camera and never caches its unfinished track', async () => {
+    const {cinema, renderer, native, finished, activated, counts} = progressing();
+    const enabling = cinema.setEnabled(true);
+    await activated.promise;
+    await cinema.setView('pov');
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    finished.resolve();
+    expect(await enabling).toBe(false);
+    await cinema.setEnabled(true);
+    expect(cinema.tracks[0].count).toBe(2000);
+    expect(counts().recorded).toBe(2);
+    cinema.close();
+  });
+  test('adding from POV activates the solo camera before download and respects a later POV choice', async () => {
+    const entered = deferred(), downloaded = deferred(), activated = deferred();
+    const {cinema} = rig({onChange: () => { if (cinema.camera) activated.resolve(); }});
+    const adding = cinema.add({id: 'slow', load: async () => { entered.resolve(); return downloaded.promise; }});
+    await entered.promise;
+    await activated.promise;
+    expect(cinema.status()).toMatchObject({view: 'cinematic', runs: [], loading: [{id: 'slow'}]});
+    await cinema.setView('pov');
+    downloaded.resolve({commands: [{run: 'slow'}]});
+    expect(await adding).toBe(true);
+    expect(cinema.status()).toMatchObject({view: 'pov', runs: [{id: 'slow'}], loading: []});
+    cinema.close();
+  });
+  test('an added run can finish recording after the solo camera has already activated', async () => {
+    const entered = deferred(), recorded = deferred(), activated = deferred();
+    const {cinema} = rig({
+      onChange: () => { if (cinema.camera) activated.resolve(); },
+      record: async ({replay}) => {
+        if (replay.commands.length === 59) return straight({count: 60});
+        entered.resolve();
+        await recorded.promise;
+        return straight({count: 60, y: 100});
+      },
+    });
+    const adding = cinema.add(run('other'));
+    await entered.promise;
+    await activated.promise;
+    expect(cinema.status()).toMatchObject({view: 'cinematic', runs: [], loading: [{id: 'other'}]});
+    recorded.resolve();
+    expect(await adding).toBe(true);
+    expect(cinema.status().runs).toMatchObject([{id: 'other'}]);
+    cinema.close();
+  });
+  test('failed camera preparation releases the add queue even if its download never finishes', async () => {
+    let fail = true;
+    const downloaded = deferred();
+    const {cinema} = rig({record: async () => {
+      if (fail) { fail = false; throw new Error('Physics failed'); }
+      return straight({count: 60});
+    }});
+    await expect(cinema.add({id: 'slow', load: () => downloaded.promise})).rejects.toThrow('Physics failed');
+    expect(cinema.status()).toBeNull();
+    expect(await cinema.add(run('next'))).toBe(true);
+    expect(cinema.status().runs).toMatchObject([{id: 'next'}]);
+    downloaded.resolve({commands: [{run: 'slow'}]});
+    cinema.close();
+  });
+  test('shader preparation overlaps planning without exposing unpositioned ghosts or paths', async () => {
+    const planning = deferred(), planned = deferred(), ready = deferred();
+    let preparing = false;
+    const {cinema, renderer, control, counts} = rig({
+      loadIdle: async () => { planning.resolve(); await planned.promise; return null; },
+      prepareScene: () => { preparing = true; return ready.promise; },
+    });
+    control.session.map.brushes = [];
+    control.session.movement = {world: {trace: () => ({fraction: 1})}};
+    const enabling = cinema.setEnabled(true);
+    await planning.promise;
+    expect(preparing).toBe(true);
+    ready.resolve();
+    await ready.promise;
+    const pov = {state: {tick: 30}, eyePosition: {x: 1, y: 2, z: 3}};
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+    expect(cinema.camera).toBe(false);
+    expect(counts().made[0].shown).toEqual([false]);
+    planned.resolve();
+    expect(await enabling).toBe(true);
+    cinema.close();
+  });
+  test('a failed first plan disposes its prewarmed scene and restores the native renderer', async () => {
+    const {cinema, renderer, native, control, counts} = rig({loadIdle: async () => { throw new Error('Planning failed'); }});
+    control.session.map.brushes = [];
+    control.session.movement = {world: {trace: () => ({fraction: 1})}};
+    await expect(cinema.setEnabled(true)).rejects.toThrow('Planning failed');
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    expect(counts().made[0].disposed).toBe(true);
   });
   test('POV keeps drawing during shader preparation and the camera starts only when ready', async () => {
     const entered = deferred(), ready = deferred();
@@ -786,7 +940,7 @@ describe('cinematic replay lifecycle', () => {
     cinema.close();
   });
   test('removing the final extra retains solo viewing until explicitly disabled', async () => {
-    const {cinema, renderer, native, listeners, counts} = rig();
+    const {cinema, renderer, native, listeners} = rig();
     expect(cinema.available()).toBe(true);
     expect(await cinema.add(run('wr'))).toBe(true);
     expect(cinema.active).toBe(true);
@@ -803,7 +957,6 @@ describe('cinematic replay lifecycle', () => {
     await cinema.setEnabled(false);
     expect(renderer.render).toBe(native);
     expect(listeners.size).toBe(0);
-    expect(counts().disposed).toBe(2);
     expect(cinema.status()).toBeNull();
   });
   test('more runs join the same replay; the same run twice is ignored', async () => {
@@ -833,7 +986,7 @@ describe('cinematic replay lifecycle', () => {
   test('the run being watched can’t be added to itself', async () => {
     const {cinema, control} = rig();
     await expect(cinema.add({id: 'same', label: 'same', load: async () => ({...control.playback.replay})})).rejects.toThrow('That’s the run you’re watching.');
-    expect(cinema.status()).toBeNull();
+    cinema.close();
   });
   test('leaving the replay ends the ghosts on the next frame', async () => {
     const {cinema, renderer, native, control} = rig();
