@@ -397,6 +397,9 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   if (leaving) for (let s = zone; s < first; s++) { travel[0][s] = lx / away; travel[1][s] = ly / away; }
   const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
   const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
+  // Solo framing never changes with corrective weights or safer shot choices.
+  const fixedFocus = !group || !others.length;
+  let composedFocus = null;
   // Plans the shots and checks them; safe holds the stretches (by their first
   // sample) that must take the style's safest shot.
   const shoot = async safe => {
@@ -525,17 +528,22 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     // leans towards the other runs; limitTo caps the distance; retreat eases
     // the shot back towards a low chase.
     const compose = (weight, limitTo, retreat) => {
-      const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
-      for (let s = 0; s < count; s++) {
-        const o = s * 3;
-        let x = runs[0][o], y = runs[0][o + 1], z = runs[0][o + 2], total = 1;
-        for (let index = 0; index < others.length; index++) {
-          const k = shares[index][s] * weight[s], r = runs[index + 1];
-          x += r[o] * k; y += r[o + 1] * k; z += r[o + 2] * k; total += k;
+      let centre = fixedFocus && composedFocus;
+      if (!centre) {
+        const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
+        for (let s = 0; s < count; s++) {
+          const o = s * 3;
+          let x = runs[0][o], y = runs[0][o + 1], z = runs[0][o + 2], total = 1;
+          for (let index = 0; index < others.length; index++) {
+            const k = shares[index][s] * weight[s], r = runs[index + 1];
+            x += r[o] * k; y += r[o + 1] * k; z += r[o + 2] * k; total += k;
+          }
+          fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
         }
-        fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
+        centre = [blur(fx, seconds(0.12), segment), blur(fy, seconds(0.12), segment), blur(fz, seconds(0.2), segment)];
+        if (fixedFocus) composedFocus = centre;
       }
-      const cx = blur(fx, seconds(0.12), segment), cy = blur(fy, seconds(0.12), segment), cz = blur(fz, seconds(0.2), segment);
+      const [cx, cy, cz] = centre;
       const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
       for (let s = 0; s < count; s++) {
         const d = clamp(Math.min(far[s], room[s], limitTo[s]), MIN_DISTANCE, MAX_DISTANCE);
@@ -555,7 +563,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         eye[s * 3] = cx[s] + ex; eye[s * 3 + 1] = cy[s] + ey; eye[s * 3 + 2] = cz[s] + ez;
       }
       calm(eye, target, view, seconds);
-      return {eye, target, focus: [cx, cy, cz]};
+      return {eye, target, focus: centre};
     };
     let weight = new Float32Array(count).fill(1), closest = new Float32Array(count).fill(MAX_DISTANCE), retreat = new Float32Array(count);
     let shot = compose(weight, closest, retreat), firstLook = null;
@@ -658,22 +666,38 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       if (pass || !cramped) break;
       const blend = blur(strongest(cramped, Math.ceil(seconds(0.45)), segment), seconds(0.2), segment);
       const history = Math.ceil(seconds(1));
-      let changed = false;
+      // Count search work, not absolute sample indices: sparse fallback regions
+      // can miss sample boundaries, and one sample can try many native traces.
+      let changed = false, work = SLICE;
       for (let s = 0; s < count; s++) {
-        if (!blend[s]) continue;
-        if (s % SLICE === 0) {
+        if (work >= SLICE) {
           if (yieldTask && !idleLeft()) deadline = await yieldTask();
           if (!isCurrent()) return null;
+          work = 0;
         }
+        work++;
+        if (!blend[s]) continue;
         const o = s * 3;
         body.x = runs[0][o]; body.y = runs[0][o + 1]; body.z = runs[0][o + 2] + EYE_HEIGHT;
         let back = s;
         while (back > 0 && s - back < history && segment[back - 1] === segment[s]) {
+          if (work >= SLICE) {
+            if (yieldTask && !idleLeft()) deadline = await yieldTask();
+            if (!isCurrent()) return null;
+            work = 0;
+          }
+          work++;
           back--;
           if (Math.hypot(runs[0][back * 3] - body.x, runs[0][back * 3 + 1] - body.y,
             runs[0][back * 3 + 2] + EYE_HEIGHT - body.z) >= BASE_DISTANCE) break;
         }
         for (; back < s; back++) {
+          if (work >= SLICE) {
+            if (yieldTask && !idleLeft()) deadline = await yieldTask();
+            if (!isCurrent()) return null;
+            work = 0;
+          }
+          work++;
           const dx = runs[0][back * 3] - body.x, dy = runs[0][back * 3 + 1] - body.y;
           const dz = runs[0][back * 3 + 2] + EYE_HEIGHT - body.z, distance = Math.hypot(dx, dy, dz);
           if (distance < MIN_DISTANCE) continue;

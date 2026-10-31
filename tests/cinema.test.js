@@ -663,6 +663,34 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().recorded).toBe(1);
     cinema.close();
   });
+  test('completing a preview continues the POV flight without stopping or restarting it', async () => {
+    const {cinema, renderer, finished, activated, time, counts} = progressing();
+    const enabling = cinema.setView('cinematic');
+    await activated.promise;
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(pov);
+    time.now = 390; renderer.render(pov);
+    const before = {...renderer.drawn.eyePosition};
+    time.now = 400; renderer.render(pov);
+    const handoff = {...renderer.drawn.eyePosition};
+    const speed = Math.hypot(handoff.x - before.x, handoff.y - before.y, handoff.z - before.z) / 10;
+    expect(speed).toBeGreaterThan(0.01);
+    finished.resolve();
+    await enabling;
+    renderer.render(pov);
+    expect(renderer.drawn.eyePosition).toEqual(handoff);
+    expect(counts().made.at(-1).shown[0]).toBe(true);
+    time.now = 401; renderer.render(pov);
+    const continuedSpeed = Math.hypot(renderer.drawn.eyePosition.x - handoff.x,
+      renderer.drawn.eyePosition.y - handoff.y, renderer.drawn.eyePosition.z - handoff.z);
+    expect(continuedSpeed / speed).toBeGreaterThan(0.8);
+    expect(continuedSpeed / speed).toBeLessThan(1.2);
+    time.now = 1000; renderer.render(pov);
+    const completed = {...renderer.drawn.eyePosition};
+    time.now = 2000; renderer.render(pov);
+    expect(renderer.drawn.eyePosition).toEqual(completed);
+    cinema.close();
+  });
   test('a local camera window keeps ghost and camera clocks correct for a clipped replay', async () => {
     const {cinema, renderer, finished, activated, time, track, counts} = progressing({tick: 700, base: 100});
     const enabling = cinema.setEnabled(true);

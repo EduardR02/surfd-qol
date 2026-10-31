@@ -69,12 +69,17 @@ function cameraWorld(session) {
   return rebuild();
 }
 
-// A pose part way from one view to another: the eye along the line, the
-// angles the short way round.
-function blend(from, to, k) {
+// Keep a plan handoff on the same flight, including its incoming velocity.
+function blend(from, to, through, velocity, duration) {
+  const k = velocity ? through * through * (3 - 2 * through) : ease(through);
+  const tangent = velocity ? through * (1 - through) ** 2 * duration : 0;
   const turn = ((to.yaw - from.yaw) % 360 + 540) % 360 - 180;
-  return {x: from.x + (to.x - from.x) * k, y: from.y + (to.y - from.y) * k, z: from.z + (to.z - from.z) * k,
-    yaw: from.yaw + turn * k, pitch: from.pitch + (to.pitch - from.pitch) * k, fov: from.fov + (to.fov - from.fov) * k};
+  return {x: from.x + (to.x - from.x) * k + (velocity?.x ?? 0) * tangent,
+    y: from.y + (to.y - from.y) * k + (velocity?.y ?? 0) * tangent,
+    z: from.z + (to.z - from.z) * k + (velocity?.z ?? 0) * tangent,
+    yaw: from.yaw + turn * k + (velocity?.yaw ?? 0) * tangent,
+    pitch: from.pitch + (to.pitch - from.pitch) * k + (velocity?.pitch ?? 0) * tangent,
+    fov: from.fov + (to.fov - from.fov) * k + (velocity?.fov ?? 0) * tangent};
 }
 
 // getAdapter() is the game adapter. A run given to add() is {id, label, load()},
@@ -176,7 +181,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // is the view last drawn and move a flight from one pose to the next.
     return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, body: {x: 0, y: 0, z: 0}, at: [], tick: 0, pending: null, trace: undefined,
-      camera: false, cameraRequested: false, pose: null, move: null, retired: [], sceneSize: 0,
+      camera: false, cameraRequested: false, pose: null, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, move: null, retired: [], sceneSize: 0,
       complete: false, partialPlan: false, planBase: 0, planEnd: Infinity, failed: false};
   }
   function prepare(current) {
@@ -343,13 +348,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.plans[key] = plan;
       if (!runs.length) recordings.get(current.replay).plans = current.plans;
       const changed = current.plan !== plan;
+      const promoted = current.partialPlan && current.camera && current.sync === sync && current.focus === focus && current.style === style;
       Object.assign(current, {sync, focus, style, plan, partialPlan: false, planBase: 0, planEnd: Infinity});
       // Native POV keeps drawing while the staged scene compiles. A map
       // reload can replace the renderer (and its pending compilation).
       while (owned() && current.warming) await current.warming;
       if (!owned()) return;
       current.pending = null;
-      if (changed && current.camera) retarget(current);
+      if (changed && current.camera) retarget(current, promoted);
       notify();
     } catch (error) {
       if (owned()) { current.pending = null; notify(); }
@@ -430,9 +436,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (current.warming) warm(current);
     if (old) current.retired.push(old);
   }
-  // The next frames fly from the pose last drawn to wherever the view now is.
-  function retarget(current) {
-    if (current.pose) current.move = {from: {...current.pose}, start: now()};
+  function retarget(current, promoted = false) {
+    if (!current.pose) return;
+    const time = now(), previous = current.move;
+    const continuing = promoted && previous?.from.eye && time < previous.start + previous.duration;
+    const duration = continuing ? Math.max(MOVE * 0.25, previous.start + previous.duration - time) : MOVE;
+    current.move = {from: {...current.pose}, start: time, duration,
+      began: continuing ? previous.began : time, revealEnd: continuing ? previous.revealEnd : time + duration,
+      velocity: continuing ? {...current.velocity} : null};
+    if (continuing) current.move.from.eye = true;
   }
 
   // The played run's fractional index from the frame's state and interpolation.
@@ -457,6 +469,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       return null;
     }
     let tick = Math.max(0, Math.min(a.count - 1, at));
+    const discontinuity = a.cut[Math.ceil(tick)] || previousTick === stateTick && tick !== current.tick;
     // Native teleports set previous=current, so they bypass interpolation.
     if (a.cut[Math.ceil(tick)]) tick = Math.ceil(tick);
     const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
@@ -473,11 +486,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const time = now(), elapsed = current.drawnAt === null ? 0 : Math.max(0, time - current.drawnAt);
     current.drawnAt = time;
     // The first planned frame flies out of the player's own eyes.
-    if (!current.pose && current.camera) current.move = {from: own, start: time};
+    if (!current.pose && current.camera) current.move = {from: own, start: time, duration: MOVE, began: time, revealEnd: time + MOVE, velocity: null};
     let pose = current.camera ? aim(current, plan, tick - current.planBase, elapsed) : own;
-    const move = current.move, through = move ? Math.min(1, (time - move.start) / MOVE) : 1;
+    const move = current.move, through = move ? Math.min(1, (time - move.start) / move.duration) : 1;
+    const revealed = move ? Math.min(1, (time - move.began) / (move.revealEnd - move.began)) : 1;
     if (move && through >= 1) current.move = null;
-    else if (move) pose = blend(move.from, pose, ease(through));
+    else if (move) pose = blend(move.from, pose, through, move.velocity, move.duration);
     if (current.camera || current.trace && move && through < 1) {
       // Safe plan samples can interpolate or blend through a corner. Check the
       // actual frame from the subject, not the smoothed/led camera target.
@@ -497,7 +511,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         // Scaling the implicit aim target about the same body by k keeps the
         // forward direction unchanged, preserving framing even during a blend.
       }
-      if (current.camera && !current.adjusted && (focus >= 0 || !move?.from.eye || through > 0.25)) {
+      if (current.camera && !current.adjusted && (focus >= 0 || !move?.from.eye || revealed > 0.25)) {
         // Interpolated angles and mode flights can lose a subject even when
         // their endpoints frame it. Keep an already visible composition intact.
         const yaw = pose.yaw * Math.PI / 180, pitch = pose.pitch * Math.PI / 180;
@@ -512,10 +526,19 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         }
       }
     }
+    const velocity = current.velocity, previousPose = current.pose;
+    if (previousPose && elapsed > 0 && !discontinuity) {
+      velocity.x = (pose.x - previousPose.x) / elapsed;
+      velocity.y = (pose.y - previousPose.y) / elapsed;
+      velocity.z = (pose.z - previousPose.z) / elapsed;
+      velocity.yaw = (((pose.yaw - previousPose.yaw) % 360 + 540) % 360 - 180) / elapsed;
+      velocity.pitch = (pose.pitch - previousPose.pitch) / elapsed;
+      velocity.fov = (pose.fov - previousPose.fov) / elapsed;
+    } else velocity.x = velocity.y = velocity.z = velocity.yaw = velocity.pitch = velocity.fov = 0;
     current.pose = pose;
     // First person hides the watched run's own ghost and path: flying out of
     // the eyes it shows once clear of them, flying back in once nearly there.
-    current.scene.show?.(0, current.camera ? !move?.from.eye || through > 0.25 : through < 0.8);
+    current.scene.show?.(0, current.camera ? !move?.from.eye || revealed > 0.25 : revealed < 0.8);
     // The camera is placed here too so the ghosts size their outlines for this frame's view.
     current.renderer.qolCamera.position.set(pose.x, pose.z, -pose.y);
     current.scene.update(current.at, innerWidth, innerHeight);
