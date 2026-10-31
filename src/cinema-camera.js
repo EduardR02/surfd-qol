@@ -21,13 +21,12 @@ export const STEP = 2;               // ticks per planned sample
 // A shot: swing from behind towards the open side and elevation in degrees
 // (to: the swing a shot they pass ends on), distance as a multiple of the
 // speed-based one, and room ahead as a share of the distance.
-const CHASE = {swing: 30, elevation: 9, distance: 1, lead: 0.16};
-const TRACK = {swing: 82, elevation: 4, distance: 1.5, lead: 0.26};                 // alongside at body height
+const CHASE = {swing: 36, elevation: 9, distance: 1, lead: 0.16};
+const TRACK = {swing: 65, elevation: 4, distance: 1.5, lead: 0.26};                 // three-quarter alongside, at body height
 const LOW = {swing: 40, elevation: -6, distance: 1.1, lead: 0.2};                   // near the face, along and up it
 const FRONT = {swing: 155, to: 105, elevation: 5, distance: 1.4, lead: 0};          // ahead; they come towards it and pass
 const FLIGHT = {swing: 0, elevation: 11, distance: 1.25, lead: 0.16};               // behind, the landing ahead
 const ARC = {swing: 72, elevation: 3, distance: 1.5, lead: 0.24};                   // beside a long flight's rise and fall
-const AHEAD = {swing: 180, elevation: 4, distance: 1.5, lead: 0};                    // ahead of a long flight, coming at it
 const STEADY = {swing: 38, elevation: 9, distance: 1.15, lead: 0.18};
 // Per style: the shots ramps take in turn by length (under MEDIUM_RAMP,
 // under LONG_RAMP, longer), and those for a ramp with one on the other side
@@ -41,7 +40,7 @@ const STEADY = {swing: 38, elevation: 9, distance: 1.15, lead: 0.18};
 // cut into each other, only teleports cut.
 const STYLES = {
   cinematic: {
-    ramps: [[CHASE], [TRACK, LOW], [FRONT, TRACK, LOW]], gentle: [LOW, CHASE], flights: [ARC, AHEAD, FLIGHT],
+    ramps: [[CHASE], [TRACK, LOW], [TRACK, LOW]], front: FRONT, gentle: [LOW, CHASE], flights: [ARC, FLIGHT],
     flight: FLIGHT, start: {swing: 0, elevation: 10, distance: 1.45, lead: 0.1},
     orbit: 70, establish: {rise: 16, widen: 0.8}, finish: {rise: 12, widen: 1.2, swing: 30}, landing: 0.3, fov: 10, transition: 0.5,
   },
@@ -53,6 +52,10 @@ const STYLES = {
 };
 // Flights longer than LONGEST_FLIGHT (running, hopping) keep the plain flight shot.
 const MEDIUM_RAMP = 0.7, LONG_RAMP = 1.3, CRAMPED = 0.9, LONG_FLIGHT = 1.1, LONGEST_FLIGHT = 5;
+// Seen from ahead or straight behind, travel collapses into depth, so most
+// shots look from three-quarters. The style's front shot is an event: only
+// on ramps of at least FRONT_RAMP seconds, at most once every FRONT_GAP.
+const FRONT_RAMP = 2.2, FRONT_GAP = 15;
 // Contact gaps under RAMP_GAP seconds are the same ramp; touches under RAMP_MIN aren't one.
 const RAMP_GAP = 0.2, RAMP_MIN = 0.3, SAME_FACE = Math.cos(40 * Math.PI / 180);
 // In flight the swing keeps this share of both ramps' swings: back behind
@@ -194,7 +197,7 @@ function findRamps(rampX, rampY, segment, runs, travel, samples) {
 // behind for a strung-out group.
 function planStretches(ramps, segment, count, first, look, samples, spread, safe) {
   const stretches = [], turns = look.ramps.map(() => 0);
-  let flights = 0, gentle = 0;
+  let flights = 0, gentle = 0, front = -Infinity;
   for (let s = 0, next = 0; s < count;) {
     let end = s;
     while (end + 1 < count && segment[end + 1] === segment[s]) end++;
@@ -216,8 +219,9 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
       const length = ramp.to - ramp.from, kind = length < samples(MEDIUM_RAMP) ? 0 : length < samples(LONG_RAMP) ? 1 : 2;
       const at = ramps.indexOf(ramp), near = other => other && segment[other.from] === segment[ramp.from] && other.side !== ramp.side &&
         Math.min(Math.abs(other.from - ramp.to), Math.abs(ramp.from - other.to)) < samples(CRAMPED);
-      let shot = kind && (near(ramps[at - 1]) || near(ramps[at + 1]))
-        ? look.gentle[gentle++ % look.gentle.length] : look.ramps[kind][turns[kind]++ % look.ramps[kind].length];
+      const cramped = kind && (near(ramps[at - 1]) || near(ramps[at + 1]));
+      let shot = cramped ? look.gentle[gentle++ % look.gentle.length] : look.ramps[kind][turns[kind]++ % look.ramps[kind].length];
+      if (look.front && !cramped && length >= samples(FRONT_RAMP) && ramp.from - front >= samples(FRONT_GAP)) { shot = look.front; front = ramp.from; }
       if (safe.has(stretch.from)) shot = look.gentle.at(-1);
       stretch.shot = shot;
       stretch.swing = out(ramp.side, shot.swing, k);
