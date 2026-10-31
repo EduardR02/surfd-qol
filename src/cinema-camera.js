@@ -37,18 +37,18 @@ const STEADY = {swing: 38, elevation: 9, distance: 1.15, lead: 0.18};
 // the start; how far round the start drifts (degrees); a teleport's opening
 // and the finish's rise (degrees), widening and drift round; the share of
 // the way to a landing the view leads by; the fov's widening at speed; how
-// long shots take to ease into each other (seconds either side); and whether
-// it cuts between distant shots.
+// long shots take to ease into each other (seconds either side). Shots never
+// cut into each other, only teleports cut.
 const STYLES = {
   cinematic: {
     ramps: [[CHASE], [TRACK, LOW], [FRONT, TRACK, LOW]], gentle: [LOW, CHASE], flights: [ARC, AHEAD, FLIGHT],
     flight: FLIGHT, start: {swing: 0, elevation: 10, distance: 1.45, lead: 0.1},
-    orbit: 70, establish: {rise: 16, widen: 0.8}, finish: {rise: 12, widen: 1.2, swing: 30}, landing: 0.3, fov: 10, transition: 0.4, cuts: true,
+    orbit: 70, establish: {rise: 16, widen: 0.8}, finish: {rise: 12, widen: 1.2, swing: 30}, landing: 0.3, fov: 10, transition: 0.5,
   },
   steady: {
     ramps: [[STEADY], [STEADY], [STEADY]], gentle: [STEADY], flights: [],
     flight: {swing: 0, elevation: 11, distance: 1.2, lead: 0.16}, start: {swing: 0, elevation: 10, distance: 1.15, lead: 0.12},
-    orbit: 0, establish: {rise: 0, widen: 0}, finish: {rise: 6, widen: 0.4, swing: 0}, landing: 0.15, fov: 6, transition: 0.55, cuts: false,
+    orbit: 0, establish: {rise: 0, widen: 0}, finish: {rise: 6, widen: 0.4, swing: 0}, landing: 0.15, fov: 6, transition: 0.55,
   },
 };
 // Flights longer than LONGEST_FLIGHT (running, hopping) keep the plain flight shot.
@@ -58,11 +58,8 @@ const RAMP_GAP = 0.2, RAMP_MIN = 0.3, SAME_FACE = Math.cos(40 * Math.PI / 180);
 // In flight the swing keeps this share of both ramps' swings: back behind
 // between opposite sides, still out to the side between two on the same side.
 const FLIGHT_SWING = 0.35;
-// Between stretches whose swings differ by more than CUT_SWING degrees, the
-// cinematic camera cuts rather than spinning round, unless that would cross
-// the line: from one side of their travel to the other (within AXIS degrees
-// of straight behind or ahead counts as neither side).
-const CUT_SWING = 70, AXIS = 20;
+// Within AXIS degrees of straight behind or ahead, a shot isn't beside them.
+const AXIS = 20;
 // The view leads towards a landing at most this many seconds away.
 const LANDING_AHEAD = 3;
 // Before the start the camera drifts round to behind at ORBIT_RATE degrees a second.
@@ -260,7 +257,6 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
 }
 
 // Which side of the travel a swing is on: 1 right, -1 left, 0 near the axis.
-const sideOf = swing => Math.abs(swing) < AXIS * DEGREES || Math.abs(swing) > (180 - AXIS) * DEGREES ? 0 : Math.sign(swing);
 
 // trace(from, to) is the clear fraction of the way, 1 when nothing is hit.
 // others: [{track, map}], each run and where it is for each of a's ticks
@@ -367,14 +363,11 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   // Plans the shots and checks them; safe holds the stretches (by their first
   // sample) that must take the style's safest shot.
   const shoot = async safe => {
-    const cutTicks = cutTick.slice();
     const stretches = planStretches(ramps, segment, count, first, look, seconds, spread, safe);
     const swingAt = new Float32Array(count), riseAt = new Float32Array(count), widenAt = new Float32Array(count), leadAt = new Float32Array(count);
     const ahead = [new Float32Array(count), new Float32Array(count), new Float32Array(count)];
     const ask = (s, shot, swing) => { swingAt[s] = swing; riseAt[s] = shot.elevation * DEGREES; widenAt[s] = shot.distance; leadAt[s] = shot.lead; };
-    // The camera cuts where a big change of swing would spin it round; never across the line.
-    const cuts = new Set();
-    stretches.forEach((stretch, index) => {
+    stretches.forEach(stretch => {
       for (let s = stretch.from; s <= stretch.to; s++) {
         const through = stretch.to > stretch.from ? (s - stretch.from) / (stretch.to - stretch.from) : 0;
         ask(s, stretch.shot, stretch.swing + (stretch.last - stretch.swing) * through);
@@ -382,9 +375,6 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         if (landing && landing.from - s <= seconds(LANDING_AHEAD))
           for (let axis = 0; axis < 3; axis++) ahead[axis][s] = runs[0][landing.from * 3 + axis] - runs[0][s * 3 + axis];
       }
-      const previous = stretches[index - 1];
-      if (look.cuts && previous && segment[previous.to] === segment[stretch.from] && Math.abs(stretch.swing - previous.last) > CUT_SWING * DEGREES &&
-        sideOf(stretch.swing) * sideOf(previous.last) >= 0) cuts.add(stretch.from);
     });
     // Before the start: a slow drift round from the first ramp's side to
     // behind, facing the way they'll leave.
@@ -394,7 +384,6 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     const lx = runs[0][leave * 3] - runs[0][first * 3], ly = runs[0][leave * 3 + 1] - runs[0][first * 3 + 1], away = Math.hypot(lx, ly);
     if (zone < first && segment[leave] === segment[first] && away > 50) {
       const side = ramps.find(ramp => ramp.from >= first)?.side ?? 1;
-      for (const cut of cuts) if (cut < first) cuts.delete(cut);
       for (let s = zone; s < first; s++) {
         const wait = (first - s) * a.dt * STEP;
         ask(s, look.start, side * Math.min(look.orbit, ORBIT_RATE * wait) * DEGREES);
@@ -420,14 +409,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         swingAt[s] += (Math.sign(swingAt[finish]) || 1) * look.finish.swing * DEGREES * out;
       }
 
-    // What the camera eases between shots (view) stops at its cuts as well as
-    // at teleports, though the route runs on.
-    const view = new Uint32Array(count);
-    for (let s = 1, k = 0; s < count; s++) {
-      if (segment[s] !== segment[s - 1]) k++;
-      else if (cuts.has(s)) { k++; cutTicks[s] = sampleTick(s); }
-      view[s] = k;
-    }
+    // Shots ease into each other everywhere but at teleports.
+    const view = segment;
     // Blurred long enough to follow the route rather than each flight across a gap.
     const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
     const ease = seconds(look.transition);
@@ -582,7 +565,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       for (let s = stretch.from; s <= stretch.to && firstLook; s++) if (firstLook.obstructed[s] || firstLook.blocked[s] < far[s] * 0.5) bad++;
       if (bad > (stretch.to - stretch.from + 1) * TROUBLE) troubled.add(stretch.from);
     }
-    return {shot, fov, view, cutTicks, troubled};
+    return {shot, fov, view, cutTicks: cutTick, troubled};
   };
   let planned = await shoot(new Set());
   if (planned?.troubled.size) planned = await shoot(planned.troubled);
