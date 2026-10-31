@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v21:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v22:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -323,13 +323,17 @@ function cinemaHooks(source) {
       // Three's compileAsync has no cancellation: its internal polling can
       // outlive a disposed renderer. Submit the same parallel compilation,
       // but own the readiness wait so scene disposal can stop it safely.
-      compile = `qolCompile:typeof ${webgl}.compile==="function"&&${webgl}.extensions?.has?.("KHR_parallel_shader_compile")&&Array.isArray(${webgl}.info?.programs)?(root,signal)=>{
-        ${webgl}.compile(root,${camera},${scene});
-        const programs=${webgl}.info.programs.slice();
+      compile = `qolCompile:typeof ${webgl}.compile==="function"&&${webgl}.extensions?.has?.("KHR_parallel_shader_compile")&&typeof ${webgl}.properties?.get==="function"?(root,signal)=>{
+        const materials=${webgl}.compile(root,${camera},${scene}),programs=new Set();
+        for(const material of materials)for(const program of ${webgl}.properties.get(material).programs.values())programs.add(program);
         return new Promise(resolve=>{
           let timer;
           const done=()=>{clearTimeout(timer);signal?.removeEventListener("abort",done);resolve();};
-          const check=()=>{if(signal?.aborted||${webgl}.getContext().isContextLost()||programs.every(program=>program.isReady()))done();else timer=setTimeout(check,10);};
+          const check=()=>{
+            if(signal?.aborted||${webgl}.getContext().isContextLost()){done();return;}
+            for(const program of programs)if(!program.isReady()){timer=setTimeout(check,10);return;}
+            done();
+          };
           signal?.addEventListener("abort",done,{once:true});
           check();
         });

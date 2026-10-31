@@ -1,7 +1,7 @@
-// Compare's camera, planned for the whole replay before it plays. Every run is
-// known in advance, so each choice is smoothed both ways in time: a move starts
-// before the ramp or landing that calls for it, the camera never lags the
-// ghosts, and seeking needs no catching up.
+// Camera shots planned from a recorded route or a window around the playhead.
+// Each choice is smoothed both ways in time, so moves can begin before the
+// ramp or landing that calls for them. A complete route uses the same math
+// and can replace its initial window while playback continues.
 //
 // The shots follow the played run's route. On a ramp the camera is out on its
 // open side (the side its face looks to), so the ramp never hides the ghosts,
@@ -113,6 +113,8 @@ const CLEARANCE = 14;
 // Detours tried when the planned spot is blocked: [swing, rise] in degrees.
 // Lowering stops at a few degrees above the ghosts (or where the shot already is).
 const DETOURS = [[0, 0], [18, 0], [-18, 0], [0, 16], [0, -14], [36, 6], [-36, 6], [0, 32], [0, -24], [65, 12], [-65, 12]];
+const DETOUR_CEILING = DETOURS.map(([turn, up]) => 1 - Math.abs(turn) * 0.004 - Math.max(up * 0.018, -up * 0.005));
+for (let index = DETOURS.length - 2; index >= 0; index--) DETOUR_CEILING[index] = Math.max(DETOUR_CEILING[index], DETOUR_CEILING[index + 1]);
 const DETOUR_FLOOR = 4;
 const TRACE_EVERY = 2;               // samples per occlusion test
 const SLICE = 80;
@@ -487,7 +489,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         }
         from.x = focus[0][s]; from.y = focus[1][s]; from.z = focus[2][s];
         let best = null;
-        for (const [turn, up] of DETOURS) {
+        for (let index = 0; index < DETOURS.length; index++) {
+          const [turn, up] = DETOURS[index];
           const az = azimuth[s] + turn * DEGREES, d = distance[s];
           const el = clamp(elevation[s] + up * DEGREES, Math.min(elevation[s], DETOUR_FLOOR * DEGREES), 1.35);
           if (up < 0 && el >= elevation[s]) continue;
@@ -497,7 +500,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
           // turning or coming closer wins wherever they can.
           const score = Math.min(1, clear / 0.7) - Math.abs(turn) * 0.004 - Math.max(up * 0.018, -up * 0.005);
           if (!best || score > best.score) best = {score, turn, lift: el - elevation[s], room: clear * d - CLEARANCE};
-          if (clear >= 0.98) break;
+          // Stop when even a perfectly clear remaining detour cannot win.
+          if (clear >= 0.98 || best.score >= (DETOUR_CEILING[index + 1] ?? -Infinity)) break;
         }
         for (let k = s; k < Math.min(count, s + TRACE_EVERY); k++) {
           detour[k] = best.turn * DEGREES; lift[k] = best.lift; limit[k] = Math.max(MIN_DISTANCE, best.room);

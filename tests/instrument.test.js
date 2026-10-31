@@ -85,6 +85,25 @@ function fixture() {
   `)({__SURFD_QOL__: {attach: value => { adapter = value; }}});
   return {adapter, runtime};
 }
+function shaderFixture() {
+  const source = nativeSource.replace('const resize=()=>{},api={', `
+    const shader={ready:false,lost:false,foreignReads:0};
+    const front={isReady:()=>true},back={isReady:()=>shader.ready},foreign={isReady:()=>{shader.foreignReads++;return false}};
+    const material={},programs=new Map([['front',front],['back',back]]);
+    const gl={compile:()=>new Set([material]),extensions:{has:()=>true},
+      info:{programs:[foreign,front,back]},properties:{get:()=>({currentProgram:front,programs})},
+      getContext:()=>({isContextLost:()=>shader.lost}),render(){}};
+    const resize=()=>{},api={`)
+    .replace('api.lastView=view', 'api.lastView=view;gl.render(scene,camera)')
+    .replace('return api}', 'api.shader=shader;return api}');
+  let adapter;
+  const timers = new Set();
+  new Function('globalThis', 'setTimeout', 'clearTimeout', instrumentReplayFixture(source))(
+    {__SURFD_QOL__: {attach: value => { adapter = value; }}},
+    callback => { timers.add(callback); return callback; }, callback => timers.delete(callback));
+  return {renderer: adapter.cinema.renderer(), timers,
+    flush() { for (const callback of [...timers]) { timers.delete(callback); callback(); } }};
+}
 
 describe('native replay instrumentation', () => {
   test('extension reservation cancels an older native download without reserving again at startup', async () => {
@@ -180,6 +199,27 @@ describe('optional Compare view instrumentation', () => {
     } finally { console.warn = originalWarn; }
     expect(adapter.cinema).toBeUndefined();
     expect(adapter.replay.playback).toBeTypeOf('function');
+  });
+  test('prewarming waits for both material variants but not unrelated map programs', async () => {
+    const {renderer, flush} = shaderFixture();
+    let settled = false;
+    const ready = renderer.qolCompile({});
+    ready.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    renderer.shader.ready = true;
+    flush();
+    await ready;
+    expect(renderer.shader.foreignReads).toBe(0);
+  });
+  test('aborting a pending shader wait stops its readiness polling', async () => {
+    const {renderer, timers} = shaderFixture();
+    const controller = new AbortController();
+    const ready = renderer.qolCompile({}, controller.signal);
+    expect(timers.size).toBe(1);
+    controller.abort();
+    await ready;
+    expect(timers.size).toBe(0);
   });
 });
 
