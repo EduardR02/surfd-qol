@@ -88,7 +88,7 @@ for (const [name, loader] of [
     ];
     const validations = [];
     const run = harness(packs, {
-      sky: ['sky'], useCompressed: true, compressedTextures: {'base.png': descriptor},
+      sky: Array(6).fill('sky'), useCompressed: true, compressedTextures: {'base.png': descriptor},
       validateDDS(buffer, value) { validations.push([Array.from(new Uint8Array(buffer)), value]); },
     }, loader);
     run.read('second');
@@ -106,6 +106,39 @@ for (const [name, loader] of [
     expect([...resources.pendingCompressed.keys()]).toEqual(['base.png']);
     expect(resources.signal).toBe(run.controller.signal);
   });
+
+  for (const [label, sky] of [
+    ['null sky', null],
+    ['empty sky', []],
+    ['incomplete sky', ['sky']],
+    ['null faces', Array(6).fill(null)],
+    ['missing face', ['sky', 'sky', null, 'sky', 'sky', 'sky']],
+    ['empty face', ['sky', 'sky', '', 'sky', 'sky', 'sky']],
+    ['undefined face', ['sky', 'sky', undefined, 'sky', 'sky', 'sky']],
+    ['too many faces', Array(7).fill('sky')],
+  ]) {
+    test(`${name}: native fog fallback accepts ${label} without waiting for sky decoding`, async () => {
+      const run = harness([
+        pack('mesh', [{url: 'world', kind: 'mesh', bytes: [1]}]),
+        pack('images', [{url: 'sky', bytes: [2]}]),
+      ], {sky}, loader);
+      run.read('mesh');
+      const resources = await run.initial;
+      expect(resources.images.size).toBe(0);
+      expect(run.aborts).toEqual([]);
+      run.read('images');
+      await run.decodeStarted('sky');
+      const value = run.decode('sky');
+      await resources.ready;
+      expect(resources.images.get('sky')).toBe(value);
+    });
+  }
+
+  test(`${name}: a complete native sky still rejects a missing packed image`, async () => {
+    const run = harness([], {sky: Array(6).fill('missing')}, loader);
+    await expect(run.initial).rejects.toThrow('Missing sky image');
+    expect(run.aborts).toHaveLength(1);
+  });
 }
 
 test('initial readiness requires every mesh and every sky image, not background decoding', async () => {
@@ -114,7 +147,7 @@ test('initial readiness requires every mesh and every sky image, not background 
     pack('geometry', [{url: 'world', kind: 'mesh', bytes: [1]}, {url: 'prop', kind: 'mesh', bytes: [2]}]),
     pack('sky-pack', [{url: 'sky', bytes: [3]}]),
   ];
-  const run = harness(packs, {sky: ['sky']});
+  const run = harness(packs, {sky: Array(6).fill('sky')});
   expect(run.readOrder).toEqual(['geometry', 'sky-pack']);
   run.read('geometry');
   await run.readStarted('background');
@@ -263,7 +296,7 @@ test('failure before handoff closes loader-owned images and rejects initial read
   const run = harness([
     pack('sky', [{url: 'sky', bytes: [1]}]),
     pack('mesh', [{url: 'world', kind: 'mesh', bytes: [2]}]),
-  ], {sky: ['sky']});
+  ], {sky: Array(6).fill('sky')});
   run.read('sky');
   await run.decodeStarted('sky');
   const owned = image('sky');
@@ -354,7 +387,7 @@ test('a required sky decode failure rejects initial readiness and aborts the own
   const run = harness([
     pack('mesh', [{url: 'world', kind: 'mesh', bytes: [1]}]),
     pack('sky', [{url: 'sky', bytes: [2]}]),
-  ], {sky: ['sky']});
+  ], {sky: Array(6).fill('sky')});
   run.read('mesh');
   run.read('sky');
   await run.decodeStarted('sky');

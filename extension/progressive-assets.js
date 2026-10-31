@@ -3,7 +3,8 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
   const meshes = new Map(), images = new Map(), compressed = new Map();
   const pendingImages = new Map(), pendingCompressed = new Map();
   const assets = new Map(), alternatives = new Map();
-  const sky = new Set(data.sky);
+  // Native rendering falls back to fog unless all six sky faces are present.
+  const sky = new Set(data.sky?.length === 6 && data.sky.every(Boolean) ? data.sky : []);
   const unread = [], decodeQueue = [];
   let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0;
   let stopped = false, handedOff = false;

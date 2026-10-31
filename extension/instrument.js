@@ -6,7 +6,7 @@ import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v30:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v31:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
