@@ -1,10 +1,11 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 import {packCollisionWorld, unpackCollisionWorld} from './collision-world.js';
+import {nativeCollisionTreeHooks} from './collision-tree.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v28:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v29:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -113,7 +114,7 @@ function alreadyInstrumented(source) {
 
 export function instrumentPhysicsWorker(source) {
   if (alreadyInstrumented(source)) return source;
-  const patched = preparedIndexWorkerHooks(collisionBoundsHook(source));
+  const patched = preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)));
   return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision preparation */`;
 }
 
@@ -472,6 +473,7 @@ export function instrumentGame(source) {
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   source = collisionBoundsHook(source);
+  source = nativeCollisionTreeHooks(source);
   source = preparedIndexHooks(source);
   source = nativeStageResetHooks(source);
   source = nativeMapLoadHooks(source);
