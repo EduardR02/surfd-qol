@@ -1,16 +1,32 @@
-// ImageBitmap avoids the HTML image/blob-URL upload path. Native decoding stays
-// available on browsers which lack it or reject its decoding options.
+// Keep ImageBitmap's upload/orientation behavior. WebCodecs can decode directly
+// from packed bytes, avoiding a Blob read for each image; both fallbacks remain.
 export async function decodeMapImage(bytes, url, signal, nativeDecode) {
   if (signal.aborted) throw signal.reason;
   if (typeof createImageBitmap !== 'function') return nativeDecode(bytes, url, signal);
+  const type = url.endsWith('.png') ? 'image/png' : url.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+  const options = {premultiplyAlpha: 'none', colorSpaceConversion: 'default', imageOrientation: 'none'};
   let image;
-  try {
-    image = await createImageBitmap(new Blob([bytes], {type: url.endsWith('.png')
-      ? 'image/png' : url.endsWith('.webp') ? 'image/webp' : 'image/jpeg'}),
-    {premultiplyAlpha: 'none', colorSpaceConversion: 'default', imageOrientation: 'none'});
-  } catch {
-    if (signal.aborted) throw signal.reason;
-    return nativeDecode(bytes, url, signal);
+  if (typeof ImageDecoder === 'function') {
+    let decoder, frame;
+    try {
+      decoder = new ImageDecoder({data: bytes, type, colorSpaceConversion: 'default', preferAnimation: false});
+      frame = (await decoder.decode({frameIndex: 0, completeFramesOnly: true})).image;
+      if (signal.aborted) throw signal.reason;
+      image = await createImageBitmap(frame, options);
+    } catch {
+      if (signal.aborted) throw signal.reason;
+    } finally {
+      frame?.close();
+      decoder?.close();
+    }
+  }
+  if (!image) {
+    try {
+      image = await createImageBitmap(new Blob([bytes], {type}), options);
+    } catch {
+      if (signal.aborted) throw signal.reason;
+      return nativeDecode(bytes, url, signal);
+    }
   }
   if (signal.aborted) { image.close(); throw signal.reason; }
   return image;

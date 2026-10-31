@@ -105,13 +105,19 @@ test('standalone injected preparation keeps its scheduling and cancellation beha
   expect(state.warmed.size).toBe(0);
 });
 
-async function withDecoder(decoder, run) {
-  const original = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap');
-  Object.defineProperty(globalThis, 'createImageBitmap', {value: decoder, configurable: true});
+async function withDecoder(decoder, run, imageDecoder = undefined) {
+  const globals = {createImageBitmap: decoder, ImageDecoder: imageDecoder};
+  const originals = new Map(Object.keys(globals).map(key =>
+    [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) {
+    Object.defineProperty(globalThis, key, {value, configurable: true});
+  }
   try { await run(); }
   finally {
-    if (original) Object.defineProperty(globalThis, 'createImageBitmap', original);
-    else delete globalThis.createImageBitmap;
+    for (const [key, original] of originals) {
+      if (original) Object.defineProperty(globalThis, key, original);
+      else delete globalThis[key];
+    }
   }
 }
 
@@ -147,4 +153,54 @@ test('unsupported bitmap decoding retains native image errors instead of swallow
         () => Promise.reject(Error('Invalid image')))).rejects.toThrow('Invalid image');
     });
   }
+});
+
+test('cancelling a codec decode releases its frame and decoder without starting bitmap conversion', async () => {
+  const controller = new AbortController();
+  let finish, framesClosed = 0, decodersClosed = 0;
+  await withDecoder(() => { throw Error('Unexpected bitmap conversion'); }, async () => {
+    const loading = decodeMapImage(new Uint8Array([1]), 'test.webp', controller.signal,
+      () => { throw Error('Unexpected native retry'); });
+    controller.abort(Error('Changed map'));
+    finish({image: {close() { framesClosed++; }}});
+    await expect(loading).rejects.toThrow('Changed map');
+    expect(framesClosed).toBe(1);
+    expect(decodersClosed).toBe(1);
+  }, class {
+    decode() { return new Promise(resolve => { finish = resolve; }); }
+    close() { decodersClosed++; }
+  });
+});
+
+test('cancelling bitmap conversion releases both decoded and converted images', async () => {
+  const controller = new AbortController();
+  let finish, started, framesClosed = 0, bitmapsClosed = 0, decodersClosed = 0;
+  const converting = new Promise(resolve => { started = resolve; });
+  await withDecoder(() => new Promise(resolve => { finish = resolve; started(); }), async () => {
+    const loading = decodeMapImage(new Uint8Array([1]), 'test.webp', controller.signal,
+      () => { throw Error('Unexpected native retry'); });
+    await converting;
+    controller.abort(Error('Changed map'));
+    finish({close() { bitmapsClosed++; }});
+    await expect(loading).rejects.toThrow('Changed map');
+    expect(framesClosed).toBe(1);
+    expect(bitmapsClosed).toBe(1);
+    expect(decodersClosed).toBe(1);
+  }, class {
+    async decode() { return {image: {close() { framesClosed++; }}}; }
+    close() { decodersClosed++; }
+  });
+});
+
+test('failed codec-to-bitmap conversion releases codec resources and preserves native image errors', async () => {
+  let framesClosed = 0, decodersClosed = 0;
+  await withDecoder(() => Promise.reject(Error('Unsupported bitmap conversion')), async () => {
+    await expect(decodeMapImage(new Uint8Array([1]), 'broken.webp', new AbortController().signal,
+      () => Promise.reject(Error('Invalid image')))).rejects.toThrow('Invalid image');
+    expect(framesClosed).toBe(1);
+    expect(decodersClosed).toBe(1);
+  }, class {
+    async decode() { return {image: {close() { framesClosed++; }}}; }
+    close() { decodersClosed++; }
+  });
 });
