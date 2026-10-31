@@ -1,4 +1,4 @@
-import { instrumentGame } from './instrument.js';
+import { instrumentGame, instrumentPhysicsWorker } from './instrument.js';
 import { loadGameSource } from './source-loader.js';
 import { createUpdateChecker } from './update-check.js';
 
@@ -22,7 +22,13 @@ async function attach(tabId) {
     if (!isSurfd(tab.url)) throw new Error('Only https://surfd.net is supported.');
     await chrome.debugger.attach({ tabId }, '1.3');
     try {
-      await command(tabId, 'Fetch.enable', { patterns: [{ urlPattern: 'https://surfd.net/assets/game-*.js', resourceType: 'Script', requestStage: 'Response' }] });
+      await command(tabId, 'Fetch.enable', { patterns: [
+        { urlPattern: 'https://surfd.net/assets/game-*.js', resourceType: 'Script', requestStage: 'Response' },
+        // Dedicated-worker entry scripts report as Other on current Chromium.
+        ...['checkpoint-speed', 'ghost', 'replay-index'].map(name => ({
+          urlPattern: `https://surfd.net/assets/${name}.worker-*.js`, requestStage: 'Response'
+        }))
+      ] });
       // The game module may have been requested before attach completed; reload so it passes through Fetch.
       await chrome.tabs.reload(tabId);
     } catch (error) {
@@ -52,6 +58,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
   if (tabId === undefined || method !== 'Fetch.requestPaused') return;
   const { requestId } = params;
+  const isGame = params.request.url.startsWith(`${origin}/assets/game-`);
   let released = false;
   try {
     if (![200, 304].includes(params.responseStatusCode) || new URL(params.request.url).origin !== origin) return;
@@ -61,7 +68,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       text = response.base64Encoded ? new TextDecoder().decode(Uint8Array.from(atob(response.body), c => c.charCodeAt(0))) : response.body;
     }
     text = await loadGameSource(params.request.url, text);
-    const patched = instrumentGame(text);
+    const patched = isGame ? instrumentGame(text) : instrumentPhysicsWorker(text);
     const bytes = new TextEncoder().encode(patched);
     // Modules are ASCII in current builds; conversion also handles future UTF-8 assets.
     let binary = '';
@@ -70,9 +77,10 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
     responseHeaders.push({ name: 'Content-Type', value: 'text/javascript; charset=utf-8' });
     await command(tabId, 'Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders, body: btoa(binary) });
     released = true;
-    await status(tabId, 'Tick observer connected.');
+    if (isGame) await status(tabId, 'Tick observer connected.');
   } catch (error) {
-    await status(tabId, `${error.message}. Game left unmodified; feedback unavailable.`, true);
+    if (isGame) await status(tabId, `${error.message}. Game left unmodified; feedback unavailable.`, true);
+    else console.warn('[Surfd QoL] Native worker optimization unavailable:', error.message);
   } finally {
     if (!released) await command(tabId, 'Fetch.continueRequest', { requestId }).catch(() => {});
   }

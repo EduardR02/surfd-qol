@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v22:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v23:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -14,6 +14,30 @@ function unique(source, pattern, label) {
   const matches = [...source.matchAll(pattern)];
   if (matches.length !== 1) throw new Error(`Unsupported Surfd build: ${label} (${matches.length} matches)`);
   return matches[0];
+}
+
+// Keep the native BVH's inclusive comparisons and axis order, without an
+// Array.every callback and dynamic property lookup for every visited box.
+function collisionBoundsHook(source) {
+  const pattern = new RegExp(`(${identifier})=\\["x","y","z"\\],(${identifier})=\\((${identifier}),(${identifier})\\)=>\\1\\.every\\((${identifier})=>\\3\\.min\\[\\5\\]<=\\4\\.max\\[\\5\\]&&\\3\\.max\\[\\5\\]>=\\4\\.min\\[\\5\\]\\)`, 'g');
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) return source;
+  const [match, axes, overlap, a, b, axis] = matches[0];
+  if (new Set([axes, overlap, a, b, axis]).size !== 5) return source;
+  const comparisons = ['x', 'y', 'z'].map(key => `${a}.min.${key}<=${b}.max.${key}&&${a}.max.${key}>=${b}.min.${key}`).join('&&');
+  return source.slice(0, matches[0].index) + `${axes}=["x","y","z"],${overlap}=(${a},${b})=>${comparisons}` + source.slice(matches[0].index + match.length);
+}
+
+function alreadyInstrumented(source) {
+  if (!source.includes('\n/* surfd-qol-adapter-v')) return false;
+  if (isCurrentInstrumented(source)) return true;
+  throw new Error('Stale Surfd QoL adapter');
+}
+
+export function instrumentPhysicsWorker(source) {
+  if (alreadyInstrumented(source)) return source;
+  const patched = collisionBoundsHook(source);
+  return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision bounds */`;
 }
 
 // Replay hooks are optional: when the game's watch function or its replay
@@ -351,15 +375,11 @@ function cinemaHooks(source) {
   }
 }
 
-// Movement code is not rewritten: the adapter is appended and reads the game's
-// own objects, and the optional hooks edit only UI, transport and renderer code.
-// An unrecognised layout fails open (hook off, or game unmodified) instead of guessing.
+// The adapter reads native objects. Optional hooks integrate UI, transport and
+// rendering, and unroll an exactly recognised collision-box comparison without
+// changing movement rules. Unrecognised hooks leave that native code unchanged.
 export function instrumentGame(source) {
-  const injected = source.indexOf('\n/* surfd-qol-adapter-v');
-  if (injected >= 0) {
-    if (isCurrentInstrumented(source)) return source;
-    throw new Error('Stale Surfd QoL adapter');
-  }
+  if (alreadyInstrumented(source)) return source;
   const state = unique(source, new RegExp(`state:(${identifier})\\?\\.state,run:\\1\\?\\.timer\\.state`, 'g'), 'session snapshot')[1];
   const viewed = unique(source, new RegExp(`spectator:\\{target:(${identifier}),view:(${identifier})\\}`, 'g'), 'spectator view');
   const marker = unique(source, /checkpointSpeeds=\[\];startJumps=0/g, 'session fields').index;
@@ -374,6 +394,7 @@ export function instrumentGame(source) {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
+  source = collisionBoundsHook(source);
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
   const practice = practiceHooks(source, sessionClass, state);

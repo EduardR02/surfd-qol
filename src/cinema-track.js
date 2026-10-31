@@ -2,7 +2,6 @@
 // faced, whether they crouched and which ramp they were surfing. Compare plays
 // one run in the game's own player and draws the others from their tracks;
 // recorded windows can already be viewed while the rest is being simulated.
-import {observePhysics} from './observer.js';
 import {MAX_COMMANDS} from './replay-store.js';
 
 const SLICE_COMMANDS = 64;
@@ -52,7 +51,7 @@ function rampNormal(contacts, from, groundNormal) {
 // Re-simulates the replay on the loaded map in idle-time slices. Null when it
 // isn't for this map, is too long, or stops being wanted (isCurrent()).
 // onProgress borrows the first `count` recorded positions, never the suffix.
-// It runs between batches, after releasing the shadow physics observer.
+// Only the shadow movement instance is observed; callbacks run between batches.
 export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null}) {
   if (typeof adapter?.Session !== 'function' || typeof adapter.Movement !== 'function' || !session?.map ||
     !Array.isArray(replay?.commands) || !replay.commands.length || replay.commands.length > MAX_COMMANDS ||
@@ -66,7 +65,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
   const track = createTrack(replay.commands.length + 1, dt);
   track.phase = new Uint8Array(track.count);
   const base = shadow.state.tick ?? replay.initialState?.tick ?? 0;
-  let index = 0, normal = null, active = null, startTick = null, splits = 0;
+  let index = 0, normal = null, startTick = null, splits = 0;
   // A replay can open with the player dropping from where the game put them
   // onto the floor. That isn't part of the route, so the ghost and its path
   // start where they land; a run that starts before landing keeps its fall.
@@ -97,17 +96,18 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
     if (timer?.phase === 'ready') startTick = null;
     if (landed === at) for (let before = 0; before < at; before++) track.position.copyWithin(before * 3, at * 3, at * 3 + 3);
   };
-  // Only ramp contacts are wanted, so the other observer callbacks do nothing.
-  const contacts = {begin() {}, end() {}, acceleration() {}, reset() {},
-    collision(collision) { normal ??= rampNormal(collision.contacts ?? [], collision.firstContact ?? 0, groundNormal); }};
-  const shadowAdapter = {Session: adapter.Session, Movement: adapter.Movement, getSession: () => active};
-  keep(0);
-  while (index < replay.commands.length) {
-    if (!isCurrent()) return null;
-    // Observers never survive an await: the game's own ticks run in between.
-    const observer = observePhysics(shadowAdapter, contacts);
-    active = shadow;
-    try {
+  const movement = shadow.movement, slide = movement.slide;
+  movement.slide = function (state, result) {
+    if (state.grounded) return slide.apply(this, arguments);
+    const firstContact = result.contacts.length;
+    const returned = slide.apply(this, arguments);
+    normal ??= rampNormal(result.contacts, firstContact, groundNormal);
+    return returned;
+  };
+  try {
+    keep(0);
+    while (index < replay.commands.length) {
+      if (!isCurrent()) return null;
       const end = Math.min(index + SLICE_COMMANDS, replay.commands.length);
       while (index < replay.commands.length && (index < end || idleLeft(deadline))) {
         normal = null;
@@ -117,13 +117,10 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
         // A start-zone re-entry resets only the clock, not the physics path.
         // keep() follows the final departure, including sub-tick startTick.
       }
-    } finally {
-      active = null;
-      observer.destroy();
+      if (landed !== null && isCurrent()) onProgress?.(track, index + 1);
+      if (index < replay.commands.length) deadline = await yieldTask();
     }
-    if (landed !== null && isCurrent()) onProgress?.(track, index + 1);
-    if (index < replay.commands.length) deadline = await yieldTask();
-  }
+  } finally { movement.slide = slide; }
   if (!isCurrent()) return null;
   // The finish counts as a split in the game's timer; keep checkpoints only.
   if (track.time !== null && track.splits.at(-1) === track.finish) track.splits.pop();

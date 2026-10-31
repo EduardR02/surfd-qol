@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, isCurrentInstrumented} from '../extension/instrument.js';
+import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, instrumentPhysicsWorker, isCurrentInstrumented} from '../extension/instrument.js';
 import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
 import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 
@@ -104,6 +104,50 @@ function shaderFixture() {
   return {renderer: adapter.cinema.renderer(), timers,
     flush() { for (const callback of [...timers]) { timers.delete(callback); callback(); } }};
 }
+
+for (const kind of ['game', 'worker']) describe(`native ${kind} collision broadphase comparisons`, () => {
+  function overlap(axes = '["x","y","z"]') {
+    const helper = `;const $axes=${axes},$overlap=($a,$b)=>$axes.every($axis=>$a.min[$axis]<=$b.max[$axis]&&$a.max[$axis]>=$b.min[$axis]);`;
+    const source = kind === 'game' ? instrumentReplayFixture(nativeSource + helper) : instrumentPhysicsWorker(helper);
+    return new Function('globalThis', source + ';return $overlap;')({});
+  }
+  const box = (min, max) => ({min: {x: min, y: min, z: min}, max: {x: max, y: max, z: max}});
+  test('keeps inclusive contacts and rejects separation on each axis', () => {
+    const testOverlap = overlap(), a = box(0, 1);
+    expect(testOverlap(a, box(1, 2))).toBe(true);
+    expect(testOverlap(box(-0, 0), box(0, -0))).toBe(true);
+    for (const axis of ['x', 'y', 'z']) {
+      const after = box(0, 1), before = box(0, 1);
+      after.min[axis] = 2;
+      before.max[axis] = -1;
+      expect(testOverlap(a, after)).toBe(false);
+      expect(testOverlap(a, before)).toBe(false);
+    }
+  });
+  test('preserves native NaN rejection, infinities and arbitrary bounds', () => {
+    const testOverlap = overlap();
+    let seed = 71;
+    const coordinate = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed - 2147483648) / 8192; };
+    const bounds = () => ({min: {x: coordinate(), y: coordinate(), z: coordinate()}, max: {x: coordinate(), y: coordinate(), z: coordinate()}});
+    const native = (a, b) => ['x', 'y', 'z'].every(axis => a.min[axis] <= b.max[axis] && a.max[axis] >= b.min[axis]);
+    for (let i = 0; i < 1000; i++) {
+      const a = bounds(), b = bounds();
+      expect(testOverlap(a, b)).toBe(native(a, b));
+    }
+    expect(testOverlap(box(-Infinity, Infinity), box(-1, 1))).toBe(true);
+    for (const axis of ['x', 'y', 'z']) for (const side of ['min', 'max']) {
+      const invalid = box(0, 1);
+      invalid[side][axis] = NaN;
+      expect(testOverlap(invalid, box(0, 1))).toBe(false);
+      expect(testOverlap(box(0, 1), invalid)).toBe(false);
+    }
+  });
+  test('leaves an unrecognised native axis set alone', () => {
+    const a = box(0, 1), b = box(0, 1);
+    a.min.z = 2;
+    expect(overlap('["x","y"]')(a, b)).toBe(true);
+  });
+});
 
 describe('native replay instrumentation', () => {
   test('extension reservation cancels an older native download without reserving again at startup', async () => {

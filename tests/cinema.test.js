@@ -23,7 +23,7 @@ function straight({count = 400, speed = 20, lead = 20, dt = 0.015, y = 0, normal
 }
 
 // Script native post-step states so timer transitions stay independent of
-// map geometry while recording still goes through the real observer path.
+// map geometry while recording uses the native session's step contract.
 async function recorded(commands, {base = 100, dt = 0.01, initialTimer = {phase: 'ready', elapsed: 0, splits: [], startTick: null}} = {}) {
   class Movement { accelerate() {} slide() {} }
   class Session {
@@ -86,6 +86,40 @@ describe('tracks', () => {
     expect(track.finish).toBe(6);
     expect(track.time).toBe(0.06);
     expect(track.elapsed[6]).toBe(0.06);
+  });
+  test('records only new airborne contacts, including a landing, without observing other sessions', async () => {
+    const old = {normal: {x: 0.8, y: 0, z: 0.6}}, fresh = {normal: {x: 0, y: -0.8, z: 0.6}};
+    class Movement {
+      slide(state, result) {
+        if (state.touch) result.contacts.push(fresh);
+        if (state.land) state.grounded = true;
+        return result;
+      }
+    }
+    class Session {
+      constructor(map, config) { this.map = map; this.config = config; this.movement = new Movement(); }
+      loadReplay() { this.state = {position: {x: 0, y: 0, z: 0}, yaw: 0}; }
+      step(command) {
+        Object.assign(this.state, command);
+        this.state.position.x++;
+        this.movement.slide(this.state, {contacts: [old]});
+        return [];
+      }
+    }
+    const map = {id: 'm', version: 1}, replay = {mapId: 'm', mapVersion: 1, config: {dt: 0.01},
+      commands: [{grounded: true, touch: true}, {grounded: false, touch: false},
+        {grounded: false, touch: true, land: true}, {grounded: false, touch: false, land: false}]};
+    const live = new Session(map, replay.config);
+    live.loadReplay();
+    const track = await recordTrack({adapter: {Session, Movement}, session: live, replay, yieldTask: async () => {
+      live.step({grounded: false, touch: true});
+      return null;
+    }});
+    expect([...track.normal.slice(3, 9)]).toEqual([0, 0, 0, 0, 0, 0]);
+    expect([...track.normal.slice(9, 12)]).toEqual([...new Float32Array([0, -0.8, 0.6])]);
+    expect([...track.normal.slice(12, 15)]).toEqual([0, 0, 0]);
+    expect([...track.position.filter((_, i) => i % 3 === 0)]).toEqual([0, 1, 2, 3, 4]);
+    expect(live.state.position.x).toBe(1);
   });
   test('uses the final fractional departure after popping out and returning to start', async () => {
     const timer = (phase, startTick, elapsed, splits = []) => ({phase, startTick, elapsed, splits});

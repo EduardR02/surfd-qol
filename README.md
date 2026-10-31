@@ -6,7 +6,7 @@
 
 A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay tools with a cinematic camera and other runs alongside, private rooms, a crouch-jump bind and nullbinds.
 
-Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It never changes physics, maps or your runs: it watches the game's own movement code and reports what happened.
+Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It preserves movement rules, maps and your runs: feedback watches the game's own movement code and reports what happened.
 
 **Download page: [eduardr02.github.io/surfd-qol](https://eduardr02.github.io/surfd-qol/)**
 
@@ -23,7 +23,7 @@ You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (
 
 ### About the "started debugging this browser" bar
 
-Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and only touches `assets/game-*.js`.
+Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and touches `assets/game-*.js` and the game's checkpoint-speed, ghost and replay-index worker scripts.
 
 You can close the bar with × or **Cancel**. Everything already loaded keeps working, including the binds, until you reload the page. The toolbar badge shows **ON** when the extension is active on the page and **!** if setup failed or the bar was closed before setup finished. Click the toolbar button to reconnect; that reloads the tab, so do it between runs. The bar comes back after each reload.
 
@@ -195,9 +195,11 @@ Tests run offline against fixtures: none of them load the site, the game's code 
 
 Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 
+On recognised builds, the loader unrolls the native collision-box helper in the main module and those three physics workers. It keeps the same inclusive comparisons and axis order, including NaN rejection; BVH traversal, candidate sorting and movement rules are unchanged. An unrecognised helper is left untouched, and an optional worker-patching failure leaves that worker native without disabling page feedback. This adds no map copies or geometry cache. The cinematic recorder captures new airborne contacts on its private shadow movement instance instead of installing general-purpose prototype observers for each recording batch.
+
 Source layout:
 
-- `extension/`: manifest, the background loader (debugger attach and script patching) and `instrument.js`, which appends an adapter to the game module.
+- `extension/`: manifest, the background loader (debugger attach and script patching) and `instrument.js`, which appends the game adapter and applies the optional native collision-box optimization.
 - `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
 - `src/observer.js`: wraps the game's movement methods without changing their results.
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
