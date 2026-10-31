@@ -44,6 +44,12 @@ function rendererRig({badGhost = -1, failMaterial = -1, failLineAdd = -1} = {}) 
   class Mesh {
     constructor(geometry, material) { this.geometry = geometry; this.material = material; this.position = new Vector(); }
   }
+  class Group {
+    constructor() { this.children = []; }
+    add(object) { this.children.push(object); }
+    remove(object) { const index = this.children.indexOf(object); if (index >= 0) this.children.splice(index, 1); }
+    traverse(visit) { visit(this); for (const object of this.children) visit(object); }
+  }
   const sentinel = {name: 'map'};
   const scene = {
     children: [sentinel],
@@ -65,7 +71,9 @@ function rendererRig({badGhost = -1, failMaterial = -1, failLineAdd = -1} = {}) 
       const label = {isSprite: true, visible: true};
       const trail = {material: {uniforms: {bandColor: {}}}, visible: true};
       const objects = ghosts.length === badGhost ? [label] : [body, outline, label, trail];
-      const group = {name: 'record-ghost', traverse(visit) { for (const object of objects) visit(object); }};
+      const group = new Group();
+      group.name = 'record-ghost';
+      for (const object of objects) group.add(object);
       scene.add(group);
       const ghost = {
         body, label, trail, disposed: 0, updates: [],
@@ -354,6 +362,59 @@ describe('cinematic replay resource reuse', () => {
     cinema.dispose();
     expect(rig.scene.children).toEqual([rig.sentinel]);
     expect(rig.geometries.every(geometry => geometry.disposed === 1)).toBe(true);
+    expect(rig.materials.every(material => material.disposed === 1)).toBe(true);
+  });
+});
+
+describe('cinematic shader preparation', () => {
+  test('keeps staged ghosts and paths out of the live map until compilation completes', async () => {
+    const rig = rendererRig();
+    let finish;
+    rig.renderer.qolCompile = () => new Promise(resolve => { finish = resolve; });
+    const cinema = createCinemaScene(rig.renderer, [{track: trackAt([0, 10, 20])}]);
+    const before = rig.scene.children.slice();
+    const ready = cinema.prepare();
+    expect(rig.scene.children).toEqual([rig.sentinel]);
+    expect(rig.geometries.every(geometry => geometry.disposed === 0)).toBe(true);
+    finish();
+    await ready;
+    expect(rig.scene.children).toEqual(before);
+    cinema.update([1], 1280, 720);
+    expect(rig.ghosts[0].updates.at(-1).frame.x).toBe(10);
+    cinema.dispose();
+  });
+
+  test('exiting during compilation never restores the scene and frees materials only once safe', async () => {
+    const rig = rendererRig();
+    let finish;
+    rig.renderer.qolCompile = () => new Promise(resolve => { finish = resolve; });
+    const cinema = createCinemaScene(rig.renderer, [{track: trackAt([0, 10, 20])}]);
+    const ready = cinema.prepare();
+    cinema.dispose();
+    cinema.dispose();
+    expect(rig.scene.children).toEqual([rig.sentinel]);
+    expect(rig.materials.every(material => material.disposed === 0)).toBe(true);
+    finish();
+    await ready;
+    expect(rig.scene.children).toEqual([rig.sentinel]);
+    expect(rig.geometries.every(geometry => geometry.disposed === 1)).toBe(true);
+    expect(rig.materials.every(material => material.disposed === 1)).toBe(true);
+  });
+
+  test.each(['unsupported', 'throws', 'rejects'])('preserves drawable ghosts and paths when prewarming %s', async mode => {
+    const rig = rendererRig();
+    if (mode !== 'unsupported') rig.renderer.qolCompile = () => {
+      if (mode === 'throws') throw new Error('compiler unavailable');
+      return Promise.reject(new Error('compiler unavailable'));
+    };
+    const cinema = createCinemaScene(rig.renderer, [{track: trackAt([0, 10, 20])}]);
+    const before = rig.scene.children.slice();
+    await cinema.prepare();
+    expect(rig.scene.children).toEqual(before);
+    cinema.update([1.5], 1280, 720);
+    expect(rig.ghosts[0].updates.at(-1).frame.x).toBe(15);
+    expect(rig.lines().every(mesh => mesh.visible)).toBe(true);
+    cinema.dispose();
     expect(rig.materials.every(material => material.disposed === 1)).toBe(true);
   });
 });

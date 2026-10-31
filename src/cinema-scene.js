@@ -236,7 +236,8 @@ function find(group, test) {
 export function createCinemaScene(renderer, runs) {
   const scene = renderer.qolScene, camera = renderer.qolCamera;
   const parts = [], disposers = [];
-  const dispose = () => {
+  let preparing = null, prepared = false, disposed = false;
+  const release = () => {
     let failure;
     while (disposers.length) {
       try { disposers.pop()(); } catch (error) { failure ??= error; }
@@ -278,10 +279,40 @@ export function createCinemaScene(renderer, runs) {
       far = {position: new three.Vector(), projectionMatrix: camera.projectionMatrix};
     }
   } catch (error) {
-    try { dispose(); } catch { /* Preserve the creation failure after cleaning every part. */ }
+    try { release(); } catch { /* Preserve the creation failure after cleaning every part. */ }
     throw error;
   }
+  const objects = () => parts.flatMap(part => [part.group, ...part.line.meshes]);
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const object of objects()) scene.remove(object);
+    // compileAsync still reads its materials until it resolves. Do not free
+    // their programs underneath it if the user exits or changes replay.
+    if (!preparing) release();
+  };
   return {
+    prepare() {
+      if (disposed || prepared || !renderer.qolCompile || !parts.length) return preparing;
+      prepared = true;
+      const root = new parts[0].group.constructor(), staged = objects();
+      // Keep these objects out of the live map until their shaders are ready.
+      // The compiler uses the map as its lighting/environment scene.
+      for (const object of staged) { scene.remove(object); root.add(object); }
+      const restore = () => {
+        for (const object of staged) root.remove(object);
+        if (disposed) release();
+        else for (const object of staged) scene.add(object);
+      };
+      try {
+        preparing = Promise.resolve(renderer.qolCompile(root)).catch(() => {
+          // Prewarming is an optimization, not a requirement for playback.
+        }).finally(() => { preparing = null; restore(); });
+      } catch {
+        restore();
+      }
+      return preparing;
+    },
     // at: each run's fractional track index; width/height: canvas CSS pixels.
     update(at, width, height) {
       for (let index = 0; index < parts.length; index++) {

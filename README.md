@@ -134,7 +134,9 @@ While you watch any replay, the view menu on the replay bar picks how you watch 
 - **Trails:** behind each ghost, six seconds of light in its colour, hot at the head and cooling as it tapers, with pulses running back along it and embers shed near the head, then a thin line of where it has been. Ahead, a slim line of light marks the route still to come. Trails follow replay time, so pausing freezes them and seeking restores them.
 - In Steady and Cinematic with other runs added, the timeline's touch marks and savelocs hide and Saveloc is off, since they belong to the watched run alone.
 
-Choosing a camera or adding a run re-simulates that run and plans the camera, which takes a moment; nothing runs before that. There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
+First use of a camera or an added run re-simulates the replay and plans the camera, which takes a moment; nothing runs before you request it. Reopening the camera on the same replay and loaded map reuses its recorded track and solo camera plans. Closing the view still frees its ghosts and GPU resources. Where parallel shader compilation is supported, new trail shaders prepare while POV keeps rendering; other clients keep the existing first-draw path.
+
+There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
 
 ### What's kept
 

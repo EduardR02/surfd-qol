@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v19:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v20:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -315,7 +315,14 @@ function cinemaHooks(source) {
     const object = unique(source, new RegExp(`(${identifier})=\\{resize:(${identifier}),setQuality:`, 'g'), 'map renderer');
     const call = unique(source, new RegExp(`(${identifier})\\.render\\(\\{state:${identifier},eyePosition:`, 'g'), 'frame render')[1];
     const ghost = unique(source, new RegExp(`ghost:(${identifier})\\|\\|(${identifier})\\?null:(${identifier})\\.frame\\((${identifier}),(${identifier})\\)\\}\\)`, 'g'), 'frame interpolation');
-    source = source.replace(object[0], () => `${object[1]}={qolScene:${scene},qolCamera:${camera},qolGhost:()=>${factory}(${scene}),resize:${object[2]},setQuality:`);
+    // Optional even within cinema: an unknown WebGL renderer layout must not
+    // disable the camera. Unsupported GPUs keep the existing first-draw path.
+    let compile = '';
+    try {
+      const webgl = unique(source, new RegExp(`(${identifier})\\.render\\(${literal(scene)},${literal(camera)}\\)`, 'g'), 'cinema WebGL renderer')[1];
+      compile = `qolCompile:typeof ${webgl}.compileAsync==="function"&&${webgl}.extensions?.has?.("KHR_parallel_shader_compile")?root=>${webgl}.compileAsync(root,${camera},${scene}):null,`;
+    } catch { /* Shader preparation is optional; the renderer hook still works. */ }
+    source = source.replace(object[0], () => `${object[1]}={${compile}qolScene:${scene},qolCamera:${camera},qolGhost:()=>${factory}(${scene}),resize:${object[2]},setQuality:`);
     source = source.replace(ghost[0], () => `${ghost[0].slice(0, -2)},qolAlpha:${ghost[5]}})`);
     return {source, adapter: `
     cinema: {

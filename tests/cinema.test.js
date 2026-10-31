@@ -413,6 +413,7 @@ describe('cinematic replay lifecycle', () => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
         const scene = {shown: runs.map(() => true), disposed: false, update(at) { positions = at.slice(); }, labels: () => [],
           show(index, value) { scene.shown[index] = value; }, dispose() { disposed++; scene.disposed = true; }};
+        if (options.prepareScene) scene.prepare = () => options.prepareScene(scene);
         made.push(scene);
         return scene;
       }});
@@ -438,6 +439,85 @@ describe('cinematic replay lifecycle', () => {
     expect(cinema.status()).toMatchObject({active: true, focus: null, sync: 'place', runs: []});
     await cinema.setEnabled(true);
     expect(counts().recorded).toBe(1);
+    cinema.close();
+  });
+  test('POV keeps drawing during shader preparation and the camera starts only when ready', async () => {
+    const entered = deferred(), ready = deferred();
+    const {cinema, renderer} = rig({prepareScene: () => { entered.resolve(); return ready.promise; }});
+    const enabling = cinema.setEnabled(true);
+    await entered.promise;
+    const pov = {state: {tick: 30}, eyePosition: {x: 1, y: 2, z: 3}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+    expect(cinema.camera).toBe(false);
+    ready.resolve();
+    expect(await enabling).toBe(true);
+    renderer.render(pov);
+    expect(cinema.camera).toBe(true);
+    expect(renderer.drawn).not.toBe(pov);
+    cinema.close();
+  });
+
+  test('returning to solo POV while shaders prepare cancels activation and restores native rendering', async () => {
+    const entered = deferred(), ready = deferred();
+    const {cinema, renderer, native, counts} = rig({prepareScene: () => { entered.resolve(); return ready.promise; }});
+    const enabling = cinema.setEnabled(true);
+    await entered.promise;
+    await cinema.setView('pov');
+    ready.resolve();
+    expect(await enabling).toBe(false);
+    expect(cinema.camera).toBe(false);
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    expect(counts().made[0].disposed).toBe(true);
+  });
+
+  test('choosing POV during an added run’s shader preparation keeps its ghosts without enabling the camera', async () => {
+    const entered = deferred(), ready = deferred();
+    const {cinema, renderer, counts} = rig({prepareScene: () => { entered.resolve(); return ready.promise; }});
+    const adding = cinema.add(run('other'));
+    await entered.promise;
+    await cinema.setView('pov');
+    ready.resolve();
+    expect(await adding).toBe(true);
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(pov);
+    expect(cinema.status()).toMatchObject({view: 'pov', runs: [{id: 'other'}]});
+    expect(renderer.drawn).toBe(pov);
+    expect(counts().made.at(-1).shown).toEqual([false, true]);
+    cinema.close();
+  });
+
+  test('a replay changed during shader preparation cannot activate the previous camera', async () => {
+    const entered = deferred(), ready = deferred();
+    const {cinema, control, renderer, native} = rig({prepareScene: () => { entered.resolve(); return ready.promise; }});
+    const enabling = cinema.setEnabled(true);
+    await entered.promise;
+    control.playback.replay = null;
+    cinema.close();
+    ready.resolve();
+    expect(await enabling).toBe(false);
+    expect(renderer.render).toBe(native);
+    expect(cinema.camera).toBe(false);
+  });
+  test('reopening never restores removed comparison runs or a track recorded on a replaced map', async () => {
+    const time = {now: 0};
+    const {cinema, renderer, control} = rig({now: () => time.now});
+    const frame = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0, fov: 90};
+    await cinema.setEnabled(true);
+    renderer.render(frame); time.now += 2000; renderer.render(frame);
+    const soloEye = {...renderer.drawn.eyePosition};
+    await cinema.add(run('other'));
+    cinema.close();
+    await cinema.setEnabled(true);
+    renderer.render(frame); time.now += 2000; renderer.render(frame);
+    expect(cinema.status().runs).toEqual([]);
+    expect(renderer.drawn.eyePosition).toEqual(soloEye);
+    cinema.close();
+    // A new map object may have the same id/version but a new collision world.
+    control.session.map = {...control.session.map};
+    await cinema.setEnabled(true);
+    expect(cinema.tracks[0].position[1]).toBe(60);
     cinema.close();
   });
   test('color slots remain stable when another run is removed and its slot reused', async () => {
