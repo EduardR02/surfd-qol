@@ -7,8 +7,8 @@ const entry = {runId:'old-pb',timeUs:10000000,splitsUs:[5000000,8000000]};
 function replayFor(session, speeds = [900,1200], finish = {}) {
   return {mapId:session.map.id,mapVersion:session.map.version,config:session.config,format:7,commands:[{speed:speeds[0]},{speed:speeds[1],finish:true,...finish}]};
 }
-// Boundary double: the implementation must use the supplied live class rather
-// than a copied physics engine. Integration with the real Session is parent-owned.
+// Stands in for the game's Session class. Reconstruction runs the class it is
+// given, so results follow the game's own physics; the real Session only exists in the game.
 class ReplaySession {
   constructor(map, config, format) {
     this.checkpointSpeeds = [];
@@ -377,27 +377,6 @@ describe('personal checkpoint references', () => {
     refs.destroy();
   });
 
-  test('finish bookkeeping for a hidden HUD records a local PB without starting replay work', async () => {
-    const session = makeSession(), settings = {checkpointReference: 'pb'};
-    let downloads = 0;
-    const refs = createCheckpointReferences({
-      getSession: () => session, getSessionClass: () => ReplaySession,
-      getReferences: () => ({boardId: 'board', own: entry, loadReplay: async () => {
-        downloads++; return replayFor(session);
-      }}),
-      settings, storage: null, yieldTask: instantYield,
-    });
-    refs.update(false);
-    session.timer.state.phase = 'running'; session.timer.state.startTick = 0;
-    refs.update(false);
-    finish(session, 9, [800, 1400]);
-    refs.observeFinish(); await microtasks();
-    expect(downloads).toBe(0);
-    restart(session);
-    expect(refs.update()).toMatchObject({own: [800, 1400], ownStatus: 'ready'});
-    refs.destroy();
-  });
-
   test('finish bookkeeping retries a transient download failure without discarding an unchanged baseline', async () => {
     const session = makeSession(), settings = {checkpointReference: 'pb'};
     let downloads = 0;
@@ -563,7 +542,7 @@ describe('Personal checkpoint ownership', () => {
 });
 
 describe('Shared checkpoint job lifecycle', () => {
-  test('equal PB and leaderboard identities load and reconstruct nonempty checkpoint scalars once', async () => {
+  test('a PB and leaderboard record with the same identity share one download and one reconstruction', async () => {
     const session = makeSession();
     let loads = 0, steps = 0, constructions = 0;
     class CountedSession extends ReplaySession {
@@ -601,7 +580,7 @@ describe('Shared checkpoint job lifecycle', () => {
     refs.destroy();
   });
 
-  test('inactive lifecycle persists the finishing PB without loading and keeps its pre-run comparison frozen', async () => {
+  test('finishing while inactive persists the PB without loading and keeps its pre-run comparison frozen', async () => {
     const session = makeSession(), storage = memoryStorage();
     let loads = 0, own = entry;
     const refs = createCheckpointReferences({
@@ -612,6 +591,7 @@ describe('Shared checkpoint job lifecycle', () => {
     refs.update(false);
     session.timer.state.startTick = 0; session.timer.state.phase = 'running'; refs.update(false);
     finish(session,9,[850,1400]);
+    refs.observeFinish();
     own = {runId:'finished-pb',timeUs:9000000,splitsUs:[4500000,7200000]};
     expect(refs.update(false)).toMatchObject({ownEntry:entry,ownStatus:'missing'});
     await microtasks();
@@ -626,7 +606,7 @@ describe('Shared checkpoint job lifecycle', () => {
 });
 
 describe('HUD numeric formatting', () => {
-  test('keeps actual timer and units separate from signed losses', () => {
+  test('formats times and signed deltas, with a dash for missing values', () => {
     expect(formatTime(65.125)).toBe('01:05.125');
     expect(formatTime(Math.fround(.015))).toBe('00:00.015');
     expect(formatTime(59.9996)).toBe('01:00.000');

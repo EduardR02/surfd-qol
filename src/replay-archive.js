@@ -31,10 +31,9 @@ export function openSiteDatabase(indexedDB = globalThis.indexedDB) {
   }).catch(error => { console.warn('[Surfd QoL] Site storage unavailable:', error); return null; });
 }
 
-// Saved replays are gzipped JSON: exact for every value, about an eighth of
-// the size of the game's command objects, and unpacked in about a millisecond.
-// Packing streams the commands in chunks, yielding between them, so a long
-// replay never holds the page.
+// Saved replays are gzipped JSON: exact for every value and far smaller than
+// the game's command objects. Packing streams the commands in chunks, yielding
+// between them, so a long replay doesn't hold the page.
 const PACK_COMMANDS = 1024;
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 export async function packReplay(replay, {chunk = PACK_COMMANDS, yieldTask = pause, isCurrent = () => true} = {}) {
@@ -266,7 +265,7 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
       const record = await done(db.transaction('replays').objectStore('replays').get(id));
       return record?.packed ? unpackReplay(record.packed) : null;
     },
-    // Only run history calls this; its completed runs are queued until we settle.
+    // Only run history calls this; runs that finish meanwhile are queued until deletion settles.
     clearHistory: clearSaved,
     clearMap: map => clearSaved(null, null, map),
     async retain(ids) {

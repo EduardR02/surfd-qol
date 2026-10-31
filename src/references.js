@@ -218,7 +218,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       }
     }
     // Only link an official identity when it changed during this exact finished
-    // run and all timing metadata agree; never combine checkpoint maxima.
+    // run and all timing metadata agree. Checkpoint maxima from different runs are
+    // never merged: no single run produced them.
     const own = refs?.own;
     if (completed && own?.runId != null && own.runId !== baseline?.runId && own.timeUs === completed.timeUs && sameSplits(own.splitsUs, completed.splitsUs)) {
       if (completed.runId !== own.runId) { completed.runId = own.runId; save(); }
@@ -232,8 +233,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     // Finish bookkeeping must not masquerade as hiding the HUD: keep active
     // reference slots (including pending and negative results) in their context.
     observeFinish() {
-      // A failed download may recover on the next finish, as before. A
-      // completed mismatch and an in-flight request need no new work.
+      // A failed download is retried on the next finish. A completed mismatch
+      // and an in-flight request need no new work.
       if (ownSlot.retryable) clear(ownSlot);
       if (recordSlot.retryable) clear(recordSlot);
       return update(visible);

@@ -61,7 +61,7 @@ function rig(Socket = FakeSocket) {
     heard() { return events.splice(0); }};
 }
 
-test('room ids use the unambiguous alphabet evenly; host keys carry 128 random bits', () => {
+test('room ids are unique and use the whole unambiguous alphabet; host keys are 128 bits of hex', () => {
   const ids = Array.from({length: 500}, newRoomId);
   expect(new Set(ids).size).toBe(500);
   for (const id of ids) expect(id).toMatch(ROOM_ID);

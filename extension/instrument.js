@@ -304,10 +304,9 @@ function previewViewHook(source, input) {
 }
 
 // Compare's cinematic view, optional. The map renderer is a plain object the
-// game calls once per frame with a view (eye, yaw, pitch, ghost): it also
-// exposes its scene, camera and the record ghost's factory, so two ghosts can
-// share the game's own ghost look. The extension wraps render() only while the
-// view is open; the frame's interpolation is passed along for smooth ghosts.
+// game calls once per frame with a view. The patch adds its scene, camera and
+// record-ghost factory, so extra ghosts share the game's ghost look, and
+// passes the frame's interpolation to render() as qolAlpha.
 function cinemaHooks(source) {
   try {
     const factory = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=new ${identifier};\\3\\.name="record-ghost"`, 'g'), 'record ghost')[1];
@@ -328,8 +327,9 @@ function cinemaHooks(source) {
   }
 }
 
-// Append access to existing lexical objects; no original movement statement is rewritten.
-// Fail open when the private game layout changes instead of guessing at another class.
+// Movement code is not rewritten: the adapter is appended and reads the game's
+// own objects, and the optional hooks edit only UI, transport and renderer code.
+// An unrecognised layout fails open (hook off, or game unmodified) instead of guessing.
 export function instrumentGame(source) {
   const injected = source.indexOf('\n/* surfd-qol-adapter-v');
   if (injected >= 0) {

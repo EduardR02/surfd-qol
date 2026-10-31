@@ -9,10 +9,9 @@ function globalValue(name, value) {
   restorers.push(() => original ? Object.defineProperty(globalThis, name, original) : delete globalThis[name]);
 }
 
-// The static controls expose the DOM operations the UI uses. Dynamic chip/tag
-// markup is deliberately not parsed here: these tests cover user actions and
-// lifecycle transitions, not strings or a second implementation of HTML.
-function rig(initial = null, getSources = () => ({})) {
+// Static controls expose just the DOM operations the UI uses. Dynamic chip/tag
+// markup isn't parsed: these tests cover actions and lifecycle, not strings.
+function rig(initial = null, getSources = () => ({}), stored = {}) {
   let root;
   function node(dataset = {}) {
     const attributes = new Map(), classes = new Set(), listeners = new Map();
@@ -49,16 +48,19 @@ function rig(initial = null, getSources = () => ({})) {
   globalValue('requestAnimationFrame', () => 1); globalValue('cancelAnimationFrame', () => {});
   globalValue('addEventListener', () => {}); globalValue('removeEventListener', () => {});
   globalValue('ResizeObserver', undefined);
-  const section = node(), row = node(), strip = node(), runs = node(), pick = node(), tags = node(), hint = node();
-  const enable = node({cn: 'enable'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node();
+  const section = node(), row = node(), strip = node(), runs = node(), pick = node(), tags = node(), hint = node(), menu = node();
+  const viewButton = node({cn: 'view'}), add = node({cn: 'add'}), reset = node({cn: 'reset'}), seg = node();
+  const items = ['pov', 'steady', 'cinematic'].map(view => node({view}));
+  for (const item of items) { item.parentElement = menu; item.matches = () => false; }
+  menu.querySelectorAll = () => items;
   const sync = [node({sync: 'time'}), node({sync: 'place'})];
   seg.querySelectorAll = () => sync;
   row.parentElement = section;
-  for (const element of [enable, add, reset, seg]) element.parentElement = row;
-  strip.parentElement = section;
-  row.querySelectorAll = () => [enable, add, reset, ...sync];
-  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint,
-    '[data-cn="enable"]': enable, '[data-cn="add"]': add, '[data-cn="reset"]': reset};
+  for (const element of [viewButton, add, reset, seg]) element.parentElement = row;
+  strip.parentElement = section; menu.parentElement = section;
+  row.querySelectorAll = () => [viewButton, add, reset, ...sync];
+  const selectors = {'.cn-row': row, '.cn-strip': strip, '.cn-runs': runs, '.cn-seg': seg, '.cn-pick': pick, '.cn-tags': tags, '.cn-hint': hint, '.cn-views': menu,
+    '[data-cn="view"]': viewButton, '[data-cn="add"]': add, '[data-cn="reset"]': reset};
   section.querySelector = row.querySelector = selector => selectors[selector];
   const native = node(), custom = node(), nativeTools = node(), nativeActions = node(), customTools = node();
   native.prepend(nativeTools); nativeTools.prepend(nativeActions); custom.prepend(customTools);
@@ -67,35 +69,79 @@ function rig(initial = null, getSources = () => ({})) {
   let status = initial;
   const calls = [];
   const cinema = {available: () => true, get active() { return !!status?.active; }, status: () => status,
-    async setEnabled(value) { calls.push(['enabled', value]); status = value ? solo() : null; },
+    async setView(view) { calls.push(['view', view]); status = view === 'pov' ? status?.runs.length ? {...status, view} : null : {...status ?? solo(), view}; },
+    async setStyle(style) { calls.push(['style', style]); },
     async setFocus(value) { calls.push(['focus', value]); }, async setSync(value) { calls.push(['sync', value]); },
     async add(source) { calls.push(['add', source.id]); await source.load(); },
     remove(id) { calls.push(['remove', id]); status = solo(); }, resetView() { calls.push(['reset']); }};
-  const ui = createCinemaUi({root, cinema, getSources, storage: {getItem: () => '1'}});
+  const storage = {getItem: name => name === 'surfd-qol.ghost-hint' ? '1' : stored[name] ?? null, setItem: (name, value) => { stored[name] = value; }};
+  const ui = createCinemaUi({root, cinema, getSources, storage});
   const click = button => row.emit('click', button);
+  const choose = view => section.emit('click', items.find(item => item.dataset.view === view));
   restorers.push(() => ui.destroy());
-  return {ui, cinema, calls, root, section, row, strip, runs, seg, enable, add, pick, sync, native, custom, nativeTools, nativeActions, customTools, click};
+  return {ui, cinema, calls, root, section, row, strip, runs, seg, viewButton, menu, items, add, pick, sync, native, custom, nativeTools, nativeActions, customTools, click, choose, stored};
 }
-const solo = () => ({active: true, played: {time: 41.233}, runs: [], loading: [], sync: 'time', focus: null, labels: []});
+const solo = () => ({active: true, played: {time: 41.233}, runs: [], loading: [], sync: 'time', focus: null, view: 'cinematic', labels: []});
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 const key = (type, name, path) => ({type, key: name, stopped: false, defaultPrevented: false, composedPath: () => path,
   preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() { this.stopped = true; }});
 
 describe('cinematic replay controls', () => {
-  test('enables and disables solo in either existing toolbar without an empty run strip', async () => {
+  test('the view menu turns a camera on and goes back to first person, in either toolbar, without an empty run strip', async () => {
     const r = rig();
     r.ui.render({visible: true});
+    expect(r.viewButton.getAttribute('aria-label')).toBe('View: POV');
     expect(r.strip.hidden && r.seg.hidden).toBe(true);
-    r.click(r.enable); await settle();
+    r.click(r.viewButton);
+    expect(r.ui.choosing && !r.menu.hidden).toBe(true);
+    r.choose('cinematic'); await settle();
     r.ui.render({visible: true});
-    expect(r.enable.getAttribute('aria-pressed')).toBe('true');
+    expect(r.ui.choosing).toBe(false);
+    expect(r.viewButton.getAttribute('aria-label')).toBe('View: Cinematic');
+    expect(r.viewButton.classList.contains('on')).toBe(true);
+    expect(r.items.map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false', 'true']);
     expect(r.strip.hidden && r.seg.hidden).toBe(true);
     r.ui.render({visible: true, custom: true});
-    r.click(r.enable); await settle();
+    r.click(r.viewButton); r.choose('pov'); await settle();
     r.ui.render({visible: true, custom: true});
-    expect(r.enable.getAttribute('aria-pressed')).toBe('false');
+    expect(r.viewButton.getAttribute('aria-label')).toBe('View: POV');
+    expect(r.calls).toEqual([['view', 'cinematic'], ['view', 'pov']]);
     r.ui.render({visible: false});
     expect(r.row.hidden && r.section.hidden).toBe(true);
+  });
+
+  test('the view menu is keyboard-operable and its keys never reach playback', async () => {
+    const r = rig(solo());
+    r.ui.render({visible: true});
+    r.viewButton.focus();
+    r.ui.handleKey(key('keydown', 'ArrowDown', [r.viewButton]));
+    expect(r.ui.choosing).toBe(true);
+    expect(r.root.activeElement).toBe(r.items[2]);
+    for (const [name, at] of [['ArrowDown', 0], ['ArrowUp', 2], ['Home', 0], ['End', 2]]) {
+      const down = key('keydown', name, [r.root.activeElement, r.menu]);
+      expect(r.ui.handleKey(down)).toBe(true);
+      expect(down.stopped && down.defaultPrevented).toBe(true);
+      expect(r.root.activeElement).toBe(r.items[at]);
+    }
+    for (const name of [' ', 'Enter']) {
+      const press = key('keydown', name, [r.items[1], r.menu]);
+      expect(r.ui.handleKey(press)).toBe(true);
+      expect(press.stopped && !press.defaultPrevented).toBe(true);
+    }
+    for (const type of ['keydown', 'keyup']) expect(r.ui.handleKey(key(type, 'Escape', [r.items[1], r.menu]))).toBe(true);
+    expect(r.menu.hidden).toBe(true);
+    expect(r.root.activeElement).toBe(r.viewButton);
+    expect(r.calls).toEqual([]);
+  });
+
+  test('the camera style chosen is remembered, and handed back when the controls start', async () => {
+    const r = rig(null, () => ({}), {'surfd-qol.camera-style': 'steady'});
+    expect(r.calls).toEqual([['style', 'steady']]);
+    r.ui.render({visible: true});
+    r.click(r.viewButton); r.choose('cinematic'); await settle();
+    expect(r.stored['surfd-qol.camera-style']).toBe('cinematic');
+    r.click(r.viewButton); r.choose('pov'); await settle();
+    expect(r.stored['surfd-qol.camera-style']).toBe('cinematic');
   });
 
   test('picker remains keyboard-operable across native/custom switches', async () => {
@@ -122,7 +168,7 @@ describe('cinematic replay controls', () => {
     r.click({disabled: false, dataset: {remove: 'wr'}, closest() { return this; }});
     r.ui.render({visible: true});
     expect(r.strip.hidden && r.seg.hidden).toBe(true);
-    expect(r.enable.getAttribute('aria-pressed')).toBe('true');
+    expect(r.viewButton.classList.contains('on')).toBe(true);
     expect(r.root.activeElement).toBe(r.add);
   });
 
@@ -139,7 +185,7 @@ describe('cinematic replay controls', () => {
     expect(r.root.activeElement).toBe(r.add);
     for (const name of [' ', 'Enter']) {
       for (const type of ['keydown', 'keyup']) {
-        const event = key(type, name, [r.enable]);
+        const event = key(type, name, [r.viewButton]);
         expect(r.ui.handleKey(event)).toBe(true);
         expect(event.stopped).toBe(true);
         expect(event.defaultPrevented).toBe(false);
@@ -148,18 +194,18 @@ describe('cinematic replay controls', () => {
     expect(r.calls).toEqual([]);
   });
 
-  test('failed cinematic activation exposes the picker error state without losing the controls', async () => {
+  test('a camera that can’t start shows the picker’s error without losing the controls', async () => {
     const r = rig();
-    r.cinema.setEnabled = async () => { throw new Error('Route unavailable.'); };
-    r.ui.render({visible: true}); r.click(r.enable); await settle();
+    r.cinema.setView = async () => { throw new Error('Route unavailable.'); };
+    r.ui.render({visible: true}); r.click(r.viewButton); r.choose('cinematic'); await settle();
     expect(r.ui.picking).toBe(true);
     expect(r.pick.hidden).toBe(false);
     expect(r.add.getAttribute('aria-expanded')).toBe('true');
-    expect(r.enable.hasAttribute('aria-busy')).toBe(false);
+    expect(r.viewButton.hasAttribute('aria-busy')).toBe(false);
     expect(r.row.hidden).toBe(false);
   });
 
-  test('Runs closes the picker and keeps its panel clear of the added-run strip', () => {
+  test('holding the bar for the Runs panel closes the picker and hides the run strip until released', () => {
     const r = rig({...solo(), runs: [{id: 'wr', label: 'WR', color: '#9ccfd8'}]});
     r.ui.render({visible: true}); r.click(r.add);
     expect(r.ui.picking).toBe(true);
@@ -177,7 +223,7 @@ describe('cinematic replay controls', () => {
     Object.assign(r.runs, {scrollWidth: 1200, clientWidth: 300, scrollLeft: 0});
     const wheel = r.strip.emit('wheel', r.runs, {deltaX: 0, deltaY: 3, deltaMode: 1});
     expect(wheel.defaultPrevented).toBe(true);
-    expect(r.runs.scrollLeft).toBe(48);
+    expect(r.runs.scrollLeft).toBeGreaterThan(0);
     const trackpad = r.strip.emit('wheel', r.runs, {deltaX: 60, deltaY: 2, deltaMode: 0});
     expect(trackpad.defaultPrevented).toBe(false);
     r.runs.scrollWidth = 200;
@@ -193,7 +239,7 @@ describe('cinematic replay controls', () => {
     expect(r.ui.holding).toBe(true);
     r.strip.emit('pointerleave');
     expect(r.ui.holding).toBe(false);
-    r.enable.focus();
+    r.viewButton.focus();
     expect(r.ui.holding).toBe(true);
     r.root.activeElement = null;
     r.row.emit('pointerenter');

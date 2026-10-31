@@ -145,7 +145,7 @@ export const runsStyles = `
 .rn-watch[aria-busy=true]::after{content:"";position:absolute;inset:7px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:rn-spin .7s linear infinite}
 @keyframes rn-spin{to{transform:rotate(1turn)}}
 
-/* Ramps: your best on each, against the PB or WR run. */
+/* Ramps toolbar: the statistic, the run to compare with, and the metric shown. */
 .rn-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 20px 8px}
 .rn-vs{margin-left:auto;font-size:12px;color:var(--text-3)}
 .rn-seg{display:flex;padding:3px;gap:2px;border-radius:10px;background:rgba(0,0,0,.35);box-shadow:inset 0 0 0 1px var(--line)}
@@ -183,7 +183,7 @@ export const runsStyles = `
 .rn-legend span::before{content:"";display:inline-block;width:4px;height:11px;margin-right:7px;border-radius:1px;transform:skewX(-18deg);vertical-align:-1px}
 .rn-legend .good::before{background:var(--good)}.rn-legend .warn::before{background:var(--warn)}.rn-legend .loss::before{background:var(--bad)}
 /* Ramps: one row per ramp, read at a glance. Its name and reach stay quiet;
-   only the one number (the whole ramp against the reference) and its bar,
+   only the one number (the chosen metric against the reference) and its bar,
    on one scale across the map, carry colour. The chevron opens the rest. */
 .rn-ramps{padding:0 12px 8px}
 .rn-rr{display:grid;grid-template-columns:96px 40px minmax(40px,1fr) 78px 24px;align-items:center;gap:12px;min-height:36px;padding:0 4px 0 8px;border-radius:8px}

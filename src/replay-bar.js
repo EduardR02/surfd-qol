@@ -11,7 +11,6 @@ const REST_MS = 2600;
 const WHEEL_MS = 150;
 const SNAP_PX = 7;
 const BIND_ACTIONS = ['save', 'load', 'previousSave', 'nextSave'];
-// Native document shortcuts own playback in both presentation modes.
 const TONES = new Set(['good', 'warn', 'loss', 'muted']);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
 
@@ -408,7 +407,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     progress = -1;
     marksLayer.innerHTML = fixed.filter(mark => mark.type === 'ramp').map(mark => `<i class="${mark.tone}" style="left:${pct(mark.at)}"></i>`).join('') +
       labelled.map(mark => `<span style="left:${pct(mark.at)}">${escape(mark.type === 'start' ? 'start' : mark.label)}</span>`).join('');
-    // Labels closer than ~44 px would overlap; drop them all rather than some.
+    // Labels closer than ~44 px would overlap, so all are dropped.
     const width = rail.clientWidth || 800;
     toggleClass(marksLayer, 'dense', labelled.some((mark, index) => index && (mark.at - labelled[index - 1].at) * width < 44));
     pins.innerHTML = marks.filter(mark => mark.type === 'loc').map(mark =>
@@ -427,7 +426,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
       const focused = root.activeElement;
       saveButton.hidden = openers.keys.hidden = !!status.ghosts;
       if (status.ghosts && open === 'keys') closePopover();
-      if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="enable"]') ?? play).focus({preventScroll: true});
+      if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="view"]') ?? play).focus({preventScroll: true});
     }
     paintMarks();
     paintPosition(position());
@@ -525,9 +524,9 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
         if (event.type === 'keydown') closePopover(true);
         return;
       }
-      // Playback keys pass through to the game's sole document handler.
+      // Playback keys stay with the game's document handler in both UIs;
+      // saveloc binds are routed by native-replay-ui.
     },
-    // Saveloc binds are routed by the shared native/custom presentation owner.
     // Dev harness: open a popover.
     showPopover(name) { if (!bar.hidden && popovers[name]) openPopover(name); },
     destroy() { hide(); sizes?.disconnect(); },

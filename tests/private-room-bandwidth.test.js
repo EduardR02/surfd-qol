@@ -36,16 +36,16 @@ describe('private room bandwidth', () => {
     expect(actual.download).toBeCloseTo(expected.download, 10);
   });
 
-  test('keeps full-room movement in one snapshot at the 64-player limit', () => {
+  test('keeps full-room movement in one fragmented snapshot at the 64-player limit', () => {
     for (const players of [MAX_ROOM_PLAYERS - 1, MAX_ROOM_PLAYERS]) {
-      const expected = synchronizedMovement(players);
+      const expected = synchronizedMovement(players), actual = estimateBandwidth(players, {spectatorViewers: 0, spectatorSenders: 0});
       expect(expected.packets).toHaveLength(1);
-      expect(estimateBandwidth(players, {spectatorViewers: 0, spectatorSenders: 0}).upload)
-        .toBeCloseTo(expected.upload, 10);
+      expect(actual.upload).toBeCloseTo(expected.upload, 10);
+      expect(actual.download).toBeCloseTo(expected.download, 10);
     }
   });
 
-  test('charges one or two MTU fragments on either side of a generated packet boundary', () => {
+  test('charges extra framing once a snapshot no longer fits one fragment', () => {
     const below = synchronizedMovement(15), above = synchronizedMovement(16);
     expect(below.packets[0].byteLength).toBeLessThan(FRAGMENT_BYTES);
     expect(above.packets[0].byteLength).toBeGreaterThan(FRAGMENT_BYTES);
@@ -55,18 +55,11 @@ describe('private room bandwidth', () => {
       .toBeCloseTo(above.upload, 10);
   });
 
-  test('accounts for the full-room snapshot and all its MTU fragments', () => {
-    const expected = synchronizedMovement(MAX_ROOM_PLAYERS);
-    const actual = estimateBandwidth(MAX_ROOM_PLAYERS, {spectatorViewers: 0, spectatorSenders: 0});
-    expect(actual.upload).toBeCloseTo(expected.upload, 10);
-    expect(actual.download).toBeCloseTo(expected.download, 10);
-  });
-
   test('rejects invalid player counts', () => {
     for (const value of [-1, 1.5, NaN, Infinity, MAX_ROOM_PLAYERS + 1, '8', null]) expect(() => estimateBandwidth(value)).toThrow();
   });
 
-  test('keeps the separately conservative spectator defaults distinct from movement demand', () => {
+  test('by default adds one 30Hz spectator stream per guest in each direction on top of movement', () => {
     const streamMbps = wireBytes(spectatorFrame) * 30 * 8 / 1e6;
     for (const players of [2, 8, 16, 32, MAX_ROOM_PLAYERS]) {
       const guests = players - 1;

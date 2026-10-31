@@ -30,9 +30,9 @@ function floorAt(session, zone, crossing, segment, ground) {
   const config = session.config;
   const world = session.movement?.world;
   if (typeof world?.trace === 'function' && Number.isFinite(zone.min?.z)) {
-    // The exit lies on the expanded trigger edge, just beyond platform support.
-    // Probe slightly inward, with a zero-height foot box: ducking must not move
-    // the reference down by duckHeight (the old trigger-bottom error).
+    // The exit lies on the expanded trigger edge, just beyond platform support,
+    // so probe slightly inward. The foot box has zero height so a ducked hull
+    // cannot shift the floor reference.
     const from = {
       x: crossing.x - Math.sign(crossing.x - segment.from.x) * 0.125,
       y: crossing.y - Math.sign(crossing.y - segment.from.y) * 0.125,

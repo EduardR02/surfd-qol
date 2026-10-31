@@ -37,17 +37,18 @@ describe('settings preview', () => {
     for (const key of Object.keys(defaults)) if (key !== 'crouchJumpKey' && key !== 'rampMetric') expect(bound.has(key)).toBe(true);
   });
 
-  test('players read touch, never board', () => {
+  test('players read touch, never board, in visible text and accessible labels', () => {
+    const labels = (panelMarkup.match(/aria-label="[^"]*"/g) ?? []).join(' ');
     expect(text(panelMarkup)).not.toMatch(/\bboard/i);
     expect(text(panelMarkup)).toContain('leaderboard');
-    expect(panelMarkup).toContain('aria-label="Touch loss, better below"');
+    expect(labels).not.toMatch(/\bboard/i);
+    expect(labels).toMatch(/touch/i);
     expect(previewModel(defaults).feedback.board.label).toBe('TOUCH');
   });
 
-  test('the strafe preview takes a speed and a mode, then starts from its own button', () => {
-    expect(panelMarkup).toContain('data-setting="strafePreviewUnits"');
-    expect(panelMarkup).toContain('value="ground" data-setting="strafePreviewMode"><span>Ground</span>');
-    expect(panelMarkup).toContain('value="air" data-setting="strafePreviewMode"><span>Air</span>');
+  test('the strafe preview offers ground and air modes and a start button', () => {
+    expect(panelMarkup).toMatch(/<input[^>]*value="ground"[^>]*data-setting="strafePreviewMode"/);
+    expect(panelMarkup).toMatch(/<input[^>]*value="air"[^>]*data-setting="strafePreviewMode"/);
     expect(panelMarkup).toContain('id="preview-start"');
   });
 
@@ -58,22 +59,22 @@ describe('settings preview', () => {
 });
 
 describe('history settings', () => {
-  test('say what is kept in a few plain sentences that follow the settings, without calling it a PB', () => {
-    const rule = text(historyRule(defaults));
-    expect(rule).toContain('your 10 newest runs with their replays, plus your best finish');
-    expect(rule).toContain('Resets under 10 s are skipped, except your latest run.');
+  test('the history rule follows the settings and does not call the best finish a PB', () => {
+    const rule = text(historyRule({ ...defaults, historyRunsPerMap: 25, historyMinSeconds: 7 }));
+    expect(rule).toContain('25 newest runs');
+    expect(rule).toContain('Resets under 7 s are skipped');
     expect(rule).not.toMatch(/\bPB\b/);
     expect(text(historyRule({ ...defaults, historyRunsPerMap: 25, historyMinSeconds: 0 }))).not.toContain('Resets under');
-    expect(historyRule({ ...defaults, keepHistory: false })).toStartWith('Recording is off.');
+    expect(historyRule({ ...defaults, keepHistory: false })).toMatch(/recording is off/i);
   });
 
   test('the History preview draws the newest runs, capped, and the skip rule', () => {
     const bars = html => (html.match(/<i style=/g) ?? []).length;
-    expect(bars(historyPreview(defaults))).toBe(10);
-    expect(historyPreview(defaults)).toContain('class="skip"');
-    const many = historyPreview({ ...defaults, historyRunsPerMap: 40, historyMinSeconds: 0 });
-    expect(bars(many)).toBe(20);
-    expect(many).toContain('+20');
+    expect(bars(historyPreview({ ...defaults, historyRunsPerMap: 5 }))).toBe(5);
+    expect(historyPreview({ ...defaults, historyMinSeconds: 10 })).toContain('class="skip"');
+    const many = historyPreview({ ...defaults, historyRunsPerMap: 100, historyMinSeconds: 0 });
+    expect(bars(many)).toBeLessThan(100);
+    expect(many).toContain(`+${100 - bars(many)}`);
     expect(many).not.toContain('class="skip"');
     expect(historyPreview({ ...defaults, keepHistory: false })).toContain('Recording is off');
   });

@@ -90,8 +90,8 @@ test('clearing run records and bests is atomic when their transaction aborts', a
   expect(await history.load()).toEqual({runs: [], bests: []});
 });
 
-// The four stores share transaction scheduling. Abort can target just one
-// store group, so independent history/archive transactions cannot pass.
+// Four stores behind one scheduler. abortStore fails any deletion touching that
+// store, abortSaveStore any save, so a clear split across transactions shows up.
 function sharedDatabase() {
   const records = Object.fromEntries(['runs', 'bests', 'meta', 'replays'].map(name => [name, new Map()]));
   const request = result => {

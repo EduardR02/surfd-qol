@@ -457,7 +457,7 @@ describe('optional native private room instrumentation', () => {
     expect(await fixture.runtime.room.list()).toEqual([hooks.row]);
   });
 
-  test('adapter uses native join callback and selected row plus current identity and maps', () => {
+  test('the adapter joins through the game’s callback and reads identity, rank and maps from it', () => {
     const hooks = privateFixtureHooks();
     const {adapter, runtime} = roomFixture(hooks);
     adapter.rooms.update([hooks.row]);
@@ -563,7 +563,7 @@ describe('optional native private room instrumentation', () => {
     expect(instrumentGame(fixture.instrumented)).toBe(fixture.instrumented);
   });
 
-  test('old adapters require fresh source', () => {
+  test('a bundle patched by an older adapter version is rejected', () => {
     expect(isCurrentInstrumented(instrumentReplayFixture(nativeSource))).toBe(true);
     expect(() => instrumentGame(nativeSource + '\n/* surfd-qol-adapter-v6: stale */')).toThrow('Stale');
   });
@@ -712,8 +712,10 @@ describe('optional native private room instrumentation', () => {
     expect(room.message).toEqual(message);
     expect(()=>room.receive(json)).toThrow('Invalid room data');
     room.receive(JSON.stringify({type:'room-chunk',data:'unfinished',final:false}));
+    // Disconnecting drops the unfinished fragments, so they cannot block a later message.
     room.disconnect();
-    expect(room.__qolChunks).toBeNull();
+    room.receive(JSON.stringify({type:'roster',players:[]}));
+    expect(room.message).toEqual({type:'roster',players:[]});
   });
 
   test('endless non-final chunks are bounded and a rejected stream releases its fragments', () => {
@@ -728,7 +730,7 @@ describe('optional native private room instrumentation', () => {
     expect(room.message).toEqual({type: 'roster', players: []});
   });
 
-  test('the game hook bounds chunks like the room protocol', () => {
+  test('the chunk limits match the room protocol’s', () => {
     expect(ROOM_MESSAGE_CHARS).toBe(MAX_ROOM_MESSAGE_CHARS);
     expect(ROOM_CHUNKS).toBe(MAX_ROOM_CHUNKS);
   });

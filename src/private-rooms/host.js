@@ -116,7 +116,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   function saveSaveloc(client, message) {
     if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(client.owner.bucket, SAVELOC_LIMIT)) return;
     const map = getMap();
-    // A catalog entry is not a native map; never accept a claim without map-aware validation.
+    // Savelocs are checked against the native map, which a bare catalog entry can't stand in for.
     if (!map || map.id !== state.mapId || !Number.isSafeInteger(nextSavelocId)) return;
     let snapshot;
     // Malformed snapshots already closed the connection in the decoder. One that only
@@ -275,9 +275,9 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       verified: !!verified,
     }}, claim.type === 'verified' ? client : undefined);
   }
-  // A run the site verified, as the finisher's game reports it. Only a personal best changes the board:
-  // its time and place must show there, or the run reads as unverified. A slower run waits for nothing
-  // and keeps only a standing the board agrees with.
+  // A run the site verified, as the finisher's game reports it. A personal best must show on the board
+  // with its time and place, or it is announced as unverified. A slower run is announced either way and
+  // keeps a leaderboard place only if the board agrees.
   function verify(client, claim) {
     const player = client.player;
     if (player.guest || !player.userId || epochs.get(claim.epoch) !== claim.mapId || announced.has(claim.id)

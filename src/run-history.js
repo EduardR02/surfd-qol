@@ -130,7 +130,7 @@ function touchRoute(records) {
   return selected ?? [];
 }
 
-// Newest first: qualifying runs on each of the MAX_MAPS most recently played
+// Prefers the newest qualifying runs on each of the MAX_MAPS most recently played
 // maps. A short latest attempt is an extra slot; it never evicts useful runs.
 // Each map's best stays pinned and counts while among the newest.
 export function retainRuns(runs, {runsPerMap = 10, minSeconds = 10, keep = new Set(), highlights = new Set()} = {}) {
@@ -426,8 +426,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     surfSequence = metrics?.surfSnapshot?.(-1)?.sequence ?? 0;
   }
   function end(outcome, live) {
-    // A board can be measured even when held Surf is disabled or the run
-    // ends before leaving the ramp. Its final revision is already collected.
+    // track() collects boards as they are measured, even with held Surf off or a
+    // run that ends before leaving the ramp, so nothing is left to read here.
     const run = current;
     if (!run) return;
     current = board = null;
@@ -570,10 +570,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const timer = live?.timer?.state;
       if (!timer || !live.state) return;
       const starting = events.includes('start');
-      // The game snapshot is a full copy of its state, so it is read only when
-      // a run would start. A replay loaded mid-run ends that run via reset().
-      // Native Exit reuses the replay's Session for practice/live play.
-      // Playback ownership belongs to this start, not the Session forever.
+      // getState() copies the whole game state, so read it only when a run would
+      // start (a replay loaded mid-run ends that run via reset()). Native Exit
+      // reuses the replay's Session, so playback is judged per start.
       let playback = false, spectating = false;
       if (starting) {
         try {
@@ -677,8 +676,8 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const total = record?.checkpointCount ?? null;
       const best = record?.best ? runs.find(run => run.id === record.best.runId) ?? null : null;
       let recentBest = recentHighlights.get(key) ?? null;
-      // Reads are cheap while the selected finish remains eligible. Expiry
-      // alone may choose a retained fallback; no per-frame history scan/timer.
+      // Rescan only once the selected finish expires, which may fall back to a
+      // retained finish: no per-frame scan or timer.
       if (recentBest && finishedAt(recentBest) + RECENT_BEST_MS <= clock()) {
         recentBest = recentBestRuns(list, clock()).get(key) ?? null;
         if (recentBest) recentHighlights.set(key, recentBest);

@@ -2,8 +2,9 @@
 // over a real gameplay backdrop. Everything is chosen by URL parameters:
 //   ?state=ramp&bg=snow&scale=1&y=82&palette=custom&panel=feedback&shot
 //   set.<settingKey>=<value> overrides any setting.
-// Only the game and the reference loaders are faked; model, view, fast path
-// and settings panel are the shipping code.
+// Only inputs are faked (game session, run history, replay playback, references,
+// cinematic state: dev/fixtures.js); model, view, fast path and settings panel
+// are the shipping code.
 import {mountHud} from '../src/hud.js';
 import {createHudModel} from '../src/hud-model.js';
 import {applySettings, defaults, colorKeys} from '../src/settings.js';
@@ -82,7 +83,7 @@ if (params.get('bail') === 'none') skipBail();
 const history = createHistory({settings, empty: emptyHistory, touch: params.get('touch')});
 const replays = createReplays({empty: emptyHistory});
 let cinema = null;
-const replayControl = createReplayControl({params, active: () => scenario.watching === true, ghosts: () => cinema?.comparing === true});
+const replayControl = createReplayControl({params, active: () => scenario.watching === true, ghosts: () => cinema?.comparing === true && cinema.camera === true});
 cinema = createCinemaFixture({params, replayControl});
 const rampReference = createRampReference({params, settings});
 const leaderboardReferences = createLeaderboardReferences(params);
@@ -154,8 +155,10 @@ if (params.has('pop')) setTimeout(() => {
 if (runsMap !== null && scenario.watching) setTimeout(() => hud.showReplayRuns(), 50);
 else if (runsMap !== null) hud.showRuns(runsMap || undefined, {maps: params.has('maps'), view: params.get('view') ?? 'runs'});
 // ?cinema=off|solo|group|focus|many|error uses the real cinematic controls with
-// UI-only fixture state. ?pick opens Add run; this does not exercise rendering.
+// UI-only fixture state (?view=pov|steady|cinematic). ?pick opens Add run and
+// ?views the view menu; this does not exercise rendering.
 if (params.has('pick')) setTimeout(() => document.getElementById('surfd-qol').shadowRoot.querySelector('[data-cn="add"]')?.click(), 80);
+if (params.has('views')) setTimeout(() => document.getElementById('surfd-qol').shadowRoot.querySelector('[data-cn="view"]')?.click(), 80);
 // With ?view=ramps: ?stat=recent|average picks the statistic, ?expand=<n> opens the nth ramp's
 // other replays, ?reset asks to reset the averages. These press the panel's own buttons.
 if (runsMap !== null && params.get('view') === 'ramps') {

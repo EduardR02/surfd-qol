@@ -9,7 +9,7 @@ const SLICE_COMMANDS = 64;
 const defer = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 const idleLeft = deadline => !!deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
-// A move this far within one tick is a teleport, never movement: the camera cuts there.
+// A move this far within one tick is treated as a teleport: the camera cuts there.
 const JUMP_UNITS = 600;
 const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'stage-return']);
 
@@ -40,7 +40,7 @@ export function trackYaw(track, at) {
   return a + delta * (track.cut[high] ? 0 : index - low);
 }
 
-// Native surf planes have 0 < normal.z < groundNormal.
+// Native surf planes have normal.z above a small floor and below groundNormal.
 function rampNormal(contacts, from, groundNormal) {
   for (let i = from; i < contacts.length; i++) {
     const normal = contacts[i]?.normal;
@@ -65,8 +65,13 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
   track.phase = new Uint8Array(track.count);
   const base = shadow.state.tick ?? replay.initialState?.tick ?? 0;
   let index = 0, normal = null, active = null, startTick = null, splits = 0;
+  // A replay can open with the player dropping from where the game put them
+  // onto the floor. That isn't part of the route, so the ghost and its path
+  // start where they land; a run that starts before landing keeps its fall.
+  let landed = null;
   const keep = at => {
     const state = shadow.state, p = state.position, o = at * 3;
+    if (landed === null && (state.grounded || state.grounded === undefined)) landed = at;
     track.position[o] = p.x; track.position[o + 1] = p.y; track.position[o + 2] = p.z;
     track.yaw[at] = state.yaw;
     track.ducked[at] = state.ducked ? 1 : 0;
@@ -75,6 +80,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
     const timer = shadow.timer?.state;
     if (Number.isFinite(timer?.elapsed)) track.elapsed[at] = timer.elapsed;
     track.phase[at] = timer?.phase === 'finished' ? 2 : timer?.phase === 'running' ? 1 : 0;
+    if (track.phase[at] && landed === null) landed = 0;
     if (track.phase[at] && (startTick !== timer.startTick || track.startTick === null)) {
       startTick = timer.startTick;
       track.startTick = Number.isFinite(startTick) ? startTick - base : at;
@@ -115,6 +121,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
     if (index < replay.commands.length) deadline = await yieldTask();
   }
   if (!isCurrent()) return null;
+  for (let at = 0; at < (landed ?? 0); at++) track.position.copyWithin(at * 3, landed * 3, landed * 3 + 3);
   // The finish counts as a split in the game's timer; keep checkpoints only.
   if (track.time !== null && track.splits.at(-1) === track.finish) track.splits.pop();
   return track;

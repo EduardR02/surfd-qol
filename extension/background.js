@@ -23,8 +23,7 @@ async function attach(tabId) {
     await chrome.debugger.attach({ tabId }, '1.3');
     try {
       await command(tabId, 'Fetch.enable', { patterns: [{ urlPattern: 'https://surfd.net/assets/game-*.js', resourceType: 'Script', requestStage: 'Response' }] });
-      // A first visit may already have requested its module before attach completed.
-      // Reload only on initial attachment, never once a session is instrumented.
+      // The game module may have been requested before attach completed; reload so it passes through Fetch.
       await chrome.tabs.reload(tabId);
     } catch (error) {
       await chrome.debugger.detach({ tabId }).catch(() => {});

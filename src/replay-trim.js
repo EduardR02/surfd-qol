@@ -8,7 +8,7 @@
 // passes, the full replay is saved.
 //
 // The check simulates only from the trim point to the start, in slices with a
-// yield between them, so it never holds the page for more than a moment.
+// yield between them, so it doesn't hold the page.
 const SLICE_COMMANDS = 32;
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 const same = (a, b) => !!a && !!b && Object.is(a.x, b.x) && Object.is(a.y, b.y) && Object.is(a.z, b.z);

@@ -79,21 +79,23 @@ describe('camera-only strafe preview', () => {
       expect(f.states.filter(state => !state.active)).toEqual([{active: false}]);
     });
   }
-  for (const mutate of [
-    f => {f.session.state.velocity.x = 0.001;},
-    f => {f.session.state.grounded = false;},
-    f => {f.session.state.position.x = 200;},
-    f => {f.session.timer.state.phase = 'running';},
-    f => {f.session.practice = true;},
-    f => {f.session.config = {...config, unrestrictedStart: true};},
-    f => {f.session.timer.state.invalidReason = 'invalid';},
-    f => {f.input.keys.add('KeyW');},
-    f => {f.input.turnLeft.held.add('ArrowLeft');},
-    f => {f.input.turnRight.held.add('ArrowRight');},
-    f => {f.session.state.ducked = true;},
-    f => f.spectate(), f => f.replay(), f => {delete f.adapter.previewView;},
+  for (const [reason, mutate] of [
+    ['moving', f => {f.session.state.velocity.x = 0.001;}],
+    ['airborne', f => {f.session.state.grounded = false;}],
+    ['outside the start zone', f => {f.session.state.position.x = 200;}],
+    ['run already started', f => {f.session.timer.state.phase = 'running';}],
+    ['practice mode', f => {f.session.practice = true;}],
+    ['unrestricted start', f => {f.session.config = {...config, unrestrictedStart: true};}],
+    ['invalid run', f => {f.session.timer.state.invalidReason = 'invalid';}],
+    ['movement key held', f => {f.input.keys.add('KeyW');}],
+    ['turn-left key held', f => {f.input.turnLeft.held.add('ArrowLeft');}],
+    ['turn-right key held', f => {f.input.turnRight.held.add('ArrowRight');}],
+    ['ducked', f => {f.session.state.ducked = true;}],
+    ['spectating', f => f.spectate()],
+    ['watching a replay', f => f.replay()],
+    ['no camera hook', f => {delete f.adapter.previewView;}],
   ]) {
-    test('rejects an unsafe start without scheduling frames', async () => {
+    test(`rejects a start while ${reason}, without scheduling frames`, async () => {
       const f = fixture(); mutate(f);
       await expect(f.preview.start({units: 300, mode: 'ground'})).rejects.toThrow('Stand still in the start zone first.');
       expect(f.frames.size).toBe(0);
@@ -108,7 +110,7 @@ describe('camera-only strafe preview', () => {
     expect(f.view()).toEqual({yaw: 73, pitch: 12});
     expect(f.frames.size).toBe(0);
   });
-  test('missing camera setter fails open and restores if a later update fails', async () => {
+  test('a camera update that throws ends the preview and reports it stopped', async () => {
     const f = fixture();
     await f.preview.start({units: 1000, mode: 'ground'});
     f.adapter.previewView.set = () => {throw new Error('native changed');};
@@ -117,7 +119,7 @@ describe('camera-only strafe preview', () => {
     expect(f.states.at(-1)).toEqual({active: false});
     expect(f.frames.size).toBe(0);
   });
-  test('speed validation and unsubscribe have no idle work', async () => {
+  test('rejects invalid speeds; an unsubscribed listener hears nothing and destroy cancels pending frames', async () => {
     const f = fixture();
     for (const units of [0, -1, NaN, Infinity, 5001, '300']) {
       await expect(f.preview.start({units, mode: 'air'})).rejects.toThrow('Enter a speed from 1 to 5000 units.');

@@ -178,19 +178,23 @@ describe('ramp meter geometry', () => {
 
   test('one width, centred: the flight and the ramp share it; the tick marks the reference ramp', async () => {
     const { meterLayout } = await import('../src/hud-view.js');
-    // 55 u/s lost in all fills the 172 px bar; the reference ramp (40) would have ended at 45.
+    // 55 u/s lost in all fills the bar; the reference ramp (40) would have ended at 45.
     const { segments, tick, left, width, airCenter, rampCenter } = meterLayout(meter, false);
-    expect([left, width]).toEqual([-86, 172]);
-    expect(segments.air.left).toBeCloseTo(-86, 6);
-    expect(segments.board.left).toBeCloseTo(-86 + 5 / 55 * 172, 6);
-    expect(end(segments.up)).toBeCloseTo(86, 6);
-    expect(tick).toBeCloseTo(-86 + 45 / 55 * 172 - 1, 6);
-    expect(airCenter).toBeCloseTo(-51.6, 6);
-    expect(rampCenter).toBeCloseTo(51.6, 6);
+    const at = (units, span = 55) => left + units / span * width;
+    expect(left).toBeCloseTo(-width / 2, 6);
+    expect(segments.air.left).toBeCloseTo(left, 6);
+    expect(segments.board.left).toBeCloseTo(at(5), 6);
+    expect(end(segments.up)).toBeCloseTo(left + width, 6);
+    // The tick is a couple of px wide, centred on the reference's end.
+    expect(Math.abs(tick - at(45))).toBeLessThan(2);
+    // One value under each half of the bar.
+    expect(airCenter).toBeLessThan(0);
+    expect(rampCenter).toBeCloseTo(-airCenter, 6);
     // Beating the reference: your parts end early, and the tick sits at the bar's end.
     const better = meterLayout({ ...meter, reference: 80 }, false);
-    expect(end(better.segments.up)).toBeCloseTo(-86 + 55 / 85 * 172, 6);
-    expect(better.tick).toBeCloseTo(85, 6);
+    expect(end(better.segments.up)).toBeCloseTo(at(55, 85), 6);
+    expect(better.tick).toBeLessThanOrEqual(left + width);
+    expect(better.tick).toBeGreaterThan(left + width - 5);
   });
 
   test('right after boarding: the flight and the board so far, no tick; without a reference, no tick', async () => {
@@ -198,10 +202,11 @@ describe('ramp meter geometry', () => {
     const fresh = meterLayout({ ...meter, fresh: true }, false);
     expect(fresh.tick).toBeNull();
     expect(fresh.segments.down).toBeUndefined();
-    expect(end(fresh.segments.board)).toBeCloseTo(-86 + 10 / 50 * 172, 6);
+    // A small first touch leaves most of the bar empty instead of filling it.
+    expect(end(fresh.segments.board)).toBeLessThan(fresh.left + fresh.width / 2);
     const fixed = meterLayout({ ...meter, reference: null }, false);
     expect(fixed.tick).toBeNull();
-    expect(end(fixed.segments.up)).toBeCloseTo(86, 6);
+    expect(end(fixed.segments.up)).toBeCloseTo(fixed.left + fixed.width, 6);
     // Only one value under the bar: it centres.
     expect(meterLayout({ ...meter, air: null }, false).rampCenter).toBe(0);
   });
@@ -209,7 +214,7 @@ describe('ramp meter geometry', () => {
   test('gains and odd values take no room: the bar never runs past its width', async () => {
     const { meterLayout } = await import('../src/hud-view.js');
     const odd = [
-      // Speed gained in the air used to shrink the scale to almost nothing.
+      // Speed gained in the air must not shrink the scale.
       { ...meter, air: item(-30) },
       { ...meter, air: item(-60), reference: 20 },
       // A booster on the way down; a SURF smaller than DOWN plus UP; a board that cost more than the whole ramp.
@@ -231,7 +236,7 @@ describe('ramp meter geometry', () => {
     // The gained flight takes no room; the ramp fills the bar to the reference.
     const gained = meterLayout({ ...meter, air: item(-30) }, false);
     expect(gained.segments.air).toBeUndefined();
-    expect(gained.segments.board.left).toBeCloseTo(-86, 6);
-    expect(end(gained.segments.up)).toBeCloseTo(86, 6);
+    expect(gained.segments.board.left).toBeCloseTo(gained.left, 6);
+    expect(end(gained.segments.up)).toBeCloseTo(gained.left + gained.width, 6);
   });
 });

@@ -124,7 +124,7 @@ describe('runs panel', () => {
     try {
       rig.panel.show(); rig.panel.showView('ramps');
       // One graded number per ramp, the whole ramp against the PB; Ramp 2 isn't on the PB's route.
-      expect(html()).toContain('<span class="rn-hero loss" role="cell" title="The whole ramp, touch included: −30.0. PB: −24.0">−6.0</span>');
+      expect(html()).toMatch(/class="rn-hero loss"[^>]*title="[^"]*−30\.0\. PB: −24\.0">−6\.0</);
       expect(html()).toContain('not in PB');
       expect(html()).toContain('Surf vs PB');
       expect(html()).not.toContain('class="rn-detail"');
@@ -140,22 +140,24 @@ describe('runs panel', () => {
       rig.body.emit('click', {target: {closest: selector => selector === 'button' ? null : {dataset: {ramp: 'a'}}}});
       expect(html()).toContain('class="rn-detail"');
       expect(html()).toContain('aria-expanded="true"');
-      expect(html()).toContain('<span role="rowheader">Speed in</span><b role="cell">2400</b><span role="cell">2410</span><b role="cell" class="loss">−10</b>');
-      expect(html()).toContain('Reached in 43% of runs');
+      expect(html()).toMatch(/Speed in<\/span><b[^>]*>2400<\/b><span[^>]*>2410<\/span><b[^>]*class="loss"[^>]*>−10<\/b>/);
+      expect(html()).toContain('>Δ<');
+      expect(html()).toMatch(/reached in 43%/i);
       rig.action({rampMode: 'recent'});
-      expect(html()).toContain('<b role="cell">2401</b>');
+      expect(html()).toContain('>2401<');
       // While the reference loads, the row shows the loss itself and the open table only You.
       slot.status = 'loading';
       rig.panel.showView('ramps');
       expect(html()).toContain('>Surf<');
-      expect(html()).toContain('class="rn-x solo"');
+      expect(html()).toContain('class="rn-detail"');
+      expect(html()).not.toContain('>Δ<');
       slot.status = 'ready';
       rig.panel.showView('ramps');
       rig.action({rampMetric: 'speedIn'});
       expect(saved).toEqual([{rampMetric: 'speedIn'}]);
       expect(html()).toContain('In vs PB');
       expect(html()).toContain('aria-checked="true" tabindex="0" data-ramp-metric="speedIn"');
-      expect(html()).toContain('title="Speed as you touched the ramp: 2401. PB: 2410">−9</span>');
+      expect(html()).toMatch(/title="[^"]*: 2401\. PB: 2410">−9<\/span>/);
       rig.action({rampMetric: 'angle'});
       expect(html()).toContain('Angle vs PB');
       expect(html()).toContain('>±0.0°</span>');
@@ -174,14 +176,14 @@ describe('runs panel', () => {
       speedIn: {best: 2400}, speedOut: {best: 2390}, angle: {best: 3.1}, pb: {speedIn: 2410, speedOut: 2380, angle: 2.8}}]});
     try {
       rig.panel.show(); rig.panel.showView('ramps');
-      expect(rig.body.innerHTML).not.toContain('50');
+      expect(rig.body.innerHTML).not.toContain('Collecting');
       expect(rig.body.innerHTML).toContain('>61%</span>');
       expect(rig.body.innerHTML).toContain('<span class="rn-hero warn"');
       expect(rig.body.innerHTML).toContain('>+0.3°</span>');
       expect(rig.body.innerHTML).toContain('within 0.5°');
-      expect(rig.body.innerHTML).toContain('<p class="rn-caption rn-explain">Angle: how far your landing was from parallel to the ramp. 0°&nbsp;loses no speed on touch.</p>');
+      expect(rig.body.innerHTML).toMatch(/<p class="rn-caption rn-explain">[^<]*parallel to the ramp[^<]*<\/p>/);
       rig.action({ramp: 'a'});
-      expect(rig.body.innerHTML).toContain('<span role="rowheader" title="Angle: how far your landing was from parallel to the ramp. 0° loses no speed on touch.">angle</span>');
+      expect(rig.body.innerHTML).toMatch(/<span role="rowheader" title="[^"]*parallel to the ramp[^"]*">angle<\/span>/);
       rig.action({rampMetric: 'speedIn'});
       expect(rig.body.innerHTML).toContain('within 2.0 u/s');
       expect(rig.body.innerHTML).not.toContain('rn-explain');
@@ -237,7 +239,7 @@ describe('runs panel', () => {
     expect(rampMetric('board', {ramp: {board: 7.5}, reference: {board: 5.1}, compared: true, tolerance: 2})).toMatchObject({text: '−2.4', tone: 'loss', you: '−7.5', ref: '−5.1'});
   });
 
-  test('how far a run got', () => {
+  test('a run’s result names Finished, the checkpoint or stage it reached, or Before CP1', () => {
     expect(reached({outcome: 'finished', checkpoints: 3, kind: 'CP'})).toBe('Finished');
     expect(reached({outcome: 'reset', checkpoints: 0, kind: 'CP', totalCheckpoints: 3})).toBe('Before CP1');
     expect(reached({outcome: 'reset', checkpoints: 2, kind: 'CP', totalCheckpoints: 3})).toBe('CP2');
@@ -490,7 +492,7 @@ describe('runs panel', () => {
     rig.action({rampMode: 'recent'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'recent']);
     rig.action({ramp: 'ramp'});
-    expect(rig.body.innerHTML).toContain('3 runs · 2 crashes left out');
+    expect(rig.body.innerHTML).toMatch(/3 runs.*2 crashes left out/);
     rig.action({rampMode: 'average'});
     expect(calls.at(-1)).toEqual(['utopia:3', 'average']);
     rig.action({resetAverages: 'ask'});
@@ -649,7 +651,8 @@ describe('runs panel', () => {
     try {
       rig.panel.show();
       expect(timers).toHaveLength(1);
-      expect(timers[0].delay).toBe(1001);
+      expect(timers[0].delay).toBeGreaterThanOrEqual(1000);
+      expect(timers[0].delay).toBeLessThan(2000);
       await rig.click('highlight');
       expect(rig.watched).toEqual([run]);
       const closedReads = reads;

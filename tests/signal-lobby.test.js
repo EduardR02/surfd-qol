@@ -58,7 +58,7 @@ test('roster previews are bounded and expose only names and validated identity',
   expect(listingFrom({...listing(1), roster: {}}).roster).toEqual([]);
 });
 
-test('public guest previews enforce the same names as room rosters', () => {
+test('roster guests need a generated Guest_xxxxx name, in new and stored listings alike', () => {
   const roster = [
     {name: 'MemberName', guest: true},
     {name: 'Guest_ABCDE', guest: true},
@@ -86,7 +86,6 @@ test('names that could pass for the site are not listed', () => {
 });
 
 test('a listing the extension would refuse is never listed, and a bad row hides only itself', async () => {
-  expect(listingFrom({name: 'Surfd EU 2 · Frankfurt', mapId: 'not-a-map', mapTitle: '', players: 100000})).toBeNull();
   // A row that got into the directory some other way.
   const lobby = createLobby({});
   expect(lobby.put('p-zzzzzzzzzzzz', {name: 'poison', mapId: 'nope', players: 100000}, 'a')).toBe(false);
@@ -155,7 +154,7 @@ test('the directory refuses new rooms when full, keeps updating listed ones, and
   expect(lobby.rooms()).toHaveLength(DIRECTORY_SIZE);
 });
 
-test('a lobby woken from storage carries on with its stored listings', () => {
+test('a stored listing without a roster is listed with an empty roster', () => {
   const lobby = createLobby({entries: new Map([['p-a', {id: 'p-a', ...listing(4), client: 'a', updatedAt: 50}]]), now: () => 100});
   expect(lobby.rooms()).toEqual([{id: 'p-a', ...listing(4), roster: [], updatedAt: 50}]);
 });

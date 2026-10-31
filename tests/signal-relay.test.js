@@ -196,7 +196,7 @@ test('missing, denied, failed and expired reservations never call the provider',
   }
 });
 
-test('the provider waits for a committed reservation and uses its remaining issuance window', async () => {
+test('the provider is not called until the reservation commits', async () => {
   let commit;
   const api = cloudflare(), pending = new Promise(resolve => { commit = resolve; });
   const issue = createRelay({env: ENV, allow: () => true, reserve: () => pending, fetch: api.fetch, now: () => 1000});

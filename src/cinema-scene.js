@@ -1,4 +1,4 @@
-// Compare adds the game's own Record Ghost, recoloured, and each run's path.
+// Each run in a cinematic replay is the game's own Record Ghost, recoloured, with its path.
 // Three.js classes come from that ghost rather than the bundle's private names.
 import {trackPoint, trackYaw} from './cinema-track.js';
 
@@ -8,12 +8,47 @@ const LINE_STEP = 2;
 // The native ghost normally fades near the first-person camera. Cinema needs
 // it solid even in tight rooms, so pass a camera farther along the same ray.
 const SOLID_FROM = 140;
-// Six seconds of tapering light, with a pale core, coloured glow and moving
-// streaks; the rest stays faint, with a transparent preview ahead of the ghost.
+// Behind each ghost, six seconds of light: a pale core in a coloured band with
+// a soft glow, hot at the head and cooling as it tapers, with smooth pulses
+// travelling back along it and embers shed near the head that drift off and
+// fade. Older history stays a quiet thin line. Ahead, the route not yet
+// travelled is a slim line of light that brightens just ahead of the ghost.
 const TAIL_SECONDS = 6;
+const AHEAD_SECONDS = 4;
+// World units between ember slots; about half of them shed an ember.
+const EMBER_SPACING = 64;
+// The three meshes of a path: band and core, additive glow, x-ray thread.
+const BAND = 0, GLOW = 1, XRAY = 2;
+// Through walls only the path near each ghost shows (seconds behind and
+// ahead), fading out with distance from the camera (units): the whole route
+// would draw a maze over the map.
+const XRAY_BEHIND = 2.5, XRAY_AHEAD = 1.5, XRAY_NEAR = 700, XRAY_FAR = 1800;
+// GLSL float literals.
+const float = value => value.toFixed(2);
+// Ages are in seconds behind the ghost, negative ahead of it.
+const lineShape = `
+uniform float mode;
+float lifeAt(float behind){
+  return 1.0-smoothstep(0.0,${float(TAIL_SECONDS)},max(behind,0.0));
+}
+// Embers live for about a second after the ghost passes.
+float emberZone(float behind){
+  return behind<0.0?0.0:1.0-smoothstep(1.0,1.4,behind);
+}
+// The band's radius in pixels.
+float bandRadius(float behind){
+  if(behind<0.0)return mix(1.8,1.1,smoothstep(0.0,${float(AHEAD_SECONDS)},-behind));
+  return mix(1.2,4.2,lifeAt(behind));
+}
+// Half-width in pixels of the ribbon each mode draws into.
+float spanFor(float behind){
+  float life=lifeAt(behind);
+  if(mode<0.5)return max(bandRadius(behind)+1.0,14.0*emberZone(behind));
+  if(mode<1.5)return behind<0.0?8.0*(1.0-smoothstep(0.0,0.8,-behind)):max(14.0*life,18.0*emberZone(behind));
+  return behind<0.0?1.0:mix(0.8,2.5,life);
+}`;
 const lineVertex = `
 uniform vec2 resolution;
-uniform float width;
 uniform float head;
 uniform float rate;
 uniform float nearPlane;
@@ -23,8 +58,11 @@ attribute float side;
 attribute float tick;
 attribute float along;
 varying float vSide;
-varying float vAhead;
+varying float vBehind;
 varying float vAlong;
+varying float vSpan;
+varying float vDepth;
+${lineShape}
 void main(){
   vec4 here=projectionMatrix*modelViewMatrix*vec4(position,1.0);
   vec3 a=(modelViewMatrix*vec4(prev,1.0)).xyz;
@@ -41,40 +79,101 @@ void main(){
   float magnitude=length(dir);
   dir=magnitude>1e-5?dir/magnitude:vec2(1.0,0.0);
   float behind=(head-tick)/rate;
-  float taper=behind<0.0?0.28:mix(1.0,0.22,smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},behind));
-  here.xy+=vec2(-dir.y,dir.x)*side*width*taper/resolution*here.w;
-  vSide=side;vAhead=tick-head;vAlong=along;
+  float span=spanFor(behind);
+  here.xy+=vec2(-dir.y,dir.x)*side*2.0*span/resolution*here.w;
+  vSide=side;vBehind=behind;vAlong=along;vSpan=span;vDepth=here.w;
   gl_Position=here;
 }`;
 const lineFragment = `
 uniform vec3 color;
+uniform vec3 pale;
+uniform vec3 body;
 uniform float opacity;
-uniform float rate;
 uniform float time;
-uniform float glow;
 varying float vSide;
-varying float vAhead;
+varying float vBehind;
 varying float vAlong;
+varying float vSpan;
+varying float vDepth;
+${lineShape}
+float hash(float n){
+  n=fract(n*0.1031);n*=n+33.33;n*=n+n;return fract(n);
+}
+// 0 is the body colour, 0.5 the line colour and 1 the pale highlight.
+vec3 heat(float t){
+  return mix(mix(body,color,clamp(t*2.0,0.0,1.0)),pale,clamp(t*2.0-1.0,0.0,1.0));
+}
 void main(){
-  float d=abs(vSide);
-  float soft=1.0-smoothstep(0.25,1.0,d);
-  if(vAhead>0.0){
-    if(glow>0.5)discard;
-    float ahead=vAhead/rate;
-    gl_FragColor=vec4(color,(0.3-0.2*smoothstep(0.0,6.0,ahead))*soft*opacity);
-  }else{
-    float behind=-vAhead/rate;
-    float tail=1.0-smoothstep(0.0,${TAIL_SECONDS.toFixed(1)},behind);
-    float flow=fract(vAlong/260.0-time*1.4);
-    float streak=smoothstep(0.0,0.08,flow)*(1.0-smoothstep(0.08,0.55,flow))*tail;
-    if(glow>0.5){
-      gl_FragColor=vec4(color,pow(1.0-d,2.2)*tail*(0.22+0.2*streak)*opacity);
+  float x=vSide*vSpan,ax=abs(x);
+  float behind=vBehind,age=max(behind,0.0),ahead=max(-behind,0.0);
+  // Pulses leave the head at two thirds of the ghost's speed and slow to a stop
+  // in the world, so they stream back from it. Only replay time moves them, and
+  // fract keeps the phase precise late in long runs.
+  float phase=2.4*(age+1.6*(1.0-exp(-age/0.8)))-fract(2.4*time);
+  // Derivatives need uniform control flow, so take them before branching.
+  float density=length(vec2(dFdx(phase),dFdy(phase)));
+  float unit=max(length(vec2(dFdx(vAlong),dFdy(vAlong))),1e-4);
+  if(behind<0.0){
+    float near=1.0-smoothstep(0.0,${float(AHEAD_SECONDS)},ahead);
+    float nose=exp(-ahead/0.3);
+    if(mode>1.5){
+      gl_FragColor=vec4(color,(1.0-smoothstep(0.0,vSpan,ax))*0.6*opacity);
+    }else if(mode>0.5){
+      gl_FragColor=vec4(mix(color,pale,0.5),exp(-3.0*ax*ax/(vSpan*vSpan+1e-3))*0.22*nose*opacity);
     }else{
-      float core=1.0-smoothstep(0.0,0.4,d);
-      vec3 tint=mix(color,vec3(1.0),core*(0.25+0.5*tail+0.25*streak));
-      gl_FragColor=vec4(tint*(1.0+0.45*streak),soft*mix(0.26,0.95,tail)*opacity);
+      float r=bandRadius(behind);
+      float edge=1.0-smoothstep(r-0.7,r+0.7,ax);
+      float core=1.0-smoothstep(0.0,r*0.6+0.4,ax);
+      gl_FragColor=vec4(mix(color,pale,core*(0.35+0.45*near)),edge*mix(0.22,0.85,near*near)*opacity);
+    }
+  }else{
+    float life=lifeAt(age);
+    float hot=exp(-age/0.25);
+    // Smooth packets that narrow with age; where they crowd on screen, their
+    // average, so distant tails do not shimmer.
+    float sharp=mix(3.0,8.0,1.0-life);
+    float crowd=smoothstep(0.06,0.2,density);
+    float envelope=life*smoothstep(0.0,0.25,age);
+    float wave=pow(0.5+0.5*cos(6.2831853*phase),sharp)*envelope;
+    float pulse=mix(wave,inversesqrt(3.14159*sharp)*envelope,crowd);
+    // Each slot along the path may hold an ember, born as the ghost passes. It
+    // drifts a few pixels to one side, shrinks and fades within a second. Check
+    // the neighbouring slots too, so embers near a slot's end are not cut off.
+    float er=mix(2.0,1.0,smoothstep(0.0,0.9,age));
+    // Embers crowded closer than a few pixels apart would only shimmer.
+    float ember=smoothstep(3.0,6.0,${float(EMBER_SPACING)}/unit)*smoothstep(0.0,0.04,age)*exp(-age/0.45)*emberZone(age);
+    float d=1e3;
+    if(ember>0.0){
+      float slot=floor(vAlong/${float(EMBER_SPACING)});
+      for(int k=-1;k<=1;k++){
+        float s=slot+float(k);
+        float centre=(s+0.2+0.6*hash(s+0.37))*${float(EMBER_SPACING)};
+        float drift=(hash(s+0.71)<0.5?-1.0:1.0)*(6.0+6.0*hash(s+0.13))*(1.0-exp(-age/0.18));
+        if(hash(s)<0.45)d=min(d,length(vec2((vAlong-centre)/unit,x-drift)));
+      }
+    }
+    vec3 spark=mix(color,pale,0.1+0.6*exp(-age/0.12));
+    float r=bandRadius(age);
+    if(mode>1.5){
+      gl_FragColor=vec4(heat(0.6),(1.0-smoothstep(0.0,vSpan,ax))*mix(0.5,1.0,life)*opacity);
+    }else if(mode>0.5){
+      float s=14.0*life+1e-3;
+      float halo=exp(-2.5*ax*ax/(s*s))*life*(0.12+0.3*hot+0.3*wave*(1.0-crowd));
+      float flare=exp(-d*d/(9.0*er*er))*ember*0.35;
+      gl_FragColor=vec4(heat(0.55+0.4*hot),(halo+flare)*opacity);
+    }else{
+      float edge=1.0-smoothstep(r-0.7,r+0.7,ax);
+      float cr=r*(0.3+0.25*hot+0.3*pulse)+0.3;
+      float core=1.0-smoothstep(cr*0.4,cr+0.6,ax);
+      vec3 band=heat(mix(0.28,0.55,life));
+      vec3 tint=mix(band,pale,clamp(core*(0.3+0.4*life+0.5*pulse+0.6*hot),0.0,1.0))*(1.0+0.25*pulse);
+      float alpha=edge*mix(0.4,0.95,life);
+      float glint=exp(-d*d/(er*er))*ember;
+      gl_FragColor=vec4(mix(tint,spark,glint/max(glint+alpha*(1.0-glint),1e-4)),(alpha+glint*(1.0-alpha))*opacity);
     }
   }
+  if(mode>1.5)gl_FragColor.a*=(1.0-smoothstep(${float(XRAY_BEHIND * 0.6)},${float(XRAY_BEHIND)},age))*(1.0-smoothstep(${float(XRAY_AHEAD * 0.5)},${float(XRAY_AHEAD)},ahead))
+    *(1.0-smoothstep(${float(XRAY_NEAR)},${float(XRAY_FAR)},vDepth));
   if(gl_FragColor.a<.004)discard;
   #include <colorspace_fragment>
 }`;
@@ -165,13 +264,13 @@ export function createCinemaScene(renderer, runs) {
       outline.material.uniforms.outlineColor.value.set(colors.outline);
       three ??= {Mesh: body.constructor, Geometry: body.geometry.constructor, Attribute: body.geometry.getAttribute('position').constructor,
         Material: body.material.constructor, Color: body.material.uniforms.deepColor.value.constructor, Vector: body.position.constructor};
-      const line = createLine(three, run.track, colors.line);
+      const line = createLine(three, run.track, colors);
       disposers.push(() => {
         for (const mesh of line.meshes) scene.remove(mesh);
         line.dispose();
       });
       for (const mesh of line.meshes) scene.add(mesh);
-      parts.push({run, ghost, label, trail, line,
+      parts.push({run, ghost, group, label, trail, line, shown: true, drawn: line.meshes.map(mesh => mesh.visible),
         frame: {x: 0, y: 0, z: 0, yaw: 0, ducked: false, opacity: 1, trail: new Float32Array(0), trailCount: 0, label: ''}});
     }
     if (three) {
@@ -187,6 +286,7 @@ export function createCinemaScene(renderer, runs) {
     update(at, width, height) {
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index], track = part.run.track;
+        if (!part.shown) continue;
         const tick = Math.max(0, Math.min(track.count - 1, at[index]));
         const frame = trackPoint(track, tick, part.frame);
         frame.yaw = trackYaw(track, tick);
@@ -204,10 +304,19 @@ export function createCinemaScene(renderer, runs) {
         part.line.set(tick, width, height, camera.near);
       }
     },
-    // Where each ghost's head is on screen in CSS pixels, null when off screen.
+    // Hides or shows a run's ghost and path, as first person does for the watched run.
+    show(index, shown) {
+      const part = parts[index];
+      if (!part || part.shown === !!shown) return;
+      part.shown = !!shown;
+      part.group.visible = part.shown;
+      part.line.meshes.forEach((mesh, k) => { mesh.visible = part.shown && part.drawn[k]; });
+    },
+    // Where each ghost's head is on screen in CSS pixels, null when off screen or hidden.
     labels(width, height) {
       camera.updateMatrixWorld();
-      return parts.map(({frame}) => {
+      return parts.map(({frame, shown}) => {
+        if (!shown) return null;
         projected.set(frame.x, frame.z + (frame.ducked ? 56 : 74), -frame.y).project(camera);
         if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || !Number.isFinite(projected.z) ||
             projected.z > 1 || projected.z < -1 || Math.abs(projected.x) > 1.05 || Math.abs(projected.y) > 1.05) return null;
@@ -218,9 +327,10 @@ export function createCinemaScene(renderer, runs) {
   };
 }
 
-// A fixed-pixel ribbon: depth-tested colour, subtle additive glow, and a faint
-// through-wall thread. All three share geometry and the replay-time uniforms.
-function createLine(three, track, color) {
+// A fixed-pixel ribbon drawn three ways from one geometry: a faint through-wall
+// thread, an additive glow and the depth-tested band, all on the same
+// replay-time uniforms.
+function createLine(three, track, colors) {
   const points = [];
   for (let tick = 0; tick < track.count; tick++) {
     // Include both sides of every cut, even between the regular samples.
@@ -285,21 +395,22 @@ function createLine(three, track, color) {
     geometry.setAttribute('tick', new three.Attribute(tick, 1));
     geometry.setAttribute('along', new three.Attribute(along, 1));
     geometry.setIndex(indices);
-    const uniforms = {color: {value: new three.Color(color)},
+    const uniforms = {color: {value: new three.Color(colors.line)}, pale: {value: new three.Color(colors.pale)},
+      body: {value: new three.Color(colors.body)},
       head: {value: 0}, rate: {value: 1 / track.dt}, time: {value: 0}, nearPlane: {value: 0.1},
       resolution: {value: {x: 1, y: 1, isVector2: true}}};
-    const material = (opacity, depthTest, width, glow = 0) => {
+    const material = (opacity, depthTest, mode) => {
       const result = new three.Material({
         vertexShader: lineVertex, fragmentShader: lineFragment, transparent: true, depthWrite: false, depthTest,
-        uniforms: {...uniforms, opacity: {value: opacity}, width: {value: width}, glow: {value: glow}},
+        uniforms: {...uniforms, opacity: {value: opacity}, mode: {value: mode}},
         // Three's AdditiveBlending: the halo brightens without hiding the map.
-        ...glow ? {blending: 2} : {},
+        ...mode === GLOW ? {blending: 2} : {},
       });
       materials.push(result);
       return result;
     };
-    const solid = material(1, true, 8), xray = material(0.18, false, 5), halo = material(1, true, 26, 1);
-    const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, halo), new three.Mesh(geometry, solid)];
+    const xray = material(0.18, false, XRAY), halo = material(1, true, GLOW), band = material(1, true, BAND);
+    const meshes = [new three.Mesh(geometry, xray), new three.Mesh(geometry, halo), new three.Mesh(geometry, band)];
     for (let i = 0; i < meshes.length; i++) {
       meshes[i].renderOrder = 30 + i;
       meshes[i].frustumCulled = false;

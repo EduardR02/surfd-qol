@@ -20,7 +20,8 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s, native transport and extras fade together; custom mode retains its timeline |
 | `set.customReplayUi=true` | Opt into the existing custom bar; otherwise native transport plus graded touch marks, saved locs and tools is shown |
 | `cinema=off\|solo\|group\|focus\|many\|error` | With `state=watching`: cinematic controls disabled, one run, several runs, one focused run, twelve extras, or an activation error |
-| `pick`, `adjusted` | With `cinema`: open Add run, or show Reset view after a camera adjustment |
+| `view=pov\|steady\|cinematic` | With `cinema`: the view shown (default `cinematic`; `pov` keeps added runs in first person) |
+| `pick`, `views`, `adjusted` | With `cinema`: open Add run or the view menu, or show Reset view after a camera adjustment |
 | `parked=true`, `indexing` | Show Return to server, or partial native indexing reach |
 | `locs=<0–20>`, `at=<tick>`, `speed=<0.25–8>` | With `state=watching`: locs on the timeline (default 3), the start position and the speed |
 | `notice=saved\|full\|<text>` | With `state=watching`: a control notice, as after saving a loc |
@@ -53,6 +54,8 @@ Writes the HUD states, each settings section, Runs panel (overview and Ramps), n
 `docs/hud-full.jpg` is `?shot&state=checkpoint&bg=fog&set.surfHud=full` at a 1920×1080 viewport with device scale 0.75 (1440×810), saved as JPEG at quality 88.
 
 `docs/replay-native.jpg` is `?shot&state=watching&bg=warm&title=other&play=paused&y=60` and `docs/replay-custom.jpg` the same with `&set.customReplayUi=true`, each at a 1100×1000 viewport with device scale 2, clipped to the bottom 120 px (x 0, y 880, 1100×120, so 2200×240) and saved as JPEG at quality 88. `y=60` lifts the HUD out of the strip, and the tall viewport crops the backdrop's key display out of it.
+
+`docs/cinematic.jpg` comes from the real game, not the harness: the Fiellu record with the KSF WR and leaderboard #2–#4 added, in Cinematic, a 1920×1080 frame scaled to 1440×810 and saved as JPEG at quality 88.
 
 ## Fonts
 

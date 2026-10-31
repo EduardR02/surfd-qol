@@ -76,8 +76,10 @@ function rendererRig({badGhost = -1, failMaterial = -1, failLineAdd = -1} = {}) 
       return ghost;
     },
   };
-  return {renderer, camera, scene, sentinel, ghosts, geometries, materials,
-    lines: () => scene.children.filter(mesh => mesh.name === 'surfd-qol-compare-line')};
+  const lines = () => scene.children.filter(mesh => mesh.name === 'surfd-qol-compare-line');
+  // Each run's meshes share one geometry; group them in creation order.
+  const paths = () => [...Map.groupBy(lines(), mesh => mesh.geometry).values()];
+  return {renderer, camera, scene, sentinel, ghosts, geometries, materials, lines, paths};
 }
 
 function spans(geometry) {
@@ -197,10 +199,15 @@ describe('cinematic run palette', () => {
     const slots = [10000, 5, 13, 8, 0, 42, 6, 2];
     const cinema = createCinemaScene(rig.renderer, slots.map(colorIndex => ({track, colorIndex})));
     cinema.update(slots.map(() => 1.5), 1280, 720);
+    expect(rig.paths()).toHaveLength(slots.length);
     for (const [index, slot] of slots.entries()) {
-      expect(rig.ghosts[index].body.material.uniforms.deepColor.value.value).toBe(runColors(slot).body);
-      for (const mesh of rig.lines().slice(index * 3, index * 3 + 3)) {
-        expect(mesh.material.uniforms.color.value.value).toBe(runColors(slot).line);
+      const colors = runColors(slot);
+      expect(rig.ghosts[index].body.material.uniforms.deepColor.value.value).toBe(colors.body);
+      for (const mesh of rig.paths()[index]) {
+        // Every colour a path draws with comes from its own run's swatches.
+        const used = Object.values(mesh.material.uniforms).map(uniform => uniform.value?.value).filter(value => typeof value === 'string');
+        expect(used).toContain(colors.line);
+        for (const value of used) expect(Object.values(colors)).toContain(value);
       }
     }
     cinema.dispose();
@@ -215,17 +222,37 @@ describe('cinematic run palette', () => {
 });
 
 describe('cinematic scene playback', () => {
+  test('a hidden run draws no ghost, path or label until shown again', () => {
+    const rig = rendererRig(), track = trackAt([0, 10, 20]);
+    const cinema = createCinemaScene(rig.renderer, [{track, colorIndex: 0}, {track, colorIndex: 1}]);
+    const [first, second] = [...new Set(rig.lines().map(mesh => mesh.geometry))].map(geometry => rig.lines().filter(mesh => mesh.geometry === geometry));
+    rig.camera.projected = [0, 0, 0];
+    cinema.show(0, false);
+    cinema.update([1, 1], 1280, 720);
+    expect(rig.ghosts[0].updates).toHaveLength(0);
+    expect(rig.ghosts[1].updates).toHaveLength(1);
+    expect(first.every(mesh => !mesh.visible)).toBe(true);
+    expect(second.some(mesh => mesh.visible)).toBe(true);
+    expect(cinema.labels(1280, 720)[0]).toBeNull();
+    expect(cinema.labels(1280, 720)[1]).not.toBeNull();
+    cinema.show(0, true);
+    cinema.update([1.5, 1.5], 1280, 720);
+    expect(rig.ghosts[0].updates).toHaveLength(1);
+    expect(first.some(mesh => mesh.visible)).toBe(true);
+    expect(cinema.labels(1280, 720)[0]).not.toBeNull();
+    cinema.dispose();
+  });
+
   test('keeps body and path identities in their stable colour slots after reordering', () => {
     const rig = rendererRig(), track = trackAt([0, 10, 20]);
     const cinema = createCinemaScene(rig.renderer, [{track, colorIndex: 0}, {track, colorIndex: 4}, {track, colorIndex: 2}]);
     for (const [index, slot] of [0, 4, 2].entries()) {
       expect(rig.ghosts[index].body.material.uniforms.deepColor.value.value).toBe(RUN_COLORS[slot].body);
-      expect(rig.lines()[index * 3].material.uniforms.color.value.value).toBe(RUN_COLORS[slot].line);
+      expect(rig.paths()[index][0].material.uniforms.color.value.value).toBe(RUN_COLORS[slot].line);
     }
     cinema.dispose();
     const reordered = createCinemaScene(rig.renderer, [{track, colorIndex: 2}, {track, colorIndex: 4}]);
-    expect(rig.lines()[0].material.uniforms.color.value.value).toBe(RUN_COLORS[2].line);
-    expect(rig.lines()[3].material.uniforms.color.value.value).toBe(RUN_COLORS[4].line);
+    expect(rig.paths().map(meshes => meshes[0].material.uniforms.color.value.value)).toEqual([RUN_COLORS[2].line, RUN_COLORS[4].line]);
     reordered.dispose();
   });
 
@@ -241,7 +268,7 @@ describe('cinematic scene playback', () => {
     cinema.update([2.5], 1280, 720);
     const first = state();
     expect(first).toEqual({
-      clocks: Array.from({length: 3}, () => ({tick: 2.5, seconds: 0.25, flow: 0.25})),
+      clocks: rig.lines().map(() => ({tick: 2.5, seconds: 0.25, flow: 0.25})),
       player: 25,
     });
     cinema.update([2.5], 1280, 720);
@@ -259,19 +286,24 @@ describe('cinematic scene playback', () => {
     fast.dt = 0.05;
     const slow = trackAt(Array.from({length: 41}, (_, index) => index * 20));
     const rig = rendererRig(), cinema = createCinemaScene(rig.renderer, [{track: fast}, {track: slow}]);
-    const clocks = () => rig.lines().map(mesh => {
-      const {head, rate, time} = mesh.material.uniforms;
-      expect(time.value).toBeCloseTo(head.value / rate.value);
-      return time.value;
+    // One clock per run, shared by every mesh of its path.
+    const clocks = () => rig.paths().map(meshes => {
+      const times = new Set(meshes.map(mesh => {
+        const {head, rate, time} = mesh.material.uniforms;
+        expect(time.value).toBeCloseTo(head.value / rate.value);
+        return time.value;
+      }));
+      expect(times.size).toBe(1);
+      return [...times][0];
     });
     cinema.update([15, 7.5], 1280, 720);
-    expect(clocks()).toEqual(Array(6).fill(0.75));
+    expect(clocks()).toEqual([0.75, 0.75]);
     expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([150, 150]);
     cinema.update([-10, 80], 1280, 720);
-    expect(clocks()).toEqual([0, 0, 0, 4, 4, 4]);
+    expect(clocks()).toEqual([0, 4]);
     expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([0, 800]);
     cinema.update([15, 7.5], 1280, 720);
-    expect(clocks()).toEqual(Array(6).fill(0.75));
+    expect(clocks()).toEqual([0.75, 0.75]);
     expect(rig.ghosts.map(ghost => ghost.updates.at(-1).frame.x)).toEqual([150, 150]);
     cinema.dispose();
   });

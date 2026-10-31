@@ -1,4 +1,4 @@
-// Shadow-root styles for the in-run HUD and the settings panel.
+// Shadow-root styles for the in-run HUD (the settings preview reuses them).
 import {FONT_FAMILY} from './hud-view.js';
 
 // The HUD is drawn straight onto the scene: no boxes, no backdrops. Legibility

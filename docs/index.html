@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Surfd QoL: feedback and replay tools for surfd.net</title>
-<meta name="description" content="A Chrome extension for surfd.net with ramp-by-ramp speed feedback, replay controls and local run history. Review your mistakes and save replay moments to practice.">
+<meta name="description" content="A Chrome extension for surfd.net with ramp-by-ramp speed feedback, replay tools with a cinematic camera, and local run history. Review your mistakes and save replay moments to practice.">
 <meta property="og:title" content="Surfd QoL">
 <meta property="og:description" content="See where you lose speed on surfd.net, review your runs with replay controls, and save moments to practice.">
 <meta property="og:image" content="https://eduardr02.github.io/surfd-qol/hud.jpg">
@@ -176,9 +176,14 @@ footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 
       <h2>Replays and run history</h2>
       <p class="lede measure">Surfd’s replay player gets savelocs, Runs and a mark on the timeline for each touch, in the color of its grade. Prefer Surfd QoL’s own bar? Switch to it in settings. Both work on your recorded runs, leaderboard replays and the KSF record route, with the touches marked on every one.</p>
       <dl class="defs">
+        <div><dt>Cinematic replays</dt><dd>Switch any replay from POV to a Steady or Cinematic camera planned around the route. Add your PB, your recent best, the WR or any leaderboard run as ghosts with their trails, racing in real time or side by side, each with its gap to the run you’re watching.</dd></div>
         <div><dt>Practice from a replay</dt><dd>Save a position with Saveloc or your usual save bind, then leave the replay and load it in practice to try the section yourself.</dd></div>
         <div><dt>Local run history</dt><dd>Open Runs for your latest attempt, recent runs, best recorded finish and recent best. In Ramps, compare your best, last 10 measurements or average with your PB or the WR. Each ramp shows how often you reach it and the measurement you pick (Surf, Touch, Angle, Down, Up, speed in or out) against the reference; click it for the touch angle (how far your landing was from parallel to the ramp; 0° loses no speed), your speed in and out, and replays to watch it in. Recording and storage settings are under QoL → History.</dd></div>
       </dl>
+      <figure class="shot full">
+        <img src="cinematic.jpg" width="1440" height="810" alt="A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and below them the replay bar with a chip and gap for each run, Add run and the Cinematic view menu." loading="lazy">
+        <figcaption>A cinematic replay of the Fiellu record with four more runs added: each ghost leaves a trail in its colour, and its chip on the bar shows its gap to the run you’re watching.</figcaption>
+      </figure>
       <figure class="shot full">
         <div class="replay-scroll" role="region" aria-label="Surfd’s replay bar screenshot; scroll horizontally to see all controls" tabindex="0">
           <img src="replay-native.jpg" width="2200" height="240" alt="Surfd’s replay bar, paused on another player’s leaderboard replay: playback buttons and the time under a timeline with a mark for each touch in its grade’s color and three savelocs above it, and Saveloc, Keys and Runs on the right." loading="lazy">

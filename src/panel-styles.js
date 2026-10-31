@@ -1,6 +1,5 @@
-// Settings panel styles. Warm charcoal glass over the menu, the user's speed
-// colour as the only accent, hairline rows instead of cards. The slanted bar
-// is the panel's one motif.
+// Settings panel styles: dark glass over the menu, the user's speed colour as
+// the only accent, hairline rows instead of cards. The slanted bar is the one motif.
 export const panelStyles = `
 .launcher,#panel{pointer-events:auto;text-shadow:none;-webkit-text-stroke:0;
   --bg:rgba(18,18,18,.93);--raise:#242424;--sunk:rgba(0,0,0,.3);--line:rgba(255,255,255,.08);--line-2:rgba(255,255,255,.15);

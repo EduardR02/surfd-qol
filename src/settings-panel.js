@@ -195,9 +195,8 @@ const AIR_EXPLAIN = {
 const KEY_HELP = 'Click, then press the new key. Esc cancels.';
 const PREVIEW_HELP = 'Turns your view like a good strafe at that speed, with the key to hold. Stand still in the start zone; any key or mouse movement stops it.';
 
-// A fixed, illustrative HUD for the preview: it follows the palette and the
-// feedback options, never real measurements.
-// Sample measurements for the preview: a flight, then a finished ramp.
+// The preview HUD follows the palette and feedback options but shows sample
+// measurements, never real ones: a flight, then a finished ramp.
 const PREVIEW_METRICS = {air: {available: true, loss: 3.2, brakingLoss: 1.4, missedGain: 1.8, tick: 10},
   board: {available: true, loss: 2.6, tick: 20}, surf: {available: true, loss: 52.7, downLoss: 14.6, upLoss: 38.1, tick: 30}};
 const PREVIEW_REFERENCE = {board: {status: 'ready', loss: 3.1}, surf: {status: 'ready', loss: 46.6},

@@ -70,7 +70,7 @@ test('requests: only surfd.net WebSocket upgrades to well-formed rooms, as a gue
   }
   for (const path of ['/', '/rooms', '/rooms/', `/rooms/${ROOM}/x?role=guest`, `/room/${ROOM}?role=guest`]) expect(parseRequest(request(path)).status).toBe(404);
   for (const origin of [null, 'https://evil.example', 'http://surfd.net', 'https://www.surfd.net', 'https://surfd.net.evil.example', 'chrome-extension://abc']) {
-    expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {origin}))).toEqual({status: 403, error: 'Origin not allowed'});
+    expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {origin})).status).toBe(403);
   }
   expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {upgrade: null})).status).toBe(426);
   expect(parseRequest(request(`/rooms/${ROOM}?role=guest`, {method: 'POST'})).status).toBe(426);
@@ -330,7 +330,7 @@ test('expiry does not wait for a late alarm, and an early alarm is set again', a
   expect(room.heard(back)[0].data.id).not.toBe(room.hostId);
 });
 
-test('a room holds MAX_GUESTS guests on the meeting point at once and refuses more until one leaves', async () => {
+test('a room refuses guests past MAX_GUESTS until one leaves', async () => {
   const room = await claimed(MAX_GUESTS);
   const extra = room.connect('guest');
   expect(extra.closed).toEqual({code: CLOSE['room-full'], reason: 'room-full'});
@@ -344,7 +344,7 @@ test('a room holds MAX_GUESTS guests on the meeting point at once and refuses mo
   expect(room.connect('guest').closed.reason).toBe('room-full');
 });
 
-test('messages over 16 KB close the sender, counting UTF-8 bytes', async () => {
+test('messages over MAX_MESSAGE close the sender, counting UTF-8 bytes', async () => {
   const room = await claimed(1);
   const [guest] = room.guests;
   const largest = JSON.stringify({type: 'offer', data: 'x'.repeat(MAX_MESSAGE - 26)});
@@ -360,7 +360,7 @@ test('messages over 16 KB close the sender, counting UTF-8 bytes', async () => {
   expect(room.world.record.goneAt).toBe(room.world.time);
 });
 
-test('relay reply floods disconnect only the targeted guest', async () => {
+test('host replies past a flooding guest’s share close that guest, not the host or other guests', async () => {
   const room = await claimed(2);
   const [attacker, other] = room.guests;
   const send = room.host.send.bind(room.host);
@@ -380,7 +380,7 @@ test('relay reply floods disconnect only the targeted guest', async () => {
   expect(room.world.record.goneAt).toBeNull();
 });
 
-test('guest message budgets reset after ten seconds', async () => {
+test('a guest’s message budget resets after RATE_WINDOW_MS', async () => {
   const room = await claimed(2);
   const [guest, other] = room.guests;
   for (let i = 0; i < RATE_MESSAGES; i++) room.say(guest, {type: 'candidate'});

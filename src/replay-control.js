@@ -71,8 +71,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   };
 
   // A seek in the game's player restores a keyframe with restorePractice and
-  // steps on from it: put the HUD's analysis back to that same tick, or clear
-  // it when it wasn't kept, rather than show values from before the seek.
+  // steps on from it: put the HUD's analysis back to that tick, or clear it
+  // if none was kept.
   function uninstall() {
     if (!wrapped) return;
     if (wrapped.prototype.restorePractice === wrapped.wrapper) wrapped.prototype.restorePractice = wrapped.original;
@@ -84,10 +84,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     uninstall();
     const original = prototype.restorePractice;
     const wrapper = function (snapshot) {
-      // A forward step or slow drag across a keyframe restores it rather than
+      // A forward step or slow drag across a keyframe restores it instead of
       // stepping there, and paused playback never kept it. Step the few ticks
-      // up to it first: the analysis runs through them and keeps that frame,
-      // instead of resetting for the rest of the replay.
+      // up to it first so the analysis keeps that frame rather than resetting.
       const ahead = watching;
       if (ahead && this === ahead.session && ahead.coherent) {
         const from = (this.state?.tick ?? 0) - ahead.base, to = (snapshot?.state?.tick ?? NaN) - ahead.base;
@@ -170,8 +169,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   }
   // Anyone else's run (or your PB) gets its ramp boards from the analysis the
   // PB/WR comparisons use. It starts once the game has indexed the replay, so
-  // it never competes with that, runs in idle time and is saved, so watching
-  // the replay again shows them at once.
+  // it doesn't compete with that, and runs in idle time. The result is saved,
+  // so watching again shows the boards at once.
   function analyse(watched) {
     if (watched.run || watched.analysing || watched.boards.length || !boardsFor || !playing(watched)?.index?.complete) return;
     watched.analysing = true;
@@ -248,10 +247,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     return entry.mapId === destination?.mapId && entry.mapVersion === destination.mapVersion
       && native?.shareSnapshot?.(entry.snapshot) === true;
   }
-  // File once into native Restart's authoritative practice bank, even if Exit
-  // retains a legacy replay Session. Rebase only the key and the start
-  // position: loading a saveloc restores its start position, and a replay's
-  // session has none of yours, so the loc carries the one Restart would use.
+  // File pending locs once into native Restart's practice bank, even if Exit
+  // keeps a legacy replay Session. Only the key and start position are rebased:
+  // loading a saveloc restores its start position, and a replay's session has
+  // none of yours, so the loc carries the one Restart would use.
   function file() {
     if (!pending.length) return;
     const native = practice(), store = native?.store?.(), destination = native?.destination?.();
@@ -272,8 +271,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       return false;
     });
   }
-  // Captures this moment of the replay for practice; null once the run has finished.
-  // The entry, or why there is none: 'finished' or 'outdated'.
+  // Captures this moment of the replay for practice: the entry, or why there
+  // is none ('finished' or 'outdated').
   function capture(watched, tick) {
     // While the game plays this replay its session sits exactly on the cursor.
     if (!(practice()?.store?.() instanceof Object) || !playing(watched)) return 'finished';
@@ -468,7 +467,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     slower() { playing(current())?.shiftSpeed(-1); },
     exit() { playing(current())?.host?.exit?.(); },
     returnToServer() { playing(current())?.host?.returnToServer?.(); },
-    // Saves the current tick as a spot, also kept for practice; false when there is no room.
+    // Saves the current tick as a spot, also kept for practice; false when nothing could be saved.
     saveSpot() {
       const watched = current();
       try { if (ghosts() === true) return false; } catch { /* saving as usual */ }
@@ -516,7 +515,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       if (!watched?.spots.includes(tick)) return;
       watched.spots = watched.spots.filter(spot => spot !== tick);
       if (watched.lastSpot === tick) watched.lastSpot = null;
-      // Nor does it become a practice location.
+      // A removed spot is no longer filed as a practice location.
       pending = pending.filter(entry => entry.watch !== watched.id || entry.tick !== tick);
       persist(watched);
     },
