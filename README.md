@@ -114,6 +114,8 @@ By default, the extension adds Saveloc, Runs and saved-location marks to the gam
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 
+On recognised game builds, **Restart current stage** also works after visiting a practice station or loading a practice saveloc, even without the preceding checkpoint splits. It uses the native stage spawn and keeps the session in practice; replay simulation and ranked-run restart rules stay unchanged.
+
 Prefer the extension's timeline? Enable **QoL → History → Custom replay bar**. It has the same touch marks and savelocs, drives the same native player, and you can switch while watching.
 
 After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight: the game restores the movement there, but the extension hasn't analysed what came before, so it leaves that measurement out.
@@ -195,11 +197,11 @@ Tests run offline against fixtures: none of them load the site, the game's code 
 
 Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 
-On recognised builds, the loader unrolls the native collision-box helper in the main module and those three physics workers. It keeps the same inclusive comparisons and axis order, including NaN rejection; BVH traversal, candidate sorting and movement rules are unchanged. An unrecognised helper is left untouched, and an optional worker-patching failure leaves that worker native without disabling page feedback. This adds no map copies or geometry cache. The cinematic recorder captures new airborne contacts on its private shadow movement instance instead of installing general-purpose prototype observers for each recording batch.
+On recognised builds, the loader unrolls the native collision-box helper in the main module and those three physics workers. It keeps the same inclusive comparisons and axis order, including NaN rejection. The replay-index worker can also reuse the loaded map's collision geometry and existing BVH: packing yields between short slices, then transfers newly allocated Float64 geometry/bounds and tree-index buffers without detaching live map data. The worker queries those buffers directly and materialises contacted triangles lazily; native candidate order, collision flags and movement rules stay unchanged. The snapshot belongs to that worker and is released with it, not kept in a disk cache or persistent worker pool. Incompatible map ownership or unsupported layouts retain native indexing. Optional worker-patching failures leave that worker native without disabling page feedback. The cinematic recorder captures new airborne contacts on its private shadow movement instance instead of installing general-purpose prototype observers for each recording batch.
 
 Source layout:
 
-- `extension/`: manifest, the background loader (debugger attach and script patching) and `instrument.js`, which appends the game adapter and applies the optional native collision-box optimization.
+- `extension/`: manifest, the background loader (debugger attach and script patching), `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets and collision preparation.
 - `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
 - `src/observer.js`: wraps the game's movement methods without changing their results.
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.

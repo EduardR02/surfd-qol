@@ -1,7 +1,9 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
+import {packCollisionWorld, unpackCollisionWorld} from './collision-world.js';
+import {nativeStageResetHooks} from './stage-reset-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v23:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v25:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -28,6 +30,80 @@ function collisionBoundsHook(source) {
   return source.slice(0, matches[0].index) + `${axes}=["x","y","z"],${overlap}=(${a},${b})=>${comparisons}` + source.slice(matches[0].index + match.length);
 }
 
+// Keep the native worker and its cancellation/batching. Send a compact copy
+// of collision data the loaded map has already prepared, not a second build.
+function preparedIndexHooks(source) {
+  if (source.includes('__surfdQolPostIndex')) return source;
+  try {
+    const index = unique(source, new RegExp(`startIndex\\((${identifier}),(${identifier}),(${identifier}),(${identifier})\\)\\{const (${identifier})=this\\.replay,(${identifier})=this\\.index,(${identifier})=this\\.revision,(${identifier})=\\(\\)=>\\{`, 'g'), 'index ownership');
+    const end = source.indexOf('stopWorker(){', index.index);
+    if (end < 0) return source;
+    const body = source.slice(index.index, end);
+    const worker = unique(body, new RegExp(`const (${identifier})=new Worker\\(new URL\\("/assets/replay-index\\.worker-[^"]+\\.js",import\\.meta\\.url\\),\\{type:"module"\\}\\);this\\.worker=\\1`, 'g'), 'index worker')[1];
+    const post = unique(body, new RegExp(`${literal(worker)}\\.postMessage\\((\\{entry:${literal(index[2])},currentVersion:${literal(index[3])},replay:${literal(index[5])}\\})\\)`, 'g'), 'index request');
+    const call = `__surfdQolPostIndex(${worker},${post[1]},${index[1]},this.host.session(),()=>this.revision===${index[7]}&&this.worker===${worker}&&!${index[6]}.complete,${index[8]})`;
+    const at = index.index + post.index;
+    return source.slice(0, at) + call + source.slice(at + post[0].length) + `
+async function __surfdQolPostIndex(worker,message,map,session,isCurrent,onFailure){
+  try{
+    const compatible=session?.map===map&&map.id===message.replay.mapId&&map.version===message.replay.mapVersion;
+    const packet=compatible?await (${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
+    if(!isCurrent())return;
+    if(!packet){worker.postMessage(message);return;}
+    const transfer=[];
+    for(const value of Object.values(packet))if(ArrayBuffer.isView(value)&&!transfer.includes(value.buffer))transfer.push(value.buffer);
+    worker.postMessage({...message,__surfdQolCollision:packet},transfer);
+  }catch{
+    if(!isCurrent())return;
+    try{worker.postMessage(message);}catch{onFailure();}
+  }
+}
+`;
+  } catch { return source; }
+}
+
+function preparedIndexWorkerHooks(source) {
+  if (source.includes('__surfdQolWorlds')) return source;
+  try {
+    const world = unique(source, new RegExp(`class (${identifier})\\{constructor\\((${identifier}),(${identifier})=\\[\\],(${identifier})=!1,(${identifier})=!1\\)\\{this\\.brushes=\\2,this\\.triangles=\\3,this\\.vphysicsFeatureFix=\\4,this\\.bspCornerFix=\\5,this\\.triangleBounds=\\3\\.map\\(`, 'g'), 'native collision world');
+    const fields = 'brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(';
+    const fieldsAt = source.indexOf(fields, world.index);
+    if (fieldsAt < 0 || fieldsAt - world.index > 1000) return source;
+    const factory = unique(source, new RegExp(`new ${literal(world[1])}\\((${identifier})\\.brushes,\\1\\.displacementTriangles,(${identifier}),(${identifier})\\)`, 'g'), 'native world factory');
+    const handler = unique(source, new RegExp(`async function (${identifier})\\((${identifier})\\)\\{try\\{const\\{entry:(${identifier}),currentVersion:(${identifier}),replay:(${identifier})\\}=\\2;`, 'g'), 'index worker request');
+    const entry = literal(handler[3]), current = literal(handler[4]), replay = literal(handler[5]);
+    const load = unique(source, new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'), 'index geometry load');
+    const strict = unique(source, /"use strict";/g, 'worker scope');
+    const map = load[1];
+    const prepare = `let ${map}=null,__surfdQolPrepared=null;
+try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
+if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
+  ${map}=__surfdQolPrepared.map;__surfdQolWorlds.set(${map}.brushes,__surfdQolPrepared);
+}else{${load[0].slice(4)}}
+`;
+    // Only the factory changes. Native constructors still initialize their
+    // fields and flag variants; the prepared geometry is flag-independent.
+    const helper = `
+const __surfdQolWorlds=new WeakMap;
+function __surfdQolWorkerWorld(map,feature,corner){
+  const prepared=__surfdQolWorlds.get(map.brushes);
+  if(!prepared)return new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
+  const world=new ${world[1]}([],[],feature,corner);
+  world.brushes=map.brushes;world.triangles=map.displacementTriangles;
+  world.triangleBounds=prepared.triangleBounds;world.tree=prepared.tree;
+  return world;
+}
+`;
+    const changes = [
+      {at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]})`},
+      {at: load.index, length: load[0].length, text: prepare},
+      {at: strict.index + strict[0].length, length: 0, text: helper},
+    ].sort((a, b) => b.at - a.at);
+    for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
+    return source;
+  } catch { return source; }
+}
+
 function alreadyInstrumented(source) {
   if (!source.includes('\n/* surfd-qol-adapter-v')) return false;
   if (isCurrentInstrumented(source)) return true;
@@ -36,8 +112,8 @@ function alreadyInstrumented(source) {
 
 export function instrumentPhysicsWorker(source) {
   if (alreadyInstrumented(source)) return source;
-  const patched = collisionBoundsHook(source);
-  return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision bounds */`;
+  const patched = preparedIndexWorkerHooks(collisionBoundsHook(source));
+  return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision preparation */`;
 }
 
 // Replay hooks are optional: when the game's watch function or its replay
@@ -395,6 +471,8 @@ export function instrumentGame(source) {
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   source = collisionBoundsHook(source);
+  source = preparedIndexHooks(source);
+  source = nativeStageResetHooks(source);
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
   const practice = practiceHooks(source, sessionClass, state);
