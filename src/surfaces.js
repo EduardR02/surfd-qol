@@ -104,32 +104,100 @@ function makeEdge(a, b) {
 }
 
 function boundsTree(items) {
-  if (!items.length) return null;
-  const node = { minX: Infinity, minY: Infinity, minZ: Infinity,
-    maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
-  for (const item of items) {
-    node.minX = Math.min(node.minX, item.minX);
-    node.minY = Math.min(node.minY, item.minY);
-    node.minZ = Math.min(node.minZ, item.minZ);
-    node.maxX = Math.max(node.maxX, item.maxX);
-    node.maxY = Math.max(node.maxY, item.maxY);
-    node.maxZ = Math.max(node.maxZ, item.maxZ);
+  const values = new Float64Array(items.length * 9);
+  const indices = new Uint32Array(items.length);
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const offset = i * 9;
+    values[offset] = item.minX;
+    values[offset + 1] = item.minY;
+    values[offset + 2] = item.minZ;
+    values[offset + 3] = item.maxX;
+    values[offset + 4] = item.maxY;
+    values[offset + 5] = item.maxZ;
+    // Keep the original doubled centres, including their floating-point rounding.
+    values[offset + 6] = item.minX + item.maxX;
+    values[offset + 7] = item.minY + item.maxY;
+    values[offset + 8] = item.minZ + item.maxZ;
+    indices[i] = i;
   }
-  if (items.length <= 8) {
-    node.items = items;
+  function compare(a, b, axis) {
+    return values[a * 9 + 6 + axis] - values[b * 9 + 6 + axis] || items[a].id - items[b].id;
+  }
+  function select(start, end, median, axis) {
+    let low = start, high = end - 1;
+    // Match the collision BVH's bounded median-of-three selection. Sorting
+    // only the unresolved range prevents adversarial pivots from going quadratic.
+    let budget = 2 * Math.ceil(Math.log2(end - start)) + 1;
+    while (low < high) {
+      if (--budget < 0) {
+        indices.subarray(low, high + 1).sort((a, b) => compare(a, b, axis));
+        return;
+      }
+      let first = indices[low], middle = indices[low + ((high - low) >> 1)];
+      const last = indices[high];
+      if (compare(first, middle, axis) > 0) {
+        const item = first;
+        first = middle;
+        middle = item;
+      }
+      if (compare(middle, last, axis) > 0) middle = last;
+      if (compare(first, middle, axis) > 0) middle = first;
+      const pivot = middle;
+      let left = low, right = high;
+      while (left <= right) {
+        while (compare(indices[left], pivot, axis) < 0) left++;
+        while (compare(indices[right], pivot, axis) > 0) right--;
+        if (left <= right) {
+          const item = indices[left];
+          indices[left++] = indices[right];
+          indices[right--] = item;
+        }
+      }
+      if (median <= right) high = right;
+      else if (median >= left) low = left;
+      else return;
+    }
+  }
+  function build(start, end, parentAxis) {
+    const node = { minX: Infinity, minY: Infinity, minZ: Infinity,
+      maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
+    for (let i = start; i < end; i++) {
+      const offset = indices[i] * 9;
+      node.minX = Math.min(node.minX, values[offset]);
+      node.minY = Math.min(node.minY, values[offset + 1]);
+      node.minZ = Math.min(node.minZ, values[offset + 2]);
+      node.maxX = Math.max(node.maxX, values[offset + 3]);
+      node.maxY = Math.max(node.maxY, values[offset + 4]);
+      node.maxZ = Math.max(node.maxZ, values[offset + 5]);
+    }
+    if (end - start <= 8) {
+      // Old leaves inherit their parent's complete sort; the root leaf keeps
+      // input order. Restore that tiny ordering without copying leaf arrays.
+      if (parentAxis >= 0) for (let i = start + 1; i < end; i++) {
+        const item = indices[i];
+        let position = i;
+        while (position > start && compare(indices[position - 1], item, parentAxis) > 0) {
+          indices[position] = indices[position - 1];
+          position--;
+        }
+        indices[position] = item;
+      }
+      node.start = start;
+      node.end = end;
+      return node;
+    }
+    const x = node.maxX - node.minX;
+    const y = node.maxY - node.minY;
+    const z = node.maxZ - node.minZ;
+    const axis = x >= y && x >= z ? 0 : y >= z ? 1 : 2;
+    const middle = start + ((end - start) >> 1);
+    select(start, end, middle, axis);
+    node.left = build(start, middle, axis);
+    node.right = build(middle, end, axis);
     return node;
   }
-  const x = node.maxX - node.minX;
-  const y = node.maxY - node.minY;
-  const z = node.maxZ - node.minZ;
-  const axis = x >= y && x >= z ? 'X' : y >= z ? 'Y' : 'Z';
-  const min = `min${axis}`;
-  const max = `max${axis}`;
-  items.sort((a, b) => (a[min] + a[max]) - (b[min] + b[max]) || a.id - b.id);
-  const middle = items.length >> 1;
-  node.left = boundsTree(items.slice(0, middle));
-  node.right = boundsTree(items.slice(middle));
-  return node;
+  return { root: items.length ? build(0, items.length, -1) : null, indices };
 }
 
 function nearby(a, b) {
@@ -320,15 +388,16 @@ function buildIndex(map, groundNormal) {
     }
     return id;
   }
-  const tree = boundsTree(faces.slice());
+  const { root: tree, indices } = boundsTree(faces);
   function connect(face, node) {
     if (!node || !nearby(face, node)) return;
-    if (!node.items) {
+    if (node.left) {
       connect(face, node.left);
       connect(face, node.right);
       return;
     }
-    for (const other of node.items) {
+    for (let i = node.start; i < node.end; i++) {
+      const other = faces[indices[i]];
       if (other.id <= face.id || !nearby(face, other)) continue;
       const a = root(face.id);
       const b = root(other.id);

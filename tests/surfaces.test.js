@@ -303,3 +303,84 @@ test('real Andromeda rotated BSP facets connect across their overlapping interio
   const index = getRampSurfaces(freeze({ brushes: [a, b] }), groundNormal);
   assert.equal(component(index, a), component(index, b));
 });
+
+test('large ordered and adversarial layouts preserve exact component IDs on every spatial axis', () => {
+  const count = 257;
+  const ordered = Array.from({ length: count }, (_, i) => i);
+  const layouts = [
+    ordered,
+    [...ordered].reverse(),
+    ordered.map((_, i) => i % 2 ? count - 1 - (i >> 1) : i >> 1),
+    [...ordered.filter(i => i % 2 === 0), ...ordered.filter(i => i % 2).reverse()],
+  ];
+  for (const axis of ['x', 'y', 'z']) for (const layout of layouts) {
+    const groups = layout.map(i => Math.floor(i / 13));
+    const brushes = layout.map(i => {
+      const group = Math.floor(i / 13);
+      const x = (i % 13) * 10;
+      return translate(ramp(`face-${i}`, x, x + 10),
+        axis === 'x' ? group * 200 : 0, axis === 'y' ? group * 200 : 0, axis === 'z' ? group * 200 : 0);
+    });
+    const first = new Map();
+    groups.forEach((group, i) => { if (!first.has(group)) first.set(group, i); });
+    const index = getRampSurfaces(freeze({ brushes }), groundNormal);
+    brushes.forEach((value, i) => assert.equal(component(index, value), first.get(groups[i]),
+      `${axis}: ${value.id}`));
+  }
+});
+
+test('duplicate centres and overlapping faces retain all contacts and stable component IDs', () => {
+  const brushes = Array.from({ length: 193 }, (_, i) => {
+    const radius = 1 + (i * 73) % 40;
+    return translate(ramp(`nested-${i}`, -radius, radius, -radius, radius), (i % 3) * 500, 0, 0);
+  });
+  const index = getRampSurfaces(freeze({ brushes }), groundNormal);
+  brushes.forEach((value, i) => assert.equal(component(index, value), i % 3, value.id));
+});
+
+test('dense touching faces agree with rectangular connectivity without merging point-only contacts', () => {
+  const cells = [];
+  for (let y = 0; y < 17; y++) for (let x = 0; x < 17; x++) {
+    // Missing alternating cells leave diagonal point contacts between islands,
+    // while the other rows contain dense transitive edge-connected runs.
+    if (y % 4 === 2 && x % 2) continue;
+    if (y % 4 === 3 && x % 2 === 0) continue;
+    cells.push({ x, y });
+    if ((x + y) % 7 === 0) cells.push({ x, y });
+  }
+  // Interleave distant rows so neighboring faces do not start in one leaf.
+  cells.sort((a, b) => ((a.x * 37 + a.y * 101) % 307) - ((b.x * 37 + b.y * 101) % 307));
+  const expected = new Array(cells.length).fill(null);
+  for (let i = 0; i < cells.length; i++) {
+    if (expected[i] !== null) continue;
+    expected[i] = i;
+    const queue = [i];
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const a = cells[queue[cursor]];
+      for (let j = i + 1; j < cells.length; j++) {
+        if (expected[j] !== null) continue;
+        const b = cells[j];
+        if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) > 1) continue;
+        expected[j] = i;
+        queue.push(j);
+      }
+    }
+  }
+  const brushes = cells.map(({ x, y }, i) => ramp(`cell-${i}`, x * 10, x * 10 + 10, y * 10, y * 10 + 10));
+  const index = getRampSurfaces(freeze({ brushes }), groundNormal);
+  brushes.forEach((value, i) => assert.equal(component(index, value), expected[i], value.id));
+});
+
+test('curved surface seams remain transitive across many spatial partitions', () => {
+  const brushes = [];
+  let z = 0;
+  for (let i = 0; i < 65; i++) {
+    const slope = -1.5 - (i % 7) / 4;
+    brushes.push(facet(`curve-${i}`, i * 10, (i + 1) * 10, z, slope));
+    z += slope * 10;
+  }
+  const isolated = translate(ramp('isolated'), 1000, 0, 0);
+  brushes.splice(17, 0, isolated);
+  const index = getRampSurfaces(freeze({ brushes }), groundNormal);
+  for (const value of brushes) assert.equal(component(index, value), value === isolated ? 17 : 0, value.id);
+});

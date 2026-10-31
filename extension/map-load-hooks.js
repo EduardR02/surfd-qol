@@ -36,7 +36,7 @@ export async function decodeMapImage(bytes, url, signal, nativeDecode) {
 
 // The visible frame prepares its own textures first. Remaining uploads and
 // geometry are warmed in short idle batches, without changing the framebuffer.
-export function prepareMapRenderer({renderer, scenes, camera, textures, alive, render, warm,
+export function prepareMapRenderer({renderer, scenes, camera, textures, alive, render, warm, ready,
   schedule = callback => typeof requestIdleCallback === 'function'
     ? requestIdleCallback(callback, {timeout: 50})
     : setTimeout(() => callback(null), 0),
@@ -84,7 +84,13 @@ export function prepareMapRenderer({renderer, scenes, camera, textures, alive, r
     }
     if (alive() && (textureIndex < pendingTextures.length || objectIndex < objects.length)) schedule(batch);
   }
-  if (pendingTextures.length || objects.length) schedule(batch);
+  function startBackground() {
+    if (!alive() || !(pendingTextures.length || objects.length)) return;
+    // The load owner reports ready's failure; never warm incomplete textures.
+    if (ready) Promise.resolve(ready).then(() => { if (alive()) schedule(batch); }, () => {});
+    else schedule(batch);
+  }
+  startBackground();
 }
 
 function nativeSkyResampleHooks(source) {
@@ -147,6 +153,7 @@ export function nativeMapLoadHooks(source) {
   if (imageMap.length !== 1) return source;
   const text = `prepare:async ${frame}=>{
     const ${started}=performance.now(),${scenes}=[${sky},${occluders},${world}],${context}=${renderer}.getContext(),${current}=()=>!${disposed}&&!${context}.isContextLost();
+    globalThis.__SURFD_QOL__?.prepareMap?.();
     ${collect}
     const __qolNodes=[];for(const scene of ${scenes})scene.traverse(node=>__qolNodes.push(node));
     const __qolSaved=new Array(__qolNodes.length*2);

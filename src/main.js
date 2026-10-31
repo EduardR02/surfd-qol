@@ -1,4 +1,5 @@
 import { createMetrics } from './metrics.js';
+import { getRampSurfaces } from './surfaces.js';
 import { createStartFeedback } from './start.js';
 import { createRunHistory } from './run-history.js';
 import { createReplayArchive, createHistoryStore, createAnalysisStore, openSiteDatabase } from './replay-archive.js';
@@ -116,6 +117,12 @@ const api = {
   privateRooms,
   strafePreview,
   cinema,
+  prepareMap() {
+    if (destroyed || failed) return;
+    const session = api.adapter?.getSession();
+    try { getRampSurfaces(session?.map, session?.config?.groundNormal); }
+    catch (error) { fail(error); }
+  },
   attach(adapter) {
     if (destroyed || api.adapter) return;
     try {
