@@ -203,9 +203,11 @@ The recognised BSP renderer shows the initial fully textured view without waitin
 
 Where supported, WebCodecs decodes packed image bytes directly, then converts the decoded frame to ImageBitmap without a per-image Blob read. Frames and decoders close immediately after conversion; unsupported codecs or conversion fall back to Blob/ImageBitmap and then the native image loader. ImageBitmap preserves the existing upload, orientation and alpha handling. Bitmaps close when loading fails, is cancelled, or their renderer is disposed. This adds no persistent image cache and does not reduce texture quality.
 
+Recognised skybox resampling keeps native face dimensions, affine transforms, linear-light blending and alpha rounding. Identity faces at the output size copy pixels directly; interpolation uses cached colour-transfer lookups, with the exact native conversion at ambiguous rounding boundaries. This avoids the native per-channel closure and repeated power-function work when sky faces have different sizes. Same-size identity skyboxes retain their no-resampling path; unknown native layouts stay unchanged.
+
 Source layout:
 
-- `extension/`: manifest, the background loader (debugger attach and script patching), `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets, collision preparation, image decoding and progressive map GPU preparation.
+- `extension/`: manifest, the background loader (debugger attach and script patching), `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets, collision preparation, image decoding, sky resampling and progressive map GPU preparation.
 - `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
 - `src/observer.js`: wraps the game's movement methods without changing their results.
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.

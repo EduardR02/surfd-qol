@@ -4,7 +4,7 @@ import {packCollisionWorld, unpackCollisionWorld} from './collision-world.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v27:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v28:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';

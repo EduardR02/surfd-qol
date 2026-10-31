@@ -1,3 +1,5 @@
+import {createSkyResampler} from './sky-resample.js';
+
 // Keep ImageBitmap's upload/orientation behavior. WebCodecs can decode directly
 // from packed bytes, avoiding a Blob read for each image; both fallbacks remain.
 export async function decodeMapImage(bytes, url, signal, nativeDecode) {
@@ -85,9 +87,41 @@ export function prepareMapRenderer({renderer, scenes, camera, textures, alive, r
   if (pendingTextures.length || objects.length) schedule(batch);
 }
 
+function nativeSkyResampleHooks(source) {
+  if (source.includes('__qolSkyResample')) return source;
+  const pattern = /function (?<name>[\w$]+)\((?<images>[\w$]+),(?<transforms>[\w$]+)=\[\]\)\{const (?<size>[\w$]+)=Math\.max\(\.\.\.\k<images>\.map\((?<image>[\w$]+)=>Math\.max\(\k<image>\.width,\k<image>\.height\)\)\),(?<identity>[\w$]+)=\[1,0,0,0,1,0\],(?<matrices>[\w$]+)=\k<images>\.map\(\((?<face>[\w$]+),(?<index>[\w$]+)\)=>(?<parse>[\w$]+)\(\k<transforms>\[\k<index>\]\)\);[\s\S]*?return [\w$]+\.putImageData\([\w$]+,0,0\),[\w$]+\}\)\}/g;
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) return source;
+  const match = matches[0], body = match[0];
+  if (body.length > 1800 || !body.includes('willReadFrequently:!0') ||
+      !/Math\.pow\(\([\w$]+\+\.055\)\/1\.055,2\.4\)/.test(body) ||
+      !/Math\.pow\([\w$]+,1\/2\.4\)/.test(body) ||
+      !/[\w$]+===3\?Math\.round\([\w$]+\*255\):[\w$]+\([\w$]+\)/.test(body)) return source;
+  const {name, parse} = match.groups;
+  // Keep native transform parsing, dimensions and canvas colour handling.
+  // Only the allocation-heavy per-pixel colour conversion changes.
+  const replacement = `const __qolSkyResample=(${createSkyResampler.toString()})();
+    function ${name}(images,transforms=[]){
+      const size=Math.max(...images.map(image=>Math.max(image.width,image.height)));
+      const identity=[1,0,0,0,1,0],matrices=images.map((image,index)=>${parse}(transforms[index]));
+      if(images.every((image,index)=>image.width===size&&image.height===size&&matrices[index].every((value,axis)=>Math.abs(value-identity[axis])<1e-12)))return images;
+      return images.map((image,index)=>{
+        const input=document.createElement("canvas");input.width=image.width;input.height=image.height;
+        const reader=input.getContext("2d",{willReadFrequently:true});reader.drawImage(image,0,0);
+        const pixels=reader.getImageData(0,0,image.width,image.height).data;
+        const output=document.createElement("canvas");output.width=output.height=size;
+        const writer=output.getContext("2d"),result=writer.createImageData(size,size);
+        __qolSkyResample(pixels,image.width,image.height,size,matrices[index],result.data);
+        writer.putImageData(result,0,0);return output;
+      });
+    }`;
+  return source.slice(0, match.index) + replacement + source.slice(match.index + body.length);
+}
+
 // Optional, atomic hook for the native BSP renderer. An unknown layout keeps
 // its original complete-before-play preparation.
 export function nativeMapLoadHooks(source) {
+  source = nativeSkyResampleHooks(source);
   if (source.includes('__qolProgressiveMap')) return source;
   const matches = [...source.matchAll(/prepare:async ([\w$]+)=>\{const ([\w$]+)=performance\.now\(\),([\w$]+)=\[([\w$]+),([\w$]+),([\w$]+)\],([\w$]+)=([\w$]+)\.getContext\(\),([\w$]+)=\(\)=>!([\w$]+)&&!\7\.isContextLost\(\),[\s\S]*?\},setTriggersVisible:/g)];
   if (matches.length !== 1) return source;
