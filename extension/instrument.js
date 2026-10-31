@@ -2,8 +2,9 @@ import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 import {packCollisionWorld, unpackCollisionWorld} from './collision-world.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
+import {nativeMapLoadHooks} from './map-load-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v25:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v26:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -473,6 +474,7 @@ export function instrumentGame(source) {
   source = collisionBoundsHook(source);
   source = preparedIndexHooks(source);
   source = nativeStageResetHooks(source);
+  source = nativeMapLoadHooks(source);
   const rooms = roomHooks(source, client, state);
   source = rooms.source;
   const practice = practiceHooks(source, sessionClass, state);
