@@ -64,7 +64,7 @@ export function createReplayUi(options) {
   const custom = createReplayBar(options);
   const extras = root.getElementById('native-replay-extras');
   const marksLayer = extras.querySelector('.nr-marks'), notice = extras.querySelector('.nr-notice');
-  const tools = extras.querySelector('.nr-tools');
+  const tools = extras.querySelector('.nr-tools'), actions = extras.querySelector('.nr-actions');
   const runs = extras.querySelector('[data-extra="runs"]'), keys = extras.querySelector('[data-extra="keys"]');
   const save = extras.querySelector('[data-extra="save"]');
   const sheet = extras.querySelector('.nr-keys'), tip = extras.querySelector('.nr-tip');
@@ -83,7 +83,7 @@ export function createReplayUi(options) {
     '@media(max-width:1000px){#replay-transport .surfd-qol-replay-slot{display:none}}';
   document.head.append(wake);
   let transport = null, slot = null, status = null, customMode = false, available = false, reserve = 0;
-  let drawn = null, geometryDirty = true, marks = [], sheetOpen = false, hovering = false;
+  let drawn = null, geometryDirty = true, marks = [], sheetOpen = false, hovering = false, needed = 0;
   const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { geometryDirty = true; }) : null;
   const resized = () => { geometryDirty = true; };
   addEventListener('resize', resized, {passive: true});
@@ -124,11 +124,14 @@ export function createReplayUi(options) {
     if (!track || !slot) { hideExtras(); return; }
     extras.hidden = false;
     if (slot.hidden) { slot.hidden = false; geometryDirty = true; }
+    // The buttons change with the view and the runs, so their width decides the layout too.
+    if (actions.scrollWidth !== needed) { needed = actions.scrollWidth; geometryDirty = true; }
     if (geometryDirty) {
       const rect = track.getBoundingClientRect(), nativeRect = transport.getBoundingClientRect(), dock = slot.getBoundingClientRect();
       extras.style.left = `${rect.left}px`; extras.style.top = `${rect.top}px`;
       extras.style.width = `${rect.width}px`; extras.style.height = `${rect.height}px`;
-      const inline = nativeRect.width > 1000;
+      // Inline only while the buttons fit beside a run chip or two; otherwise the compact row above.
+      const inline = nativeRect.width > 1000 && dock.width >= needed + 180;
       tools.style.left = `${inline ? dock.left : rect.left}px`;
       tools.style.top = `${inline ? dock.top : rect.bottom - 57}px`;
       tools.style.width = `${inline ? dock.width : rect.width}px`;
