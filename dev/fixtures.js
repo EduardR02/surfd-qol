@@ -385,10 +385,12 @@ export function createReplayControl({params, active, ghosts = () => false}) {
 }
 
 // UI-only cinematic states: no renderer, physics or alignment is simulated.
-// ?cinema=off|solo|group|focus|many|error starts the real controls in that state.
+// ?cinema=off|solo|group|focus|many|error starts the real controls in that
+// state; ?view=pov|steady|cinematic picks the view (default cinematic).
 export function createCinemaFixture({params, replayControl}) {
   const mode = params.get('cinema');
   let enabled = mode != null && mode !== 'off' && mode !== 'error', focus = mode === 'focus' ? 'run:jose' : null, sync = 'time', adjusted = params.has('adjusted');
+  let preferred = params.get('view') === 'steady' ? 'steady' : 'cinematic', camera = params.get('view') !== 'pov';
   const initial = [
     {id: 'run:site-wr', label: 'Site WR', time: 40.533},
     {id: 'run:jose', label: '#3 Jose', time: 40.884},
@@ -409,12 +411,20 @@ export function createCinemaFixture({params, replayControl}) {
     available: () => replayControl.active,
     get active() { return enabled && replayControl.active; },
     get comparing() { return fixture.active && runs.length > 0; },
-    async setEnabled(value) {
-      if (value && mode === 'error') throw new Error('This replay’s route is unavailable.');
-      enabled = value;
-      if (!value) { runs = []; loading = []; focus = null; adjusted = false; }
+    get camera() { return fixture.active && camera; },
+    get view() { return fixture.camera ? preferred : 'pov'; },
+    async setEnabled(value) { return fixture.setView(value ? preferred : 'pov'); },
+    async setView(view) {
+      if (view !== 'pov' && mode === 'error') throw new Error('This replay’s route is unavailable.');
+      if (view === 'pov') {
+        camera = false;
+        if (!runs.length && !loading.length) { enabled = false; focus = null; adjusted = false; }
+        return true;
+      }
+      preferred = view; enabled = camera = true;
       return true;
     },
+    async setStyle(style) { preferred = style; },
     async add(source) {
       if ([...runs, ...loading].some(run => run.id === source.id)) return false;
       const used = new Set([...runs, ...loading].map(run => run.colorIndex));
@@ -425,13 +435,17 @@ export function createCinemaFixture({params, replayControl}) {
       try {
         await source.load();
         if (!loading.includes(entry)) return false;
-        enabled = true;
+        enabled = camera = true;
         runs = [...runs, {...entry, time: initial.find(run => run.id === entry.id)?.time ?? 41.233}];
         return true;
       } finally { loading = loading.filter(run => run !== entry); }
     },
-    remove(id) { runs = runs.filter(run => run.id !== id); loading = loading.filter(run => run.id !== id); if (focus === id) focus = null; },
-    async setFocus(id) { focus = id === focus ? null : id; },
+    remove(id) {
+      runs = runs.filter(run => run.id !== id); loading = loading.filter(run => run.id !== id);
+      if (focus === id) focus = null;
+      if (!camera && !runs.length && !loading.length) enabled = false;
+    },
+    async setFocus(id) { if (!camera) { camera = true; focus = id; } else focus = id === focus ? null : id; },
     async setSync(value) { sync = value; },
     resetView() { adjusted = false; },
     status() {
@@ -439,7 +453,7 @@ export function createCinemaFixture({params, replayControl}) {
       const status = replayControl.status();
       return {active: fixture.active, played: {label: 'This run', time: 41.233, colorIndex: 0, color: colorOf(0)},
         runs: runs.map((run, index) => ({...run, color: colorOf(run.colorIndex), gap: [.267, -.084, -.211, .189][index % 4]})),
-        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted,
+        loading: loading.map(run => ({...run, color: colorOf(run.colorIndex)})), sync, focus, pending: null, adjusted: adjusted && camera, view: fixture.view, style: preferred, preferred,
         labels: [0, ...runs].map((_, index, all) => ({x: innerWidth * (.18 + index * .64 / Math.max(1, all.length - 1)), y: innerHeight * .43 + Math.sin((status?.index ?? 0) / 160 + index) * 18}))};
     },
   };

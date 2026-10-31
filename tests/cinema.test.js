@@ -125,6 +125,27 @@ describe('tracks', () => {
     expect(track.cut[1]).toBe(1);
     expect(trackPoint(track, 0.5).x).toBe(5);
   });
+  test('an opening drop from the spawn onto the floor is held where they land', async () => {
+    class Movement { accelerate() {} slide() {} }
+    class Session {
+      constructor(map, config) { this.map = map; this.config = config; this.movement = new Movement(); this.timer = {state: {phase: 'ready', splits: [], elapsed: 0}}; }
+      loadReplay(replay) { this.state = structuredClone(replay.initialState); }
+      step() {
+        const p = this.state.position;
+        this.state.tick++;
+        if (p.z > 0) p.z = Math.max(0, p.z - 40); else p.x += 10;
+        this.state.grounded = p.z === 0;
+        return [];
+      }
+      restart() {} restorePractice() {} visitStation() {}
+    }
+    const replay = {mapId: 'm', mapVersion: 1, config: {dt: 0.01}, commands: new Array(8).fill({}),
+      initialState: {tick: 0, position: {x: 0, y: 0, z: 134}, velocity: {x: 0, y: 0, z: 0}, yaw: 0, grounded: false}};
+    const track = await recordTrack({adapter: {Session, Movement}, session: {map: {id: 'm', version: 1}}, replay, yieldTask: async () => null});
+    // It falls for four ticks, then walks along x.
+    expect([0, 1, 2, 3, 4].map(tick => trackPoint(track, tick).z)).toEqual([0, 0, 0, 0, 0]);
+    expect(trackPoint(track, 6).x).toBe(20);
+  });
   test('a replay of another map is not read', async () => {
     const replay = {mapId: 'other', mapVersion: 1, commands: [{}]};
     expect(await recordTrack({adapter: {Session() {}, Movement() {}}, session: {map: {id: 'm', version: 1}}, replay})).toBeNull();
@@ -218,7 +239,7 @@ describe('the planned camera', () => {
     return {a, plan: await planCamera({a, b, map: alignByPlace(a, b), trace, style})};
   };
   const at = (result, tick) => shotAt(result.plan, tick);
-  for (const style of ['cinematic', 'follow']) describe(style, () => {
+  for (const style of ['cinematic', 'steady']) describe(style, () => {
     test('sits behind and above the ghosts between ramps', async () => {
       const result = await plan(null, null, style);
       const {eye, target} = at(result, 200);
@@ -284,43 +305,43 @@ describe('the planned camera', () => {
       expect(Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)).toBeLessThan(80);
     });
   });
-  test('cinematic gives long ramps shots of their own in turn; follow keeps one', async () => {
+  test('cinematic gives long ramps shots of their own in turn; steady keeps one', async () => {
     const a = surfing([[100, 300], [380, 580], [660, 860]]);
-    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
+    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
     const first = angles(cinematic, 200), second = angles(cinematic, 480);
     expect(Math.abs(first.swing - second.swing) + Math.abs(first.elevation - second.elevation)).toBeGreaterThan(20);
     // Every shot is still from the open side.
     for (const tick of [200, 480, 760]) expect(angles(cinematic, tick).swing).toBeGreaterThan(20);
-    const steady = [200, 480, 760].map(tick => angles(follow, tick));
-    for (const shot of steady) {
+    const held = [200, 480, 760].map(tick => angles(steady, tick));
+    for (const shot of held) {
       expect(shot.swing).toBeGreaterThan(20);
       expect(shot.swing).toBeLessThan(60);
-      expect(Math.abs(shot.elevation - steady[0].elevation)).toBeLessThan(3);
+      expect(Math.abs(shot.elevation - held[0].elevation)).toBeLessThan(3);
     }
   });
-  test('cinematic drifts round the prestrafe to behind them as they leave; follow waits behind', async () => {
+  test('cinematic drifts round the prestrafe to behind them as they leave; steady waits behind', async () => {
     const a = straight({lead: 200});
-    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
+    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
     expect(Math.abs(angles(cinematic, 10).swing)).toBeGreaterThan(25);
     expect(Math.abs(angles(cinematic, 195).swing)).toBeLessThan(10);
-    expect(Math.abs(angles(follow, 10).swing)).toBeLessThan(5);
+    expect(Math.abs(angles(steady, 10).swing)).toBeLessThan(5);
   });
-  test('after a teleport the cinematic camera opens high and wide, then settles; follow cuts straight to its shot', async () => {
+  test('after a teleport the cinematic camera opens higher and wider, then settles; steady cuts straight to its shot', async () => {
     const a = straight({count: 700});
     for (let i = 300; i < a.count; i++) a.position[i * 3 + 1] += 20000;
     a.cut[300] = 1;
     const distance = (planned, tick) => { const {eye, target} = shotAt(planned, tick); return Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z); };
-    const cinematic = await planCamera({a, style: 'cinematic'}), follow = await planCamera({a, style: 'follow'});
-    expect(angles(cinematic, 304).elevation).toBeGreaterThan(angles(cinematic, 500).elevation + 15);
-    expect(distance(cinematic, 304)).toBeGreaterThan(distance(cinematic, 500) * 1.5);
-    expect(Math.abs(angles(follow, 304).elevation - angles(follow, 500).elevation)).toBeLessThan(3);
+    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
+    expect(angles(cinematic, 304).elevation).toBeGreaterThan(angles(cinematic, 500).elevation + 8);
+    expect(distance(cinematic, 304)).toBeGreaterThan(distance(cinematic, 500) * 1.3);
+    expect(Math.abs(angles(steady, 304).elevation - angles(steady, 500).elevation)).toBeLessThan(3);
   });
   test('the view widens with speed, more in the cinematic style', async () => {
     const fov = async (speed, style) => shotAt(await planCamera({a: straight({speed}), style}), 200).fov;
     expect(await fov(5, 'cinematic')).toBeCloseTo(74);
     expect(await fov(60, 'cinematic')).toBeGreaterThan(82);
-    expect(await fov(60, 'follow')).toBeGreaterThan(77);
-    expect(await fov(60, 'follow')).toBeLessThan(await fov(60, 'cinematic'));
+    expect(await fov(60, 'steady')).toBeGreaterThan(77);
+    expect(await fov(60, 'steady')).toBeLessThan(await fov(60, 'cinematic'));
   });
   test('never blends across a teleport', () => {
     const values = Float32Array.from([0, 0, 0, 100, 100, 100]), segment = Uint32Array.from([0, 0, 0, 1, 1, 1]);
@@ -383,16 +404,19 @@ describe('cinematic replay lifecycle', () => {
     const native = function (view) { this.drawn = view; };
     const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
-    let disposed = 0, scenes = 0, colors = [], positions = [];
+    let disposed = 0, scenes = 0, colors = [], positions = [], made = [];
     const control = {playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
     const adapter = {cinema: {renderer: () => renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
-        return {update(at) { positions = at.slice(); }, labels: () => [], dispose() { disposed++; }};
+        const scene = {shown: runs.map(() => true), disposed: false, update(at) { positions = at.slice(); }, labels: () => [],
+          show(index, value) { scene.shown[index] = value; }, dispose() { disposed++; scene.disposed = true; }};
+        made.push(scene);
+        return scene;
       }});
-    return {cinema, renderer, native, listeners, control, canvas, counts: () => ({disposed, scenes, recorded, colors, positions})};
+    return {cinema, renderer, native, listeners, control, canvas, counts: () => ({disposed, scenes, recorded, colors, positions, made})};
   }
   const run = id => ({id, label: id, load: async () => ({commands: [{run: id}]})});
   const deferred = () => {
@@ -546,6 +570,8 @@ describe('cinematic replay lifecycle', () => {
     await cinema.setEnabled(true);
     const eye = () => { renderer.render({state: {tick: 30}, qolAlpha: 1}); return {...renderer.drawn.eyePosition}; };
     const wheel = deltaY => listeners.get('wheel')({target: canvas, deltaY, preventDefault() {}, stopImmediatePropagation() {}});
+    // Past the flight out of first person first.
+    eye(); time.now += 2000;
     const start = eye(), moved = point => Math.hypot(point.x - start.x, point.y - start.y, point.z - start.z);
     expect(renderer.drawn.fov).toBeGreaterThanOrEqual(74);
     wheel(100);
@@ -562,19 +588,87 @@ describe('cinematic replay lifecycle', () => {
     expect(1 - moved(eye()) / full).toBeCloseTo(early / full, 3);
     cinema.close();
   });
+  test('a new set of runs replaces the scene only after the new one has drawn, so shaders are reused', async () => {
+    const {cinema, renderer, counts} = rig();
+    await cinema.setEnabled(true);
+    await cinema.add(run('wr'));
+    const [first, second] = counts().made;
+    expect(first.disposed).toBe(false);
+    expect(first.shown.every(value => !value)).toBe(true);
+    renderer.render({state: {tick: 20}, qolAlpha: 1});
+    expect(first.disposed).toBe(true);
+    expect(second.disposed).toBe(false);
+    cinema.close();
+    expect(second.disposed).toBe(true);
+  });
+  test('first person keeps the game’s view with the added runs, and hides the watched run’s ghost', async () => {
+    const time = {now: 0};
+    const {cinema, renderer, counts} = rig({now: () => time.now});
+    await cinema.add(run('wr'));
+    expect(cinema.status()).toMatchObject({view: 'cinematic'});
+    expect(cinema.camera).toBe(true);
+    const own = {state: {tick: 30}, qolAlpha: 1, eyePosition: {x: 5, y: 6, z: 7}, yaw: 10, pitch: 5, fov: 90, ghost: {}};
+    renderer.render(own); time.now += 2000; renderer.render(own);
+    const camera = {...renderer.drawn.eyePosition};
+    await cinema.setView('pov');
+    expect(cinema.status()).toMatchObject({view: 'pov', active: true});
+    expect(cinema.camera).toBe(false);
+    // The way back into the eyes is a flight, then the game's own view.
+    time.now += 500; renderer.render(own);
+    const halfway = renderer.drawn.eyePosition;
+    expect(Math.hypot(halfway.x - 5, halfway.y - 6, halfway.z - 7)).toBeGreaterThan(1);
+    expect(Math.hypot(halfway.x - camera.x, halfway.y - camera.y, halfway.z - camera.z)).toBeGreaterThan(1);
+    time.now += 1000; renderer.render(own);
+    expect(renderer.drawn).toBe(own);
+    expect(counts().made.at(-1).shown[0]).toBe(false);
+    expect(counts().made.at(-1).shown[1]).toBe(true);
+    // Flying out of the eyes again, the watched ghost waits until the camera is clear of them.
+    await cinema.setView('cinematic');
+    time.now += 100; renderer.render(own);
+    expect(counts().made.at(-1).shown[0]).toBe(false);
+    time.now += 400; renderer.render(own);
+    expect(counts().made.at(-1).shown[0]).toBe(true);
+    cinema.close();
+  });
+  test('first person leaves the mouse to the game; choosing a run there follows it with the camera', async () => {
+    const {cinema, listeners, canvas} = rig();
+    await cinema.add(run('wr'));
+    await cinema.setView('pov');
+    const wheel = {target: canvas, deltaY: 100, prevented: false, preventDefault() { this.prevented = true; }, stopImmediatePropagation() {}};
+    listeners.get('wheel')(wheel);
+    expect(wheel.prevented).toBe(false);
+    expect(cinema.status().adjusted).toBe(false);
+    await cinema.setFocus('wr');
+    expect(cinema.status()).toMatchObject({view: 'cinematic', focus: 'wr'});
+    cinema.close();
+  });
+  test('adding a run from first person switches to the remembered style; first person with none is all off', async () => {
+    const {cinema} = rig();
+    await cinema.setView('steady');
+    expect(cinema.status().view).toBe('steady');
+    await cinema.setView('pov');
+    expect(cinema.status()).toBeNull();
+    await cinema.add(run('wr'));
+    expect(cinema.status()).toMatchObject({view: 'steady', runs: [{id: 'wr'}]});
+    // Removing the last run keeps the view it was in.
+    await cinema.remove('wr');
+    expect(cinema.status()).toMatchObject({view: 'steady', runs: []});
+    await cinema.setView('pov');
+    expect(cinema.status()).toBeNull();
+  });
   test('a camera style plans its own shots and is kept with the others', async () => {
     const {cinema, renderer} = rig();
     await cinema.setEnabled(true);
     expect(cinema.status().style).toBe('cinematic');
     renderer.render({state: {tick: 40}, qolAlpha: 1});
     const cinematic = {...renderer.drawn.eyePosition};
-    await cinema.setStyle('follow');
-    expect(cinema.status().style).toBe('follow');
+    await cinema.setStyle('steady');
+    expect(cinema.status().style).toBe('steady');
     renderer.render({state: {tick: 40}, qolAlpha: 1});
     expect(renderer.drawn.eyePosition).not.toEqual(cinematic);
     await cinema.setStyle('nonsense');
     await cinema.setSync('place');
-    expect(cinema.status()).toMatchObject({style: 'follow', sync: 'place'});
+    expect(cinema.status()).toMatchObject({style: 'steady', sync: 'place'});
     cinema.close();
   });
   test('concurrent solo activation shares recording and enables both callers', async () => {

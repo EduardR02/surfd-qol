@@ -149,7 +149,7 @@ export function createReplayUi(options) {
       const focused = root.activeElement;
       save.hidden = keys.hidden = comparing;
       if (comparing && sheetOpen) showSheet();
-      if (comparing && (focused === save || focused === keys || sheet.contains(focused))) (extras.querySelector('[data-cn="enable"]') ?? runs).focus({preventScroll: true});
+      if (comparing && (focused === save || focused === keys || sheet.contains(focused))) (extras.querySelector('[data-cn="view"]') ?? runs).focus({preventScroll: true});
     }
   }
   // The HUD's 67 ms lifecycle tick is enough for static annotations; native

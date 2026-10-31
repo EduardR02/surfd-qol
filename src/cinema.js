@@ -5,7 +5,10 @@
 // by place on the route (Side by side).
 //
 // Nothing runs until cinematic viewing is enabled (directly or by adding a
-// run). Solo and group shots use the same camera; close() restores the game.
+// run). The view is the game's own first person (POV) or the planned camera
+// in a style (Steady or Cinematic); switching between them flies the camera
+// there rather than cutting. Solo and group shots use the same camera;
+// close() restores the game.
 import {createTrack, recordTrack, trackPoint, trackYaw} from './cinema-track.js';
 import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles} from './cinema-camera.js';
@@ -19,6 +22,10 @@ const DRAG_RADIANS = 0.005;
 const ZOOM_STEP = 1.12;
 // Scrolling sets the zoom to reach; the view closes on it with this time constant (ms).
 const ZOOM_EASE = 100;
+// The planned camera's styles; a switch of view flies there over MOVE ms.
+const STYLES = ['steady', 'cinematic'];
+const MOVE = 1000;
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - (2 - 2 * t) ** 3 / 2;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 
@@ -35,11 +42,20 @@ function cameraWorld(session) {
   } catch { return world; }
 }
 
+// A pose part way from one view to another: the eye along the line, the
+// angles the short way round.
+function blend(from, to, k) {
+  const turn = ((to.yaw - from.yaw) % 360 + 540) % 360 - 180;
+  return {x: from.x + (to.x - from.x) * k, y: from.y + (to.y - from.y) * k, z: from.z + (to.z - from.z) * k,
+    yaw: from.yaw + turn * k, pitch: from.pitch + (to.pitch - from.pitch) * k, fov: from.fov + (to.fov - from.fov) * k};
+}
+
 // getAdapter() is the game adapter. A run given to add() is {id, label, load()},
 // load() giving its replay. record, createScene and now stand in for the game in tests.
 export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, record = recordTrack, createScene = createCinemaScene, now = () => performance.now()}) {
-  // The watched replay and its track, the added runs, and what's being added.
-  let state = null;
+  // The watched replay and its track, the added runs, and what's being added;
+  // and the camera style last chosen, which adding a run switches to.
+  let state = null, preferred = 'cinematic';
   const notify = () => { try { onChange(); } catch { /* UI only */ } };
   const playing = () => { try { return getAdapter?.()?.replay?.playback?.()?.replay ?? null; } catch { return null; } };
 
@@ -56,20 +72,40 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (state && state.replay !== replay) close();
     return state ??= createState(replay);
   }
+  // true: the camera in the remembered style; false: everything off.
   async function setEnabled(enabled) {
     if (!enabled) { close(); return false; }
+    return setView(preferred);
+  }
+  // 'pov' keeps any added runs in the game's own view (with none, it's all
+  // off); 'steady' or 'cinematic' is the planned camera, remembered for next time.
+  async function setView(view) {
+    if (view === 'pov') {
+      const current = state;
+      if (current && !current.runs.length && !current.loading.length) close();
+      else if (current?.camera) { current.camera = false; retarget(current); notify(); }
+      return true;
+    }
+    if (!STYLES.includes(view)) return false;
+    preferred = view;
     const current = currentState();
-    return current.enabling ??= (async () => {
+    if (current.enabling?.view === view) return current.enabling.promise;
+    const enabling = {view, promise: (async () => {
       try {
         await prepare(current);
         if (!owns(current)) return false;
-        if (!current.renderer) await show(current, current.sync, current.focus);
-        return owns(current) && !!current.renderer;
+        const shown = current.pending ?? current;
+        if (!current.renderer || current.style !== view || current.pending) await show(current, shown.sync, shown.focus, view);
+        if (!owns(current) || current.enabling !== enabling) return false;
+        if (!current.camera) { current.camera = true; retarget(current); notify(); }
+        return !!current.renderer;
       } catch (error) {
         if (state === current && !current.renderer && !current.loading.length) close();
         throw error;
       }
-    })().finally(() => { current.enabling = null; });
+    })().finally(() => { if (current.enabling === enabling) current.enabling = null; })};
+    current.enabling = enabling;
+    return enabling.promise;
   }
   function add(run) {
     let current;
@@ -94,9 +130,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   function createState(replay) {
     // sync, focus and style are the shown camera's: Real time or Side by side,
     // null for the group shot, 'played' or a run's id for one run alone, and
-    // the camera style ('cinematic' or 'follow').
-    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: 'cinematic', plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
-      applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined};
+    // the camera style ('cinematic' or 'steady').
+    // camera is whether the planned camera shows (else first person); pose
+    // is the view last drawn and move a flight from one pose to the next.
+    return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
+      applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined,
+      camera: false, pose: null, move: null, retired: [], sceneSize: 0};
   }
   function prepare(current) {
     return current.ready ??= (async () => {
@@ -134,7 +173,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.plans = {};
     if (current.renderer) rebuild(current);
     const request = current.pending;
-    await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus);
+    // Adding a run from first person switches to the remembered camera.
+    await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus, current.camera ? request?.style ?? current.style : preferred);
+    if (owned() && !current.camera) { current.camera = true; retarget(current); notify(); }
     return owned();
   }
   const planKey = (sync, focus, style) => `${sync}|${focus ?? ''}|${style}`;
@@ -179,6 +220,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     }
     current.runs = current.runs.filter(run => run.id !== id);
     current.plans = {};
+    // First person with no runs left is everything off; a camera stays.
+    if (!current.camera && !current.runs.length && !current.loading.length) { close(); return; }
     rebuild(current);
     const request = current.pending;
     const focus = request ? request.focus : current.focus;
@@ -196,8 +239,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const plan = current.plans[key] ?? await planFor(current, runs, sync, focus, style, owned);
       if (!owned() || !plan) return;
       current.plans[key] = plan;
+      const changed = current.plan !== plan;
       Object.assign(current, {sync, focus, style, plan, pending: null});
       if (!current.renderer) start(current);
+      else if (changed && current.camera) retarget(current);
       notify();
     } catch (error) {
       if (owned()) { current.pending = null; notify(); }
@@ -226,25 +271,41 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     };
     current.checking = requestAnimationFrame(check);
   }
+  function sceneFor(current, renderer) {
+    current.sceneSize = current.runs.length + 1;
+    return createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+  }
   function attach(current, renderer) {
-    current.scene = createScene(renderer, [{track: current.track, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+    current.scene = sceneFor(current, renderer);
     current.renderer = renderer;
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
-      try { return original.call(this, frame(current, view) ?? view); }
-      catch (error) { queueMicrotask(() => { if (state === current) close(); }); throw error; }
+      try {
+        const drawn = original.call(this, frame(current, view) ?? view);
+        // A replaced scene goes once its successor has drawn (see rebuild).
+        for (const scene of current.retired.splice(0)) { try { scene.dispose(); } catch { /* already gone */ } }
+        return drawn;
+      } catch (error) { queueMicrotask(() => { if (state === current) close(); }); throw error; }
     };
   }
   function detach(current) {
     if (current.renderer && current.renderer.render === current.wrapper) current.renderer.render = current.original;
-    try { current.scene?.dispose(); } catch { /* the map was unloaded with it */ }
+    for (const scene of [current.scene, ...current.retired.splice(0)]) { try { scene?.dispose(); } catch { /* the map was unloaded with it */ } }
     current.renderer = current.scene = null;
   }
   // The scene holds one ghost per run, so a change of runs builds it again.
+  // The new one comes first and the old one stays, hidden, until the new one
+  // has drawn: disposing it first would free the shared shader programs and
+  // the new scene would compile them all again, a stall of a second or more.
   function rebuild(current) {
-    const renderer = current.renderer;
-    detach(current);
-    try { attach(current, renderer); } catch (error) { if (state === current) close(); throw error; }
+    const old = current.scene, size = current.sceneSize;
+    try { current.scene = sceneFor(current, current.renderer); } catch (error) { if (state === current) close(); throw error; }
+    for (let index = 0; index < size; index++) old?.show?.(index, false);
+    if (old) current.retired.push(old);
+  }
+  // The next frames fly from the pose last drawn to wherever the view now is.
+  function retarget(current) {
+    if (current.pose) current.move = {from: {...current.pose}, start: now()};
   }
 
   // The played run's fractional index from the frame's state and interpolation.
@@ -272,6 +333,27 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // Drag turns the view at once; zoom eases, so a wheel's steps glide without lagging.
     const time = now(), elapsed = current.drawnAt === null ? 0 : Math.max(0, time - current.drawnAt);
     current.drawnAt = time;
+    const eye = view.eyePosition ?? {x: 0, y: 0, z: 0};
+    const own = {x: eye.x, y: eye.y, z: eye.z, yaw: view.yaw ?? 0, pitch: view.pitch ?? 0, fov: view.fov ?? 90, eye: true};
+    // The first planned frame flies out of the player's own eyes.
+    if (!current.pose && current.camera) current.move = {from: own, start: time};
+    let pose = current.camera ? aim(current, plan, tick, elapsed) : own;
+    const move = current.move, through = move ? Math.min(1, (time - move.start) / MOVE) : 1;
+    if (move && through >= 1) current.move = null;
+    else if (move) pose = blend(move.from, pose, ease(through));
+    current.pose = pose;
+    // First person hides the watched run's own ghost and path: flying out of
+    // the eyes it shows once clear of them, flying back in once nearly there.
+    current.scene.show?.(0, current.camera ? !move?.from.eye || through > 0.25 : through < 0.8);
+    // The camera is placed here too so the ghosts size their outlines for this frame's view.
+    current.renderer.qolCamera.position.set(pose.x, pose.z, -pose.y);
+    current.scene.update(current.at, innerWidth, innerHeight);
+    if (!current.camera && !current.move) return null;
+    return {...view, eyePosition: {x: pose.x, y: pose.y, z: pose.z}, yaw: pose.yaw, pitch: pose.pitch, fov: pose.fov,
+      ghost: null, remotePlayers: [], showPlayers: false};
+  }
+  // The planned camera's pose at a tick, with your own angle and zoom.
+  function aim(current, plan, tick, elapsed) {
     const applied = current.applied;
     applied.yaw = current.view.yaw; applied.pitch = current.view.pitch;
     applied.zoom += (current.view.zoom - applied.zoom) * (1 - Math.exp(-elapsed / ZOOM_EASE));
@@ -288,18 +370,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       }
     }
     const angles = viewAngles(shot.eye, shot.target);
-    // The camera is placed here too so the ghosts size their outlines for this frame's view.
-    current.renderer.qolCamera.position.set(shot.eye.x, shot.eye.z, -shot.eye.y);
-    current.scene.update(current.at, innerWidth, innerHeight);
-    return {...view, eyePosition: {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z}, yaw: angles.yaw, pitch: angles.pitch, fov: shot.fov,
-      ghost: null, remotePlayers: [], showPlayers: false};
+    return {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z, yaw: angles.yaw, pitch: angles.pitch, fov: shot.fov};
   }
 
   function listen(current) {
     const canvas = document.querySelector('canvas');
     let drag = null;
+    // In first person the game keeps its own mouse; these steer the planned camera only.
     const onDown = event => {
-      if (event.button !== 0 || event.target !== canvas) return;
+      if (event.button !== 0 || event.target !== canvas || !current.camera) return;
       event.preventDefault(); event.stopImmediatePropagation();
       drag = {x: event.clientX, y: event.clientY, id: event.pointerId};
       try { canvas.setPointerCapture(event.pointerId); } catch { /* still follows the window */ }
@@ -318,14 +397,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       drag = null;
     };
     const onWheel = event => {
-      if (event.target !== canvas || event.ctrlKey) return;
+      if (event.target !== canvas || event.ctrlKey || !current.camera) return;
       event.preventDefault(); event.stopImmediatePropagation();
       current.view.zoom = Math.max(0.35, Math.min(3, current.view.zoom * (event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
       if (!current.adjusted) { current.adjusted = true; notify(); }
     };
-    const onDouble = event => { if (event.target === canvas) { event.preventDefault(); event.stopImmediatePropagation(); resetView(); } };
+    const onDouble = event => { if (event.target === canvas && current.camera) { event.preventDefault(); event.stopImmediatePropagation(); resetView(); } };
     // The game also listens for clicks on its canvas; a drag here is the camera's alone.
-    const swallow = event => { if (event.target === canvas && event.button === 0) { event.preventDefault(); event.stopImmediatePropagation(); } };
+    const swallow = event => { if (event.target === canvas && event.button === 0 && current.camera) { event.preventDefault(); event.stopImmediatePropagation(); } };
     const listeners = [['pointerdown', onDown], ['pointermove', onMove], ['pointerup', onUp], ['pointercancel', onUp],
       ['wheel', onWheel], ['dblclick', onDouble], ['mousedown', swallow], ['click', swallow]];
     for (const [type, listener] of listeners) addEventListener(type, listener, {capture: true, passive: false});
@@ -334,6 +413,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
 
   function resetView() {
     if (!state?.renderer) return;
+    if (state.adjusted && state.camera) retarget(state);
     state.view = {yaw: 0, pitch: 0, zoom: 1};
     state.adjusted = false;
     state.room = Infinity;
@@ -344,19 +424,23 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
     await show(current, sync, current.pending ? current.pending.focus : current.focus);
   }
-  // 'cinematic' or 'follow'.
+  // 'cinematic' or 'steady'.
+  // Remembered for when the camera next shows; shown now if it already is.
   async function setStyle(style) {
-    const current = state;
-    if (!current?.renderer || !['cinematic', 'follow'].includes(style) || current.style === style && !current.pending) return;
-    await show(current, current.pending?.sync ?? current.sync, current.pending ? current.pending.focus : current.focus, style);
+    if (!STYLES.includes(style)) return;
+    if (state?.camera) await setView(style);
+    else preferred = style;
   }
   // null for the group shot, 'played' for the watched run, or an added run's id;
   // choosing the focused run again goes back to the group.
+  // In first person, choosing a run switches to the remembered camera on it.
   async function setFocus(focus) {
     const current = state;
     if (!current?.renderer || focus !== null && focus !== 'played' && !current.runs.some(run => run.id === focus)) return;
-    const shown = current.pending ? current.pending.focus : current.focus;
-    await show(current, current.pending?.sync ?? current.sync, focus !== null && focus === shown ? null : focus);
+    const shown = current.pending ? current.pending.focus : current.focus, sync = current.pending?.sync ?? current.sync;
+    if (current.camera) { await show(current, sync, focus !== null && focus === shown ? null : focus); return; }
+    await show(current, sync, focus, preferred);
+    if (owns(current) && !current.camera) { current.camera = true; retarget(current); notify(); }
   }
 
   function close() {
@@ -380,6 +464,11 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     setSync,
     setFocus,
     setStyle,
+    setView,
+    // Whether the planned camera shows (else the game's own first person), and the view by name.
+    get camera() { return !!state?.renderer && state.camera; },
+    get view() { return state?.renderer && state.camera ? state.pending?.style ?? state.style : 'pov'; },
+    get preferred() { return preferred; },
     // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
     get comparing() { return !!state?.renderer && state.runs.length > 0; },
@@ -401,7 +490,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }
       return {active: !!current.renderer, played: {colorIndex: 0, color: colorOf(0), time: current.track?.time ?? null}, runs,
         loading: current.loading.map(({id, label, colorIndex}) => ({id, label, colorIndex, color: colorOf(colorIndex)})),
-        sync: current.sync, focus: current.focus, style: current.style, pending: current.pending?.sync ?? null, adjusted: current.adjusted, labels};
+        sync: current.sync, focus: current.focus, style: current.style, view: current.camera ? current.pending?.style ?? current.style : 'pov', preferred,
+        pending: current.pending?.sync ?? null, adjusted: current.adjusted && current.camera, labels};
     },
     destroy() { close(); },
   };

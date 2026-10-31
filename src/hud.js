@@ -42,7 +42,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   nativeStyle.textContent = '#telemetry,#center-speed-hud,#split-comparison{display:none!important}';
   document.head.append(nativeStyle);
   nativeStyle.disabled = true;
-  // The game's crosshair marks first-person aim; the cinematic camera has none.
+  // The game's crosshair marks first-person aim; the planned camera has none.
   const cinemaStyle = document.createElement('style');
   cinemaStyle.textContent = '#crosshair{visibility:hidden!important}';
   document.head.append(cinemaStyle);
@@ -107,7 +107,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   let cinemaUi = null;
   // The replay bar's Runs button opens the panel above the bar, on the replayed run's map.
   const replayBar = replayControl ? createReplayUi({root, host, control: replayControl, getBindings: () => getAdapter?.()?.getBindings?.(),
-    getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.comparing,
+    getCustom: () => settings.customReplayUi === true, getCinema: () => !!cinema?.comparing && !!cinema?.camera,
     getKind: status => history?.view?.(status.run?.mapKey ?? history.currentMap)?.kind,
     onRuns: rect => runs.toggle(replayBar.status?.run?.mapKey ?? history?.currentMap, rect), held: () => runs.open || !!cinemaUi?.holding}) : null;
 
@@ -163,9 +163,9 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     if (inMenu) placeLauncher();
     const spectator = currentView?.target != null;
     const hasState = spectator ? !!currentView.view?.pose : !!(snapshot?.state ?? session?.state);
-    // The cinematic view labels its ghosts instead of showing the HUD.
-    setOverlayHidden(settings.hud === false || !inSurf || !hasState || !!cinema?.active);
-    cinemaStyle.disabled = !cinema?.active;
+    // The planned camera labels its ghosts instead of showing the HUD; first person keeps both.
+    setOverlayHidden(settings.hud === false || !inSurf || !hasState || !!cinema?.camera);
+    cinemaStyle.disabled = !cinema?.camera;
     // Keep native in-run telemetry suppressed behind open menus while the
     // custom HUD is enabled; disabling the custom HUD restores it.
     nativeStyle.disabled = settings.hud === false || snapshot == null;

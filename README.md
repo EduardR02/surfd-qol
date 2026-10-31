@@ -120,16 +120,17 @@ After you seek to a part you haven't watched yet, feedback can stay grey until t
 
 ### Cinematic replays
 
-While you watch any replay, **Cinematic** on the replay bar switches to a third-person camera, even for a single run. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (search by name or rank). Adding a run turns the camera on. The replay bar, seeking and stage jumps work as usual.
+While you watch any replay, the view menu on the replay bar picks how you watch it: **POV** (the player's own first-person view, where every replay starts), **Steady** or **Cinematic**. Both cameras work for a single run too. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (search by name or rank). Adding a run switches to the camera you used last (Cinematic the first time). The replay bar, seeking and stage jumps work as usual.
 
-- **Chips:** each run gets a chip in its colour next to the cinematic tools. Click one to follow that run; click it again to frame everyone. × removes a run. Turn **Cinematic** off to go back to first person.
+- **Chips:** each run gets a chip in its colour next to the cinematic tools. Click one to follow that run (from POV, this switches to your camera); click it again to frame everyone. × removes a run.
 - **Real time** (the default) starts each run's clock when it leaves the start zone, from the last exit if a prestrafe pops out and back in. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ; it isn't a race.
 - **Gaps:** an added run's chip shows its gap to the run you're watching at this point: negative (teal) means it got here sooner, positive (red) later.
-- **Camera:** planned for the whole replay before it plays, so it turns before a ramp instead of reacting to it. It sits behind the ghosts and swings towards the open side of the ramp they surf, so you look onto the ramp rather than through it, pulls back with speed and in the air, steers around walls and cuts at teleports. **Drag** to look from another angle and **scroll** to zoom; **Reset view** or a double-click goes back to the planned camera.
+- **Cameras:** both are planned for the whole replay before it plays, so they move ahead of the action, look onto the face of the ramp being surfed rather than through it, and steer around walls. **Steady** follows calmly from the side each ramp faces. **Cinematic** varies its shots along the route: alongside, ahead as the runs come towards it, low along the ramp. Switching views flies the camera instead of cutting. **Drag** to look around and **scroll** to zoom; **Reset view** or a double-click goes back to the planned camera.
+- **POV** keeps added runs visible as ghosts with their trails and names, with the timeline's touch marks and Saveloc, since the view is the watched run's own.
 - **Trails:** behind each ghost, six seconds of tail in its colour, hot at the head and cooling with soft pulses running back along it, then a thin line of where it has been. Ahead, beads mark the route still to come; the ghost eats them as it goes. Trails follow replay time, so pausing freezes them and seeking restores them.
-- With other runs added, the timeline's touch marks and savelocs hide and Saveloc is off, since they belong to the watched run alone.
+- In Steady and Cinematic with other runs added, the timeline's touch marks and savelocs hide and Saveloc is off, since they belong to the watched run alone.
 
-Turning on Cinematic or adding a run re-simulates that run and plans the camera, which takes a moment; nothing runs before that. There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
+Choosing a camera or adding a run re-simulates that run and plans the camera, which takes a moment; nothing runs before that. There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
 
 ### What's kept
 

@@ -426,7 +426,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
       const focused = root.activeElement;
       saveButton.hidden = openers.keys.hidden = !!status.ghosts;
       if (status.ghosts && open === 'keys') closePopover();
-      if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="enable"]') ?? play).focus({preventScroll: true});
+      if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="view"]') ?? play).focus({preventScroll: true});
     }
     paintMarks();
     paintPosition(position());
