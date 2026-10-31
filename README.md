@@ -138,6 +138,8 @@ While you watch any replay, the view menu on the replay bar picks how you watch 
 
 First use re-simulates the replay in the background. The camera can start once a recorded window around the playhead is ready, without waiting for the end of the map; paths fill in as recording advances, and the camera blends into the completed plan. A seek outside the prepared window temporarily uses native POV rather than a stale camera position. Adding a run starts the camera independently of its download and processing. Nothing runs before you request it. Reopening the same replay and loaded map reuses its complete track and solo plans; unfinished windows are not cached. Closing still frees ghosts and GPU resources. Where parallel shader compilation is supported, shaders prepare alongside camera planning while POV keeps rendering; other clients keep the existing first-draw path.
 
+Both cameras check the finished plan and the final interpolated or blended view against opaque map geometry. Cramped shots ease into a clear chase along the travelled route where possible; moving closer than the usual shot distance is the fallback when there is no room. Clear shots retain their planned framing.
+
 Cached CPU results stay in the tab's memory, not on disk. They use weak replay keys and weak map/world identity references, so they do not keep an unloaded map alive. Reloading the page clears the cache.
 
 There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.

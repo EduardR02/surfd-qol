@@ -15,6 +15,8 @@
 // Geometry between the ghosts and the camera first turns the camera (a little
 // round, then higher or lower), then pulls it in, both before the obstruction
 // arrives; a ghost the shot would hide sends it back towards a low chase.
+// The final smoothed eye is clipped against the played run's sightline, even
+// where staying clear requires coming closer than the preferred shot distance.
 import {trackPoint, trackYaw} from './cinema-track.js';
 
 export const STEP = 2;               // ticks per planned sample
@@ -619,6 +621,79 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   let planned = await shoot(new Set());
   if (planned?.troubled.size) planned = await shoot(planned.troubled);
   if (!planned) return null;
+  if (trace) {
+    const body = {x: 0, y: 0, z: 0}, eye = {x: 0, y: 0, z: 0};
+    let cramped = null;
+    // Constrain after all easing. If a shot is cramped, first try a calm chase
+    // along the travelled route; clipping into a close-up is the last resort.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let s = 0; s < count; s++) {
+        if (s % SLICE === 0) {
+          if (yieldTask && !idleLeft()) deadline = await yieldTask();
+          if (!isCurrent()) return null;
+        }
+        const o = s * 3;
+        body.x = runs[0][o]; body.y = runs[0][o + 1]; body.z = runs[0][o + 2] + EYE_HEIGHT;
+        eye.x = planned.shot.eye[o]; eye.y = planned.shot.eye[o + 1]; eye.z = planned.shot.eye[o + 2];
+        const clear = trace(body, eye);
+        const dx = eye.x - body.x, dy = eye.y - body.y, dz = eye.z - body.z;
+        const distance = Math.hypot(dx, dy, dz);
+        if (!pass && (clear < 1 || distance < BASE_DISTANCE * 0.5)) (cramped ??= new Float32Array(count))[s] = 1;
+        if (clear < 1) {
+          const share = distance > 0 ? Math.max(0, clear - CLEARANCE / distance) : 0;
+          planned.shot.eye[o] = body.x + dx * share;
+          planned.shot.eye[o + 1] = body.y + dy * share;
+          planned.shot.eye[o + 2] = body.z + dz * share;
+          // Preserve a good shot's bearing by shrinking its lead with its eye.
+          planned.shot.target[o] = body.x + (planned.shot.target[o] - body.x) * share;
+          planned.shot.target[o + 1] = body.y + (planned.shot.target[o + 1] - body.y) * share;
+          planned.shot.target[o + 2] = body.z + (planned.shot.target[o + 2] - body.z) * share;
+        }
+        if (!framed(planned.shot, s, body, planned.fov[s])) {
+          planned.shot.target[o] = body.x;
+          planned.shot.target[o + 1] = body.y;
+          planned.shot.target[o + 2] = body.z;
+        }
+      }
+      if (pass || !cramped) break;
+      const blend = blur(strongest(cramped, Math.ceil(seconds(0.45)), segment), seconds(0.2), segment);
+      const history = Math.ceil(seconds(1));
+      let changed = false;
+      for (let s = 0; s < count; s++) {
+        if (!blend[s]) continue;
+        if (s % SLICE === 0) {
+          if (yieldTask && !idleLeft()) deadline = await yieldTask();
+          if (!isCurrent()) return null;
+        }
+        const o = s * 3;
+        body.x = runs[0][o]; body.y = runs[0][o + 1]; body.z = runs[0][o + 2] + EYE_HEIGHT;
+        let back = s;
+        while (back > 0 && s - back < history && segment[back - 1] === segment[s]) {
+          back--;
+          if (Math.hypot(runs[0][back * 3] - body.x, runs[0][back * 3 + 1] - body.y,
+            runs[0][back * 3 + 2] + EYE_HEIGHT - body.z) >= BASE_DISTANCE) break;
+        }
+        for (; back < s; back++) {
+          const dx = runs[0][back * 3] - body.x, dy = runs[0][back * 3 + 1] - body.y;
+          const dz = runs[0][back * 3 + 2] + EYE_HEIGHT - body.z, distance = Math.hypot(dx, dy, dz);
+          if (distance < MIN_DISTANCE) continue;
+          const scale = Math.min(1, BASE_DISTANCE / distance);
+          eye.x = body.x + dx * scale; eye.y = body.y + dy * scale; eye.z = body.z + dz * scale;
+          if (trace(body, eye) < 1) continue;
+          const weight = blend[s];
+          planned.shot.eye[o] += (eye.x - planned.shot.eye[o]) * weight;
+          planned.shot.eye[o + 1] += (eye.y - planned.shot.eye[o + 1]) * weight;
+          planned.shot.eye[o + 2] += (eye.z - planned.shot.eye[o + 2]) * weight;
+          planned.shot.target[o] += (body.x - planned.shot.target[o]) * weight;
+          planned.shot.target[o + 1] += (body.y - planned.shot.target[o + 1]) * weight;
+          planned.shot.target[o + 2] += (body.z - planned.shot.target[o + 2]) * weight;
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) break;
+    }
+  }
   return {count, eye: planned.shot.eye, target: planned.shot.target, fov: planned.fov, segment: planned.view, cutTick: planned.cutTicks};
 }
 

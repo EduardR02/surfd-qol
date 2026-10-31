@@ -175,7 +175,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // camera is whether the planned camera shows (else first person); pose
     // is the view last drawn and move a flight from one pose to the next.
     return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
-      applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, at: [], tick: 0, pending: null, trace: undefined,
+      applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, body: {x: 0, y: 0, z: 0}, at: [], tick: 0, pending: null, trace: undefined,
       camera: false, cameraRequested: false, pose: null, move: null, retired: [], sceneSize: 0,
       complete: false, partialPlan: false, planBase: 0, planEnd: Infinity, failed: false};
   }
@@ -187,7 +187,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
-        return hit.startSolid || hit.allSolid ? 1 : Math.max(0, Math.min(1, hit.fraction));
+        // Escaping an initial overlap can still hit a different brush later.
+        // Native fractions already preserve that hit and allow a clear escape.
+        return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
       const track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle,
         onProgress: (track, count) => progress(current, track, count)});
@@ -476,6 +478,40 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const move = current.move, through = move ? Math.min(1, (time - move.start) / MOVE) : 1;
     if (move && through >= 1) current.move = null;
     else if (move) pose = blend(move.from, pose, ease(through));
+    if (current.camera || current.trace && move && through < 1) {
+      // Safe plan samples can interpolate or blend through a corner. Check the
+      // actual frame from the subject, not the smoothed/led camera target.
+      let focus = -1;
+      if (current.focus && current.focus !== 'played') {
+        for (let index = 0; index < current.runs.length; index++) {
+          if (current.runs[index].id === current.focus) { focus = index; break; }
+        }
+      }
+      const body = trackPoint(focus < 0 ? a : current.runs[focus].track, current.at[focus + 1], current.body);
+      body.z += 40;
+      const clear = current.trace ? current.trace(body, pose) : 1;
+      if (clear < 1) {
+        const dx = pose.x - body.x, dy = pose.y - body.y, dz = pose.z - body.z, distance = Math.hypot(dx, dy, dz);
+        const k = distance > 0 ? Math.max(0, clear * distance - 12) / distance : 0;
+        pose.x = body.x + dx * k; pose.y = body.y + dy * k; pose.z = body.z + dz * k;
+        // Scaling the implicit aim target about the same body by k keeps the
+        // forward direction unchanged, preserving framing even during a blend.
+      }
+      if (current.camera && !current.adjusted && (focus >= 0 || !move?.from.eye || through > 0.25)) {
+        // Interpolated angles and mode flights can lose a subject even when
+        // their endpoints frame it. Keep an already visible composition intact.
+        const yaw = pose.yaw * Math.PI / 180, pitch = pose.pitch * Math.PI / 180;
+        const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+        const dx = body.x - pose.x, dy = body.y - pose.y, dz = body.z - pose.z;
+        const depth = (dx * cy + dy * sy) * cp - dz * sp;
+        const across = dx * sy - dy * cy, up = (dx * cy + dy * sy) * sp + dz * cp;
+        const tall = Math.tan(pose.fov * Math.PI / 360) * 0.75;
+        if (depth < 1 || Math.abs(across) > tall * innerWidth / innerHeight * depth || Math.abs(up) > tall * depth) {
+          const angles = viewAngles(pose, body);
+          pose.yaw = angles.yaw; pose.pitch = angles.pitch;
+        }
+      }
+    }
     current.pose = pose;
     // First person hides the watched run's own ghost and path: flying out of
     // the eyes it shows once clear of them, flying back in once nearly there.

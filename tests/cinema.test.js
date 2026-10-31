@@ -459,6 +459,153 @@ describe('cinematic replay lifecycle', () => {
     const promise = new Promise(done => { resolve = done; });
     return {promise, resolve};
   };
+  // The native convex-brush trace contract, restricted to axis-aligned boxes:
+  // aggregate startSolid, continue on escape, stop on allSolid, keep later hits.
+  function cameraBoxes(brushes) {
+    const axes = ['x', 'y', 'z'], epsilon = 0.03125;
+    class World {
+      constructor(brushes, triangles = [], feature = false, corner = false) {
+        Object.assign(this, {brushes, triangles, vphysicsFeatureFix: feature, bspCornerFix: corner,
+          triangleBounds: [], triangleCache: new Map(),
+          tree: {query: bounds => brushes.flatMap((brush, index) =>
+            axes.every(axis => bounds.max[axis] >= brush.min[axis] && bounds.min[axis] <= brush.max[axis]) ? [index] : [])}});
+      }
+      triangleBrush() { throw new Error('No displacement triangles in this fixture'); }
+      trace(from, to, probe) {
+        const result = {fraction: 1, startSolid: false, allSolid: false};
+        const bounds = {min: {}, max: {}};
+        for (const axis of axes) {
+          bounds.min[axis] = Math.min(from[axis], to[axis]) + probe.min[axis] - epsilon;
+          bounds.max[axis] = Math.max(from[axis], to[axis]) + probe.max[axis] + epsilon;
+        }
+        for (const index of this.tree.query(bounds)) {
+          const brush = this.brushes[index];
+          let enter = -1, leave = 1, outside = false, endsOutside = false, missed = false;
+          for (const axis of axes) for (const sign of [1, -1]) {
+            const distance = sign > 0 ? brush.max[axis] - probe.min[axis] : -brush.min[axis] + probe.max[axis];
+            const start = sign * from[axis] - distance, end = sign * to[axis] - distance;
+            outside ||= start > 0; endsOutside ||= end > 0;
+            if (start > 0 && end > 0) { missed = true; break; }
+            if (start <= 0 && end <= 0) continue;
+            if (start > end) enter = Math.max(enter, Math.max(0, (start - epsilon) / (start - end)));
+            else leave = Math.min(leave, (start + epsilon) / (start - end));
+          }
+          if (missed) continue;
+          if (!outside) {
+            result.startSolid = true;
+            if (!endsOutside) return {...result, allSolid: true, fraction: 0};
+          } else if (enter < leave && enter > -1) result.fraction = Math.min(result.fraction, enter);
+        }
+        return result;
+      }
+    }
+    const world = new World(brushes);
+    return {world, map: {brushes, displacementTriangles: world.triangles}};
+  }
+  const cameraBox = (center, radius) => ({
+    contents: 1,
+    min: {x: center.x - radius, y: center.y - radius, z: center.z - radius},
+    max: {x: center.x + radius, y: center.y + radius, z: center.z + radius},
+  });
+  const cameraProbe = {min: {x: -6, y: -6, z: -6}, max: {x: 6, y: 6, z: 6}};
+  function expectInCameraFrame(view, point) {
+    const yaw = view.yaw * Math.PI / 180, pitch = view.pitch * Math.PI / 180;
+    const dx = point.x - view.eyePosition.x, dy = point.y - view.eyePosition.y, dz = point.z - view.eyePosition.z;
+    const forward = dx * Math.cos(yaw) + dy * Math.sin(yaw);
+    const depth = forward * Math.cos(pitch) - dz * Math.sin(pitch);
+    const across = dx * Math.sin(yaw) - dy * Math.cos(yaw);
+    const up = forward * Math.sin(pitch) + dz * Math.cos(pitch);
+    const tall = Math.tan(view.fov * Math.PI / 360) * 0.75;
+    expect(depth).toBeGreaterThan(0);
+    expect(Math.abs(across) / depth).toBeLessThanOrEqual(tall * innerWidth / innerHeight);
+    expect(Math.abs(up) / depth).toBeLessThanOrEqual(tall);
+  }
+
+  for (const focus of [false, true]) test(`the final fractional frame stays visible through a corner-cut blend${focus ? ' from a focused run' : ''}`, async () => {
+    const played = straight({count: 60, speed: 0, lead: 0}), focused = straight({count: 60, speed: 0, lead: 0, y: 600});
+    const track = focus ? focused : played, tick = 30.5, body = trackPoint(track, tick);
+    body.z += 40;
+    const plan = await planCamera({a: track, style: 'steady', group: false,
+      others: focus ? [{track: played, map: Float32Array.from({length: 60}, (_, index) => index)}] : []});
+    const shot = adjust(shotAt(plan, tick)), destination = {...shot.eye};
+    // Both endpoints see the subject, but their halfway blend lands inside a
+    // remote box. Plan-time/sample clipping cannot validate this flight.
+    const start = {x: destination.x, y: destination.y + 10000, z: destination.z};
+    const halfway = {x: destination.x, y: destination.y + 5000, z: destination.z};
+    const collision = cameraBoxes([cameraBox(body, 8), cameraBox(halfway, 3)]);
+    expect(collision.world.trace(body, start, cameraProbe)).toMatchObject({fraction: 1, startSolid: true, allSolid: false});
+    expect(collision.world.trace(body, destination, cameraProbe)).toMatchObject({fraction: 1, startSolid: true, allSolid: false});
+    const hit = collision.world.trace(body, halfway, cameraProbe);
+    expect(hit.startSolid).toBe(true);
+    expect(hit.fraction).toBeLessThan(1);
+    const time = {now: 0};
+    const {cinema, renderer, control} = rig({now: () => time.now, record: ({replay}) => replay.commands.length === 59 ? played : focused});
+    globalThis.innerWidth = 1100; globalThis.innerHeight = 760;
+    Object.assign(control.session.map, collision.map);
+    control.session.movement = {world: collision.world};
+    await cinema.setView('steady');
+    if (focus) { await cinema.add(run('focused')); await cinema.setFocus('focused'); }
+    const frame = {state: {tick: 31}, qolAlpha: 0.5, eyePosition: start, yaw: 0, pitch: 0};
+    renderer.render(frame);
+    time.now = 500; renderer.render(frame);
+    const eye = renderer.drawn.eyePosition, distance = Math.hypot(halfway.x - body.x, halfway.y - body.y, halfway.z - body.z);
+    expect(Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z)).toBeLessThan(hit.fraction * distance);
+    expect(collision.world.trace(body, eye, cameraProbe).fraction).toBe(1);
+    expectInCameraFrame(renderer.drawn, body);
+    time.now = 1000; renderer.render(frame);
+    expect(collision.world.trace(body, renderer.drawn.eyePosition, cameraProbe).fraction).toBe(1);
+    expectInCameraFrame(renderer.drawn, body);
+    if (focus) {
+      await cinema.setView('pov');
+      time.now = 1500; renderer.render(frame);
+      const returning = renderer.drawn.eyePosition;
+      expect(Math.hypot(returning.x - body.x, returning.y - body.y, returning.z - body.z)).toBeLessThan(hit.fraction * distance);
+      expect(collision.world.trace(body, returning, cameraProbe).fraction).toBe(1);
+      time.now = 2000; renderer.render(frame);
+      expect(renderer.drawn.eyePosition).toEqual(frame.eyePosition);
+      expect(renderer.drawn.yaw).toBe(frame.yaw ?? 0);
+      expect(renderer.drawn.pitch).toBe(frame.pitch ?? 0);
+    }
+    cinema.close();
+  });
+  test('flying out of POV preserves the initial first-person orientation', async () => {
+    const {cinema, renderer} = rig({now: () => 0});
+    await cinema.setView('steady');
+    const frame = {state: {tick: 1}, eyePosition: {x: 0, y: 0, z: 64}, yaw: 35, pitch: -12, fov: 90};
+    renderer.render(frame);
+    expect(renderer.drawn.eyePosition).toEqual(frame.eyePosition);
+    expect(renderer.drawn.yaw).toBe(frame.yaw);
+    expect(renderer.drawn.pitch).toBe(frame.pitch);
+    cinema.close();
+  });
+  test('manual camera adjustment preserves an intentionally off-screen flight', async () => {
+    const track = straight({count: 60, speed: 0, lead: 0}), tick = 30.5;
+    const plan = await planCamera({a: track, style: 'steady'});
+    const shot = adjust(shotAt(plan, tick), {yaw: -0.005});
+    const time = {now: 0};
+    const {cinema, renderer, listeners, canvas} = rig({record: () => track, now: () => time.now});
+    await cinema.setView('steady');
+    const event = {button: 0, target: canvas, pointerId: 1, clientX: 0, clientY: 0, preventDefault() {}, stopImmediatePropagation() {}};
+    listeners.get('pointerdown')(event);
+    listeners.get('pointermove')({...event, clientX: 1});
+    const frame = {state: {tick: 31}, qolAlpha: 0.5, eyePosition: {x: shot.eye.x, y: shot.eye.y + 10000, z: shot.eye.z}};
+    renderer.render(frame); time.now = 500; renderer.render(frame);
+    const towardBody = viewAngles(renderer.drawn.eyePosition, {x: 0, y: 0, z: 40});
+    expect(Math.abs(renderer.drawn.yaw - towardBody.yaw)).toBeGreaterThan(20);
+    cinema.close();
+  });
+  test('an all-solid final view cannot treat an opaque hull as a clear escape', async () => {
+    const track = straight({count: 60, speed: 0, lead: 0}), body = {x: 0, y: 0, z: 40};
+    const collision = cameraBoxes([cameraBox(body, 10000)]), time = {now: 0};
+    const {cinema, renderer, control} = rig({record: () => track, now: () => time.now});
+    Object.assign(control.session.map, collision.map);
+    control.session.movement = {world: collision.world};
+    await cinema.setView('steady');
+    const frame = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(frame); time.now = 2000; renderer.render(frame);
+    expect(renderer.drawn.eyePosition).toEqual(body);
+    cinema.close();
+  });
   test('solo viewing supports explicit group and focus choices without extra runs', async () => {
     const {cinema, counts} = rig();
     expect(await cinema.setEnabled(true)).toBe(true);
