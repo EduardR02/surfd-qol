@@ -19,6 +19,10 @@ const AHEAD_SECONDS = 4;
 const EMBER_SPACING = 64;
 // The three meshes of a path: band and core, additive glow, x-ray thread.
 const BAND = 0, GLOW = 1, XRAY = 2;
+// Through walls only the path near each ghost shows (seconds behind and
+// ahead), fading out with distance from the camera (units): the whole route
+// would draw a maze over the map.
+const XRAY_BEHIND = 2.5, XRAY_AHEAD = 1.5, XRAY_NEAR = 700, XRAY_FAR = 1800;
 // GLSL float literals.
 const float = value => value.toFixed(2);
 // Ages are in seconds behind the ghost, negative ahead of it.
@@ -57,6 +61,7 @@ varying float vSide;
 varying float vBehind;
 varying float vAlong;
 varying float vSpan;
+varying float vDepth;
 ${lineShape}
 void main(){
   vec4 here=projectionMatrix*modelViewMatrix*vec4(position,1.0);
@@ -76,7 +81,7 @@ void main(){
   float behind=(head-tick)/rate;
   float span=spanFor(behind);
   here.xy+=vec2(-dir.y,dir.x)*side*2.0*span/resolution*here.w;
-  vSide=side;vBehind=behind;vAlong=along;vSpan=span;
+  vSide=side;vBehind=behind;vAlong=along;vSpan=span;vDepth=here.w;
   gl_Position=here;
 }`;
 const lineFragment = `
@@ -89,6 +94,7 @@ varying float vSide;
 varying float vBehind;
 varying float vAlong;
 varying float vSpan;
+varying float vDepth;
 ${lineShape}
 float hash(float n){
   n=fract(n*0.1031);n*=n+33.33;n*=n+n;return fract(n);
@@ -166,6 +172,8 @@ void main(){
       gl_FragColor=vec4(mix(tint,spark,glint/max(glint+alpha*(1.0-glint),1e-4)),(alpha+glint*(1.0-alpha))*opacity);
     }
   }
+  if(mode>1.5)gl_FragColor.a*=(1.0-smoothstep(${float(XRAY_BEHIND * 0.6)},${float(XRAY_BEHIND)},age))*(1.0-smoothstep(${float(XRAY_AHEAD * 0.5)},${float(XRAY_AHEAD)},ahead))
+    *(1.0-smoothstep(${float(XRAY_NEAR)},${float(XRAY_FAR)},vDepth));
   if(gl_FragColor.a<.004)discard;
   #include <colorspace_fragment>
 }`;
