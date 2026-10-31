@@ -175,13 +175,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   function prepare(current) {
     return current.ready ??= (async () => {
-      const adapter = getAdapter(), session = adapter.getSession();
+      const adapter = getAdapter(), session = adapter.getSession(), cacheWorld = session.movement?.world ?? session.map;
       let cached = recordings.get(current.replay);
-      if (cached?.map !== session.map || cached?.world !== session.movement?.world) cached = null;
+      if (cached?.map.deref() !== session.map || cached?.world.deref() !== cacheWorld) cached = null;
       current.track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle});
       if (!owns(current)) return;
       if (!current.track) throw new Error('This replay can’t use cinematic viewing.');
-      if (!cached) recordings.set(current.replay, cached = {map: session.map, world: session.movement?.world, track: current.track, plans: {}});
+      if (!cached) recordings.set(current.replay, cached = {map: new WeakRef(session.map), world: new WeakRef(cacheWorld), track: current.track, plans: {}});
       current.plans = cached.plans;
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
@@ -338,16 +338,21 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     };
   }
   function warm(current) {
+    current.cancelWarm?.();
     const pending = current.scene.prepare?.();
-    const warming = pending ? Promise.resolve(pending).finally(() => {
-      if (current.warming === warming) current.warming = null;
+    let cancel;
+    const cancelled = pending ? new Promise(resolve => { cancel = resolve; }) : null;
+    const warming = pending ? Promise.race([pending, cancelled]).finally(() => {
+      if (current.warming === warming) current.warming = current.cancelWarm = null;
     }) : null;
     current.warming = warming;
+    current.cancelWarm = cancel;
   }
   function detach(current) {
+    current.cancelWarm?.();
     if (current.renderer && current.renderer.render === current.wrapper) current.renderer.render = current.original;
     for (const scene of [current.scene, ...current.retired.splice(0)]) { try { scene?.dispose(); } catch { /* the map was unloaded with it */ } }
-    current.renderer = current.scene = current.warming = null;
+    current.renderer = current.scene = current.warming = current.cancelWarm = null;
   }
   // The scene holds one ghost per run, so a change of runs builds it again.
   // The new one comes first and the old one stays, hidden, until the new one

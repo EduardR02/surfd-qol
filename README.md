@@ -136,6 +136,8 @@ While you watch any replay, the view menu on the replay bar picks how you watch 
 
 First use of a camera or an added run re-simulates the replay and plans the camera, which takes a moment; nothing runs before you request it. Reopening the camera on the same replay and loaded map reuses its recorded track and solo camera plans. Closing the view still frees its ghosts and GPU resources. Where parallel shader compilation is supported, new trail shaders prepare while POV keeps rendering; other clients keep the existing first-draw path.
 
+Cached CPU results stay in the tab's memory, not on disk. They use weak replay keys and weak map/world identity references, so they do not keep an unloaded map alive. Reloading the page clears the cache.
+
 There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
 
 ### What's kept

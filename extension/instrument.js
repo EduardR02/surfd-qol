@@ -1,7 +1,7 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v20:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v21:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -320,7 +320,20 @@ function cinemaHooks(source) {
     let compile = '';
     try {
       const webgl = unique(source, new RegExp(`(${identifier})\\.render\\(${literal(scene)},${literal(camera)}\\)`, 'g'), 'cinema WebGL renderer')[1];
-      compile = `qolCompile:typeof ${webgl}.compileAsync==="function"&&${webgl}.extensions?.has?.("KHR_parallel_shader_compile")?root=>${webgl}.compileAsync(root,${camera},${scene}):null,`;
+      // Three's compileAsync has no cancellation: its internal polling can
+      // outlive a disposed renderer. Submit the same parallel compilation,
+      // but own the readiness wait so scene disposal can stop it safely.
+      compile = `qolCompile:typeof ${webgl}.compile==="function"&&${webgl}.extensions?.has?.("KHR_parallel_shader_compile")&&Array.isArray(${webgl}.info?.programs)?(root,signal)=>{
+        ${webgl}.compile(root,${camera},${scene});
+        const programs=${webgl}.info.programs.slice();
+        return new Promise(resolve=>{
+          let timer;
+          const done=()=>{clearTimeout(timer);signal?.removeEventListener("abort",done);resolve();};
+          const check=()=>{if(signal?.aborted||${webgl}.getContext().isContextLost()||programs.every(program=>program.isReady()))done();else timer=setTimeout(check,10);};
+          signal?.addEventListener("abort",done,{once:true});
+          check();
+        });
+      }:null,`;
     } catch { /* Shader preparation is optional; the renderer hook still works. */ }
     source = source.replace(object[0], () => `${object[1]}={${compile}qolScene:${scene},qolCamera:${camera},qolGhost:()=>${factory}(${scene}),resize:${object[2]},setQuality:`);
     source = source.replace(ghost[0], () => `${ghost[0].slice(0, -2)},qolAlpha:${ghost[5]}})`);

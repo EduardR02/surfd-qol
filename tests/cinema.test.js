@@ -405,8 +405,8 @@ describe('cinematic replay lifecycle', () => {
     const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
     let disposed = 0, scenes = 0, colors = [], positions = [], made = [];
-    const control = {playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
-    const adapter = {cinema: {renderer: () => renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
+    const control = {renderer, playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
+    const adapter = {cinema: {renderer: () => control.renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
@@ -464,12 +464,36 @@ describe('cinematic replay lifecycle', () => {
     const enabling = cinema.setEnabled(true);
     await entered.promise;
     await cinema.setView('pov');
-    ready.resolve();
     expect(await enabling).toBe(false);
     expect(cinema.camera).toBe(false);
     expect(cinema.status()).toBeNull();
     expect(renderer.render).toBe(native);
     expect(counts().made[0].disposed).toBe(true);
+    ready.resolve();
+  });
+
+  test('a replacement renderer can activate without waiting for the obsolete compiler', async () => {
+    const entered = deferred(), oldReady = deferred(), newReady = deferred();
+    let preparations = 0;
+    const {cinema, renderer, native, control} = rig({prepareScene: () => {
+      if (++preparations === 1) { entered.resolve(); return oldReady.promise; }
+      return newReady.promise;
+    }});
+    const frames = [];
+    globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+    const enabling = cinema.setEnabled(true);
+    await entered.promise;
+    const replacement = control.renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
+    frames.shift()();
+    newReady.resolve();
+    expect(await enabling).toBe(true);
+    expect(renderer.render).toBe(native);
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0, fov: 90};
+    replacement.render(pov);
+    expect(cinema.camera).toBe(true);
+    expect(replacement.drawn).not.toBe(pov);
+    cinema.close();
+    oldReady.resolve();
   });
 
   test('choosing POV during an added run’s shader preparation keeps its ghosts without enabling the camera', async () => {
@@ -500,7 +524,7 @@ describe('cinematic replay lifecycle', () => {
     expect(renderer.render).toBe(native);
     expect(cinema.camera).toBe(false);
   });
-  test('reopening never restores removed comparison runs or a track recorded on a replaced map', async () => {
+  test('reopening never restores removed comparison runs or a track recorded on a replaced map or world', async () => {
     const time = {now: 0};
     const {cinema, renderer, control} = rig({now: () => time.now});
     const frame = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 0}, yaw: 0, pitch: 0, fov: 90};
@@ -518,6 +542,10 @@ describe('cinematic replay lifecycle', () => {
     control.session.map = {...control.session.map};
     await cinema.setEnabled(true);
     expect(cinema.tracks[0].position[1]).toBe(60);
+    cinema.close();
+    control.session.movement = {world: {}};
+    await cinema.setEnabled(true);
+    expect(cinema.tracks[0].position[1]).toBe(90);
     cinema.close();
   });
   test('color slots remain stable when another run is removed and its slot reused', async () => {

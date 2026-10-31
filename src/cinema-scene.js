@@ -237,6 +237,7 @@ export function createCinemaScene(renderer, runs) {
   const scene = renderer.qolScene, camera = renderer.qolCamera;
   const parts = [], disposers = [];
   let preparing = null, prepared = false, disposed = false;
+  const compilation = new AbortController();
   const release = () => {
     let failure;
     while (disposers.length) {
@@ -286,9 +287,9 @@ export function createCinemaScene(renderer, runs) {
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    compilation.abort();
     for (const object of objects()) scene.remove(object);
-    // compileAsync still reads its materials until it resolves. Do not free
-    // their programs underneath it if the user exits or changes replay.
+    // Let preparation stop reading its materials before releasing them.
     if (!preparing) release();
   };
   return {
@@ -305,7 +306,7 @@ export function createCinemaScene(renderer, runs) {
         else for (const object of staged) scene.add(object);
       };
       try {
-        preparing = Promise.resolve(renderer.qolCompile(root)).catch(() => {
+        preparing = Promise.resolve(renderer.qolCompile(root, compilation.signal)).catch(() => {
           // Prewarming is an optimization, not a requirement for playback.
         }).finally(() => { preparing = null; restore(); });
       } catch {
