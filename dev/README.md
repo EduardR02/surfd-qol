@@ -57,6 +57,15 @@ Writes the HUD states, each settings section, Runs panel (overview and Ramps), n
 
 `docs/cinematic.jpg` comes from the real game, not the harness: the Fiellu record with the KSF WR and leaderboard #2–#4 added, in Cinematic, a 1920×1080 frame scaled to 1440×810 and saved as JPEG at quality 88.
 
+## Cinematic performance checks
+
+The harness does not measure replay simulation or GPU compilation. The cinematic tests run offline; real-game profiling is a separate manual check:
+
+- Measure first camera activation separately from reopening the same replay and switching to an already-planned style. First use includes native replay simulation; cached CPU results are scoped to replay, map and collision-world identity.
+- On a browser with `KHR_parallel_shader_compile`, new scene objects stay outside the live map while their shaders prepare. Check that POV keeps drawing and that exiting or choosing POV during preparation cannot reactivate the camera. Without that capability, no precompilation is attempted.
+- The camera can reuse the native collision BVH when the expected public arrays and query interface are present. Its filtered view preserves candidate order and collision flags, owns a separate triangle cache, and falls back to the constructor path for incompatible implementations. Compare hit fractions, normals and solid-state results, not generated triangle-brush object identity.
+- Camera planning consumes available idle time between bounded trace batches and still checks cancellation. Segment travel windows are scanned linearly; shot-independent blurs are reused during safe-shot replanning. Matching retains Float32 costs and the existing DTW tie-breaking.
+
 ## Fonts
 
 `src/hud-fonts.js` embeds Instrument Sans (SIL OFL 1.1), subset to the characters the HUD and panel use. Regenerate with `python dev/subset-fonts.py <folder with InstrumentSans-*.ttf>` (needs fontTools).

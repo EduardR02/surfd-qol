@@ -16,8 +16,14 @@ function warp(a, b, a0, a1, b0, b1, out) {
   const na = Math.max(2, Math.min(MAX_SAMPLES, a1 - a0 + 1)), nb = Math.max(2, Math.min(MAX_SAMPLES, b1 - b0 + 1));
   const at = (from, to, n, k) => from + (to - from) * k / (n - 1);
   const pa = new Float32Array(na * 3), pb = new Float32Array(nb * 3), point = {x: 0, y: 0, z: 0};
-  for (let i = 0; i < na; i++) { trackPoint(a, at(a0, a1, na, i), point); pa.set([point.x, point.y, point.z], i * 3); }
-  for (let j = 0; j < nb; j++) { trackPoint(b, at(b0, b1, nb, j), point); pb.set([point.x, point.y, point.z], j * 3); }
+  for (let i = 0; i < na; i++) {
+    trackPoint(a, at(a0, a1, na, i), point);
+    pa[i * 3] = point.x; pa[i * 3 + 1] = point.y; pa[i * 3 + 2] = point.z;
+  }
+  for (let j = 0; j < nb; j++) {
+    trackPoint(b, at(b0, b1, nb, j), point);
+    pb[j * 3] = point.x; pb[j * 3 + 1] = point.y; pb[j * 3 + 2] = point.z;
+  }
   const cost = new Float32Array(na * nb);
   for (let i = 0; i < na; i++) {
     for (let j = 0; j < nb; j++) {
@@ -40,10 +46,11 @@ function warp(a, b, a0, a1, b0, b1, out) {
       if (diagonal <= up && diagonal <= left) { i--; j--; } else if (up <= left) i--; else j--;
     }
   }
+  // Every row is visited by the monotonic path; reuse its mean at every output tick.
+  for (let i = 0; i < na; i++) sum[i] /= count[i];
   for (let tick = a0; tick <= a1; tick++) {
     const k = a1 === a0 ? 0 : (tick - a0) * (na - 1) / (a1 - a0), low = Math.floor(k), high = Math.min(na - 1, low + 1);
-    const mean = index => sum[index] / count[index];
-    const sample = mean(low) + (mean(high) - mean(low)) * (k - low);
+    const sample = sum[low] + (sum[high] - sum[low]) * (k - low);
     out[tick] = at(b0, b1, nb, sample);
   }
 }

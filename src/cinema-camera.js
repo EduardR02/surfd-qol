@@ -119,7 +119,10 @@ const SLICE = 80;
 const DEGREES = Math.PI / 180;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const unit = (normals, at) => { const x = normals[at * 3], y = normals[at * 3 + 1], z = normals[at * 3 + 2], length = Math.hypot(x, y, z) || 1; return [x / length, y / length, z / length]; };
+const unit = (normals, at, out, offset) => {
+  const x = normals[at * 3], y = normals[at * 3 + 1], z = normals[at * 3 + 2], length = Math.hypot(x, y, z) || 1;
+  out[offset] = x / length; out[offset + 1] = y / length; out[offset + 2] = z / length;
+};
 const smoothstep = (low, high, value) => { const t = clamp((value - low) / (high - low), 0, 1); return t * t * (3 - 2 * t); };
 
 // A centred Gaussian blur that never reaches across a cut.
@@ -214,11 +217,12 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
     s = end + 1;
   }
   const out = (side, degrees, k) => side * (Math.abs(degrees) > 90 ? degrees : degrees * k) * DEGREES;
+  let rampIndex = 0;
   stretches.forEach((stretch, index) => {
     const k = spread(stretch.from, stretch.to), ramp = stretch.ramp;
     if (ramp) {
       const length = ramp.to - ramp.from, kind = length < samples(MEDIUM_RAMP) ? 0 : length < samples(LONG_RAMP) ? 1 : 2;
-      const at = ramps.indexOf(ramp), near = other => other && segment[other.from] === segment[ramp.from] && other.side !== ramp.side &&
+      const at = rampIndex++, near = other => other && segment[other.from] === segment[ramp.from] && other.side !== ramp.side &&
         Math.min(Math.abs(other.from - ramp.to), Math.abs(ramp.from - other.to)) < samples(CRAMPED);
       const cramped = kind && (near(ramps[at - 1]) || near(ramps[at + 1]));
       let shot = cramped ? look.gentle[gentle++ % look.gentle.length] : look.ramps[kind][turns[kind]++ % look.ramps[kind].length];
@@ -288,6 +292,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   // Samples since and until each other run's own teleports.
   const since = others.map(() => new Float32Array(count).fill(Infinity)), until = others.map(() => new Float32Array(count).fill(Infinity));
   const point = {x: 0, y: 0, z: 0};
+  // Spend the current idle window before scheduling another one. Checks stay
+  // at bounded trace batches, including across validation passes and retries.
+  let deadline = null;
+  const idleLeft = () => deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
   let cutAt = 0;
   for (let s = 0; s < count; s++) {
     const tick = sampleTick(s), previous = s ? sampleTick(s - 1) : 0;
@@ -298,21 +306,24 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     }
     if (s && cut) cutAt++;
     segment[s] = cutAt;
-    for (const [index, {track, map: where}] of others.entries())
+    for (let index = 0; index < others.length; index++) {
+      const {track, map: where} = others[index];
       for (let k = Math.floor(s ? where[previous] : where[tick]) + 1; k <= Math.floor(where[tick]) && !cut; k++)
         if (track.cut[k] === 1) { since[index][s] = until[index][s] = 0; break; }
+    }
     // The face run a touched last in this step, as a horizontal direction.
     for (let k = s ? previous + 1 : 0; k <= tick; k++) {
       const nx = a.normal[k * 3], ny = a.normal[k * 3 + 1], length = Math.hypot(nx, ny);
-      if (length > 1e-3) { rampX[s] = nx / length; rampY[s] = ny / length; faces[0].set(unit(a.normal, k), s * 3); }
+      if (length > 1e-3) { rampX[s] = nx / length; rampY[s] = ny / length; unit(a.normal, k, faces[0], s * 3); }
     }
     trackPoint(a, tick, point);
     runs[0][s * 3] = point.x; runs[0][s * 3 + 1] = point.y; runs[0][s * 3 + 2] = point.z;
-    for (const [index, {track, map: where}] of others.entries()) {
+    for (let index = 0; index < others.length; index++) {
+      const {track, map: where} = others[index];
       trackPoint(track, where[tick], point);
       runs[index + 1][s * 3] = point.x; runs[index + 1][s * 3 + 1] = point.y; runs[index + 1][s * 3 + 2] = point.z;
       const at = Math.max(0, Math.min(track.count - 1, Math.round(where[tick])));
-      if (Math.hypot(track.normal[at * 3], track.normal[at * 3 + 1]) > 1e-3) faces[index + 1].set(unit(track.normal, at), s * 3);
+      if (Math.hypot(track.normal[at * 3], track.normal[at * 3 + 1]) > 1e-3) unit(track.normal, at, faces[index + 1], s * 3);
     }
   }
   // Another run's teleport doesn't cut the shot (only the played run's do):
@@ -343,10 +354,15 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   // Travel: where the focus goes over the next and last third of a second.
   const reach = Math.max(1, Math.round(seconds(0.33)));
   const travel = [new Float32Array(count), new Float32Array(count)], known = new Uint8Array(count);
+  // Segment bounds only advance: don't search the same neighbours for every sample.
+  let segmentFrom = 0, segmentTo = -1;
   for (let s = 0; s < count; s++) {
-    let from = s, to = s;
-    while (from > 0 && from > s - reach && segment[from - 1] === segment[s]) from--;
-    while (to < count - 1 && to < s + reach && segment[to + 1] === segment[s]) to++;
+    if (s > segmentTo) {
+      segmentFrom = s;
+      segmentTo = s;
+      while (segmentTo + 1 < count && segment[segmentTo + 1] === segment[s]) segmentTo++;
+    }
+    const from = Math.max(segmentFrom, s - reach), to = Math.min(segmentTo, s + reach);
     const dx = focus[0][to] - focus[0][from], dy = focus[1][to] - focus[1][from];
     speed[s] = to > from ? Math.hypot(dx, dy, focus[2][to] - focus[2][from]) / ((to - from) * a.dt * STEP) : 0;
     const length = Math.hypot(dx, dy);
@@ -367,6 +383,16 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     return 1 - (1 - SPREAD_SWING) * smoothstep(SPREAD_NEAR, SPREAD_FAR, total / (to - from + 1));
   };
   const first = Math.min(count - 1, Math.round(a.start / STEP));
+  // Before-start travel and these blurs do not depend on the chosen shots.
+  // Keep them outside shoot(), which may repeat with safer shots.
+  let zone = first;
+  while (zone > 0 && segment[zone - 1] === segment[first]) zone--;
+  const leave = Math.min(count - 1, first + Math.round(seconds(0.6)));
+  const lx = runs[0][leave * 3] - runs[0][first * 3], ly = runs[0][leave * 3 + 1] - runs[0][first * 3 + 1], away = Math.hypot(lx, ly);
+  const leaving = zone < first && segment[leave] === segment[first] && away > 50;
+  if (leaving) for (let s = zone; s < first; s++) { travel[0][s] = lx / away; travel[1][s] = ly / away; }
+  const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
+  const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
   // Plans the shots and checks them; safe holds the stretches (by their first
   // sample) that must take the style's safest shot.
   const shoot = async safe => {
@@ -385,16 +411,11 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     });
     // Before the start: a slow drift round from the first ramp's side to
     // behind, facing the way they'll leave.
-    let zone = first;
-    while (zone > 0 && segment[zone - 1] === segment[first]) zone--;
-    const leave = Math.min(count - 1, first + Math.round(seconds(0.6)));
-    const lx = runs[0][leave * 3] - runs[0][first * 3], ly = runs[0][leave * 3 + 1] - runs[0][first * 3 + 1], away = Math.hypot(lx, ly);
-    if (zone < first && segment[leave] === segment[first] && away > 50) {
+    if (leaving) {
       const side = ramps.find(ramp => ramp.from >= first)?.side ?? 1;
       for (let s = zone; s < first; s++) {
         const wait = (first - s) * a.dt * STEP;
         ask(s, look.start, side * Math.min(look.orbit, ORBIT_RATE * wait) * DEGREES);
-        travel[0][s] = lx / away; travel[1][s] = ly / away;
         ahead[0][s] = ahead[1][s] = ahead[2][s] = 0;
       }
     }
@@ -418,12 +439,9 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
 
     // Shots ease into each other everywhere but at teleports.
     const view = segment;
-    // Blurred long enough to follow the route rather than each flight across a gap.
-    const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
     const ease = seconds(look.transition);
     const swing = blur(swingAt, ease, view), rise = blur(riseAt, ease * 1.25, view), widen = blur(widenAt, ease * 1.5, view), leadShare = blur(leadAt, ease, view);
     const toLanding = ahead.map(values => blur(values, seconds(0.3), view));
-    const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
     const azimuth = new Float32Array(count), elevation = new Float32Array(count), distance = new Float32Array(count), fov = new Float32Array(count), halfViews = new Float32Array(count), above = new Float32Array(count);
     for (let s = 0; s < count; s++) {
       fov[s] = FOV + look.fov * smoothstep(FOV_SLOW, FOV_FAST, smoothSpeed[s]);
@@ -463,7 +481,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     if (trace) {
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0};
       for (let s = 0; s < count; s += TRACE_EVERY) {
-        if (s % (SLICE * TRACE_EVERY) === 0 && yieldTask) { await yieldTask(); if (!isCurrent()) return null; }
+        if (s % (SLICE * TRACE_EVERY) === 0) {
+          if (yieldTask && !idleLeft()) deadline = await yieldTask();
+          if (!isCurrent()) return null;
+        }
         from.x = focus[0][s]; from.y = focus[1][s]; from.z = focus[2][s];
         let best = null;
         for (const [turn, up] of DETOURS) {
@@ -543,7 +564,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0}, body = {x: 0, y: 0, z: 0};
       let found = false;
       for (let s = 0; s < count; s += TRACE_EVERY) {
-        if (s % (SLICE * TRACE_EVERY) === 0 && yieldTask) { await yieldTask(); if (!isCurrent()) return null; }
+        if (s % (SLICE * TRACE_EVERY) === 0) {
+          if (yieldTask && !idleLeft()) deadline = await yieldTask();
+          if (!isCurrent()) return null;
+        }
         from.x = shot.focus[0][s]; from.y = shot.focus[1][s]; from.z = shot.focus[2][s];
         to.x = shot.eye[s * 3]; to.y = shot.eye[s * 3 + 1]; to.z = shot.eye[s * 3 + 2];
         body.x = runs[0][s * 3]; body.y = runs[0][s * 3 + 1]; body.z = runs[0][s * 3 + 2] + EYE_HEIGHT;
