@@ -22,12 +22,13 @@ export const STEP = 2;               // ticks per planned sample
 // (to: the swing a shot they pass ends on), distance as a multiple of the
 // speed-based one, and room ahead as a share of the distance.
 const CHASE = {swing: 36, elevation: 9, distance: 1, lead: 0.16};
+const FACE = {swing: 72, elevation: 14, distance: 1.45, lead: 0.32};                // from the open side onto the face, a little ahead: the clearest view of the lines
 const TRACK = {swing: 65, elevation: 4, distance: 1.5, lead: 0.26};                 // three-quarter alongside, at body height
 const LOW = {swing: 40, elevation: -6, distance: 1.1, lead: 0.2};                   // near the face, along and up it
 const FRONT = {swing: 155, to: 105, elevation: 5, distance: 1.4, lead: 0};          // ahead; they come towards it and pass
 const FLIGHT = {swing: 0, elevation: 11, distance: 1.25, lead: 0.16};               // behind, the landing ahead
 const ARC = {swing: 72, elevation: 3, distance: 1.5, lead: 0.24};                   // beside a long flight's rise and fall
-const STEADY = {swing: 38, elevation: 9, distance: 1.15, lead: 0.18};
+const STEADY = {swing: 62, elevation: 12, distance: 1.3, lead: 0.26};
 // Per style: the shots ramps take in turn by length (under MEDIUM_RAMP,
 // under LONG_RAMP, longer), and those for a ramp with one on the other side
 // within CRAMPED seconds (gentle: there's no time to swing far out and back);
@@ -40,7 +41,7 @@ const STEADY = {swing: 38, elevation: 9, distance: 1.15, lead: 0.18};
 // cut into each other, only teleports cut.
 const STYLES = {
   cinematic: {
-    ramps: [[CHASE], [TRACK, LOW], [TRACK, LOW]], front: FRONT, gentle: [LOW, CHASE], flights: [ARC, FLIGHT],
+    ramps: [[CHASE], [FACE, LOW], [FACE, TRACK, FACE, LOW]], front: FRONT, gentle: [LOW, CHASE], flights: [ARC, FLIGHT],
     flight: FLIGHT, start: {swing: 0, elevation: 10, distance: 1.45, lead: 0.1},
     orbit: 70, establish: {rise: 16, widen: 0.8}, finish: {rise: 12, widen: 1.2, swing: 30}, landing: 0.3, fov: 10, transition: 0.5,
   },
@@ -55,7 +56,7 @@ const MEDIUM_RAMP = 0.7, LONG_RAMP = 1.3, CRAMPED = 0.9, LONG_FLIGHT = 1.1, LONG
 // Seen from ahead or straight behind, travel collapses into depth, so most
 // shots look from three-quarters. The style's front shot is an event: only
 // on ramps of at least FRONT_RAMP seconds, at most once every FRONT_GAP.
-const FRONT_RAMP = 2.2, FRONT_GAP = 15;
+const FRONT_RAMP = 1.6, FRONT_GAP = 10;
 // Contact gaps under RAMP_GAP seconds are the same ramp; touches under RAMP_MIN aren't one.
 const RAMP_GAP = 0.2, RAMP_MIN = 0.3, SAME_FACE = Math.cos(40 * Math.PI / 180);
 // In flight the swing keeps this share of both ramps' swings: back behind
@@ -90,7 +91,7 @@ const TURN_LIMIT = 110;
 // but from the side it needs a long way back to fit across the frame, which
 // walls rarely allow: as the group's span over a shot grows from SPREAD_NEAR
 // to SPREAD_FAR, a shot from behind swings out only SPREAD_SWING as far.
-const SPREAD_NEAR = 500, SPREAD_FAR = 1500, SPREAD_SWING = 0.35;
+const SPREAD_NEAR = 800, SPREAD_FAR = 3000, SPREAD_SWING = 0.8;
 // While a framed ghost rides a face, the camera stays at least this far
 // (degrees, seen from the ghost) above the face's plane, so the ramp never
 // hides them, even passing behind them onto a new ramp.
