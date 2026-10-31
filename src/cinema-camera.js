@@ -92,6 +92,8 @@ const SPREAD_NEAR = 500, SPREAD_FAR = 1500, SPREAD_SWING = 0.35;
 // (degrees, seen from the ghost) above the face's plane, so the ramp never
 // hides them, even passing behind them onto a new ramp.
 const FACE_MARGIN = 6;
+// Other runs' faces lift the camera no higher than this (degrees).
+const OTHER_FACE_MAX = 18;
 // The camera stays back far enough to keep the map around the ghosts in view;
 // only walls bring it nearer than BASE_DISTANCE. Speed and the shot widen it.
 const BASE_DISTANCE = 300, MAX_DISTANCE = 2400, MIN_DISTANCE = 70, SPEED_DISTANCE = 0.07;
@@ -106,7 +108,7 @@ const LEAD_MAX = 320;
 const CLEARANCE = 14;
 // Detours tried when the planned spot is blocked: [swing, rise] in degrees.
 // Lowering stops at a few degrees above the ghosts (or where the shot already is).
-const DETOURS = [[0, 0], [18, 0], [-18, 0], [0, 16], [0, -14], [36, 6], [-36, 6], [0, 32], [0, -24], [65, 12], [-65, 12], [0, 50]];
+const DETOURS = [[0, 0], [18, 0], [-18, 0], [0, 16], [0, -14], [36, 6], [-36, 6], [0, 32], [0, -24], [65, 12], [-65, 12]];
 const DETOUR_FLOOR = 4;
 const TRACE_EVERY = 2;               // samples per occlusion test
 const SLICE = 80;
@@ -424,6 +426,15 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       const halfView = halfViews[s] = Math.atan(Math.tan(fov[s] * Math.PI / 360) * 0.75);
       const length = Math.hypot(tx[s], ty[s]) || 1;
       azimuth[s] = Math.atan2(-ty[s] / length, -tx[s] / length) + swing[s];
+      // Keep to the open side of the face the played run rides. Reaching the
+      // far side would mean rising over the ramp, so a swing across waits
+      // level behind or ahead of them until they leave it.
+      const ox = faces[0][s * 3], oy = faces[0][s * 3 + 1];
+      if ((ox || oy) && Math.cos(azimuth[s]) * ox + Math.sin(azimuth[s]) * oy < 0) {
+        const normal = Math.atan2(oy, ox), wrap = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
+        const [left, right] = [wrap(normal + Math.PI / 2 - azimuth[s]), wrap(normal - Math.PI / 2 - azimuth[s])];
+        azimuth[s] += Math.abs(left) < Math.abs(right) ? left : right;
+      }
       elevation[s] = Math.max(rise[s], BEHIND_LOW * DEGREES * (1 - smoothstep(15 * DEGREES, 40 * DEGREES, Math.abs(swing[s]))));
       // The lowest elevation that keeps the camera above every ridden face's
       // plane: A cos e + B sin e is how far above it a unit step towards the
@@ -434,7 +445,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         const nx = faces[r][s * 3], ny = faces[r][s * 3 + 1], nz = faces[r][s * 3 + 2];
         if (!nx && !ny) continue;
         const A = Math.cos(azimuth[s]) * nx + Math.sin(azimuth[s]) * ny, B = nz, reach = Math.hypot(A, B) || 1;
-        least = Math.max(least, Math.atan2(B, A) - Math.acos(Math.min(1, Math.sin(FACE_MARGIN * DEGREES) / reach)));
+        const needed = Math.atan2(B, A) - Math.acos(Math.min(1, Math.sin(FACE_MARGIN * DEGREES) / reach));
+        // Another run on a face turned away isn't worth going over the top for:
+        // the visibility check eases the shot back low instead.
+        least = Math.max(least, r ? Math.min(needed, OTHER_FACE_MAX * DEGREES) : needed);
       }
       above[s] = least;
       distance[s] = clamp(Math.max((BASE_DISTANCE + smoothSpeed[s] * SPEED_DISTANCE) * widen[s], smoothSpan[s] * 0.5 / Math.tan(halfView) * 1.3 + 140), BASE_DISTANCE, MAX_DISTANCE);
@@ -453,8 +467,9 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
           if (up < 0 && el >= elevation[s]) continue;
           to.x = from.x + Math.cos(az) * Math.cos(el) * d; to.y = from.y + Math.sin(az) * Math.cos(el) * d; to.z = from.z + Math.sin(el) * d;
           const clear = trace(from, to);
-          // Rising costs most: a high camera flattens the dip and climb.
-          const score = Math.min(1, clear / 0.7) - Math.abs(turn) * 0.004 - Math.max(up * 0.009, -up * 0.005);
+          // Rising costs most: a high camera flattens the dip and climb, so
+          // turning or coming closer wins wherever they can.
+          const score = Math.min(1, clear / 0.7) - Math.abs(turn) * 0.004 - Math.max(up * 0.018, -up * 0.005);
           if (!best || score > best.score) best = {score, turn, lift: el - elevation[s], room: clear * d - CLEARANCE};
           if (clear >= 0.98) break;
         }
@@ -471,6 +486,9 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     const az = blur(azimuth, seconds(0.3), view), far = blur(distance, seconds(0.5), view);
     const el = blur(elevation, seconds(0.3), view).map((value, s) => Math.max(value, floor[s]));
     const out = blur(swing, seconds(0.3), view);
+    // Where a retreat heads: the nearer of behind and ahead, eased so the
+    // choice never flips between them from one frame to the next.
+    const axis = blur(out.map(value => Math.abs(value) > Math.PI / 2 ? Math.sign(value) * Math.PI : 0), seconds(0.45), view);
     // The shot from the smoothed choices. weight scales how far the framing
     // leans towards the other runs; limitTo caps the distance; retreat eases
     // the shot back towards a low chase.
@@ -489,9 +507,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
       for (let s = 0; s < count; s++) {
         const d = clamp(Math.min(far[s], room[s], limitTo[s]), MIN_DISTANCE, MAX_DISTANCE);
-        // Back towards the nearer of behind and ahead.
-        const axis = Math.abs(out[s]) > Math.PI / 2 ? Math.sign(out[s]) * Math.PI : 0;
-        const yaw = az[s] + (axis - out[s]) * retreat[s] + smoothDetour[s];
+        const yaw = az[s] + (axis[s] - out[s]) * retreat[s] + smoothDetour[s];
         const pitch = clamp(Math.max(el[s] + (RETREAT_ELEVATION * DEGREES - el[s]) * retreat[s], floor[s]) + smoothLift[s], -1.35, 1.35);
         const length = Math.hypot(tx[s], ty[s]) || 1, lead = Math.min(LEAD_MAX, far[s] * leadShare[s]);
         const ex = Math.cos(yaw) * Math.cos(pitch) * d, ey = Math.sin(yaw) * Math.cos(pitch) * d, ez = Math.sin(pitch) * d;
