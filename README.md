@@ -122,6 +122,10 @@ After you seek to a part you haven't watched yet, feedback can stay grey until t
 
 While you watch any replay, the view menu on the replay bar picks how you watch it: **POV** (the player's own first-person view, where every replay starts), **Steady** or **Cinematic**. Both cameras work for a single run too. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (search by name or rank). Adding a run switches to the camera you used last (Cinematic the first time). The replay bar, seeking and stage jumps work as usual.
 
+![A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and the replay bar below with a chip and gap for each run](docs/cinematic.jpg)
+
+*The Fiellu record with four more runs added, in Cinematic. Each chip shows that run's gap to the one you're watching.*
+
 - **Chips:** each run gets a chip in its colour next to the cinematic tools. Click one to follow that run (from POV, this switches to your camera); click it again to frame everyone. × removes a run.
 - **Real time** (the default) starts each run's clock when it leaves the start zone, from the last exit if a prestrafe pops out and back in. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ; it isn't a race.
 - **Gaps:** an added run's chip shows its gap to the run you're watching at this point: negative (teal) means it got here sooner, positive (red) later.

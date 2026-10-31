@@ -55,6 +55,8 @@ Writes the HUD states, each settings section, Runs panel (overview and Ramps), n
 
 `docs/replay-native.jpg` is `?shot&state=watching&bg=warm&title=other&play=paused&y=60` and `docs/replay-custom.jpg` the same with `&set.customReplayUi=true`, each at a 1100×1000 viewport with device scale 2, clipped to the bottom 120 px (x 0, y 880, 1100×120, so 2200×240) and saved as JPEG at quality 88. `y=60` lifts the HUD out of the strip, and the tall viewport crops the backdrop's key display out of it.
 
+`docs/cinematic.jpg` comes from the real game, not the harness: the Fiellu record with the KSF WR and leaderboard #2–#4 added, in Cinematic, a 1920×1080 frame scaled to 1440×810 and saved as JPEG at quality 88.
+
 ## Fonts
 
 `src/hud-fonts.js` embeds Instrument Sans (SIL OFL 1.1), subset to the characters the HUD and panel use. Regenerate with `python dev/subset-fonts.py <folder with InstrumentSans-*.ttf>` (needs fontTools).
