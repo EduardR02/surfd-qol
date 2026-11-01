@@ -69,17 +69,19 @@ function cameraWorld(session) {
   return rebuild();
 }
 
-// Keep a plan handoff on the same flight, including its incoming velocity.
-function blend(from, to, through, velocity, duration) {
+// Replanning a tracking shot blends an offset from the moving destination,
+// not a fixed world position that the surfers would leave behind.
+function blend(from, to, through, velocity, duration, offset) {
   const k = velocity ? through * through * (3 - 2 * through) : ease(through);
   const tangent = velocity ? through * (1 - through) ** 2 * duration : 0;
-  const turn = ((to.yaw - from.yaw) % 360 + 540) % 360 - 180;
-  return {x: from.x + (to.x - from.x) * k + (velocity?.x ?? 0) * tangent,
-    y: from.y + (to.y - from.y) * k + (velocity?.y ?? 0) * tangent,
-    z: from.z + (to.z - from.z) * k + (velocity?.z ?? 0) * tangent,
-    yaw: from.yaw + turn * k + (velocity?.yaw ?? 0) * tangent,
-    pitch: from.pitch + (to.pitch - from.pitch) * k + (velocity?.pitch ?? 0) * tangent,
-    fov: from.fov + (to.fov - from.fov) * k + (velocity?.fov ?? 0) * tangent};
+  const origin = offset ? to : from, weight = offset ? 1 - k : k;
+  const turn = offset?.yaw ?? ((to.yaw - from.yaw) % 360 + 540) % 360 - 180;
+  return {x: origin.x + (offset?.x ?? to.x - from.x) * weight + (velocity?.x ?? 0) * tangent,
+    y: origin.y + (offset?.y ?? to.y - from.y) * weight + (velocity?.y ?? 0) * tangent,
+    z: origin.z + (offset?.z ?? to.z - from.z) * weight + (velocity?.z ?? 0) * tangent,
+    yaw: origin.yaw + turn * weight + (velocity?.yaw ?? 0) * tangent,
+    pitch: origin.pitch + (offset?.pitch ?? to.pitch - from.pitch) * weight + (velocity?.pitch ?? 0) * tangent,
+    fov: origin.fov + (offset?.fov ?? to.fov - from.fov) * weight + (velocity?.fov ?? 0) * tangent};
 }
 
 // getAdapter() is the game adapter. A run given to add() is {id, label, load()},
@@ -181,7 +183,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // is the view last drawn and move a flight from one pose to the next.
     return {replay, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, body: {x: 0, y: 0, z: 0}, at: [], tick: 0, pending: null, trace: undefined,
-      camera: false, cameraRequested: false, pose: null, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, move: null, retired: [], sceneSize: 0,
+      camera: false, cameraRequested: false, pose: null, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, motionRate: 0, motionStep: 0, move: null, retired: [], sceneSize: 0,
       complete: false, partialPlan: false, planBase: 0, planEnd: Infinity, failed: false};
   }
   function prepare(current) {
@@ -440,10 +442,30 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (!current.pose) return;
     const time = now(), previous = current.move;
     const continuing = promoted && previous?.from.eye && time < previous.start + previous.duration;
-    const duration = continuing ? Math.max(MOVE * 0.25, previous.start + previous.duration - time) : MOVE;
-    current.move = {from: {...current.pose}, start: time, duration,
-      began: continuing ? previous.began : time, revealEnd: continuing ? previous.revealEnd : time + duration,
-      velocity: continuing ? {...current.velocity} : null};
+    const following = current.camera && !current.pose.eye && !previous?.from.eye && current.drawnAt !== null;
+    const start = following ? current.drawnAt : time;
+    const duration = continuing ? Math.max(MOVE * 0.25, previous.start + previous.duration - start) : MOVE;
+    const velocity = continuing || following ? {...current.velocity} : null;
+    let offset = null;
+    if (following) {
+      const tick = current.tick - current.planBase, step = current.motionStep || 16;
+      // Sample without advancing zoom or collision clearance. Relative velocity
+      // preserves an interrupted flight as well as ordinary replay tracking.
+      const target = aim(current, current.plan, tick, 0, false);
+      const before = aim(current, current.plan, tick - current.motionRate * step, 0, false);
+      const from = current.pose;
+      offset = {x: from.x - target.x, y: from.y - target.y, z: from.z - target.z,
+        yaw: ((from.yaw - target.yaw) % 360 + 540) % 360 - 180,
+        pitch: from.pitch - target.pitch, fov: from.fov - target.fov};
+      velocity.x -= (target.x - before.x) / step;
+      velocity.y -= (target.y - before.y) / step;
+      velocity.z -= (target.z - before.z) / step;
+      velocity.yaw -= (((target.yaw - before.yaw) % 360 + 540) % 360 - 180) / step;
+      velocity.pitch -= (target.pitch - before.pitch) / step;
+      velocity.fov -= (target.fov - before.fov) / step;
+    }
+    current.move = {from: {...current.pose}, start, duration, offset,
+      began: continuing ? previous.began : start, revealEnd: continuing ? previous.revealEnd : start + duration, velocity};
     if (continuing) current.move.from.eye = true;
   }
 
@@ -481,17 +503,22 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
       current.scene.show?.(index + 1, true);
     }
+    const lastTick = current.tick;
     current.tick = tick;
     // Drag turns the view at once; zoom eases, so a wheel's steps glide without lagging.
     const time = now(), elapsed = current.drawnAt === null ? 0 : Math.max(0, time - current.drawnAt);
     current.drawnAt = time;
+    if (elapsed > 0) {
+      current.motionRate = discontinuity ? 0 : (tick - lastTick) / elapsed;
+      current.motionStep = elapsed;
+    }
     // The first planned frame flies out of the player's own eyes.
     if (!current.pose && current.camera) current.move = {from: own, start: time, duration: MOVE, began: time, revealEnd: time + MOVE, velocity: null};
     let pose = current.camera ? aim(current, plan, tick - current.planBase, elapsed) : own;
     const move = current.move, through = move ? Math.min(1, (time - move.start) / move.duration) : 1;
     const revealed = move ? Math.min(1, (time - move.began) / (move.revealEnd - move.began)) : 1;
     if (move && through >= 1) current.move = null;
-    else if (move) pose = blend(move.from, pose, through, move.velocity, move.duration);
+    else if (move) pose = blend(move.from, pose, through, move.velocity, move.duration, move.offset);
     if (current.camera || current.trace && move && through < 1) {
       // Safe plan samples can interpolate or blend through a corner. Check the
       // actual frame from the subject, not the smoothed/led camera target.
@@ -534,7 +561,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       velocity.yaw = (((pose.yaw - previousPose.yaw) % 360 + 540) % 360 - 180) / elapsed;
       velocity.pitch = (pose.pitch - previousPose.pitch) / elapsed;
       velocity.fov = (pose.fov - previousPose.fov) / elapsed;
-    } else velocity.x = velocity.y = velocity.z = velocity.yaw = velocity.pitch = velocity.fov = 0;
+    } else if (!previousPose || discontinuity) velocity.x = velocity.y = velocity.z = velocity.yaw = velocity.pitch = velocity.fov = 0;
     current.pose = pose;
     // First person hides the watched run's own ghost and path: flying out of
     // the eyes it shows once clear of them, flying back in once nearly there.
@@ -547,19 +574,23 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       ghost: null, remotePlayers: [], showPlayers: false};
   }
   // The planned camera's pose at a tick, with your own angle and zoom.
-  function aim(current, plan, tick, elapsed) {
+  function aim(current, plan, tick, elapsed, advance = true) {
     const applied = current.applied;
-    applied.yaw = current.view.yaw; applied.pitch = current.view.pitch;
-    applied.zoom += (current.view.zoom - applied.zoom) * (1 - Math.exp(-elapsed / ZOOM_EASE));
+    if (advance) {
+      applied.yaw = current.view.yaw; applied.pitch = current.view.pitch;
+      applied.zoom += (current.view.zoom - applied.zoom) * (1 - Math.exp(-elapsed / ZOOM_EASE));
+    }
     const shot = adjust(shotAt(plan, tick, current.shot), applied);
     if (current.adjusted && current.trace) {
       // Your own angle isn't in the plan: keep it out of walls as it plays.
       const clear = current.trace(shot.target, shot.eye);
       const dx = shot.eye.x - shot.target.x, dy = shot.eye.y - shot.target.y, dz = shot.eye.z - shot.target.z, d = Math.hypot(dx, dy, dz) || 1;
       const allowed = clear < 1 ? Math.max(40, clear * d - 12) : Infinity;
-      current.room = allowed < current.room ? allowed : Math.min(allowed, current.room === Infinity ? Infinity : current.room * 1.04 + 4);
-      if (current.room < d) {
-        const k = current.room / d;
+      const room = allowed < current.room ? allowed : advance
+        ? Math.min(allowed, current.room === Infinity ? Infinity : current.room * 1.04 + 4) : current.room;
+      if (advance) current.room = room;
+      if (room < d) {
+        const k = room / d;
         shot.eye.x = shot.target.x + dx * k; shot.eye.y = shot.target.y + dy * k; shot.eye.z = shot.target.z + dz * k;
       }
     }

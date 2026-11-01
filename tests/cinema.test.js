@@ -1072,6 +1072,63 @@ describe('cinematic replay lifecycle', () => {
     cinema.close();
     expect(second.disposed).toBe(true);
   });
+  function moving() {
+    const time = {now: 0};
+    let runs = 0;
+    const fixture = rig({now: () => time.now,
+      record: async () => straight({count: 2000, y: runs++ * 200})});
+    fixture.control.playback.replay.commands = new Array(1999).fill({});
+    const render = ms => {
+      time.now = ms;
+      const tick = 300 + ms / 15;
+      fixture.control.playback.index = tick;
+      fixture.renderer.render({state: {tick: Math.ceil(tick)}, qolAlpha: 1 + tick - Math.ceil(tick),
+        eyePosition: {x: (tick - 20) * 20, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90});
+      return {...fixture.renderer.drawn.eyePosition};
+    };
+    return {...fixture, time, render};
+  }
+  test('adding a run keeps following the moving replay while reframing', async () => {
+    const {cinema, render} = moving();
+    await cinema.setView('steady');
+    render(0);
+    const before = render(1985), start = render(2000);
+    const speed = (start.x - before.x) / 15;
+    await cinema.add(run('other'));
+    const same = render(2000);
+    expect(Math.hypot(same.x - start.x, same.y - start.y, same.z - start.z)).toBeLessThan(1e-7);
+    const after = render(2015);
+    expect((after.x - start.x) / 15 / speed).toBeGreaterThan(0.8);
+    const points = [{ms: 2000, eye: start}, {ms: 2015, eye: after}];
+    for (const ms of [2030, 2060, 2120, 2250, 2500, 2750]) points.push({ms, eye: render(ms)});
+    const end = render(4000), offset = ({ms, eye}) => (280 + ms / 15) * 20 - eye.x;
+    const limits = [offset(points[0]), offset({ms: 4000, eye: end})];
+    for (const point of points) {
+      expect(offset(point)).toBeLessThanOrEqual(Math.max(...limits) + 1);
+      expect(offset(point)).toBeGreaterThanOrEqual(Math.min(...limits) - 1);
+    }
+    cinema.close();
+  });
+  test('a second reframe preserves the in-flight camera motion', async () => {
+    const {cinema, render} = moving();
+    await cinema.setView('steady');
+    render(0); render(2000);
+    await cinema.add(run('first'));
+    render(2000);
+    const before = render(2200), start = render(2215);
+    const speed = Math.hypot(start.x - before.x, start.y - before.y, start.z - before.z) / 15;
+    expect(speed).toBeGreaterThan(0.1);
+    // A second draw at the same timestamp must not erase the measured motion.
+    render(2215);
+    await cinema.add(run('second'));
+    const same = render(2215);
+    expect(Math.hypot(same.x - start.x, same.y - start.y, same.z - start.z)).toBeLessThan(1e-7);
+    const after = render(2230);
+    const continued = Math.hypot(after.x - start.x, after.y - start.y, after.z - start.z) / 15;
+    expect(continued / speed).toBeGreaterThan(0.8);
+    expect(continued / speed).toBeLessThan(1.2);
+    cinema.close();
+  });
   test('first person keeps the game’s view with the added runs, and hides the watched run’s ghost', async () => {
     const time = {now: 0};
     const {cinema, renderer, counts} = rig({now: () => time.now});
