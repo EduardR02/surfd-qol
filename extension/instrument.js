@@ -5,8 +5,9 @@ import {nativeCollisionTreeHooks} from './collision-tree.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
+import {createReplayIndexPool, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v34:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v35:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -33,33 +34,35 @@ function collisionBoundsHook(source) {
   return source.slice(0, matches[0].index) + `${axes}=["x","y","z"],${overlap}=(${a},${b})=>${comparisons}` + source.slice(matches[0].index + match.length);
 }
 
-// Keep the native worker and its cancellation/batching. Send a compact copy
-// of collision data the loaded map has already prepared, not a second build.
-function preparedIndexHooks(source) {
-  if (source.includes('__surfdQolPostIndex')) return source;
+// Leave the native player's validation, watchdog, fallback and outputs intact.
+// Worker-shaped leases retain only one loaded map/world, never a finished index.
+function preparedIndexHooks(source, state) {
+  if (source.includes('__surfdQolIndexes')) return source;
   try {
     const index = unique(source, new RegExp(`startIndex\\((${identifier}),(${identifier}),(${identifier}),(${identifier})\\)\\{const (${identifier})=this\\.replay,(${identifier})=this\\.index,(${identifier})=this\\.revision,(${identifier})=\\(\\)=>\\{`, 'g'), 'index ownership');
     const end = source.indexOf('stopWorker(){', index.index);
     if (end < 0) return source;
     const body = source.slice(index.index, end);
-    const worker = unique(body, new RegExp(`const (${identifier})=new Worker\\(new URL\\("/assets/replay-index\\.worker-[^"]+\\.js",import\\.meta\\.url\\),\\{type:"module"\\}\\);this\\.worker=\\1`, 'g'), 'index worker')[1];
-    const post = unique(body, new RegExp(`${literal(worker)}\\.postMessage\\((\\{entry:${literal(index[2])},currentVersion:${literal(index[3])},replay:${literal(index[5])}\\})\\)`, 'g'), 'index request');
-    const call = `__surfdQolPostIndex(${worker},${post[1]},${index[1]},this.host.session(),()=>this.revision===${index[7]}&&this.worker===${worker}&&!${index[6]}.complete,${index[8]})`;
-    const at = index.index + post.index;
-    return source.slice(0, at) + call + source.slice(at + post[0].length) + `
-async function __surfdQolPostIndex(worker,message,map,session,isCurrent,onFailure){
-  try{
+    const creation = unique(body, new RegExp(`const (${identifier})=(new Worker\\(new URL\\("/assets/replay-index\\.worker-[^"]+\\.js",import\\.meta\\.url\\),\\{type:"module"\\}\\));this\\.worker=\\1`, 'g'), 'index worker');
+    const worker = creation[1];
+    const stop = unique(source, /stopWorker\(\)\{clearTimeout\(this\.workerTimeout\),this\.workerTimeout=void 0,this\.worker\?\.terminate\(\),this\.worker=null\}/g, 'index release');
+    const fallback = unique(body, /this\.stopWorker\(\),this\.fallback=/g, 'index fallback');
+    const map = unique(source, new RegExp(`(${identifier})&&\\1\\.dispose\\(\\),${literal(state)}=(${identifier})\\((${identifier})\\),`, 'g'), 'map ownership');
+    const attach = unique(source, new RegExp(`${literal(map[1])}\\.setQuality\\?\\.\\(`, 'g'), 'map renderer ownership');
+    const changes = [
+      {at: index.index + creation.index, length: creation[0].length,
+        text: `const ${worker}=__surfdQolIndexes().acquire(${index[1]},${index[5]},this.host.session(),()=>${creation[2]});this.worker=${worker},${worker}.onclose=()=>{if(this.worker===${worker})this.stopWorker()}`},
+      {at: index.index + fallback.index, length: fallback[0].length, text: 'this.stopWorker(!0),this.fallback='},
+      {at: stop.index, length: stop[0].length, text: 'stopWorker(__surfdQolFailed=!1){clearTimeout(this.workerTimeout),this.workerTimeout=void 0,this.worker?.terminate(__surfdQolFailed),this.worker=null}'},
+      {at: attach.index, length: 0, text: `__surfdQolIndexes().ownMap(${map[3]},${map[1]}),`},
+    ].sort((a, b) => b.at - a.at);
+    for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
+    return source + `
+function __surfdQolIndexes(){
+  return __surfdQolIndexes.pool??=(${createReplayIndexPool.toString()})(async(map,session,message,isCurrent)=>{
     const compatible=session?.map===map&&map.id===message.replay.mapId&&map.version===message.replay.mapVersion;
-    const packet=compatible?await (${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
-    if(!isCurrent())return;
-    if(!packet){worker.postMessage(message);return;}
-    const transfer=[];
-    for(const value of Object.values(packet))if(ArrayBuffer.isView(value)&&!transfer.includes(value.buffer))transfer.push(value.buffer);
-    worker.postMessage({...message,__surfdQolCollision:packet},transfer);
-  }catch{
-    if(!isCurrent())return;
-    try{worker.postMessage(message);}catch{onFailure();}
-  }
+    return compatible?await (${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
+  });
 }
 `;
   } catch { return source; }
@@ -76,18 +79,28 @@ function preparedIndexWorkerHooks(source) {
     const handler = unique(source, new RegExp(`async function (${identifier})\\((${identifier})\\)\\{try\\{const\\{entry:(${identifier}),currentVersion:(${identifier}),replay:(${identifier})\\}=\\2;`, 'g'), 'index worker request');
     const entry = literal(handler[3]), current = literal(handler[4]), replay = literal(handler[5]);
     const load = unique(source, new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'), 'index geometry load');
+    const receiver = unique(source, new RegExp(`(${identifier})\\.onmessage=(${identifier})=>\\{${literal(handler[1])}\\(\\2\\.data\\)\\};`, 'g'), 'index worker receiver');
+    const loop = unique(source, new RegExp(`const (${identifier})=new (${identifier})\\(${literal(load[1])},${replay}\\);for\\(;;\\)\\{const (${identifier})=performance\\.now\\(\\)\\+(${identifier}),(${identifier})=\\1\\.run\\(\\(\\)=>performance\\.now\\(\\)<\\3\\);if\\(${literal(receiver[1])}\\.postMessage\\(\\{ok:!0,batch:\\5\\},\\{transfer:\\[\\5\\.elapsed\\.buffer,\\5\\.phases\\.buffer\\]\\}\\),\\5\\.done\\)return\\}`, 'g'), 'index worker chunks');
+    const failure = unique(source, new RegExp(`${literal(receiver[1])}\\.postMessage\\(\\{ok:!1,error:(${identifier}) instanceof Error\\?\\1\\.message:String\\(\\1\\)\\}\\)`, 'g'), 'index worker failure');
     const strict = unique(source, /"use strict";/g, 'worker scope');
     const map = load[1];
-    const prepare = `let ${map}=null,__surfdQolPrepared=null;
-try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
-if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
-  ${map}=__surfdQolPrepared.map;__surfdQolWorlds.set(${map}.brushes,__surfdQolPrepared);
-}else{${load[0].slice(4)}}
+    const prepare = `let ${map}=__surfdQolMap;
+if(!${map}||${map}.id!==${handler[5]}.mapId||${map}.version!==${handler[5]}.mapVersion){
+  ${map}=null;let __surfdQolPrepared=null;
+  try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
+  if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
+    ${map}=__surfdQolPrepared.map;__surfdQolWorlds.set(${map}.brushes,__surfdQolPrepared);
+  }else{${load[0].slice(4)}}
+  if(!__surfdQolJob.current())return;
+  __surfdQolMap=${map};
+}
+if(!__surfdQolJob.current())return;
 `;
-    // Only the factory changes. Native constructors still initialize their
-    // fields and flag variants; the prepared geometry is flag-independent.
+    // Native world caching keeps flag variants separate; native Sessions and
+    // their movement/timer/replay state are still freshly constructed each run.
     const helper = `
 const __surfdQolWorlds=new WeakMap;
+let __surfdQolMap=null;
 function __surfdQolWorkerWorld(map,feature,corner){
   const prepared=__surfdQolWorlds.get(map.brushes);
   if(!prepared)return new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
@@ -97,10 +110,23 @@ function __surfdQolWorkerWorld(map,feature,corner){
   return world;
 }
 `;
+    const chunks = `const ${loop[1]}=new ${loop[2]}(${map},${handler[5]});
+__surfdQolJob.world(${map});
+for(;;){
+  if(!__surfdQolJob.current())return;
+  const ${loop[3]}=performance.now()+${loop[4]},${loop[5]}=${loop[1]}.run(()=>__surfdQolJob.current()&&performance.now()<${loop[3]});
+  __surfdQolJob.emit({ok:!0,batch:${loop[5]}},{transfer:[${loop[5]}.elapsed.buffer,${loop[5]}.phases.buffer]});
+  if(${loop[5]}.done)return;
+  await __surfdQolJob.pause();
+}`;
     const changes = [
       {at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]})`},
       {at: load.index, length: load[0].length, text: prepare},
       {at: strict.index + strict[0].length, length: 0, text: helper},
+      {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]});${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
+      {at: handler.index, length: handler[0].length, text: handler[0].replace(`(${handler[2]})`, `(${handler[2]},__surfdQolJob)`)},
+      {at: loop.index, length: loop[0].length, text: chunks},
+      {at: failure.index, length: failure[0].length, text: failure[0].replace(`${receiver[1]}.postMessage`, '__surfdQolJob.emit')},
     ].sort((a, b) => b.at - a.at);
     for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
     return source;
@@ -480,7 +506,7 @@ export function instrumentGame(source) {
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   source = collisionBoundsHook(source);
   source = nativeCollisionTreeHooks(source);
-  source = preparedIndexHooks(source);
+  source = preparedIndexHooks(source, state);
   source = nativeStageResetHooks(source);
   source = nativeMapLoadHooks(source);
   source = nativeProgressiveMapHooks(source);
