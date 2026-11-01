@@ -351,7 +351,7 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
       <p>Get into maps sooner, at full texture quality. Textures outside your starting view can finish loading while you surf.</p>
     </div>
     <figure class="loading-benchmark">
-      <figcaption><strong>Time until playable (seconds)</strong><span>Median of 3 cached-load runs per map and variant</span></figcaption>
+      <figcaption><strong>Time until playable (seconds)</strong><span>Median of 3 preloaded-asset entries per map and variant</span></figcaption>
       <div class="benchmark-legend">
         <span><i class="benchmark-native" aria-hidden="true"></i>Native game</span>
         <span><i class="benchmark-qol" aria-hidden="true"></i>Surfd QoL</span>
@@ -366,11 +366,11 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
         <dl>
           <div class="benchmark-row">
             <dt>Native</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:10.43"></span></span><span class="benchmark-value">10.43 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:10.58"></span></span><span class="benchmark-value">10.58 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
           <div class="benchmark-row">
             <dt>QoL</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:2.61"></span></span><span class="benchmark-value">2.61 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:2.82"></span></span><span class="benchmark-value">2.82 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
         </dl>
       </section>
@@ -379,15 +379,15 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
         <dl>
           <div class="benchmark-row">
             <dt>Native</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:3.04"></span></span><span class="benchmark-value">3.04 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:3.18"></span></span><span class="benchmark-value">3.18 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
           <div class="benchmark-row">
             <dt>QoL</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.52"></span></span><span class="benchmark-value">1.52 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.71"></span></span><span class="benchmark-value">1.71 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
         </dl>
       </section>
-      <p class="benchmark-note">Measured 31 Oct 2026 using the same browser and window size (<a href="https://github.com/EduardR02/surfd-qol/commit/e79ddcf">test build</a>). Includes extension setup; background textures may finish later. Results vary by device and map.</p>
+      <p class="benchmark-note">Measured 1 Nov 2026 in headless Chrome 156 on a Ryzen 9 5950X and RTX 5070 Ti at 1440×900, without CPU throttling (<a href="https://github.com/EduardR02/surfd-qol/commit/a88ac13">tested source</a>). From another map to rendered, input-ready local play; browser startup excluded and extension setup included. Compressed assets were preloaded and supplied from memory via DevTools while offline; interception overhead is included. Background textures may finish later. Results vary by device and map.</p>
     </figure>
   </section>
 
