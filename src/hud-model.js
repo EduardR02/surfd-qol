@@ -121,8 +121,9 @@ export function buildMeter(metrics, runRefs, settings) {
   const boardLoss = settings.showBoard !== false && board?.available ? finite(board.loss) : null;
   const rampShown = settings.showSurf !== false && surf?.available === true;
   const down = rampShown ? finite(surf.downLoss) : null, up = rampShown ? finite(surf.upLoss) : null, total = rampShown ? finite(surf.loss) : null;
+  const airMetric = settings.airMetric === 'missed' || settings.airMetric === 'braking' ? settings.airMetric : 'combined';
   const airValue = settings.showAir !== false && air?.available
-    ? finite(settings.airMetric === 'missed' ? air.missedGain : settings.airMetric === 'braking' ? air.brakingLoss : air.loss) : null;
+    ? finite(airMetric === 'missed' ? air.missedGain : airMetric === 'braking' ? air.brakingLoss : air.loss) : null;
   // A board newer than the last finished ramp belongs to the ramp you're on.
   const fresh = board?.available === true && Number.isFinite(board.tick) &&
     (!surf?.available || !Number.isFinite(surf.tick) || board.tick > surf.tick);
@@ -130,15 +131,16 @@ export function buildMeter(metrics, runRefs, settings) {
     : startTone(boardLoss, settings.boardLossAmazing, settings.boardLossGood);
   const rampTone = (field, value) => relative(settings.surfColorReference) ? referenceTone(value, reference(field), margin)
     : startTone(value, settings.airLossAmazing, settings.airLossGood);
-  const item = (value, tone, stale = false) => value === null ? null : {value, text: formatDelta(-value, 1), tone, stale};
-  const boardItem = item(boardLoss, boardTone), surfItem = item(total, rampTone('surf', total), fresh);
+  const item = (value, tone, label, stale = false) => value === null ? null : {value, text: formatDelta(-value, 1), tone, label, stale};
+  const boardItem = item(boardLoss, boardTone, 'touch'), surfItem = item(total, rampTone('surf', total), 'surf', fresh);
   return {
     hidden: boardItem === null && surfItem === null && airValue === null,
     bar: settings.rampBar !== false,
     fresh, split: settings.rampResult !== 'total',
-    air: item(airValue, startTone(airValue, settings.airLossAmazing, settings.airLossGood)),
+    air: item(airValue, startTone(airValue, settings.airLossAmazing, settings.airLossGood),
+      airMetric === 'missed' ? 'missed' : airMetric === 'braking' ? 'brake' : 'air'),
     board: boardItem,
-    down: item(down, rampTone('down', down), fresh), up: item(up, rampTone('up', up), fresh), surf: surfItem,
+    down: item(down, rampTone('down', down), 'down', fresh), up: item(up, rampTone('up', up), 'up', fresh), surf: surfItem,
     // The reference ramp's loss spans the speed's width; null grades on fixed cutoffs.
     reference: relative(settings.surfColorReference) ? reference('surf') : null,
     // What the ramp you're on has cost so far: its board, then the whole ramp.
@@ -246,7 +248,7 @@ export function createHudModel(clock = () => performance.now()) {
       // Last completed tick touched a ramp ('surf') or not ('air', including
       // ground); null when unknown. Used to keep the speed tint off ramps.
       motion: spectator || metrics?.active === false ? null : metrics?.strafe?.mode ?? null,
-      zen, layout,
+      zen, layout, compactLabels: settings.compactLabels !== false,
       // The timer row: sync, time and run label. While surfing, the start and
       // checkpoint deltas take its place, and sync shows only with the start.
       // Compact shows no timer unless asked; a run label (PRACTICE, INVALID) still shows on its own.

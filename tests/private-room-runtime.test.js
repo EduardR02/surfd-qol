@@ -129,7 +129,7 @@ function fixture({storage = new Map(), displayName = 'Surfer', getState = () => 
     signOut() { displayName = ''; for (const listener of [...accountListeners]) listener(); },
     rows: () => rows, open: value => { open = value; }, menu: value => { menu = value; }, response: value => { response = value; },
     background(hidden) { events.document.hidden = hidden; events.document.dispatchEvent(new Event('visibilitychange')); },
-    async host(options) { const promise = runtime.host(options); signals.at(-1).ready(); return promise; },
+    async host(options) { const promise = runtime.host({visibility: 'private', ...options}); signals.at(-1).ready(); return promise; },
     async join(id = ROOM) {
       const promise = runtime.join(id), signal = signals.at(-1);
       signal.ready(); signal.message('room-info', row(id));
@@ -586,7 +586,7 @@ describe('private room runtime', () => {
   test('hosting registers with a host key and joins the game only once the meeting point is ready', async () => {
     const f = fixture();
     try {
-      const pending = f.runtime.host();
+      const pending = f.runtime.host({visibility: 'private'});
       expect(f.joined).toEqual([]);
       expect(f.signals[0].options).toMatchObject({role: 'host', key: expect.stringMatching(/^[0-9a-f]{32}$/)});
       f.signals[0].ready();
@@ -595,6 +595,26 @@ describe('private room runtime', () => {
       expect(f.runtime.hosting()).toEqual({id, visibility: 'private', name: "Surfer's room", mapId: 'map', maxPlayers: 16, players: 0, uploadMbps: null});
       expect(f.signals[0].sent).toEqual([{to: null, type: 'listing', data: null}]);
     } finally { f.runtime.destroy(); }
+  });
+
+  test('fresh hosts are discoverable while a remembered private choice stays unlisted', async () => {
+    const storage = new Map(), first = fixture({storage});
+    let next;
+    try {
+      const opening = first.runtime.host();
+      first.signals[0].ready();
+      await opening;
+      expect(first.signals[0].sent.find(message => message.type === 'listing')?.data)
+        .toMatchObject({name: "Surfer's room", mapId: 'map', capacity: 16});
+      first.runtime.setVisibility('private');
+
+      next = fixture({storage});
+      const reopening = next.runtime.host();
+      next.signals[0].ready();
+      await reopening;
+      expect(next.signals[0].sent.filter(message => message.type === 'listing'))
+        .toEqual([{to: null, type: 'listing', data: null}]);
+    } finally { first.runtime.destroy(); next?.runtime.destroy(); }
   });
 
   test('room-info replies address only the requesting guest', async () => {

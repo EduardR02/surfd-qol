@@ -18,7 +18,7 @@ Pick a state and backdrop from the bottom-left menus, or use the URL:
 | `palette=custom` | A non-default palette |
 | `panel=display\|feedback\|compare\|controls\|history` | Opens the settings panel on that section |
 | `play=playing\|paused\|ended` | With `state=watching`: the playback state (default `playing`, and the playhead moves; `ended` holds on the last frame). Left alone for about 3 s, native transport and extras fade together; custom mode retains its timeline |
-| `set.customReplayUi=true` | Opt into the existing custom bar; otherwise native transport plus graded touch marks, saved locs and tools is shown |
+| `set.customReplayUi=false` | Use native transport plus graded touch marks, saved locs and tools instead of the default custom bar |
 | `cinema=off\|solo\|group\|focus\|many\|error` | With `state=watching`: cinematic controls disabled, one run, several runs, one focused run, twelve extras, or an activation error |
 | `view=pov\|steady\|cinematic` | With `cinema`: the view shown (default `cinematic`; `pov` keeps added runs in first person) |
 | `pick`, `views`, `adjusted` | With `cinema`: open Add run or the view menu, or show Reset view after a camera adjustment |
@@ -51,11 +51,11 @@ PUPPETEER=<puppeteer ESM entry or package> CHROME=<chrome.exe> bun dev/shoot.js 
 
 Writes the HUD states, each settings section, Runs panel (overview and Ramps), native transport/extras and custom replay bar at desktop and narrow sizes into `outDir` (default: `<tmp>/surfd-qol-shots`). Includes native ramp hover, idle, indexing, Return to server and custom keyboard-sheet scenarios. Puppeteer is not a project dependency.
 
-`docs/hud-full.jpg` is `?shot&state=checkpoint&bg=fog&set.surfHud=full` at a 1920×1080 viewport with device scale 0.75 (1440×810), saved as JPEG at quality 88.
+`docs/hud.jpg` and `docs/hud-full.jpg` use `?shot&state=checkpoint&bg=warm&scale=1.6&y=72`, with `&set.surfHud=full` for the full view. Both use the default combined Surf feedback; compact value labels are enabled. `docs/hud-energy.jpg` uses the same framing with `state=energy-loss`, `set.surfHud=full` and `set.speedEnergyColor=true`; its tint comes from the real energy model. Capture at a 1440×810 viewport with device scale 1 as JPEGs at quality 88. Values are examples, not measurements from the backdrop's run.
 
-`docs/replay-native.jpg` is `?shot&state=watching&bg=warm&title=other&play=paused&y=60` and `docs/replay-custom.jpg` the same with `&set.customReplayUi=true`, each at a 1100×1000 viewport with device scale 2, clipped to the bottom 120 px (x 0, y 880, 1100×120, so 2200×240) and saved as JPEG at quality 88. `y=60` lifts the HUD out of the strip, and the tall viewport crops the backdrop's key display out of it.
+`docs/replay-custom.jpg` uses `?shot&state=watching&bg=warm&title=other&play=paused&y=60`, and `docs/replay-native.jpg` adds `&set.customReplayUi=false`, each at a 1100×1000 viewport with device scale 2, clipped to the bottom 120 px (x 0, y 880, 1100×120, so 2200×240) and saved as JPEG at quality 88. `y=60` lifts the HUD out of the strip, and the tall viewport crops the backdrop's key display out of it.
 
-`docs/cinematic.jpg` comes from the real game, not the harness: the Fiellu record with the KSF WR and leaderboard #2–#4 added, in Cinematic, a 1920×1080 frame scaled to 1440×810 and saved as JPEG at quality 88.
+`docs/cinematic.jpg` and `docs/cinematic-custom.jpg` come from the real game, not the harness: the Fiellu leaderboard record paused at command 3300, with the KSF WR and leaderboard #2–#4 added in Cinematic. The 1440×810 pair shares its camera, playback index and crop; only `customReplayUi` changes.
 
 ## Cinematic performance checks
 

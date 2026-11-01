@@ -79,6 +79,7 @@ export const hudStyles = `
 
 /* Surfing: the checkpoint deltas or the start take the timer's place. */
 .surf .events{bottom:39px}.flip.surf .events{top:96px}
+.flip.surf:not(.no-compact-labels):has(.meter:not([hidden]):not(.bare)) .events{top:112px}
 .flip.full .events{top:124px}
 .surf .split-head{display:none}
 
@@ -91,12 +92,18 @@ export const hudStyles = `
 .m-seg.good{background:var(--good)}.m-seg.warn{background:var(--warn)}.m-seg.loss{background:var(--bad)}
 .m-track{position:absolute;top:0;height:7px;border-radius:2px;background:rgba(246,240,236,.22);box-shadow:0 0 0 1.5px var(--edge)}
 .m-tick{position:absolute;top:-4px;width:2px;height:15px;background:var(--paper);box-shadow:0 0 0 1.25px var(--edge)}
-.m-value{position:absolute;top:13px;transform:translateX(-50%);font-size:26px;line-height:1;font-weight:700}
+.m-value{position:absolute;top:13px;transform:translateX(-50%);text-align:center;font-size:26px;line-height:1;font-weight:700}
 .m-value.stale{color:var(--muted);opacity:.6}
 .bare .m-value{top:2px}.bare .m-row{top:8px}
+.surf.no-compact-labels .m-value .lab,.surf.no-compact-labels .feedback .lab{display:none}
 .m-row{position:absolute;left:0;top:22px;transform:translateX(-50%);display:flex;justify-content:center}
 .m-row .slot{width:88px}
 .m-row .val{font-size:26px}
 /* Every value in the full layout is named, so it reads without knowing the layout. */
 .m-row .lab{margin-top:6px;font-size:13px;opacity:.95;letter-spacing:.06em}
+/* Leave room for the complete labelled rows in the small settings preview. */
+.preview .hud.surf:not(.no-compact-labels):has(.meter:not([hidden])){top:calc(var(--y,56%) - 16px)}
+.preview .hud.full{top:calc(var(--y,56%) - 20px)}
+@media (max-height:720px){.preview .hud.full{top:calc(var(--y,56%) - 22px)}}
+@media (max-height:640px){.preview .hud.full{--scale:.46;top:calc(var(--y,56%) - 18px)}}
 `;

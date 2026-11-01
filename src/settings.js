@@ -4,13 +4,13 @@ export const defaults = {
   // Zen: only the speed, plus the start speed and height after leaving the start.
   zen: false,
   // While surfing: the compact HUD, or the full one replays and spectating use.
-  surfHud: 'compact', compactTimer: false,
+  surfHud: 'compact', compactTimer: false, compactLabels: true,
   // The bar under the speed; off keeps just the values under it.
   rampBar: true,
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,
-  rampResult: 'split', speedEnergyColor: false, speedEnergyRamps: false, speedEnergyLive: false,
+  rampResult: 'total', speedEnergyColor: false, speedEnergyRamps: false, speedEnergyLive: false,
   checkpointReference: 'both', wrSource: 'ksf', continuousFeedback: false, airMetric: 'combined',
   boardColorReference: 'fixed', startColorReference: 'fixed', surfColorReference: 'wr',
   startHeightAmazing: 7.5, startHeightGood: 15,
@@ -22,9 +22,8 @@ export const defaults = {
   nullAD: false, nullWSpace: false,
   // Strafe preview: the speed it starts from and whether it strafes on the ground (prestrafe) or in the air.
   strafePreviewUnits: 300, strafePreviewMode: 'ground',
-  // Replays use Surfd's own player and bar, with the extension's additions on
-  // it; this swaps in the extension's bar instead, driving the same player.
-  customReplayUi: false,
+  // Both replay bars drive Surfd's own player.
+  customReplayUi: true,
   // What the Runs panel's Ramps view shows for every ramp.
   rampMetric: 'surf',
   // Run history: the newest runs per map (each with its replay) plus every

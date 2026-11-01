@@ -33,9 +33,9 @@ You can close the bar with × or **Cancel**. Everything already loaded keeps wor
 
 Speed sits big on the centre line of the screen, with a bar for your last ramp under it. Size, height, opacity and all colors are adjustable, and the HUD uses its own bundled font (Instrument Sans), so nothing is fetched from the web. It hides in menus, loading screens and dialogs, and stays up for replays and spectating.
 
-**Two layouts.** While you surf, the HUD stays compact: the speed and the ramp bar with two values under it, and no timer (turn on **Timer** under **While surfing** if you want it). For a few seconds after the start and each checkpoint, your start stats or checkpoint deltas show above the speed. Run labels like PRACTICE or INVALID still show. Replays and spectating show the full HUD: the timer and strafe sync, each checkpoint's split, and every ramp value written out. Set **While surfing** to **Full** under **Display** to keep everything on while you run. **Zen** keeps just the speed and the start stats.
+**Two layouts.** While you surf, the HUD stays compact: the speed and the ramp bar with two labelled values under it, and no timer (turn on **Timer** under **While surfing** if you want it). Turn off **Value labels** under **Display** for numbers alone. For a few seconds after the start and each checkpoint, your start stats or checkpoint deltas show above the speed. Run labels like PRACTICE or INVALID still show. Replays and spectating show the full HUD: the timer and strafe sync, each checkpoint's split, and every ramp value written out. Set **While surfing** to **Full** under **Display** to keep everything on while you run. **Zen** keeps just the speed and the start stats.
 
-**The ramp bar** keeps one width, centred under the speed. Your last flight (AIR) and the ramp you landed on share it in the order they happened: the flight, then the touch, the rest of the way down and the way up, each part in the color of its grade. The tick marks where the ramp would have ended had it cost what the reference ramp did, so whatever lies right of it is what you lost beyond the reference. Beat the reference and your parts end early, with the tick at the bar's end. With fixed grading there's no reference, so there's no tick. While surfing, the two values under the bar are the flight's loss and what the ramp has cost you so far: its touch right after you land, then the whole ramp once you leave it. Turn off **Ramp bar** under **Display** to keep just the values.
+**The ramp bar** keeps one width, centred under the speed. Your last flight (AIR) and the ramp you landed on share it in the order they happened: the flight, then the touch and the rest of the ramp, each part in the color of its grade. Choosing **Down + Up** splits the ramp into downhill and uphill portions. The tick marks where the ramp would have ended had it cost what the reference ramp did, so whatever lies right of it is what you lost beyond the reference. Beat the reference and your parts end early, with the tick at the bar's end. With fixed grading there's no reference, so there's no tick. While surfing, the two values under the bar are the flight's loss and what the ramp has cost you so far: its touch right after you land, then the whole ramp once you leave it. Turn off **Ramp bar** under **Display** to keep just the values.
 
 The values, all in u/s. Each one stays until the next ramp or flight replaces it, so you can glance at it in the air instead of mid-ramp.
 
@@ -47,7 +47,7 @@ The values, all in u/s. Each one stays until the next ramp or flight replaces it
 | **AIR** | Your last flight between ramps: speed lost to air braking plus gain missed by imperfect strafes. You can show either part on its own. |
 | **SURF** | The whole ramp: DOWN + UP, touch included. It's the value under the bar while you surf. |
 
-Down and Up are measured against perfect gravity-only conversion. If you land at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, touch included.** Prefer one number per ramp in the full HUD? Set **Ramp result** to **Net** to show SURF instead of DOWN and UP.
+Down and Up are measured against perfect gravity-only conversion. If you land at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, touch included.** **Net Surf** is the default; choose **Down + Up** under **QoL → Feedback → Show as** for the split.
 
 Don't chase zero. Ramp surfing always bleeds some speed; on Cannonball's second ramp the KSF record still loses 34 u/s going down and 16 coming up. That's why the useful comparison is against a reference run, which is the default.
 
@@ -74,7 +74,7 @@ For 1.8 seconds after you leave the start zone you see your exit **speed** (350 
 
 At each checkpoint you get time and speed deltas against your PB, the WR, or both, for a few seconds; the full HUD also shows the split's own time and speed above them. The reference comes from the full replay, never per-checkpoint bests.
 
-![The full HUD on Boreas just after a checkpoint, as replays show it: the split with its PB and KSF deltas, the timer and sync, the speed, and the ramp bar with air, touch, down, up and surf written out under it](docs/hud-full.jpg)
+![The full HUD on Utopia just after a checkpoint, as replays show it: the split with its PB and KSF deltas, the timer and sync, the speed, and the ramp bar with air, touch and surf written out under it](docs/hud-full.jpg)
 
 *The full HUD, as replays and spectating show it, just after a checkpoint.*
 
@@ -110,13 +110,13 @@ The last 10 count measurements of each ramp, not your last 10 runs. Averages sta
 
 ▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd's own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
 
-By default, the extension adds Saveloc, Runs and saved-location marks to the game's replay bar. Ramp touches are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game's own.
+The custom replay bar is on by default, with Saveloc, Runs and saved-location marks. Ramp touches are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game's own.
 
 **Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
 
 On recognised game builds, **Restart current stage** also works after visiting a practice station or loading a practice saveloc, even without the preceding checkpoint splits. It uses the native stage spawn and keeps the session in practice; replay simulation and ranked-run restart rules stay unchanged.
 
-Prefer the extension's timeline? Enable **QoL → History → Custom replay bar**. It has the same touch marks and savelocs, drives the same native player, and you can switch while watching.
+Prefer Surfd's bar? Turn off **QoL → History → Custom replay bar**. Both bars drive the same native player and show the same touch marks and savelocs. You can switch while watching.
 
 After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight: the game restores the movement there, but the extension hasn't analysed what came before, so it leaves that measurement out.
 
@@ -162,7 +162,7 @@ Replays get full feedback, plus a **Hull: crouched / standing** line in the game
 
 Surf with friends in a room of your own: no time limit, no map votes, and the host picks the map. Everyone in the room needs Surfd QoL.
 
-- **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Private** (room code or invite link only) or **Public** (listed under **Community** for everyone with the extension). Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open; the room view shows the upload your player limit needs.
+- **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Public** (default; listed under **Community** for everyone with the extension) or **Private** (room code or invite link only). Your visibility choice is remembered. Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open; the room view shows the upload your player limit needs.
 - **Join:** pick a room in the **Community** tab, type its code next to the filters, or open an invite link.
 - **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs count for the leaderboard as they do in solo play: Surfd checks each replay itself.
 - **Shared savelocs:** a location anyone saves shows up in everyone's saveloc list (Settings → Gameplay), labelled with its owner. Everyone keeps up to 20 per map, as in the game.

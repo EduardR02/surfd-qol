@@ -1,4 +1,4 @@
-// Opt-in custom replay bar. It is drawn on the scene the way
+// Custom replay bar. It is drawn on the scene the way
 // the HUD is, over a soft pool of shade instead of a box: one line with Play,
 // the timeline and a few tools. The timeline is the run itself: the start,
 // each checkpoint, every ramp board graded in the HUD's colours, and your

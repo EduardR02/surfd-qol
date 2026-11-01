@@ -45,7 +45,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let queuedRun, stopVerdicts = null;
   const stored = key => { try { return (storage ?? globalThis.localStorage)?.getItem(key); } catch { return null; } };
   const store = (key, value) => { try { (storage ?? globalThis.localStorage)?.setItem(key, value); } catch { /* Storage may be disabled. */ } };
-  let visibility = stored(VISIBILITY_KEY) === 'public' ? 'public' : 'private';
+  let visibility = stored(VISIBILITY_KEY) === 'private' ? 'private' : 'public';
   let name = stored(NAME_KEY);
   const savedMaxPlayers = Number(stored(MAX_PLAYERS_KEY));
   let maxPlayers = isMaxPlayers(savedMaxPlayers) ? savedMaxPlayers : DEFAULT_MAX_PLAYERS;

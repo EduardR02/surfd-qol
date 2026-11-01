@@ -7,8 +7,6 @@ const text = html => html.replace(/<[^>]+>/g, '');
 
 describe('settings preview', () => {
   test('mirrors the feedback options', () => {
-    expect(visible(previewModel(defaults))).toEqual(['board', 'result', 'up']);
-    expect(previewModel(defaults).feedback.result.label).toBe('DOWN');
     const net = previewModel({ ...defaults, rampResult: 'total' });
     expect(visible(net)).toEqual(['board', 'result']);
     expect(net.feedback.result.label).toBe('SURF');

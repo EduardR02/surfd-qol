@@ -56,7 +56,8 @@ export const hudMarkup = `
   </div>
   <div class="meter" data-part="meter" hidden>
     <i class="m-track" data-part="segTrack"></i><i class="m-seg" data-part="segAir"></i><i class="m-seg" data-part="segBoard"></i><i class="m-seg" data-part="segDown"></i><i class="m-seg" data-part="segUp"></i><i class="m-tick" data-part="segTick"></i>
-    ${num('meterAir', 'm-value')}${num('meterRamp', 'm-value')}
+    <div class="m-value" data-part="meterAir">${num('meterAir', 'val')}${label('meterAirLabel', 'air')}</div>
+    <div class="m-value" data-part="meterRamp">${num('meterRamp', 'val')}${label('meterRampLabel', 'surf')}</div>
     <div class="m-row" data-part="rampRow">${[['air', 'air'], ['board', 'touch'], ['down', 'down'], ['up', 'up'], ['surf', 'surf']].map(([name, text]) =>
       `<div class="slot" data-part="${name}Slot">${num(`${name}Value`, 'val')}<span class="lab">${text}</span></div>`).join('')}</div>
   </div>`;
@@ -170,11 +171,12 @@ export function createHudView(element) {
     if (bar && geometry.tick !== null) place(parts.segTick, `left:${geometry.tick.toFixed(1)}px`);
     // Surfing: two values under the bar. Full: every value in a row.
     const under = (key, center, item) => {
-      hide(nums[key], full || !item || center === null);
+      hide(parts[key], full || !item || center === null);
       if (full || !item || center === null) return;
       number(key, item.text);
-      cls(nums[key], `m-value ${tone(item.tone)}${item.stale ? ' stale' : ''}`);
-      place(nums[key], `left:${center.toFixed(1)}px`);
+      text(`${key}Label`, item.label);
+      cls(parts[key], `m-value ${tone(item.tone)}${item.stale ? ' stale' : ''}`);
+      place(parts[key], `left:${center.toFixed(1)}px`);
     };
     under('meterAir', geometry.airCenter, model.air);
     under('meterRamp', geometry.rampCenter, model.ramp);
@@ -207,6 +209,7 @@ export function createHudView(element) {
       element.classList.toggle('zen', model.zen === true);
       element.classList.toggle('full', layout === 'full');
       element.classList.toggle('surf', layout === 'surf');
+      element.classList.toggle('no-compact-labels', layout === 'surf' && model.compactLabels === false);
       hide(parts.clock, model.clock?.hidden === true);
       hide(nums.time, model.time?.hidden === true);
       text('sync', model.sync.hidden ? '' : model.sync.text);

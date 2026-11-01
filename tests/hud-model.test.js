@@ -10,7 +10,7 @@ const settings = patch => ({ ...defaults, surfColorReference: 'fixed', ...patch 
 
 describe('HUD feedback slots', () => {
   test('after a ramp: Down in the shared slot, Board and Up of the same ramp', () => {
-    const feedback = buildFeedback(metrics, null, settings());
+    const feedback = buildFeedback(metrics, null, settings({ rampResult: 'split' }));
     expect(feedback.result).toMatchObject({ hidden: false, label: 'DOWN', text: '−18.0', value: 18 });
     expect(feedback.board).toMatchObject({ hidden: false, label: 'TOUCH', text: '−3.0' });
     expect(feedback.up).toMatchObject({ hidden: false, label: 'UP', text: '−12.0', stale: false });
@@ -18,7 +18,7 @@ describe('HUD feedback slots', () => {
   });
 
   test('a newer flight takes the shared slot and marks Up stale', () => {
-    const feedback = buildFeedback({ ...metrics, air: { ...air, tick: 50 } }, null, settings());
+    const feedback = buildFeedback({ ...metrics, air: { ...air, tick: 50 } }, null, settings({ rampResult: 'split' }));
     expect(feedback.result).toMatchObject({ label: 'AIR', text: '−9.0' });
     expect(feedback.up.stale).toBe(true);
     expect(buildFeedback({ ...metrics, air: { ...air, tick: 50 } }, null, settings({ airMetric: 'missed' })).result)
@@ -34,22 +34,22 @@ describe('HUD feedback slots', () => {
   test('each value hides independently and never borrows a hidden metric', () => {
     const boardOnly = buildFeedback(metrics, null, settings({ showAir: false, showSurf: false }));
     expect([boardOnly.result.hidden, boardOnly.board.hidden, boardOnly.up.hidden]).toEqual([true, false, true]);
-    const rampOnly = buildFeedback({ ...metrics, air: { ...air, tick: 99 } }, null, settings({ showAir: false, showBoard: false }));
+    const rampOnly = buildFeedback({ ...metrics, air: { ...air, tick: 99 } }, null, settings({ showAir: false, showBoard: false, rampResult: 'split' }));
     expect(rampOnly.result.label).toBe('DOWN');
     expect(rampOnly.up.stale).toBe(false);
     const none = buildFeedback(metrics, null, settings({ showAir: false, showSurf: false, showBoard: false }));
     expect(none.hidden).toBe(true);
-    const unavailable = buildFeedback({ ...metrics, surf: { ...surf, available: false, downLoss: null, upLoss: null } }, null, settings());
+    const unavailable = buildFeedback({ ...metrics, surf: { ...surf, available: false, downLoss: null, upLoss: null } }, null, settings({ rampResult: 'split' }));
     expect([unavailable.result.text, unavailable.up.text, unavailable.result.tone]).toEqual(['—', '—', 'muted']);
   });
 
   test('Down and Up grade against their own matched PB/WR phase; fixed cutoffs otherwise', () => {
     const runRefs = { down: { status: 'ready', loss: 18.05 }, up: { status: 'ready', loss: 9 }, board: { status: 'loading' } };
-    const feedback = buildFeedback(metrics, runRefs, settings({ surfColorReference: 'wr', boardColorReference: 'pb' }));
+    const feedback = buildFeedback(metrics, runRefs, settings({ surfColorReference: 'wr', boardColorReference: 'pb', rampResult: 'split' }));
     expect(feedback.result.tone).toBe('good');
     expect(feedback.up.tone).toBe('loss');
     expect(feedback.board.tone).toBe('muted');
-    const fixed = buildFeedback(metrics, null, settings());
+    const fixed = buildFeedback(metrics, null, settings({ rampResult: 'split' }));
     expect([fixed.result.tone, fixed.up.tone, fixed.board.tone]).toEqual(['warn', 'warn', 'good']);
   });
 
@@ -125,7 +125,7 @@ describe('ramp meter and layouts', () => {
   const meterSettings = patch => settings({ boardColorReference: 'wr', surfColorReference: 'wr', ...patch });
 
   test('the last flight, then the finished ramp: board included in Down and Surf', () => {
-    const meter = buildMeter(ramp, runRefs, meterSettings());
+    const meter = buildMeter(ramp, runRefs, meterSettings({ rampResult: 'split' }));
     expect(meter).toMatchObject({ hidden: false, fresh: false, split: true, reference: 46.6,
       air: { text: '−9.0' }, board: { text: '−3.0', tone: 'good' }, down: { text: '−18.0', stale: false }, up: { text: '−12.0' },
       surf: { text: '−30.0', tone: 'good' }, ramp: { text: '−30.0' } });
@@ -134,6 +134,18 @@ describe('ramp meter and layouts', () => {
   test('right after boarding, the ramp so far is its board and the last ramp is a ghost', () => {
     const meter = buildMeter({ ...ramp, board: { ...board, tick: 50 } }, runRefs, meterSettings());
     expect(meter).toMatchObject({ fresh: true, reference: 46.6, ramp: { text: '−3.0' }, surf: { stale: true }, down: { stale: true } });
+  });
+
+  test('compact meter labels follow the selected flight and the actual ramp value', () => {
+    const completed = buildMeter(ramp, runRefs, meterSettings({ airMetric: 'combined' }));
+    expect(completed.air).toMatchObject({ label: 'air', text: '−9.0' });
+    expect(completed.ramp).toMatchObject({ label: 'surf', text: '−30.0' });
+    expect(buildMeter(ramp, runRefs, meterSettings({ airMetric: 'missed' })).air).toMatchObject({ label: 'missed', text: '−5.0' });
+    expect(buildMeter(ramp, runRefs, meterSettings({ airMetric: 'braking' })).air).toMatchObject({ label: 'brake', text: '−4.0' });
+    const touching = { ...ramp, board: { ...board, tick: 50 } };
+    expect(buildMeter(touching, runRefs, meterSettings()).ramp).toMatchObject({ label: 'touch', text: '−3.0' });
+    expect(buildMeter(ramp, runRefs, meterSettings({ showSurf: false })).ramp).toMatchObject({ label: 'touch', text: '−3.0' });
+    expect(buildMeter(touching, runRefs, meterSettings({ showBoard: false })).ramp).toBeNull();
   });
 
   test('hidden values drop out, and everything hidden hides the meter', () => {

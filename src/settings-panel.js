@@ -65,6 +65,7 @@ export const panelMarkup = `
         ${toggle('zen', 'Zen mode', 'Only the speed, plus your start speed and height.')}
         ${choice('surfHud', 'While surfing', [['compact', 'Compact'], ['full', 'Full']], 'Compact keeps the speed, the air and ramp loss under it, and checkpoint deltas. Replays and spectating always show everything.')}
         ${toggle('compactTimer', 'Timer', 'Show the timer above the speed in the compact HUD.', ' sub')}
+        ${toggle('compactLabels', 'Value labels', 'Name the values under the speed in the compact HUD.', ' sub')}
         ${toggle('rampBar', 'Ramp bar', 'The bar under the speed: your last flight and ramp, in the order they happened. Off keeps just the values.')}
       </div>
       <h3>Layout</h3>
@@ -174,7 +175,7 @@ export const panelMarkup = `
       <p id="history-rule" class="hist-rule" role="status"></p>
       <h3>Playback</h3>
       <div class="group">
-        ${toggle('customReplayUi', 'Custom replay bar', 'Replays use Surfd’s own bar, with ramp touches, savelocs and Runs added to it. This swaps in Surfd QoL’s bar instead.')}
+        ${toggle('customReplayUi', 'Custom replay bar', 'Surfd QoL’s timeline with ramp touches, savelocs and Runs. Turn off to use Surfd’s own bar.')}
       </div>
       <h3>Storage</h3>
       <div class="group hist-store">
@@ -217,7 +218,7 @@ export function previewModel(settings) {
   const layout = zen ? 'zen' : settings.surfHud === 'full' ? 'full' : 'surf';
   const timer = layout !== 'surf' || settings.compactTimer === true;
   return {
-    zen, layout, clock: {hidden: zen || !timer}, time: {hidden: !timer},
+    zen, layout, compactLabels: settings.compactLabels !== false, clock: {hidden: zen || !timer}, time: {hidden: !timer},
     sync: {hidden: zen || layout === 'surf' || settings.showSync === false, text: '96.4%', tone: 'good'},
     runState: {text: '', title: ''},
     feedback: {hidden: zen || !live || (result.hidden && board.hidden && up.hidden), result, board, up},
@@ -309,6 +310,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     if (history !== historyShown) { historyShown = history; node('history-preview').innerHTML = history; }
     setDisabled('zen', settings.hud === false);
     setDisabled('compactTimer', settings.hud === false || settings.zen === true || settings.surfHud === 'full');
+    setDisabled('compactLabels', settings.hud === false || settings.zen === true || settings.surfHud === 'full');
     setDisabled('rampBar', settings.hud === false || settings.zen === true || settings.continuousFeedback === true);
     zenButton.setAttribute('aria-pressed', String(settings.zen === true));
   }
