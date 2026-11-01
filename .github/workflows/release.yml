@@ -1,5 +1,6 @@
 # Pushing a version tag (vX.Y.Z, matching extension/manifest.json) builds the
-# extension, runs the tests and publishes surfd-qol.zip as a GitHub release.
+# extension, runs the tests and publishes surfd-qol.zip and surfd-qol-firefox.xpi
+# as a GitHub release.
 name: Release
 
 on:
@@ -20,8 +21,10 @@ jobs:
       - run: bun test
       - run: bun run build
       - name: Package
-        run: cd dist && zip -r -X ../surfd-qol.zip .
+        run: |
+          (cd dist && zip -r -X ../surfd-qol.zip .)
+          (cd dist-firefox && zip -r -X ../surfd-qol-firefox.xpi .)
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" surfd-qol.zip --title "Surfd QoL $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" surfd-qol.zip surfd-qol-firefox.xpi --title "Surfd QoL $GITHUB_REF_NAME" --generate-notes

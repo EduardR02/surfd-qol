@@ -12,7 +12,7 @@ Everything on the HUD can be configured or turned off. The code is plain JavaScr
 
 ## Install
 
-You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (Firefox isn't supported). The extension isn't on the Chrome Web Store, so you load it yourself:
+You need Chrome 118 or newer, Edge, Brave or Opera on desktop, or Firefox 128 or newer ([see below](#firefox)). The extension isn't on the Chrome Web Store, so you load it yourself:
 
 1. Download [surfd-qol.zip](https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip) and unzip it somewhere it can stay. Your browser loads the extension from that folder every time.
 2. Open your browser's extensions page (`chrome://extensions`, `edge://extensions`, `brave://extensions` or `opera://extensions`) and switch on **Developer mode**.
@@ -21,7 +21,16 @@ You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (
 
 **Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension on your browser's extensions page and reload Surfd. Your settings stay.
 
-### About the "started debugging this browser" bar
+### Firefox
+
+Firefox has its own build, [surfd-qol-firefox.xpi](https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol-firefox.xpi). It isn't signed by Mozilla, and release Firefox only keeps signed add-ons, so:
+
+- **Any Firefox, until it closes:** open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on…** and pick the `.xpi`. Firefox removes it when it quits, so repeat this each session.
+- **To keep it installed:** use Firefox Developer Edition, Nightly or ESR. Set `xpinstall.signatures.required` to `false` in `about:config`, then in `about:addons` click the gear, **Install Add-on From File…**, and pick the `.xpi`.
+
+Firefox patches the game script as it downloads, so there's no debugger bar and no reload. To update, install the new `.xpi` the same way. If the HUD doesn't appear, check that the extension may access surfd.net under **Permissions** on its `about:addons` page.
+
+### About the "started debugging this browser" bar (Chromium)
 
 Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and touches `assets/game-*.js` and the game's checkpoint-speed, ghost and replay-index worker scripts.
 
@@ -192,20 +201,20 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 - **No custom HUD:** check the badge. **!** means setup failed; click the toolbar button to reload. If Surfd shipped an update the extension doesn't recognise, it stays out of the way and the game's own HUD remains.
 - **Everything grey:** the reference is still loading, you have no PB on this map, or your route visits ramps in a different order than the reference.
 - **A value shows —:** nothing measured yet this run, the contact was ambiguous (e.g. ramp and wall at once), or the value was hidden for part of that ramp or flight. Flights with under 50 ms of strafing don't replace the previous AIR value at all.
-- **The debugger bar keeps coming back:** expected after every reload; see above.
+- **The debugger bar keeps coming back:** expected after every reload in Chromium browsers; see above.
 
 ## Development
 
 You only need [Bun](https://bun.sh) to work on the source; no other dependencies.
 
 ```sh
-bun run build   # writes the unpacked extension to dist/
+bun run build   # writes the unpacked extension to dist/ and the Firefox one to dist-firefox/
 bun test
 ```
 
 Tests run offline against fixtures: none of them load the site, the game's code or the signalling Worker. (`bun signal/check-live.mjs` checks a deployed Worker, by hand.)
 
-Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
+Load `dist/` with **Load unpacked** while developing, or `dist-firefox/manifest.json` with **Load Temporary Add-on…** in Firefox. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` and `surfd-qol-firefox.xpi` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
 
 On recognised builds, the loader unrolls the native collision-box helper in the main module and those three physics workers. It keeps the same inclusive comparisons and axis order, including NaN rejection. The replay-index worker can also reuse the loaded map's collision geometry and existing BVH: packing yields between short slices, then transfers newly allocated Float64 geometry/bounds and tree-index buffers without detaching live map data. The worker queries those buffers directly and materialises contacted triangles lazily; native candidate order, collision flags and movement rules stay unchanged. The snapshot belongs to that worker and is released with it, not kept in a disk cache or persistent worker pool. Incompatible map ownership or unsupported layouts retain native indexing. Optional worker-patching failures leave that worker native without disabling page feedback. The cinematic recorder captures new airborne contacts on its private shadow movement instance instead of installing general-purpose prototype observers for each recording batch.
 
@@ -223,7 +232,7 @@ Recognised skybox resampling keeps native face dimensions, affine transforms, li
 
 Source layout:
 
-- `extension/`: manifest, the background loader (debugger attach and script patching), `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets, collision preparation, image decoding, sky resampling and progressive map GPU preparation.
+- `extension/`: manifest, the background loaders (debugger attach in Chromium, response filtering in Firefox) and their shared script patching, `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets, collision preparation, image decoding, sky resampling and progressive map GPU preparation.
 - `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
 - `src/observer.js`: wraps the game's movement methods without changing their results.
 - `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
