@@ -14,6 +14,7 @@ const SIGN_IN = 'Sign in to host a room.';
 const BAD_CODE = 'Check the room code.';
 const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
+const DIRECTORY_TIMEOUT = 5000;
 // Relay credentials: time to get an answer, lead time before expiry to renew, retry delay after a failed renewal.
 const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
@@ -28,6 +29,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   fetch: fetchRooms = (...args) => globalThis.fetch(...args), now = Date.now,
   timers = globalThis, events = globalThis, storage,
   socketFactory = createPeerSocket, listen = listenRoom, uiFactory = createRoomUi } = {}) {
+  const document = events.document;
   const known = new Map(), directory = new Map(), guests = new Map(), gone = new Set(), drops = new Map();
   const sockets = new Map(), latestSockets = new Map();
   const roomStates = new WeakMap();
@@ -35,7 +37,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let sharedSaves = null;
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
-  let lastDirectory = -Infinity, directoryRequest = null, sampling = false;
+  let lastDirectory = -Infinity, directoryRequest = null, directoryTimer = null, sampling = false;
   let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
   // Finishes sent for verification, waiting on the site's verdict, by attempt id.
@@ -71,6 +73,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     return adapter;
   }
   function directoryVisible() {
+    if (document?.hidden) return false;
     const adapter = getAdapter()?.rooms;
     return !!(adapter?.browserOpen?.() || adapter?.menuOpen?.());
   }
@@ -78,10 +81,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     const community = new Map(directory);
     for (const [id, row] of known) {
       const listed = directory.get(id);
-      if (!listed || id === hosted?.id) community.set(id, row);
-      else community.set(id, latestSockets.has(id)
-        ? row
-        : {...listed, ping: row.ping ?? listed.ping});
+      if (id === hosted?.id || latestSockets.has(id) || guests.has(id)) community.set(id, row);
+      else if (listed) community.set(id, {...listed, ping: row.ping ?? listed.ping});
     }
     for (const id of gone) community.delete(id);
     return [...rows.filter(row => !isPrivateRoomId(row.id)), ...community.values()];
@@ -437,6 +438,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
           (event.code === 1006 || event.code === CLOSE.refused || event.reason === SERVICE)) {
         getAdapter()?.rooms?.notice?.(event.reason);
       }
+      if (!ownHost) known.delete(id);
+      updateLobby();
       ui?.refresh();
     }, {once: true});
     // Entering a room marks the page for the room's CSS before the game connects.
@@ -499,6 +502,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     if (listening) return;
     listening = true;
     events.addEventListener?.('pagehide', pagehide);
+    document?.addEventListener?.('visibilitychange', pageVisibility);
   }
   function updateHostTimers() {
     if (hosted?.visibility === 'public') {
@@ -548,15 +552,32 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   }
   async function refreshDirectory() {
     if (destroyed || !directoryVisible()) return;
-    if (directoryRequest) return directoryRequest;
+    if (directoryRequest) {
+      if (!directoryAbort?.signal.aborted) return directoryRequest;
+      await directoryRequest;
+      return refreshDirectory();
+    }
     if (now() - lastDirectory < 10000) return;
     lastDirectory = now();
     directoryRequest = (async () => {
       const controller = directoryAbort = new AbortController();
+      let timedOut = false, stop;
+      const cancelled = new Promise((_, reject) => {
+        stop = () => reject(new Error(SERVICE));
+        controller.signal.addEventListener('abort', stop, {once: true});
+      });
+      const deadline = timers.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, DIRECTORY_TIMEOUT);
       try {
-        const response = await fetchRooms(new URL('/rooms', SIGNAL_URL).href, {signal: controller.signal});
-        if (!response.ok) throw new Error(SERVICE);
-        const body = await response.json();
+        const body = await Promise.race([cancelled, (async () => {
+          const response = await fetchRooms(new URL('/rooms', SIGNAL_URL).href, {signal: controller.signal, cache: 'no-store'});
+          if (controller.signal.aborted) return;
+          if (!response.ok) throw new Error(SERVICE);
+          return response.json();
+        })()]);
+        if (destroyed || controller.signal.aborted) return;
         const rows = body?.rooms;
         if (!Array.isArray(rows)) throw new Error(SERVICE);
         const next = new Map();
@@ -565,32 +586,54 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
           const row = normalize(value, true);
           if (row && !gone.has(row.id)) next.set(row.id, row);
         }
-        if (destroyed || controller.signal.aborted) return;
         directory.clear();
         for (const [id, row] of next) directory.set(id, row);
         updateLobby();
       } catch {
-        if (!destroyed && !controller.signal.aborted) getAdapter()?.rooms?.notice?.(SERVICE);
-      } finally { directoryRequest = null; directoryAbort = null; }
+        if (!destroyed && (timedOut || !controller.signal.aborted)) getAdapter()?.rooms?.notice?.(SERVICE);
+      } finally {
+        timers.clearTimeout(deadline);
+        controller.signal.removeEventListener('abort', stop);
+        if (directoryAbort === controller) {
+          if (controller.signal.aborted && !timedOut) lastDirectory = -Infinity;
+          directoryRequest = null; directoryAbort = null;
+        }
+      }
     })();
     return directoryRequest;
+  }
+  function updateDirectoryActivity() {
+    if (directoryVisible()) {
+      directoryTimer ??= timers.setInterval(() => void refreshDirectory(), 10000);
+      void refreshDirectory();
+    } else {
+      timers.clearInterval(directoryTimer);
+      directoryTimer = null;
+      directoryAbort?.abort();
+    }
+  }
+  function pageVisibility() {
+    if (destroyed) return;
+    if (!document.hidden) {
+      lastDirectory = -Infinity;
+      updateLobby();
+    }
+    updateDirectoryActivity();
   }
   function browserVisibility(open) {
     if (destroyed || browserVisible === open) return;
     browserVisible = open;
     if (open) updateLobby();
     else {
-      if (!directoryVisible()) directoryAbort?.abort();
       ui?.refresh();
     }
+    updateDirectoryActivity();
   }
   function menuVisibility(open) {
     if (destroyed || menuVisible === open) return;
     menuVisible = open;
-    if (directoryVisible()) {
-      updateLobby();
-      void refreshDirectory();
-    } else directoryAbort?.abort();
+    if (directoryVisible()) updateLobby();
+    updateDirectoryActivity();
   }
   function joinInvite(id) {
     Promise.resolve().then(() => {
@@ -828,11 +871,21 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       }
       if (hosted && (id == null || id === hosted.id)) closeHost();
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
+      // A departed connection's snapshot is no longer authoritative, even if
+      // the directory still has a cached copy from before the departure.
+      for (const roomId of known.keys()) if (id == null || id === roomId) {
+        known.delete(roomId);
+        directory.delete(roomId);
+      }
+      // The directory can contain a public row even when no peer snapshot was received.
+      if (id != null) directory.delete(id);
       for (const [socket, roomId] of sockets) if (id == null || id === roomId) {
         sockets.delete(socket);
         if (latestSockets.get(roomId) === socket) latestSockets.delete(roomId);
         socket.close(1000, '');
       }
+      lastDirectory = -Infinity;
+      directoryAbort?.abort();
       updateLobby();
       ui?.refresh();
     },
@@ -856,8 +909,11 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       forgetRuns();
       destroyed = true;
       directoryAbort?.abort();
+      timers.clearInterval(directoryTimer);
+      directoryTimer = null;
       timers.clearInterval(heartbeat);
       events.removeEventListener?.('pagehide', pagehide);
+      document?.removeEventListener?.('visibilitychange', pageVisibility);
       ui?.destroy();
       for (const session of guests.values()) closeGuest(session);
       for (const socket of sockets.keys()) socket.close(4004, HOST_LEFT);

@@ -6,7 +6,7 @@ import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v31:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v34:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -258,9 +258,8 @@ function roomBrowserHooks(source, hook) {
   return source.replace(create[0], () => `${create[0]}__qolProfile:(userId,name)=>${window}.open("profile",{userId,name}),`);
 }
 
-// Optional parts of the host's room UI, each on its own: the game's map change
-// dialog for choosing a room's starting map, its Leave and map change, and the
-// host's Your room button in the room menu.
+// Optional room UI hooks: map choice, leaving, the host's Your room button,
+// and stable selectors for legacy scoreboard actions that community rooms hide.
 function roomUiHooks(source, hook) {
   const adapter = [];
   const optional = (label, apply) => {
@@ -277,6 +276,12 @@ function roomUiHooks(source, hook) {
     adapter.push(`
       leaveRoom: () => { ${leave[1]}?.roomId() && ${leave[1]}.leave(); ${leave[2]}(); },
       changeMap: () => ${leave[1]}?.roomView?.changeMap?.(),`);
+  });
+  optional('Legacy room action visibility', () => {
+    const report = unique(source, new RegExp(`if\\((${identifier})\\.textContent="Report",\\1\\.onclick=\\(\\)=>\\{`, 'g'), 'legacy player report');
+    const moderate = unique(source, new RegExp(`(${identifier})\\.textContent="Moderate",\\1\\.onclick=\\(\\)=>\\{`, 'g'), 'legacy player moderation');
+    source = source.replace(report[0], () => `if(${report[1]}.classList.add("qol-room-report"),${report[1]}.textContent="Report",${report[1]}.onclick=()=>{`);
+    source = source.replace(moderate[0], () => `${moderate[1]}.classList.add("qol-room-moderate"),${moderate[1]}.textContent="Moderate",${moderate[1]}.onclick=()=>{`);
   });
   optional('Your room menu button', () => {
     const menu = unique(source, new RegExp(`(${identifier})\\.innerHTML=\`\\$\\{(${identifier})\\.guest\\(\\)\\?'<button type="button" class="btn" data-act="signin" `, 'g'), 'room menu');

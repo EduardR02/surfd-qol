@@ -166,6 +166,10 @@ Surf with friends in a room of your own: no time limit, no map votes, and the ho
 - **Join:** pick a room in the **Community** tab, type its code next to the filters, or open an invite link.
 - **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs count for the leaderboard as they do in solo play: Surfd checks each replay itself.
 - **Shared savelocs:** a location anyone saves shows up in everyone's saveloc list (Settings → Gameplay), labelled with its owner. Everyone keeps up to 20 per map, as in the game.
+- **Friends UI:** the native **Invite** button is temporarily hidden in private and public community rooms because delivery through the site's backend is unverified. Share a room code or link instead; those work independently of native invitations. The invite integration remains in place.
+- **Friend status and Join:** automatic room status and Join buttons require server presence from Surfd's backend. Community rooms do not currently publish that presence; a received community invite or server-presence Join action uses the extension's room connection instead of an official-server ticket.
+- **Room controls:** unsupported native player reports, official-server moderation and map votes are hidden, including their legacy scoreboard variants. Chat, spectating, local mute, host Kick/Ban and Change map remain available. Official-server controls are unchanged.
+- **Browser freshness:** public listings refresh every 10 seconds while the foreground tab shows the menu or server browser. Polling pauses during play and in background tabs; returning to an open menu or browser refreshes immediately. Official servers load independently, and community rows update when their directory results arrive. Leaving removes the local cached listing and roster; a lost guest connection also clears its peer roster. Directory caching can add another 10 seconds before remote changes appear. A stalled community lookup times out after 5 seconds without delaying official results.
 
 ### Optional extras
 

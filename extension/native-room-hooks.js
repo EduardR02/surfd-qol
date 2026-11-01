@@ -70,15 +70,52 @@ function friendHooks(source, hook, lobby) {
   const ownRoom = unique(source, new RegExp(`myRoom:\\(\\)=>(${identifier})\\.connected\\(\\)\\?(${identifier})\\.rows\\(\\)\\.find\\((${identifier})=>\\3\\.name===\\1\\.title\\(\\)\\)\\?\\.id\\?\\?null:null`, 'g'), 'native passive invite link');
   const note = unique(source, new RegExp(`noteOf\\((${identifier})\\)\\{const (${identifier})=(${identifier})\\[\\1\\.roomId\\?\\?"eu"\\]\\?\\.name\\?\\?"Surfd EU"`, 'g'), 'native invitation label');
   const fallback = unique(source, new RegExp(`${literal(roomName[4])}=(${identifier})=>(${identifier})\\[\\1\\]\\?\\.name\\?\\?"Surfd "\\+\\1\\.toUpperCase\\(\\)`, 'g'), 'native room label fallback');
-  for (const join of joins) source = source.replace(join[0], () => `join:${join[1]}=>{${join[2]}.close(!1);return ${community(join[1])}?__qolNativeJoin(${join[1]}):${join[3]}(${join[1]})}`);
+  const liveInvite = unique(source, new RegExp(`invite\\((${identifier}),(${identifier})\\)\\{this\\.write\\("invite",\\{to:\\1,roomId:\\2\\},("[^"]+")\\)\\}`, 'g'), 'native invite response');
+  const proxyInvite = unique(source, new RegExp(`invite\\((${identifier}),(${identifier})\\)\\{this\\.inner\\.invite\\(\\1,\\2\\)\\}`, 'g'), 'native invite proxy');
+  const inviteAction = unique(source, new RegExp(`(${identifier})==="invite"&&\\((${identifier})\\.invite\\((${identifier})\\),(${identifier})\\.add\\(\\3\\.userId\\),(${identifier})\\(\\)\\)`, 'g'), 'native invite acknowledgement');
+  const passiveLink = unique(source, new RegExp(`(${identifier})\\.myRoom\\(\\)\\?\x60Invite link: surfd\\.net/\\?join=\\$\\{\\1\\.myRoom\\(\\)\\}\x60:`, 'g'), 'native passive invite text');
+  const profileRoom = unique(source, new RegExp(`roomOf:(${identifier})=>\\{const (${identifier})=(${identifier})\\.friends\\(\\)\\.find\\((${identifier})=>\\4\\.userId===\\1\\),(${identifier})=(${identifier})\\.connected\\(\\)\\?(${identifier})\\.rows\\(\\)\\.find\\((${identifier})=>\\8\\.name===\\6\\.title\\(\\)\\)\\?\\.id:null;return \\2\\?\\.presence\\.kind==="server"&&\\2\\.presence\\.roomId!==\\5\\?\\2\\.presence\\.roomId:null\\}`, 'g'), 'native profile join availability');
+  for (const join of joins) source = source.replace(join[0], () => `join:${join[1]}=>{${join[2]}.close(!1);return ${community(join[1])}?__qolNativeJoin(${join[1]},${invite[6]}):${join[3]}(${join[1]})}`);
   source = source.replace(roomName[0], () => `roomName:${roomName[1]}=>${community(roomName[1])}?__qolNativeRoomName(${roomName[1]}):${roomName[0].slice(roomName[0].indexOf('=>') + 2)}`);
   source = source.replace(roomMap[0], () => roomMap[0].replace('{', () => `{if(${community(roomMap[1])})return __qolNativeRoomMap(${roomMap[1]});`));
   source = source.replace(profile[0], () => `(${community(`${profile[2]}.roomId`)}?"Playing on "+__qolNativeRoomName(${profile[2]}.roomId)+" · "+__qolNativeRoomMap(${profile[2]}.roomId):${profile[0]})`);
-  source = source.replace(invite[0], () => `invite:${invite[1]}=>{const ${invite[2]}=${native}?.connected()?${native}.roomId():null;if(!${invite[2]}){${invite[6]}.toast("Join a server first, then invite friends to it.");return}if(${community(invite[2])}){${invite[7]}.invite(${invite[1]}.userId,${invite[2]});return}${invite[7]}.invite(${invite[1]}.userId,${invite[2]}),`);
-  // Native renders myRoom() as an invite URL without an explicit Copy/Invite action.
-  source = source.replace(ownRoom[0], () => `myRoom:()=>{const id=${native}?.connected()?${native}.roomId():null;return ${community('id')}&&${hook}?.roomInfo?.(id)?.visibility!=="public"?null:id}`);
+  source = source.replace(invite[0], () => `invite:${invite[1]}=>{const ${invite[2]}=${native}?.connected()?${native}.roomId():null;if(!${invite[2]}){${invite[6]}.toast("Join a server first, then invite friends to it.");return}if(${community(invite[2])})return __qolNativeInvite(${invite[1]},${invite[2]},${invite[7]},${invite[6]});${invite[7]}.invite(${invite[1]}.userId,${invite[2]}),`);
+  // Keep real room identity for same-room Join gating. Community-room CSS hides
+  // native Invite separately; suppress private codes only in the passive link.
+  source = source.replace(ownRoom[0], () => `myRoom:()=>${native}?.connected()?${native}.roomId():null`);
+  source = source.replace(passiveLink[0], () => `${passiveLink[1]}.myRoom()&&(!${community(`${passiveLink[1]}.myRoom()`)}||${hook}?.roomInfo?.(${passiveLink[1]}.myRoom())?.visibility==="public")?\x60Invite link: surfd.net/?join=\${${passiveLink[1]}.myRoom()}\x60:`);
+  source = source.replace(profileRoom[0], () => profileRoom[0].replace(`${profileRoom[6]}.connected()?${profileRoom[7]}.rows().find(${profileRoom[8]}=>${profileRoom[8]}.name===${profileRoom[6]}.title())?.id:null`, `${native}?.connected()?${native}.roomId():null`));
+  // Both native layers otherwise discard write()'s acknowledged response / null error.
+  source = source.replace(liveInvite[0], () => liveInvite[0].replace('{this.write(', '{return this.write('));
+  source = source.replace(proxyInvite[0], () => proxyInvite[0].replace('{this.inner.invite(', '{return this.inner.invite('));
+  source = source.replace(inviteAction[0], () => `${inviteAction[1]}==="invite"&&(${community(`${inviteAction[2]}.myRoom()`)}?${inviteAction[2]}.invite(${inviteAction[3]}).then(sent=>{if(sent){${inviteAction[4]}.add(${inviteAction[3]}.userId);${inviteAction[5]}()}}):(${inviteAction[2]}.invite(${inviteAction[3]}),${inviteAction[4]}.add(${inviteAction[3]}.userId),${inviteAction[5]}()))`);
   source = source.replace(note[0], () => `noteOf(${note[1]}){const ${note[2]}=${community(`${note[1]}.roomId`)}?__qolNativeRoomName(${note[1]}.roomId):${note[3]}[${note[1]}.roomId??"eu"]?.name??"Surfd EU"`);
   source = source.replace(fallback[0], () => `${roomName[4]}=${fallback[1]}=>${community(fallback[1])}?__qolNativeRoomName(${fallback[1]}):${fallback[2]}[${fallback[1]}]?.name??"Surfd "+${fallback[1]}.toUpperCase()`);
-  // No presence hook: the official server authors server presence, and native sends null while connected.
-  return source + `\nasync function __qolNativeJoin(id){try{return await ${hook}?.join(id)}catch(error){${invite[6]}.toast(error?.message??"Couldn't reach the room service. Try again in a moment.")}}\nfunction __qolNativeRoomName(id){const room=${hook}?.roomInfo?.(id);return room?.visibility==="public"?room.name:"Private room"}\nfunction __qolNativeRoomMap(id){return ${hook}?.roomInfo?.(id)?.mapTitle??"connecting"}\n`;
+  // Native only publishes menu/solo; server presence requires the site's backend.
+  // Never invent it from community roster account ids (those are self-asserted).
+  return source + `
+async function __qolNativeJoin(id,options){
+  try{
+    if(typeof ${hook}?.join!=="function")throw new Error("Community rooms are unavailable. Reload Surfd QoL and try again.");
+    return await ${hook}.join(id);
+  }catch(error){options.toast(error?.message??"Couldn't reach the room service. Try again in a moment.")}
+}
+async function __qolNativeInvite(friend,id,store,options){
+  try{
+    const result=await store.invite(friend.userId,id);
+    if(result===null)return false;
+    if(!result||result.ok===false){
+      options.toast("The site did not confirm this community invite. Share the room code or link directly.");
+      return false;
+    }
+    options.toast("Invitation sent to "+friend.name+".");
+    return true;
+  }catch(error){
+    options.toast(error?.message??"Couldn't send the invite. Share the room code or link directly.");
+    return false;
+  }
+}
+function __qolNativeRoomName(id){const room=${hook}?.roomInfo?.(id);return room?.visibility==="public"?room.name:"Private room"}
+function __qolNativeRoomMap(id){return ${hook}?.roomInfo?.(id)?.mapTitle??"connecting"}
+`;
 }

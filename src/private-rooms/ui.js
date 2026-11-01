@@ -13,9 +13,15 @@ const NOBODY = 'Nobody here yet.';
 const NOT_STARTED = 'Players show here once the room starts.';
 
 export const ROOM_CLASS = 'qol-room';
-// The first rule hides map votes and official-server moderation while in a community room.
+// Unsupported native actions stay wired but hidden while in a community room.
 export const ROOM_STYLE = `
 html.${ROOM_CLASS} :is(#menu-server [data-act="nominate"], #menu-server [data-act="rtv"], #menu-server [data-act="extend"], #players-actions [data-act="reports"], #players-actions [data-act="panel"], .more-menu [data-act="moderate"]) { display: none !important; }
+html.${ROOM_CLASS} :is(
+  .social-pop [data-act="invite"],
+  #players-rows [data-report], #profile-report, .more-menu [data-act="report"],
+  #room-scoreboard .qol-room-report, #room-scoreboard .qol-room-moderate,
+  .room-menu-actions :is(.room-nominate, .room-extend, .room-rtv, .room-reports)
+) { display: none !important; }
 html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 .qol-code-join { display: inline-flex; align-items: center; gap: 6px; }
 .qol-code-join .field input { width: 150px; }

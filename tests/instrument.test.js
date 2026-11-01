@@ -2,6 +2,7 @@ import {describe, expect, test} from 'bun:test';
 import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, instrumentPhysicsWorker, isCurrentInstrumented} from '../extension/instrument.js';
 import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
 import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
+import {createPrivateRooms} from '../src/private-rooms/index.js';
 
 const nativePracticePanelSource = `
 function fixturePanel(n,e,document){const save=document.getElementById("save"),count={};
@@ -322,8 +323,16 @@ const officialNames={eu:{name:"Surfd EU"}},roomLabel=id=>officialNames[id]?.name
 let nativeRoomId=null,joinedState=false,menuKey="",wasJoined=false,wasVisible=false;
 const nativeMenu={hidden:false},nativeLoading={isOpen:()=>false},nativeBackdrop={setActive(){}};
 const nativePresence=[],nativeInvites=[],nativeToasts=[],nativeReplies=[],nativeQueries=[],nativeJoins=[];
-const friendStore={entries:[],friends(){return this.entries},setPresence(value){nativePresence.push(value)},
-  invite(userId,roomId){nativeInvites.push({userId,roomId})}};
+class NativeLiveSocial {
+  answer=()=>Promise.resolve({ok:true});
+  async write(action,body,message){nativeInvites.push({userId:body.to,roomId:body.roomId});try{return await this.answer()}catch(error){nativeToasts.push(error.message??message);return null}}
+  invite(userId,roomId){this.write("invite",{to:userId,roomId:roomId},"Couldn’t send the invite.")}
+}
+const friendStore=new class {
+  inner=new NativeLiveSocial();entries=[];
+  friends(){return this.entries}setPresence(value){nativePresence.push(value)}
+  invite(userId,roomId){this.inner.invite(userId,roomId)}
+};
 class NativeNotifications {
   noteOf(note){const name=officialNames[note.roomId??"eu"]?.name??"Surfd EU",text=note.kind==="invite"?"invited you to "+name+".":"";return {...note,text}}
 }
@@ -340,7 +349,18 @@ const friendCallbacks={
   roomName:id=>nativeRows.rows().find(row=>row.id===id)?.name??roomLabel(id),
   roomMap:id=>{const row=nativeRows.rows().find(entry=>entry.id===id);return row?nativeRows.mapTitle(row):"connecting"}
 };
-const profileCallbacks={join:id=>{friendWindows.close(!1),officialFriendJoin(id)}};
+const profileCallbacks={join:id=>{friendWindows.close(!1),officialFriendJoin(id)},
+  roomOf:userId=>{const friend=friendStore.friends().find(entry=>entry.userId===userId),own=roomDisplay.connected()?nativeRows.rows().find(entry=>entry.name===roomDisplay.title())?.id:null;return friend?.presence.kind==="server"&&friend.presence.roomId!==own?friend.presence.roomId:null}};
+function nativeSocialPanel(store,callbacks){
+  const invited=new Set();let renders=0;
+  function render(){renders++}
+  function click(action,friend){return action==="invite"&&(callbacks.invite(friend),invited.add(friend.userId),render())}
+  function footer(){return callbacks.myRoom()?\`Invite link: surfd.net/?join=\${callbacks.myRoom()}\`:"Join a friend and you’ll land on their server."}
+  function buttons(friend){const own=callbacks.myRoom(),playing=friend.presence.kind==="server",same=playing&&friend.presence.roomId===own;return {join:playing&&!same,invite:!!own&&!same&&friend.presence.kind!=="offline",invited:invited.has(friend.userId)}}
+  function join(friend){if(buttons(friend).join)return callbacks.join(friend.presence.roomId)}
+  return {click,footer,buttons,join,renders:()=>renders};
+}
+const socialPanel=nativeSocialPanel(friendStore,friendCallbacks);
 function acceptNativeInvite(note){friendCallbacks.join(note.roomId)}
 function nativeSync(value){const key=\`\${value.joined}|\${value.visible}|\${value.roomId}|\${nativeLoading.isOpen()}\`;if(key===menuKey)return;const previousJoined=wasJoined,previousVisible=wasVisible;menuKey=key,wasJoined=value.joined,wasVisible=value.visible,nativeBackdrop.setActive(value.visible&&!value.joined&&!nativeLoading.isOpen());const map=nativeOptions.currentMap();friendStore.setPresence(value.joined&&value.roomId?null:value.joined&&map?{kind:"solo",mapId:map}:{kind:"menu"})}
 function nativeFrame(){lobby.sync({joined:joinedState,visible:!nativeMenu.hidden,roomId:roomController?.roomId()??null})}
@@ -434,16 +454,23 @@ function resetSolo(){soloResets++}
 const gameActions={leave:()=>{activeRoom?.roomId()&&activeRoom.leave(),resetSolo()},room:()=>activeRoom?.roomView??null};
 function serverMenu(e,o){if(e.hidden=!1,o){e.innerHTML=\`\${o.guest()?'<button type="button" class="btn" data-act="signin" title="Sign in to chat">Sign in to chat</button>':'<button type="button" class="btn" data-act="chat">Chat</button>'}\`}return e.innerHTML}
 function serverMenuAction(u,o){u.onclick=()=>{const h=u.dataset.act;if(h==="chat"&&o.openChat(),h==="rtv"&&o.rtv(),0)return};u.onclick()}
+function legacyPlayerActions(player){
+  const report=document.createElement("button");
+  if(report.textContent="Report",report.onclick=()=>{connection.report(player.id)},player.moderator){
+    const moderate=document.createElement("button");moderate.textContent="Moderate",moderate.onclick=()=>{connection.moderate(player.id)};
+  }
+}
 ` + nativeSocialSource;
 
 function roomFixture(privateRooms, source = roomSource) {
   let adapter;
   const requests = [], sockets = [], warnings = [];
-  let failList = false;
+  let failList = false, listResponse = null;
   const fetch = async (url, options) => {
     requests.push({url, options});
     if (String(url).endsWith('/servers')) {
       if (failList) throw new Error('offline');
+      if (listResponse) return listResponse;
       return {ok: true, json: async () => ({servers: [{id: 'public', mapId: 'map', online: true}]})};
     }
     return {ok: true, json: async () => ({token: 'native-ticket'})};
@@ -459,7 +486,7 @@ function roomFixture(privateRooms, source = roomSource) {
     return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},me:value=>{ownProfile=value},
       guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()},
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
-        notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
+        notes:new NativeNotifications(),friendStore,socialPanel,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
         results:nativeResults,announceResult,client,
         finish:ticket=>{rankedTicket=ticket?{ticket:{id:ticket}}:null;return nativeFinish({},true)},
@@ -467,7 +494,8 @@ function roomFixture(privateRooms, source = roomSource) {
       ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
       playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
   `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
-  return {adapter, runtime, requests, sockets, warnings, instrumented, failList: () => { failList = true; }};
+  return {adapter, runtime, requests, sockets, warnings, instrumented,
+    failList: () => { failList = true; }, listResponse: value => { listResponse = value; }};
 }
 
 function privateFixtureHooks() {
@@ -483,6 +511,56 @@ function privateFixtureHooks() {
 }
 
 describe('optional native private room instrumentation', () => {
+  test.each([false, true])('native results settle independently and late community rows still appear (official offline: %s)', async offline => {
+    let fixture, finishDirectory;
+    const rooms = createPrivateRooms({
+      getAdapter: () => fixture?.adapter, events: new EventTarget(),
+      storage: {getItem: () => null, setItem() {}},
+      fetch: () => new Promise(resolve => { finishDirectory = resolve; })
+    });
+    try {
+      fixture = roomFixture(rooms);
+      fixture.runtime.browser.view.el.hidden = false;
+      if (offline) fixture.failList();
+      let outcome;
+      const pending = fixture.runtime.room.list().then(rows => {
+        fixture.adapter.rooms.update(rows);
+        outcome = {rows};
+      }, error => { outcome = {error}; });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (offline) expect(outcome?.error?.message).toBe('offline');
+      else expect(outcome?.rows?.map(row => row.id)).toEqual(['public']);
+      await pending;
+      const community = {id: 'p-abcdefghjkmn', name: 'Fresh room', mapId: 'map', players: 2, capacity: 16};
+      finishDirectory({ok: true, json: async () => ({rooms: [community]})});
+      await rooms.refreshDirectory();
+      expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(offline ? [community.id] : ['public', community.id]);
+      expect((await fixture.runtime.room.list()).map(row => row.id)).toEqual(offline ? [community.id] : ['public', community.id]);
+    } finally { rooms.destroy(); }
+  });
+
+  test('community rows arriving first survive the later official result', async () => {
+    let fixture;
+    const community = {id: 'p-abcdefghjkmn', name: 'Fresh room', mapId: 'map', players: 2, capacity: 16};
+    const rooms = createPrivateRooms({
+      getAdapter: () => fixture?.adapter, events: new EventTarget(),
+      storage: {getItem: () => null, setItem() {}},
+      fetch: async () => ({ok: true, json: async () => ({rooms: [community]})})
+    });
+    try {
+      fixture = roomFixture(rooms);
+      fixture.runtime.browser.view.el.hidden = false;
+      let finishOfficial;
+      fixture.listResponse(new Promise(resolve => { finishOfficial = resolve; }));
+      const pending = fixture.runtime.room.list();
+      await rooms.refreshDirectory();
+      expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual([community.id]);
+      finishOfficial({ok: true, json: async () => ({servers: [{id: 'public', mapId: 'map', online: true}]})});
+      fixture.adapter.rooms.update(await pending);
+      expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(['public', community.id]);
+    } finally { rooms.destroy(); }
+  });
+
   test('public tickets, refresh, ping and WebSockets keep the native flow', async () => {
     const fixture = roomFixture(privateFixtureHooks());
     await fixture.runtime.room.open('public');
@@ -984,32 +1062,116 @@ describe('native community behavior integration', () => {
     expect(native.friends.roomMap('p-cccccccccccc')).toBe('connecting');
   });
 
-  test('only explicit native invitation sends the private ID and does not claim delivery', () => {
-    const fixture = roomFixture(socialHooks());
-    fixture.runtime.browser.update(rows, 'Ready');
-    const native = fixture.runtime.native;
+  test('community invite handler waits for acknowledgement and keeps private codes out of its passive link', async () => {
+    const {runtime} = roomFixture(socialHooks()), native = runtime.native;
+    const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'menu'}};
+    let acknowledge;
+    native.friendStore.inner.answer = () => new Promise(resolve => { acknowledge = resolve; });
     native.setRoom(communityId);
-    expect(native.friends.myRoom()).toBeNull();
+    expect(native.socialPanel.buttons(friend)).toEqual({join: false, invite: true, invited: false});
+    expect(native.socialPanel.footer()).not.toContain(communityId);
     expect(native.nativeInvites).toEqual([]);
-    native.friends.invite({userId: 'friend', name: 'Friend'});
+    const pending = native.socialPanel.click('invite', friend);
     expect(native.nativeInvites).toEqual([{userId: 'friend', roomId: communityId}]);
+    expect(native.socialPanel.buttons(friend).invited).toBe(false);
     expect(native.nativeToasts).toEqual([]);
+    acknowledge({ok: true});
+    await pending;
+    expect(native.socialPanel.buttons(friend).invited).toBe(true);
+    expect(native.nativeToasts).toHaveLength(1);
     native.setRoom(publicId);
-    expect(native.friends.myRoom()).toBe(publicId);
+    expect(native.socialPanel.footer()).toContain(publicId);
+  });
+
+  test('rejected and unacknowledged community invites remain retryable without success feedback', async () => {
+    for (const answer of [() => Promise.reject(new Error('Unsupported room')), () => Promise.resolve(undefined), () => Promise.resolve({ok: false})]) {
+      const {runtime} = roomFixture(socialHooks()), native = runtime.native;
+      const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'menu'}};
+      native.friendStore.inner.answer = answer;
+      native.setRoom(communityId);
+      await native.socialPanel.click('invite', friend);
+      expect(native.socialPanel.buttons(friend)).toMatchObject({invite: true, invited: false});
+      expect(native.nativeToasts).toHaveLength(1);
+      expect(native.socialPanel.renders()).toBe(0);
+      native.friendStore.inner.answer = () => Promise.resolve({ok: true});
+      await native.socialPanel.click('invite', friend);
+      expect(native.socialPanel.buttons(friend).invited).toBe(true);
+      expect(native.nativeInvites).toHaveLength(2);
+    }
+  });
+
+  test('a throwing native invitation implementation is contained by the community action', async () => {
+    const {runtime} = roomFixture(socialHooks()), native = runtime.native;
+    native.friendStore.invite = () => { throw new Error('Sign in again'); };
+    native.setRoom(communityId);
+    const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'menu'}};
+    await native.socialPanel.click('invite', friend);
+    expect(native.socialPanel.buttons(friend).invited).toBe(false);
+    expect(native.nativeToasts).toEqual(['Sign in again']);
+  });
+
+  test('official invitations keep native immediate feedback and passive links', () => {
+    const {runtime} = roomFixture(socialHooks()), native = runtime.native;
+    const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'menu'}};
     native.setRoom('eu');
-    native.friends.invite({userId: 'friend', name: 'Friend'});
-    expect(native.nativeInvites.at(-1)).toEqual({userId: 'friend', roomId: 'eu'});
+    native.socialPanel.click('invite', friend);
+    expect(native.nativeInvites).toEqual([{userId: 'friend', roomId: 'eu'}]);
+    expect(native.socialPanel.buttons(friend).invited).toBe(true);
+    expect(native.socialPanel.footer()).toContain('surfd.net/?join=eu');
     expect(native.nativeToasts).toEqual(['Invited Friend']);
   });
 
-  test('preserves server-controlled presence instead of publishing private IDs', () => {
-    const {runtime} = roomFixture(socialHooks());
-    runtime.native.frame();
-    runtime.native.setRoom(communityId);
-    runtime.native.frame();
-    runtime.native.setRoom('eu');
-    runtime.native.frame();
-    expect(runtime.native.nativePresence).toEqual([{kind: 'menu'}, null, null]);
+  test('native Join gates consume server presence and compare real room ids, not duplicate titles', async () => {
+    const joined = [], {runtime} = roomFixture(socialHooks({join: id => joined.push(id)})), native = runtime.native;
+    const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'server', roomId: communityId}};
+    native.friendStore.entries = [friend];
+    runtime.browser.update([{id: 'eu', name: 'Duplicate title'}, ...rows], 'Ready');
+    native.setRoom(communityId);
+    expect(native.socialPanel.buttons(friend)).toMatchObject({join: false, invite: false});
+    expect(native.profile.roomOf(friend.userId)).toBeNull();
+    native.setRoom(publicId);
+    expect(native.socialPanel.buttons(friend).join).toBe(true);
+    expect(native.profile.roomOf(friend.userId)).toBe(communityId);
+    await native.socialPanel.join(friend);
+    await native.profile.join(native.profile.roomOf(friend.userId));
+    expect(joined).toEqual([communityId, communityId]);
+    friend.presence = {kind: 'menu'};
+    expect(native.socialPanel.buttons(friend).join).toBe(false);
+    expect(native.profile.roomOf(friend.userId)).toBeNull();
+  });
+
+  test('missing runtime reports community join unavailability rather than silently swallowing the action', async () => {
+    const {runtime} = roomFixture(undefined);
+    await runtime.native.friends.join(communityId);
+    expect(runtime.native.nativeToasts).toHaveLength(1);
+    expect(runtime.native.nativeJoins).toEqual([]);
+  });
+
+  test('community errors use the native lobby closure instead of nonexistent global toast bindings', async () => {
+    const changed = roomSource
+      .replace('const friendWindows={close(){}},nativeOptions=', 'const friendWindows={close(){}};function scopedCallbacks(){const nativeOptions=')
+      .replace('function acceptNativeInvite(note)', 'return {friendCallbacks,profileCallbacks,friendPresence,socialPanel};}const {friendCallbacks,profileCallbacks,friendPresence,socialPanel}=scopedCallbacks();function acceptNativeInvite(note)')
+      .replace('const map=nativeOptions.currentMap();', 'const map="map";');
+    const {runtime} = roomFixture(socialHooks({join: () => { throw new Error('Room closed'); }}), changed), native = runtime.native;
+    await native.friends.join(communityId);
+    await native.profile.join(publicId);
+    expect(native.nativeToasts).toEqual(['Room closed', 'Room closed']);
+    native.setRoom(communityId);
+    native.friendStore.inner.answer = () => Promise.resolve({ok: true});
+    const friend = {userId: 'friend', name: 'Friend', presence: {kind: 'menu'}};
+    await native.socialPanel.click('invite', friend);
+    expect(native.socialPanel.buttons(friend).invited).toBe(true);
+  });
+
+  test('an unsupported invite signature leaves the complete friend hook native', () => {
+    const changed = roomSource.replace('invite(userId,roomId){this.inner.invite(userId,roomId)}', 'invite(userId,roomId){return this.inner.invite(userId,roomId)}');
+    const joins = [], fixture = roomFixture(socialHooks({join: id => joins.push(id)}), changed);
+    fixture.runtime.native.friends.join(communityId);
+    fixture.runtime.native.profile.join(publicId);
+    expect(joins).toEqual([]);
+    expect(fixture.runtime.native.nativeJoins).toEqual([communityId, publicId]);
+    expect(fixture.warnings.some(warning => warning[0] === '[Surfd QoL] Native community friends unavailable:')).toBe(true);
+    expect(fixture.adapter.rooms).toBeDefined();
   });
 
   test('menu transitions notify once and the adapter reports actual visibility', async () => {

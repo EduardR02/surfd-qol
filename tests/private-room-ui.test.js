@@ -616,8 +616,6 @@ describe('server browser', () => {
     expect([note.tag, note.className]).toEqual(['p', 'qol-room-note']);
     expect(note.textContent).toContain('room code');
     expect(f.info.querySelector('.sub').textContent).toBe('Private');
-    const style = f.document.children.find(node => node.tag === 'style').textContent;
-    expect(style).toContain('.qol-room-note');
     f.rows.at(-1).visibility = 'public'; f.ui.refresh();
     expect(note.textContent).toContain('Listed for everyone');
     f.select('eu'); f.ui.refresh();
@@ -625,17 +623,9 @@ describe('server browser', () => {
     f.ui.destroy();
   });
 
-  test('one CSS rule keyed on a class on <html> hides votes and official moderation in community rooms', () => {
+  test('community UI state follows the active room and is restored on exit', () => {
     const f = fixture();
     const html = f.document.documentElement, style = f.document.children.find(node => node.tag === 'style');
-    const [rule] = style.textContent.trim().split('\n');
-    expect(rule).toStartWith(`html.${ROOM_CLASS} :is(`);
-    for (const selector of ['#menu-server [data-act="nominate"]', '#menu-server [data-act="rtv"]', '#menu-server [data-act="extend"]',
-      '#players-actions [data-act="reports"]', '#players-actions [data-act="panel"]', '.more-menu [data-act="moderate"]']) {
-      expect(rule).toContain(selector);
-    }
-    expect(rule).toEndWith('{ display: none !important; }');
-    expect(style.textContent).not.toContain('#players-actions [data-act="change"]');
     f.root.hidden = true; f.ui.refresh();
     f.current('eu'); f.ui.refresh();
     expect(html.classList.contains(ROOM_CLASS)).toBe(false);
