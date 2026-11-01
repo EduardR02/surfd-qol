@@ -5,6 +5,13 @@ const axes = ['x', 'y', 'z'];
 const point = (x, y, z) => ({x, y, z});
 const box = (x, y, z, X = x, Y = y, Z = z) => ({min: point(x, y, z), max: point(X, Y, Z)});
 const overlap = (a, b) => axes.every(axis => a.min[axis] <= b.max[axis] && a.max[axis] >= b.min[axis]);
+function boxPlanes(bounds) {
+  return axes.flatMap(axis => [1, -1].map(sign => {
+    const normal = point(0, 0, 0);
+    normal[axis] = sign;
+    return {normal, distance: sign > 0 ? bounds.max[axis] : -bounds.min[axis]};
+  }));
+}
 
 function nativeTree(bounds, leafSize = 3) {
   function build(items) {
@@ -38,6 +45,7 @@ function triangle(vertices, surfaceId = 'surface', triangleId = 'triangle') {
   return {vertices, surfaceId, triangleId};
 }
 function fixture(brushes = [], triangles = []) {
+  for (const brush of brushes) if (!Object.hasOwn(brush, 'planes')) brush.planes = boxPlanes(brush);
   const triangleBounds = triangles.map(t => ({
     min: Object.fromEntries(axes.map(axis => [axis, Math.min(...t.vertices.map(v => v[axis]))])),
     max: Object.fromEntries(axes.map(axis => [axis, Math.max(...t.vertices.map(v => v[axis]))])),
@@ -69,6 +77,73 @@ function expectQueries(snapshot, world, queries) {
   }
 }
 
+// The native replay worker's swept-hull brush trace, kept here as an oracle
+// for the values actually read by movement, including both collision fixes.
+function nativeTrace(tree, brushes, start, end, hull, featureFix, cornerFix) {
+  const epsilon = 0.03125, dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+  const sweep = {min: point(0, 0, 0), max: point(0, 0, 0)};
+  for (const axis of axes) {
+    sweep.min[axis] = Math.min(start[axis], end[axis]) + hull.min[axis] - epsilon;
+    sweep.max[axis] = Math.max(start[axis], end[axis]) + hull.max[axis] + epsilon;
+  }
+  const result = {fraction: 1, end: {...end}, normal: point(0, 0, 0), startSolid: false, allSolid: false, brush: null};
+  const finish = () => ({...result, brush: result.brush && {
+    id: result.brush.id, friction: result.brush.friction, collisionModel: result.brush.collisionModel,
+  }});
+  for (const index of tree.query(sweep)) {
+    const brush = brushes[index];
+    if (axes.some(axis => Math.max(start[axis], end[axis]) + hull.max[axis] < brush.min[axis] - epsilon ||
+        Math.min(start[axis], end[axis]) + hull.min[axis] > brush.max[axis] + epsilon) ||
+        brush.leafBounds && !brush.leafBounds.some(leaf => overlap(sweep, leaf))) continue;
+    let enter = -1, leave = 1, normal = point(0, 0, 0), startsOutside = false, endsOutside = false;
+    let missed = false, friction, exactEnter = -Infinity, exactLeave = Infinity, fixedEnter = -1, fixedNormal = point(0, 0, 0);
+    const corner = cornerFix && !brush.collisionModel && brush.planes.length === 6 &&
+      brush.planes.every(plane => axes.filter(axis => plane.normal[axis] !== 0).length === 1 &&
+        axes.some(axis => Math.abs(plane.normal[axis]) === 1));
+    for (const plane of brush.planes) {
+      const n = plane.normal;
+      const support = n.x * (n.x < 0 ? hull.max.x : hull.min.x) +
+        n.y * (n.y < 0 ? hull.max.y : hull.min.y) + n.z * (n.z < 0 ? hull.max.z : hull.min.z);
+      const from = dot(start, n) - (plane.distance - support), to = dot(end, n) - (plane.distance - support);
+      if (brush.collisionModel === 'vphysics' || corner) {
+        if (from > to) {
+          const exact = from / (from - to);
+          if (exact > exactEnter) {
+            exactEnter = exact;
+            fixedEnter = Math.max(0, (from - epsilon) / (from - to));
+            fixedNormal = n;
+          }
+        } else if (from < to) exactLeave = Math.min(exactLeave, from / (from - to));
+      }
+      if (from > 0) startsOutside = true;
+      if (to > 0) endsOutside = true;
+      if (from > 0 && to > 0 && (!brush.collisionModel || to >= from - 1e-5)) { missed = true; break; }
+      if (from <= 0 && to <= 0) continue;
+      if (from > to) {
+        const fraction = Math.max(0, (from - epsilon) / (from - to));
+        if (fraction > enter) { enter = fraction; normal = n; friction = plane.friction; }
+      } else leave = Math.min(leave, (from + epsilon) / (from - to));
+    }
+    if (missed || exactLeave < 1 && exactEnter > exactLeave) continue;
+    if (featureFix && brush.collisionModel === 'vphysics') { enter = fixedEnter; normal = fixedNormal; }
+    if (!startsOutside) {
+      result.startSolid = true;
+      if (!endsOutside) {
+        result.allSolid = true; result.fraction = 0; result.end = {...start}; result.brush = brush;
+        return finish();
+      }
+      continue;
+    }
+    if (enter < leave && enter > -1 && enter < result.fraction) {
+      result.fraction = Math.max(0, enter); result.normal = {...normal}; result.brush = brush;
+      if (friction !== undefined) result.friction = friction;
+      else delete result.friction;
+    }
+  }
+  for (const axis of axes) result.end[axis] = start[axis] + (end[axis] - start[axis]) * result.fraction;
+  return finish();
+}
+
 const queries = [box(-100, -100, -100, 100, 100, 100), box(0, 0, 0), box(10, 0, 0),
   box(-3, -3, -3, 3, 3, 3), box(10, 10, 10), box(1000, 1000, 1000), box(3, 3, 3, -3, -3, -3)];
 
@@ -86,6 +161,115 @@ test('empty, brush-only and triangle-only snapshots preserve native candidates',
     expect(snapshot.map.displacementTriangles.length).toBe(world.triangles.length);
     expect(snapshot.triangleBounds.length).toBe(world.triangles.length);
   }
+});
+
+test('packed brushes reproduce native swept-hull contacts for both collision fixes', async () => {
+  const wall = {...box(0, -8, -8, 4, 8, 8), id: 'bsp-0-22', friction: 0.75, kind: 'stone',
+    leafBounds: [box(0, -8, -8, 4, -2, 8), box(0, 2, -8, 4, 8, 8)]};
+  wall.planes = boxPlanes(wall);
+  wall.planes[1].friction = 0.375;
+  const prop = {...box(12, -8, -8, 16, 8, 8), id: 'prop-12-2', friction: 0.5,
+    kind: 'ramp', collisionModel: 'vphysics'};
+  prop.planes = boxPlanes(prop);
+  prop.planes[1].normal.z = -0;
+  prop.planes[1].friction = 0;
+  const ramp = {...box(22, -8, -8, 28, 8, 8), id: 'bsp-ramp', friction: 0.91, kind: 'ramp'};
+  ramp.planes = [...boxPlanes(ramp), {normal: point(0.125, 0, 0.9921567416492215), distance: 7.123456789012345}];
+  const {map, world} = fixture([wall, prop, ramp]);
+  const packet = await packCollisionWorld(map, world);
+  const transfer = [...new Set(Object.values(packet).filter(ArrayBuffer.isView).map(view => view.buffer))];
+  const snapshot = unpackCollisionWorld(structuredClone(packet, {transfer}));
+  const hull = box(-0.5, -0.5, -0.5, 0.5, 0.5, 0.5);
+  const paths = [
+    [point(-10, 4, 0), point(30, 4, 0)],
+    [point(-10, 0, 0), point(30, 0, 0)],
+    [point(2, 4, 0), point(2, 4, 0)],
+    [point(2, 4, 0), point(8, 4, 0)],
+    [point(20, 0, 12), point(26, 0, -5)],
+    [point(40, 30, 0), point(50, 30, 0)],
+  ];
+  for (const featureFix of [false, true]) for (const cornerFix of [false, true]) {
+    for (const [start, end] of paths) {
+      expect(nativeTrace(snapshot.tree, snapshot.map.brushes, start, end, hull, featureFix, cornerFix))
+        .toEqual(nativeTrace(world.tree, world.brushes, start, end, hull, featureFix, cornerFix));
+    }
+  }
+  const hit = nativeTrace(snapshot.tree, snapshot.map.brushes, ...paths[0], hull, false, false);
+  expect(hit.brush.id).toBe('bsp-0-22');
+  expect(hit.friction).toBe(0.375);
+  expect(nativeTrace(snapshot.tree, snapshot.map.brushes, ...paths[1], hull, true, true).brush.id).toBe('prop-12-2');
+  expect(nativeTrace(snapshot.tree, snapshot.map.brushes, ...paths[2], hull, false, false).allSolid).toBe(true);
+  expect(snapshot.map.brushes[2].planes[6].distance).toBe(7.123456789012345);
+  expect(Object.is(snapshot.map.brushes[1].planes[1].normal.z, -0)).toBe(true);
+});
+
+test('brush scalar columns and lazy objects preserve IDs, optional values and mutation', async () => {
+  const ids = ['bsp-\ud800', 'bsp-\ud800', -0, 2 ** 45 + 3, NaN, Infinity, 12345678901234567890n, null, undefined];
+  const brushes = ids.map((id, i) => {
+    const brush = {...box(i * 10, 0, 0, i * 10 + 5, 5, 5), id, friction: i === 0 ? -0 : i,
+      kind: 'stone', vertices: [point(1, 2, 3)], faces: [[0]], color: '#fff',
+      contents: 1, modelIndex: 0, sourceBrush: i};
+    brush.planes = boxPlanes(brush);
+    return brush;
+  });
+  brushes[0].planes[0].friction = undefined;
+  brushes[0].planes[1].friction = null;
+  brushes[0].planes[2].friction = -0;
+  brushes[0].planes[3].friction = NaN;
+  Object.assign(brushes[1], {surfaceprop: 'wood', propIndex: 'part-2',
+    modelPath: 'models/example.mdl', collisionModel: 'vphysics', broadphaseOnlyVertices: true});
+  brushes[1].leafBounds = [];
+  brushes[2].leafBounds = null;
+  brushes[3].leafBounds = undefined;
+  const {map, world} = fixture(brushes);
+  const packet = await packCollisionWorld(map, world);
+  expect(packet.map.brushes).toBeNull();
+  expect(packet.brushData).toBeInstanceOf(Uint32Array);
+  expect(packet.planeValues).toBeInstanceOf(Float64Array);
+  expect(packet.scalarChars).toBeInstanceOf(Uint16Array);
+  const snapshot = unpackCollisionWorld(structuredClone(packet));
+  const values = snapshot.map.brushes;
+  expect(Array.isArray(values)).toBe(true);
+  for (let i = 0; i < ids.length; i++) {
+    expect(Object.is(values[i].id, ids[i])).toBe(true);
+    expectBounds(values[i], brushes[i]);
+    expect(values[i]).toBe(values[i]);
+    expect(Object.hasOwn(values[i], 'vertices')).toBe(false);
+    expect(Object.hasOwn(values[i], 'faces')).toBe(false);
+  }
+  expect(Object.is(values[0].friction, -0)).toBe(true);
+  expect(values[1].kind).toBe('stone');
+  expect(values[1].collisionModel).toBe('vphysics');
+  expect(Object.getOwnPropertyDescriptor(values[0], 'planes').get).toBeInstanceOf(Function);
+  const planes = values[0].planes;
+  expect(values[0].planes).toBe(planes);
+  expect(Object.hasOwn(planes[0], 'friction')).toBe(true);
+  expect(planes[0].friction).toBeUndefined();
+  expect(planes[1].friction).toBeNull();
+  expect(Object.is(planes[2].friction, -0)).toBe(true);
+  expect(Number.isNaN(planes[3].friction)).toBe(true);
+  expect(Object.hasOwn(planes[4], 'friction')).toBe(false);
+  expect(values[1].leafBounds).toEqual([]);
+  expect(values[2].leafBounds).toBeNull();
+  expect(Object.hasOwn(values[3], 'leafBounds')).toBe(true);
+  expect(values[3].leafBounds).toBeUndefined();
+  planes[0].normal.x = 0.125;
+  values[0].friction = 0.25;
+  expect(values[0].planes[0].normal.x).toBe(0.125);
+  expect(values[0].friction).toBe(0.25);
+  expect(brushes[0].planes[0].normal.x).toBe(1);
+  const replacementPlanes = [{normal: point(0, 0, 1), distance: 4}];
+  values[4].planes = replacementPlanes;
+  expect(values[4].planes).toBe(replacementPlanes);
+  expect(brushes[4].planes.length).toBe(6);
+  delete values[1];
+  expect(1 in values).toBe(false);
+  expect(values[1]).toBeUndefined();
+  values.length = 2;
+  values.length = ids.length;
+  expect(2 in values).toBe(false);
+  values[2] = {id: 'replacement'};
+  expect(values[2].id).toBe('replacement');
 });
 
 test('lazy indexed geometry preserves numerical values, signed zeros, IDs and caching', async () => {
@@ -108,6 +292,19 @@ test('lazy indexed geometry preserves numerical values, signed zeros, IDs and ca
     expectBounds(snapshot.triangleBounds[i], world.triangleBounds[i]);
   }
   expectQueries(snapshot, world, queries);
+});
+
+test('native displacement import fields are accepted without entering worker collision data', async () => {
+  const item = {...triangle([point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)], 7, 8),
+    contents: 268435458, tags: 6};
+  const {map, world} = fixture([], [item]);
+  const snapshot = unpackCollisionWorld(await packCollisionWorld(map, world));
+  const result = snapshot.map.displacementTriangles[0];
+  expect(result.surfaceId).toBe(7);
+  expect(result.triangleId).toBe(8);
+  expect(result.vertices).toEqual(item.vertices);
+  expect(Object.hasOwn(result, 'contents')).toBe(false);
+  expect(Object.hasOwn(result, 'tags')).toBe(false);
 });
 
 test('numeric ID columns transfer without narrowing signed zero, large or nonfinite numbers', async () => {
@@ -176,10 +373,16 @@ test('Array proxies preserve indexed reads, length, symbols and iteration', asyn
 test('transfer detaches only new snapshot buffers and preserves live geometry and metadata', async () => {
   const {map, world} = variedFixture();
   map.futurePhysicsField.liveBuffer = new Float64Array([1, -0, 3]);
+  map.importMetadata = {entities: [{name: 'not-used-by-replay-physics'}]};
+  map.vphysicsFeatureFix = true;
+  map.bspCornerFix = false;
+  map.conveyors = [{brushIds: ['bsp-0-22'], velocity: point(8, 0, 0)}];
+  const originalBrush = world.brushes[0], originalPlane = originalBrush.planes[0];
   const originalTriangle = world.triangles[0], originalRoot = world.tree.root;
   const packet = await packCollisionWorld(map, world);
   expect(packet.map.displacementTriangles).toBeNull();
-  expect(packet.map.brushes).toBe(map.brushes);
+  expect(packet.map.brushes).toBeNull();
+  expect(Object.hasOwn(packet.map, 'importMetadata')).toBe(false);
   const transfer = [...new Set(Object.values(packet).filter(ArrayBuffer.isView).map(view => view.buffer))];
   const received = structuredClone(packet, {transfer});
   for (const buffer of transfer) expect(buffer.byteLength).toBe(0);
@@ -187,8 +390,14 @@ test('transfer detaches only new snapshot buffers and preserves live geometry an
   expect(Object.is(map.futurePhysicsField.liveBuffer[1], -0)).toBe(true);
   expect(world.triangles[0]).toBe(originalTriangle);
   expect(world.tree.root).toBe(originalRoot);
+  expect(world.brushes[0]).toBe(originalBrush);
+  expect(originalBrush.planes[0]).toBe(originalPlane);
+  expect(map.importMetadata.entities[0].name).toBe('not-used-by-replay-physics');
   expect(map.displacementTriangles).toBe(world.triangles);
   const snapshot = unpackCollisionWorld(received);
+  expect(snapshot.map.vphysicsFeatureFix).toBe(true);
+  expect(snapshot.map.bspCornerFix).toBe(false);
+  expect(snapshot.map.conveyors).toEqual(map.conveyors);
   expect(snapshot.map.futurePhysicsField).toEqual(map.futurePhysicsField);
   expect(snapshot.map.spawn).toEqual(map.spawn);
   expect(snapshot.map.zones).toEqual(map.zones);
@@ -253,6 +462,26 @@ test('cooperative slices make progress, cancel promptly and use task yields by d
   } finally { now.mockRestore(); }
 });
 
+test('a single large brush yields and cancels while copying its planes', async () => {
+  let reads = 0, clock = 0, current = true, yields = 0;
+  const brush = box(0, 0, 0, 10, 10, 10);
+  brush.planes = Array.from({length: 2048}, () => ({
+    normal: point(1, 0, 0),
+    get distance() { reads++; return 10; },
+  }));
+  const {map, world} = fixture([brush]);
+  const now = spyOn(performance, 'now').mockImplementation(() => clock += 5);
+  try {
+    expect(await packCollisionWorld(map, world, {
+      isCurrent: () => current,
+      yieldTask: async () => { yields++; current = false; },
+    })).toBeNull();
+    expect(yields).toBe(1);
+    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeLessThan(brush.planes.length * 2);
+  } finally { now.mockRestore(); }
+});
+
 test('empty triangle representations are compatible but unrelated world ownership is rejected', async () => {
   const {map, world} = fixture([box(0, 0, 0)]);
   delete map.displacementTriangles;
@@ -266,6 +495,19 @@ test('empty triangle representations are compatible but unrelated world ownershi
 
 test('packing rejects malformed geometry, bounds and topology without changing originals', async () => {
   for (const change of [
+    ({world}) => { world.brushes[0].futureCollisionFlag = true; },
+    ({world}) => { world.brushes[0].planes = null; },
+    ({world}) => { world.brushes[0].planes[0].futureCollisionFlag = true; },
+    ({world}) => { world.brushes[0].planes[0].distance = NaN; },
+    ({world}) => { world.brushes[0].planes[0].normal.x = Infinity; },
+    ({world}) => { world.brushes[0].planes[0].normal.futureComponent = 1; },
+    ({world}) => { world.brushes[0].planes[0].friction = {value: 1}; },
+    ({world}) => { world.brushes[0].id = {value: 'unsupported'}; },
+    ({world}) => { world.brushes[0].min.futureComponent = 1; },
+    ({world}) => { world.brushes[0].leafBounds = [box(0, 0, 0, Infinity, 1, 1)]; },
+    ({world}) => { world.brushes[0].leafBounds = [{...box(0, 0, 0), collisionFlag: true}]; },
+    ({world}) => { world.triangles[0].futureCollisionFlag = true; },
+    ({world}) => { world.triangles[0].vertices[0].futureComponent = 1; },
     ({world}) => { world.triangles[0].vertices.pop(); },
     ({world}) => { world.triangles[0].vertices.push(point(0, 0, 0)); },
     ({world}) => { world.triangles[0].vertices[1].x = Infinity; },
@@ -291,9 +533,29 @@ test('packing rejects malformed geometry, bounds and topology without changing o
 
 test('unpacking rejects malformed or detached packets', async () => {
   const {map, world} = variedFixture(9);
+  world.brushes[0].id = 'sample-id';
+  world.brushes[0].leafBounds = [box(-1, -1, -1, 1, 1, 1)];
   const original = await packCollisionWorld(map, world);
   for (const change of [
     packet => { packet.version = 99; },
+    packet => { packet.version = 1; },
+    packet => { packet.map.brushes = []; },
+    packet => { packet.brushData = packet.brushData.slice(1); },
+    packet => { packet.brushData[0] = 1; },
+    packet => { packet.brushData[7] = packet.planeFriction.length + 1; },
+    packet => { packet.brushData[8] = 2; },
+    packet => { packet.brushData[2] = 0x3fffffff; },
+    packet => { packet.brushData[2] = 0x80000000; },
+    packet => { packet.brushData[6] = 4; },
+    packet => { packet.brushData[packet.brushData.length - 1] = 1; },
+    packet => { packet.planeValues = new Float32Array(packet.planeValues); },
+    packet => { packet.planeValues[0] = NaN; },
+    packet => { packet.planeFriction[0] = 0xffffffff; },
+    packet => { packet.leafBounds[0] = Infinity; },
+    packet => { packet.scalarOffsets[0] = 1; },
+    packet => { packet.scalarOffsets[packet.scalarOffsets.length - 1]--; },
+    packet => { packet.scalarChars = new Uint8Array(packet.scalarChars); },
+    packet => { structuredClone(packet.scalarChars, {transfer: [packet.scalarChars.buffer]}); },
     packet => { packet.map.displacementTriangles = []; },
     packet => { packet.vertices = new Float32Array(packet.vertices); },
     packet => { packet.vertices[0] = NaN; },

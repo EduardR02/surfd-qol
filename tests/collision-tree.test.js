@@ -255,6 +255,7 @@ for (const [name, build] of builders) {
 
   test(`${name}: leaf arrays work with collision-world packing and transfer`, async () => {
     const {bounds, queries} = randomFixture(109, 79);
+    for (const brush of bounds) brush.planes = [];
     const tree = {bounds, root: build(bounds, 5)};
     const map = {brushes: bounds, displacementTriangles: []};
     const world = {brushes: bounds, triangles: map.displacementTriangles, triangleBounds: [], tree};
