@@ -1,19 +1,7 @@
-import { instrumentGame, instrumentPhysicsWorker } from './instrument.js';
-import { loadGameSource } from './source-loader.js';
-import { createUpdateChecker } from './update-check.js';
+import { origin, isSurfd, isGameModule, WORKERS, patchModule, status, answerUpdateCheck } from './background-common.js';
 
 const sessions = new Map();
-const origin = 'https://surfd.net';
-const isSurfd = url => { try { const parsed = new URL(url); return parsed.origin === origin && parsed.pathname === '/'; } catch { return false; } };
 const command = (tabId, method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
-const checkForUpdate = createUpdateChecker({storage: chrome.storage.local, version: chrome.runtime.getManifest().version});
-
-async function status(tabId, message, error = false) {
-  try { await chrome.tabs.sendMessage(tabId, { type: 'surfd-qol-status', message, error }); } catch { /* navigation */ }
-  await chrome.action.setBadgeText({ tabId, text: error ? '!' : 'ON' }).catch(() => {});
-  await chrome.action.setBadgeBackgroundColor({ tabId, color: error ? '#b83c42' : '#286a61' }).catch(() => {});
-  await chrome.action.setTitle({tabId, title: `Surfd QoL — ${message}`}).catch(() => {});
-}
 
 async function attach(tabId) {
   if (sessions.has(tabId)) return sessions.get(tabId);
@@ -25,7 +13,7 @@ async function attach(tabId) {
       await command(tabId, 'Fetch.enable', { patterns: [
         { urlPattern: 'https://surfd.net/assets/game-*.js', resourceType: 'Script', requestStage: 'Response' },
         // Dedicated-worker entry scripts report as Other on current Chromium.
-        ...['checkpoint-speed', 'ghost', 'replay-index'].map(name => ({
+        ...WORKERS.map(name => ({
           urlPattern: `https://surfd.net/assets/${name}.worker-*.js`, requestStage: 'Response'
         }))
       ] });
@@ -42,10 +30,7 @@ async function attach(tabId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (message?.type === 'surfd-qol-check-update' && sender.tab && isSurfd(sender.url)) {
-    checkForUpdate().then(update => respond({update}), () => respond({update: null}));
-    return true;
-  }
+  if (answerUpdateCheck(message, sender, respond)) return true;
   if (message?.type !== 'surfd-qol-connect' || !sender.tab || !isSurfd(sender.url)) return;
   attach(sender.tab.id).then(() => respond({ ok: true }), async error => {
     await status(sender.tab.id, `Could not attach: ${error.message}. Close DevTools and use the QoL toolbar button to retry.`, true);
@@ -58,7 +43,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
   if (tabId === undefined || method !== 'Fetch.requestPaused') return;
   const { requestId } = params;
-  const isGame = params.request.url.startsWith(`${origin}/assets/game-`);
+  const isGame = isGameModule(params.request.url);
   let released = false;
   try {
     if (![200, 304].includes(params.responseStatusCode) || new URL(params.request.url).origin !== origin) return;
@@ -67,8 +52,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       const response = await command(tabId, 'Fetch.getResponseBody', { requestId });
       text = response.base64Encoded ? new TextDecoder().decode(Uint8Array.from(atob(response.body), c => c.charCodeAt(0))) : response.body;
     }
-    text = await loadGameSource(params.request.url, text);
-    const patched = isGame ? instrumentGame(text) : instrumentPhysicsWorker(text);
+    const patched = await patchModule(params.request.url, text);
     const bytes = new TextEncoder().encode(patched);
     // Modules are ASCII in current builds; conversion also handles future UTF-8 assets.
     let binary = '';
