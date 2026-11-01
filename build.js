@@ -1,5 +1,6 @@
-import { mkdir, copyFile, readFile } from 'node:fs/promises';
+import { mkdir, copyFile, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { firefoxManifest } from './firefox-manifest.js';
 await mkdir('dist', { recursive: true });
 for (const name of ['manifest.json', 'background.js', 'background-common.js', 'instrument.js', 'collision-world.js', 'collision-tree.js', 'stage-reset-hooks.js', 'map-load-hooks.js', 'sky-resample.js', 'progressive-map-hooks.js', 'progressive-assets.js', 'progressive-textures.js', 'native-room-hooks.js', 'native-saveloc-hooks.js', 'source-loader.js', 'update-check.js']) await copyFile(`extension/${name}`, `dist/${name}`);
 // The bundled HUD font (Instrument Sans, subset) ships with its licence.
@@ -17,3 +18,12 @@ for (const [entry, name] of [['src/main.js', 'page.js'], ['src/bridge.js', 'brid
   if (!result.success) throw new AggregateError(result.logs, `Failed to build ${name}`);
 }
 console.log('Chrome extension built: dist/');
+
+// Firefox loads the same files, with its own background loader and manifest.
+await rm('dist-firefox', { recursive: true, force: true });
+await mkdir('dist-firefox');
+for (const name of await readdir('dist')) if (name !== 'background.js') await copyFile(`dist/${name}`, `dist-firefox/${name}`);
+await copyFile('extension/background-firefox.js', 'dist-firefox/background-firefox.js');
+const manifest = firefoxManifest(JSON.parse(await readFile('extension/manifest.json', 'utf8')));
+await writeFile('dist-firefox/manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
+console.log('Firefox extension built: dist-firefox/');

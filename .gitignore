@@ -1,5 +1,6 @@
 # Generated extension and dependencies
 /dist/
+/dist-firefox/
 /node_modules/
 /coverage/
 
