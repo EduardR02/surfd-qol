@@ -38,6 +38,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, directoryTimer = null, sampling = false;
+  let directoryError = '';
   let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
   // Finishes sent for verification, waiting on the site's verdict, by attempt id.
@@ -588,9 +589,13 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         }
         directory.clear();
         for (const [id, row] of next) directory.set(id, row);
+        directoryError = '';
         updateLobby();
       } catch {
-        if (!destroyed && (timedOut || !controller.signal.aborted)) getAdapter()?.rooms?.notice?.(SERVICE);
+        if (!destroyed && (timedOut || !controller.signal.aborted)) {
+          directoryError = SERVICE;
+          ui?.refresh();
+        }
       } finally {
         timers.clearTimeout(deadline);
         controller.signal.removeEventListener('abort', stop);
@@ -625,6 +630,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     browserVisible = open;
     if (open) updateLobby();
     else {
+      directoryError = '';
       ui?.refresh();
     }
     updateDirectoryActivity();
@@ -643,6 +649,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     });
   }
   const api = {
+    directoryError: () => directoryError,
     // Called by the game as it handles each finish: the attempt id it sends for verification, or null.
     finishQueued(id) { queuedRun = typeof id === 'string' ? id : null; },
     async observeFinish(live, history) {

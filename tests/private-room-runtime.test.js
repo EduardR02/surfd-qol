@@ -928,6 +928,43 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
+  test('passive directory failures recover without sending shared notices', async () => {
+    const f = fixture();
+    try {
+      f.response({ok: false});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryError()).toBeTruthy();
+      expect(f.notices).toEqual([]);
+      expect(f.rows().map(value => value.id)).toEqual(['official']);
+      f.response({ok: true, json: async () => ({rooms: []})});
+      f.timers.advance(10000);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryError()).toBe('');
+      expect(f.rows().map(value => value.id)).toEqual(['official']);
+      f.response({ok: false});
+      f.timers.advance(10000);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryError()).toBeTruthy();
+      f.open(false); f.runtime.browserVisibility(false);
+      expect(f.runtime.directoryError()).toBe('');
+      expect(f.notices).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('cancelled passive directory work does not report an error', async () => {
+    const f = fixture();
+    try {
+      f.response(new Promise(() => {}));
+      f.open(true); f.runtime.browserVisibility(true);
+      const pending = f.runtime.refreshDirectory();
+      f.open(false); f.runtime.browserVisibility(false);
+      await pending;
+      expect(f.runtime.directoryError()).toBe('');
+      expect(f.notices).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
   test('directory refresh is menu-gated and throttled', async () => {
     const f = fixture();
     try {

@@ -110,18 +110,21 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     form.onsubmit = event => { event.preventDefault(); joinCode(); };
     const toolbar = root.querySelector('.toolbar'), grow = toolbar?.querySelector('.grow');
     if (grow) grow.before(form); else toolbar?.append(form);
+    const directoryNote = element('p', 'foot-note qol-directory-note');
+    directoryNote.setAttribute('role', 'status');
+    toolbar?.after(directoryNote);
 
     const view = buildView();
     root.querySelector('.window-body')?.append(view.view);
     const title = root.querySelector('.titlebar h2');
     nodes = {hostButton, back, start, endButton, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
-      layout: root.querySelector('.servers-layout'), note: element('p', 'qol-room-note')};
+      layout: root.querySelector('.servers-layout'), note: element('p', 'qol-room-note'), directoryNote};
     rosterKey = '';
   }
   function unmount() {
     if (!nodes) return;
-    const {hostButton, back, start, endButton, refreshButton, join, form, view, title, titleText, layout, note} = nodes;
-    for (const node of [hostButton, back, start, endButton, form, view.view, note]) node.remove();
+    const {hostButton, back, start, endButton, refreshButton, join, form, view, title, titleText, layout, note, directoryNote} = nodes;
+    for (const node of [hostButton, back, start, endButton, form, view.view, note, directoryNote]) node.remove();
     hidden(refreshButton, false); hidden(join, false); hidden(layout, false);
     text(title, titleText);
     nodes = null;
@@ -346,6 +349,8 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   function render(adapter, hosting) {
     const host = mode === 'host';
     const {hostButton, back, start, endButton, refreshButton, join, submit, view, title, titleText, layout} = nodes;
+    text(nodes.directoryNote, rooms.directoryError?.() ?? '');
+    hidden(nodes.directoryNote, host || !rooms.directoryError?.());
     hidden(layout, host); hidden(view.view, !host);
     text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);
     text(hostButton, hosting ? 'Your room' : 'Host a room');

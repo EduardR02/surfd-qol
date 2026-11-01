@@ -172,6 +172,7 @@ Surf with friends in a room of your own: no time limit, no map votes, and the ho
 - **Friend status and Join:** automatic room status and Join buttons require server presence from Surfd's backend. Community rooms do not currently publish that presence; a received community invite or server-presence Join action uses the extension's room connection instead of an official-server ticket.
 - **Room controls:** unsupported native player reports, official-server moderation and map votes are hidden, including their legacy scoreboard variants. Chat, spectating, local mute, host Kick/Ban and Change map remain available. Official-server controls are unchanged.
 - **Browser freshness:** public listings refresh every 10 seconds while the foreground tab shows the menu or server browser. Polling pauses during play and in background tabs; returning to an open menu or browser refreshes immediately. Official servers load independently, and community rows update when their directory results arrive. Leaving removes the local cached listing and roster; a lost guest connection also clears its peer roster. Directory caching can add another 10 seconds before remote changes appear. A stalled community lookup times out after 5 seconds without delaying official results.
+Passive directory errors appear only inside the server browser and clear after a successful refresh or when it closes. An empty community list is normal; it does not interrupt solo or official-server play.
 
 ### Optional extras
 

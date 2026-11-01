@@ -199,6 +199,31 @@ const groupTitles = view => view.querySelectorAll('.group-title').filter(shown)
   .map(node => node.textContent.slice(0, node.textContent.length - (node.querySelector('small')?.textContent.length ?? 0)));
 const type = (input, value) => { input.value = value; input.oninput(); };
 
+test('directory feedback stays in the list and does not replace explicit action feedback', async () => {
+  const f = fixture();
+  let error = 'Directory unavailable';
+  f.rooms.directoryError = () => error;
+  try {
+    f.status.textContent = 'Native status';
+    f.ui.refresh();
+    const note = f.root.querySelector('.qol-directory-note');
+    expect(shown(note)).toBe(true);
+    expect(note.textContent).toBe(error);
+    expect(f.status.textContent).toBe('Native status');
+    await f.host().click();
+    expect(shown(note)).toBe(false);
+    f.fail(new Error('Host failed'));
+    await f.footButton('Start room').click();
+    expect(f.status.textContent).toBe('Host failed');
+    await f.footButton('Back').click();
+    expect(shown(note)).toBe(true);
+    error = '';
+    f.ui.refresh();
+    expect(shown(note)).toBe(false);
+    expect(f.status.textContent).toBe('Host failed');
+  } finally { f.ui.destroy(); }
+});
+
 describe('Host a room', () => {
   test('replaces the server list with the room groups in the same window', async () => {
     const f = fixture();
