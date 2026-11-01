@@ -7,7 +7,7 @@ import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 import {createReplayIndexPool, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v35:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v36:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -54,7 +54,7 @@ function preparedIndexHooks(source, state) {
         text: `const ${worker}=__surfdQolIndexes().acquire(${index[1]},${index[5]},this.host.session(),()=>${creation[2]});this.worker=${worker},${worker}.onclose=()=>{if(this.worker===${worker})this.stopWorker()}`},
       {at: index.index + fallback.index, length: fallback[0].length, text: 'this.stopWorker(!0),this.fallback='},
       {at: stop.index, length: stop[0].length, text: 'stopWorker(__surfdQolFailed=!1){clearTimeout(this.workerTimeout),this.workerTimeout=void 0,this.worker?.terminate(__surfdQolFailed),this.worker=null}'},
-      {at: attach.index, length: 0, text: `__surfdQolIndexes().ownMap(${map[3]},${map[1]}),`},
+      {at: attach.index, length: 0, text: `__surfdQolIndexes().ownRenderer(${map[1]}),`},
     ].sort((a, b) => b.at - a.at);
     for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
     return source + `

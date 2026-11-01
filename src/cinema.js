@@ -441,11 +441,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   function retarget(current, promoted = false) {
     if (!current.pose) return;
     const time = now(), previous = current.move;
-    const continuing = promoted && previous?.from.eye && time < previous.start + previous.duration;
+    const initialFlight = current.camera && previous?.from.eye && time < previous.start + previous.duration;
+    const continuing = promoted && initialFlight;
     const following = current.camera && !current.pose.eye && !previous?.from.eye && current.drawnAt !== null;
     const start = following ? current.drawnAt : time;
     const duration = continuing ? Math.max(MOVE * 0.25, previous.start + previous.duration - start) : MOVE;
-    const velocity = continuing || following ? {...current.velocity} : null;
+    const velocity = initialFlight || following ? {...current.velocity} : null;
     let offset = null;
     if (following) {
       const tick = current.tick - current.planBase, step = current.motionStep || 16;

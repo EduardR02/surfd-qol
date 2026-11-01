@@ -1,7 +1,7 @@
 // Worker-shaped leases let the native player keep its validation, watchdog and
 // fallback. Only the map's worker/world outlives stopWorker(); indexes do not.
 export function createReplayIndexPool(prepare) {
-  let slot = null, generation = 0;
+  let slot = null, rendererScope = null, generation = 0;
   const protocol = 1;
   function evict(owner = slot) {
     if (!owner) return;
@@ -41,6 +41,7 @@ export function createReplayIndexPool(prepare) {
           if (ArrayBuffer.isView(value) && !transfer.includes(value.buffer)) transfer.push(value.buffer);
         }
       }
+      lease.dispatched = true;
       try { owner.worker.postMessage(message, transfer); }
       catch (error) {
         if (!packet) throw error;
@@ -53,9 +54,10 @@ export function createReplayIndexPool(prepare) {
   }
   return {
     acquire(map, replay, session, createWorker) {
-      if (slot && (slot.map !== map || slot.mapId !== replay.mapId || slot.version !== replay.mapVersion)) evict();
+      if (slot && (slot.scope !== rendererScope || slot.mapId !== replay.mapId || slot.version !== replay.mapVersion)) evict();
+      slot?.lease?.terminate();
       if (!slot) {
-        const owner = {worker: createWorker(), map, mapId: replay.mapId, version: replay.mapVersion,
+        const owner = {worker: createWorker(), scope: rendererScope, mapId: replay.mapId, version: replay.mapVersion,
           ready: false, world: false, lease: null};
         slot = owner;
         owner.worker.onmessage = event => {
@@ -84,9 +86,8 @@ export function createReplayIndexPool(prepare) {
         owner.worker.onmessageerror = () => fail(owner);
       }
       const owner = slot;
-      owner.lease?.terminate();
       const lease = {
-        id: ++generation, map, session, closed: false, posting: false, message: null,
+        id: ++generation, map, session, closed: false, posting: false, dispatched: false, message: null,
         onmessage: null, onerror: null, onclose: null,
         postMessage(message) {
           if (!current(owner, lease)) return;
@@ -98,7 +99,7 @@ export function createReplayIndexPool(prepare) {
           lease.closed = true;
           if (!currentOwner()) return;
           owner.lease = null;
-          if (failed) { evict(owner); return; }
+          if (failed || lease.dispatched && !owner.world) { evict(owner); return; }
           try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'cancel', job: lease.id}); }
           catch { evict(owner); }
         },
@@ -111,10 +112,14 @@ export function createReplayIndexPool(prepare) {
       }
       return lease;
     },
-    ownMap(map, renderer) {
+    ownRenderer(renderer) {
+      const scope = {};
+      rendererScope = scope;
+      evict();
       const dispose = renderer.dispose;
       renderer.dispose = function (...args) {
-        if (slot?.map === map) evict();
+        if (slot?.scope === scope) evict();
+        if (rendererScope === scope) rendererScope = null;
         return dispose.apply(this, args);
       };
     },
@@ -153,7 +158,10 @@ export function createReplayIndexWorker(post, run, pause = () => new Promise(res
     running = false;
   }
   return message => {
-    if (message?.__surfdQolIndex !== protocol) return;
+    if (message?.__surfdQolIndex !== protocol) {
+      post({ok: false, error: 'Replay index worker protocol unavailable'});
+      return;
+    }
     if (message.type === 'hello') {
       post({__surfdQolIndex: protocol, type: 'ready'});
     } else if (message.type === 'cancel') {

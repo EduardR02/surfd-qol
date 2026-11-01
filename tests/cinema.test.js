@@ -1088,6 +1088,23 @@ describe('cinematic replay lifecycle', () => {
     };
     return {...fixture, time, render};
   }
+  test('adding runs during the initial POV flight preserves camera velocity', async () => {
+    const {cinema, render} = moving();
+    await cinema.setView('cinematic');
+    render(0);
+    const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+    for (const [id, at] of [['first', 400], ['second', 550]]) {
+      const before = render(at - 10), start = render(at);
+      const speed = distance(start, before) / 10;
+      expect(speed).toBeGreaterThan(0.01);
+      await cinema.add(run(id));
+      expect(distance(render(at), start)).toBeLessThan(1e-7);
+      const continued = distance(render(at + 1), start);
+      expect(continued / speed).toBeGreaterThan(0.8);
+      expect(continued / speed).toBeLessThan(1.2);
+    }
+    cinema.close();
+  });
   test('adding a run keeps following the moving replay while reframing', async () => {
     const {cinema, render} = moving();
     await cinema.setView('steady');

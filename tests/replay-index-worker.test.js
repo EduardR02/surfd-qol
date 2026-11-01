@@ -41,7 +41,7 @@ for (const [kind, makePool, makeWorker] of [
     let preparations = 0, disposed = 0;
     const f = fixture(async () => { preparations++; return packet; });
     const renderer = {dispose() { disposed++; }};
-    f.pool.ownMap(f.map, renderer);
+    f.pool.ownRenderer(renderer);
     expect(f.workers).toHaveLength(0);
     expect(preparations).toBe(0);
     const first = f.acquire(), replay = replayFor(f.map), batches = [];
@@ -130,10 +130,10 @@ for (const [kind, makePool, makeWorker] of [
     expect(worker.terminated).toBe(0);
   });
 
-  test('map identity, revision and archived replay versions own separate workers', () => {
-    const f = fixture(), first = f.acquire();
-    const renderer = {dispose() {}};
-    f.pool.ownMap(f.map, renderer);
+  test('renderer lifetimes and replay revisions own worlds independently of parsed map identity', () => {
+    const f = fixture(), renderer = {dispose() {}};
+    f.pool.ownRenderer(renderer);
+    const first = f.acquire();
     let closed = 0;
     first.onclose = () => { closed++; first.terminate(); };
     const archived = f.acquire(f.map, replayFor(f.map, 'archive-v0'));
@@ -146,11 +146,88 @@ for (const [kind, makePool, makeWorker] of [
     f.map.version = 'v2';
     f.acquire();
     expect(f.workers[2].terminated).toBe(1);
-    const replacement = {...f.map};
-    f.acquire(replacement);
-    expect(f.workers[3].terminated).toBe(1);
+    f.acquire({...f.map});
+    expect(f.workers).toHaveLength(4);
     renderer.dispose();
-    expect(f.workers[4].terminated).toBe(0);
+    expect(f.workers[3].terminated).toBe(1);
+  });
+
+  test('separately parsed archived maps reuse their world and late renderer disposal cannot evict a newer world', async () => {
+    let preparations = 0;
+    const f = fixture(async () => { preparations++; return null; });
+    const renderer = {dispose() {}};
+    f.pool.ownRenderer(renderer);
+    const archive = {...f.map, version: 'archive-v0'}, replay = replayFor(archive);
+    const first = f.acquire(archive, replay);
+    first.postMessage({replay});
+    const worker = f.workers[0];
+    worker.ready();
+    await flush();
+    worker.world(first, replay);
+    first.terminate();
+    const second = f.acquire({...archive}, replay);
+    second.postMessage({replay});
+    await flush();
+    expect(f.workers).toHaveLength(1);
+    expect(preparations).toBe(1);
+    expect(worker.runs()).toHaveLength(2);
+    const replacement = {dispose() {}};
+    f.pool.ownRenderer(replacement);
+    expect(worker.terminated).toBe(1);
+    f.acquire({...archive}, replay);
+    renderer.dispose();
+    expect(f.workers[1].terminated).toBe(0);
+    replacement.dispose();
+    expect(f.workers[1].terminated).toBe(1);
+  });
+
+  for (const explicitCancel of [false, true]) test(`${explicitCancel ? 'canceling' : 'replacing'} a dispatched cold load never waits for its obsolete fetch`, async () => {
+    const load = deferred(), workers = [], starts = [], batches = [], map = {id: 'map', version: 'v1'};
+    const pool = makePool(async () => null);
+    function create() {
+      const worker = {terminated: false, terminate() { this.terminated = true; },
+        postMessage(message) { queueMicrotask(() => { if (!worker.terminated) receive(message); }); }};
+      const receive = makeWorker(data => queueMicrotask(() => {
+        if (!worker.terminated) worker.onmessage?.({data});
+      }), async (message, job) => {
+        starts.push(message.replay.label);
+        if (message.replay.label === 'obsolete') await load.promise;
+        if (!job.current()) return;
+        job.world(map);
+        job.emit({ok: true, batch: {done: true}});
+      });
+      workers.push(worker);
+      return worker;
+    }
+    const replay = {...replayFor(map), label: 'obsolete'};
+    const first = pool.acquire(map, replay, {map}, create);
+    first.postMessage({replay});
+    await flush();
+    expect(starts).toEqual(['obsolete']);
+    if (explicitCancel) first.terminate();
+    const nextReplay = {...replay, label: 'replacement'};
+    const next = pool.acquire(map, nextReplay, {map}, create);
+    expect(first.closed).toBe(true);
+    expect(workers[0].terminated).toBe(true);
+    next.onmessage = event => batches.push(event.data.batch);
+    next.postMessage({replay: nextReplay});
+    await flush();
+    expect(starts).toEqual(['obsolete', 'replacement']);
+    expect(batches).toEqual([{done: true}]);
+    load.resolve();
+    await flush();
+    expect(batches).toEqual([{done: true}]);
+    next.terminate();
+  });
+
+  test('an untagged native request fails immediately rather than waiting for a watchdog', () => {
+    const posts = [], starts = [];
+    const receive = makeWorker(data => posts.push(data), async message => { starts.push(message); });
+    receive({entry: {id: 'map'}, currentVersion: 'v1', replay: replayFor({id: 'map', version: 'v1'})});
+    expect(starts).toHaveLength(0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].ok).toBe(false);
+    expect(typeof posts[0].error).toBe('string');
   });
 
   test('worker, protocol and batch failures evict state and notify native fallback once', async () => {
@@ -187,6 +264,7 @@ for (const [kind, makePool, makeWorker] of [
     await flush();
     expect(messages.filter(message => message.type === 'run')).toHaveLength(1);
     expect(messages.find(message => message.type === 'run').__surfdQolCollision).toBeUndefined();
+    worker.world(lease, replayFor(f.map));
     lease.terminate();
     const next = f.acquire();
     let failures = 0;
@@ -267,10 +345,9 @@ self.probe={simulations,loads:()=>loads,builds:()=>builds};
 function instrumentedWorkerFixture() {
   const posts = [], scheduled = [], self = {postMessage: data => posts.push(data)};
   const source = instrumentPhysicsWorker(nativeWorker);
-  expect(source).toContain('__surfdQolReceive');
   new Function('self', 'setTimeout', source)(self, callback => scheduled.push(callback));
   return {posts, scheduled, probe: self.probe,
-    send: data => self.onmessage({data: protocol(data)}),
+    send: data => self.onmessage({data: protocol(data)}), sendRaw: data => self.onmessage({data}),
     async resume() { scheduled.shift()(); await flush(); }};
 }
 
@@ -343,17 +420,16 @@ function valid(batch){return batch&&typeof batch.done==="boolean"}
 const player=new Player();install(map);
 `;
 
-function instrumentedPlayerFixture() {
+function instrumentedPlayerFixture(native = nativePlayer) {
   let source;
   const warn = console.warn;
-  try { console.warn = () => {}; source = instrumentGame(nativePlayer); }
+  try { console.warn = () => {}; source = instrumentGame(native); }
   finally { console.warn = warn; }
-  expect(source).toContain('__surfdQolIndexes().acquire');
   const workers = [], timers = new Map();
   class NativeWorker extends WorkerStub { constructor() { super(); workers.push(this); } }
   const runtime = new Function('globalThis', 'Worker', 'setTimeout', 'clearTimeout',
     source.replaceAll('import.meta.url', '"https://surfd.net/game.js"') +
-    ';return {player,install,dispose:()=>renderer.dispose(),map,fallbacks:()=>fallbacks};')(
+    ';return {player,install,useReplayMap:map=>nativeSession=makeSession(map),dispose:()=>renderer.dispose(),map,fallbacks:()=>fallbacks};')(
     {}, NativeWorker, callback => { const id = Symbol(); timers.set(id, callback); return id; }, id => timers.delete(id));
   return {...runtime, workers, timers};
 }
@@ -391,6 +467,37 @@ test('native player completion retains its worker, while native failure and map 
   expect(f.timers.size).toBe(0);
   f.install({id: 'map-two', version: 'v2'});
   expect(f.workers).toHaveLength(2);
+});
+
+test('renderer disposal releases completed workers for cross-map and archived replay geometry', async () => {
+  for (const version of ['v1', 'archive-v0']) {
+    const f = instrumentedPlayerFixture(), replayMap = {...f.map, version};
+    f.useReplayMap(replayMap);
+    const replay = {...replayFor(replayMap), commands: [{}]};
+    f.player.begin(replay);
+    const worker = f.workers[0], lease = f.player.worker;
+    worker.ready();
+    await flush();
+    worker.world(lease, replay);
+    worker.batch(lease, {done: true});
+    expect(f.player.index.complete).toBe(true);
+    expect(worker.terminated).toBe(0);
+    f.dispose();
+    expect(worker.terminated).toBe(1);
+    expect(f.timers.size).toBe(0);
+  }
+});
+
+test('a patched worker with an unpatched player triggers immediate native fallback', () => {
+  const player = instrumentedPlayerFixture(nativePlayer.replace('renderer.setQuality?.(1)', 'renderer.setQuality(1)'));
+  const worker = instrumentedWorkerFixture(), replay = {...replayFor(player.map), commands: [{}]};
+  player.player.begin(replay);
+  worker.sendRaw(player.workers[0].posts[0].message);
+  for (const response of worker.posts) player.workers[0].receive(response);
+  expect(player.fallbacks()).toBe(1);
+  expect(player.workers[0].terminated).toBe(1);
+  expect(player.timers.size).toBe(0);
+  expect(worker.probe.simulations).toHaveLength(0);
 });
 
 test('an unpatched worker fails the handshake into native fallback without indexing or a leaked watchdog', () => {
