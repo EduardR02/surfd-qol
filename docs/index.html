@@ -3,279 +3,492 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Surfd QoL: feedback and replay tools for surfd.net</title>
-<meta name="description" content="A Chrome extension for surfd.net with ramp-by-ramp speed feedback, replay tools with a cinematic camera, and local run history. Review your mistakes and save replay moments to practice.">
-<meta property="og:title" content="Surfd QoL">
-<meta property="og:description" content="See where you lose speed on surfd.net, review your runs with replay controls, and save moments to practice.">
-<meta property="og:image" content="https://eduardr02.github.io/surfd-qol/hud.jpg">
+<title>Surfd QoL — replays, feedback and run history for surfd.net</title>
+<meta name="description" content="Compare runs in cinematic replays, see ramp-by-ramp speed feedback and revisit your run history with Surfd QoL, a browser extension for surfd.net.">
 <meta name="color-scheme" content="dark">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Surfd QoL">
+<meta property="og:title" content="Surfd QoL — replays, feedback and run history">
+<meta property="og:description" content="Cinematic multi-run replays, ramp-by-ramp feedback and local run history for surfd.net.">
+<meta property="og:url" content="https://eduardr02.github.io/surfd-qol/">
+<meta property="og:image" content="https://eduardr02.github.io/surfd-qol/cinematic.jpg">
+<meta property="og:image:alt" content="A cinematic replay on Fiellu with several runs shown together as coloured trails.">
+<meta name="twitter:card" content="summary_large_image">
 <style>
-@font-face{font-family:"Instrument Sans";src:url(fonts/instrument-sans-400.woff) format("woff");font-weight:400;font-display:swap}
-@font-face{font-family:"Instrument Sans";src:url(fonts/instrument-sans-700.woff) format("woff");font-weight:700;font-display:swap}
-:root{
-  --ink:#1a1516;--raise:#241d1e;--line:rgba(255,232,226,.1);
-  --paper:#f6f0ec;--dust:#b4aca8;--rose:#ebbcba;
-  --good:#9ccfd8;--warn:#f6c177;--bad:#eb6f92;
-  --edge:rgba(16,10,13,.74);
-}
+@font-face{font-family:"Instrument Sans";src:url("fonts/instrument-sans-400.woff") format("woff");font-weight:400;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url("fonts/instrument-sans-700.woff") format("woff");font-weight:700;font-display:swap}
+:root{--ground:#1a1516;--raised:#251d1e;--text:#f7f0ed;--muted:#bfb0ad;--rose:#edbfbd;--foam:#9ccfd8;--love:#eb6f92;--line:rgba(247,240,237,.15)}
 *,*::before,*::after{box-sizing:border-box}
-html{background:var(--ink);color:var(--paper);-webkit-text-size-adjust:100%}
-body{margin:0;font:400 17px/1.6 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased}
-a{color:var(--rose);text-underline-offset:.18em;text-decoration-thickness:1px}
+[hidden]{display:none!important}
+html{background:var(--ground);color:var(--text);-webkit-text-size-adjust:100%}
+body{margin:0;font:400 17px/1.55 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-synthesis:none}
+a{color:inherit;text-decoration-color:var(--rose);text-underline-offset:.2em;text-decoration-thickness:1px}
 a:hover{text-decoration-thickness:2px}
-:focus-visible{outline:2px solid var(--rose);outline-offset:3px;border-radius:4px}
-.wrap{width:min(1080px,100% - 32px);margin-inline:auto}
-.measure{max-width:64ch}
-
-/* The slanted bar is the extension's own mark. */
-.mark{display:inline-block;width:.32em;height:.9em;background:var(--rose);transform:skewX(-18deg);border-radius:1px;vertical-align:-.08em}
-
-header.top{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
-.brand{display:flex;align-items:center;gap:.5em;font-weight:700;font-size:18px;color:var(--paper);text-decoration:none}
-.top nav a{color:var(--dust);text-decoration:none;font-size:15px}
-.top nav a:hover{color:var(--paper)}
-
-.hero{padding:40px 0 36px}
-.hero h1{margin:0;font-size:clamp(40px,6.4vw,76px);line-height:1.02;letter-spacing:-.025em;font-weight:700;max-width:13ch}
-.hero p{margin:22px 0 0;font-size:19px;color:var(--dust)}
-.hero p + p{margin-top:12px}
-.cta{display:flex;flex-wrap:wrap;align-items:center;gap:14px 22px;margin-top:32px}
-.download{display:inline-flex;align-items:center;gap:12px;padding:15px 24px 15px 20px;border-radius:12px;background:var(--rose);color:#2a1718;
-  font-weight:700;font-size:18px;text-decoration:none;box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 30px rgba(235,188,186,.18)}
-.download:hover{background:#f3cbc9}
-.download svg{width:20px;height:20px;flex:none}
-.cta small{color:var(--dust);font-size:15px;line-height:1.45}
-
-.shot{margin-block:0}
-.shot img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
-.shot figcaption{margin-top:10px;max-width:76ch;font-size:14px;color:var(--dust)}
-.shot.full{margin:40px 0 0}
-.replay-scroll{overflow-x:auto;border-radius:14px;border:1px solid var(--line)}
-.replay-scroll img{min-width:1000px;border:0;border-radius:0}
-
-section{padding:72px 0 0}
-section h2{margin:0 0 18px;font-size:30px;line-height:1.15;letter-spacing:-.015em}
-.lede{margin:0}
-
-/* Install: a real sequence, so it is numbered. */
-.steps{list-style:none;margin:28px 0 0;padding:0;counter-reset:step;display:grid;gap:2px;max-width:760px}
-.steps li{counter-increment:step;display:grid;grid-template-columns:44px 1fr;gap:4px 14px;padding:18px 20px;background:var(--raise);border-radius:4px}
-.steps li:first-child{border-radius:12px 12px 4px 4px}
-.steps li:last-child{border-radius:4px 4px 12px 12px}
-.steps li::before{content:counter(step);grid-row:span 2;font-size:28px;line-height:1;font-weight:700;color:var(--rose);font-variant-numeric:tabular-nums}
-.steps b{font-weight:700}
-.steps span{color:var(--dust);font-size:15.5px}
-code,kbd{font:inherit;font-weight:700;color:var(--paper)}
-.copy{margin-left:8px;padding:3px 10px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--dust);font:inherit;font-size:13.5px;cursor:pointer;vertical-align:1px}
-.copy:hover{color:var(--paper);border-color:rgba(255,232,226,.25)}
-.note{margin:22px 0 0;font-size:15.5px;color:var(--dust)}
-.update-guide{margin-top:36px}
-.update-guide h3{margin:0 0 12px;font-size:24px;line-height:1.2;letter-spacing:-.01em}
-.update-guide .steps{margin-top:22px}
-
-/* The feedback row, set in the HUD's own type: dark edge under each glyph, fraction smaller. */
-.row{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 0;margin:30px 0 8px;padding:34px 8px 28px;border-radius:14px;
-  background:linear-gradient(180deg,#59606b 0%,#8d8794 55%,#b8a09c 100%)}
-.value{flex:0 0 156px;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 12px}
-.value b{font-size:40px;line-height:1;font-weight:700;font-variant-numeric:tabular-nums;-webkit-text-stroke:1.75px var(--edge);paint-order:stroke fill;
-  text-shadow:0 1px 2px rgba(0,0,0,.5),0 0 10px rgba(0,0,0,.28)}
-.value b small{font-size:.74em}
-.value .lab{margin-top:7px;font-size:14px;font-weight:700;letter-spacing:.06em;color:var(--paper);-webkit-text-stroke:1.25px var(--edge);paint-order:stroke fill}
-.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
-dl.defs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:22px 28px;margin:26px 0 0}
-dl.defs div{border-top:1px solid var(--line);padding-top:12px}
-dl.defs dt{font-weight:700}
-dl.defs dd{margin:4px 0 0;color:var(--dust);font-size:15.5px}
-.legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin:26px 0 0;padding:0;list-style:none;font-size:15.5px;color:var(--dust)}
-.legend li{display:flex;align-items:center;gap:9px}
-.legend i{width:10px;height:10px;border-radius:50%;background:currentColor;flex:none}
-
-.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:44px;align-items:start}
-.split ul{margin:0;padding-left:1.1em}
-.split li{margin:0 0 10px}
-.split li::marker{color:var(--rose)}
-.split img{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line)}
-
-footer{margin-top:88px;padding:28px 0 40px;border-top:1px solid var(--line);color:var(--dust);font-size:14.5px}
-footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px 24px}
-
-@media (max-width:760px){
-  .value{flex-basis:112px}
+:focus-visible{outline:3px solid var(--foam);outline-offset:4px}
+img{display:block;max-width:100%;height:auto}
+figure,p,h1,h2,h3{margin:0}
+.wrap{width:min(1200px,calc(100% - 48px));margin-inline:auto}
+.skip-link{position:fixed;left:12px;top:-100px;z-index:10;padding:10px 14px;background:var(--rose);color:var(--ground)}
+.skip-link:focus{top:12px}
+.site-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-block:23px}
+.brand{display:inline-flex;align-items:center;gap:10px;color:var(--text);font-size:18px;font-weight:700;white-space:nowrap;text-decoration:none}
+.mark{width:7px;height:19px;flex:none;transform:skewX(-18deg);background:var(--rose);border-radius:1px}
+.site-header nav{display:flex;align-items:center;gap:clamp(14px,2.5vw,32px)}
+.site-header nav a{color:var(--muted);font-size:15px;white-space:nowrap;text-decoration:none}
+.site-header nav a:hover{color:var(--text)}
+.hero{padding-top:64px}
+.hero-intro{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);align-items:end;gap:48px;padding-bottom:54px}
+h1{font-size:clamp(52px,6.3vw,82px);line-height:.99;letter-spacing:-.045em}
+.hero-copy{max-width:440px;padding-bottom:3px}
+.hero-copy>p:first-child{font-size:18px;line-height:1.5}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:16px 22px;margin-top:26px}
+.download{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:52px;padding:12px 20px;background:var(--rose);color:#2a181a;border-radius:5px;font-weight:700;text-decoration:none}
+.download:hover{background:#f8d4d1;text-decoration:none}
+.download svg{width:18px;height:18px;flex:none}
+.install-link{font-weight:700;font-size:28px;line-height:1.2}
+.availability{margin-top:14px;color:var(--muted);font-size:14px;line-height:1.45}
+.screenshot img{width:100%;border:1px solid var(--line);border-radius:6px}
+.hero-shot img{box-shadow:0 24px 70px rgba(0,0,0,.25)}
+figcaption{margin-top:10px;color:var(--muted);font-size:14px;line-height:1.45}
+h2{font-size:clamp(32px,3.4vw,46px);line-height:1.08;letter-spacing:-.035em}
+h3{font-size:20px;line-height:1.25;letter-spacing:-.015em}
+.replay-copy{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:48px;padding:48px 0 36px}
+.replay-copy h2{max-width:12ch}
+.prose{max-width:55ch;color:var(--muted)}
+.prose p+p{margin-top:15px}
+.story-link{display:inline-block;margin-top:20px;color:var(--foam);text-decoration-color:var(--foam);font-size:15px;font-weight:700}
+.replay-strip{padding-bottom:124px}
+.strip-window{overflow-x:auto;border:1px solid var(--line);border-radius:6px}
+.strip-window img{width:100%;min-width:720px;max-width:none}
+.hud-story{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.75fr);align-items:center;gap:clamp(40px,6vw,86px);padding-bottom:130px}
+.hud-story .story-copy{grid-column:2;grid-row:1}
+.hud-story figure{grid-column:1;grid-row:1}
+.hud-note{display:block;margin-top:8px}
+.story-copy h2{max-width:12ch;margin-bottom:22px}
+.story-copy .prose{max-width:41ch}
+.controls{display:grid;grid-template-columns:minmax(0,.75fr) minmax(0,1.25fr);gap:clamp(40px,7vw,100px);padding-block:74px 0;border-top:1px solid var(--line)}
+.controls-intro p{max-width:35ch;margin-top:20px;color:var(--muted)}
+.control-items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 32px}
+.control-items article{padding-top:16px;border-top:2px solid var(--foam)}
+.control-items article+article{border-color:var(--love)}
+.control-items h3{color:var(--foam)}
+.control-items article+article h3{color:var(--love)}
+.control-items p{margin-top:10px;color:var(--muted)}
+.control-items .story-link{grid-column:1/-1;margin-top:0}
+.history{background:var(--raised);border-block:1px solid var(--line)}
+.history-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,425px);align-items:center;gap:clamp(50px,12vw,180px);padding-block:88px}
+.history-layout .story-copy{max-width:480px}
+.history-layout .story-copy h2{max-width:13ch}
+.preview-views{display:inline-flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;padding:4px;border-radius:6px;background:#181314}
+.preview-views button{padding:9px 13px;border:0;border-radius:4px;background:transparent;color:var(--muted);font:700 14px/1.25 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;cursor:pointer}
+.preview-views button:hover{color:var(--text)}
+.preview-views button[aria-pressed="true"]{background:var(--foam);color:#182426}
+.history .preview-views button[aria-pressed="true"]{background:var(--rose);color:#2a181a}
+.preview-frame{display:grid}
+.preview-frame img{grid-area:1/1}
+.hero-shot .preview-frame,.hud-visual .preview-frame{aspect-ratio:16/9}
+.history-frame{place-items:center;aspect-ratio:870/1365}
+.history-visual figcaption{min-height:2.9em}
+.preview-fallback{display:block;width:fit-content;margin-top:12px;color:var(--foam);font-size:15px;font-weight:700}
+.community{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:48px;padding-block:92px}
+.community h2{max-width:13ch}
+.community figure{grid-column:1/-1}
+.performance{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:48px;padding-block:80px;border-bottom:1px solid var(--line)}
+.performance h2{max-width:14ch}
+.loading-benchmark{grid-column:1/-1;padding:28px 32px;background:var(--raised);border:1px solid var(--line);border-radius:6px}
+.loading-benchmark figcaption{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 24px;margin:0}
+.loading-benchmark figcaption strong{color:var(--text);font-size:18px}
+.benchmark-legend{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:20px;color:var(--muted);font-size:14px}
+.benchmark-legend span{display:inline-flex;align-items:center;gap:8px}
+.benchmark-legend i{width:12px;height:12px;border-radius:2px}
+.benchmark-native{background:var(--love)}
+.benchmark-qol{background:var(--foam)}
+.benchmark-scale{display:grid;grid-template-columns:70px minmax(0,1fr) 60px;column-gap:12px;margin-top:22px}
+.benchmark-ticks{position:relative;grid-column:2;height:1.4em;color:var(--muted);font-size:12px}
+.benchmark-ticks span{position:absolute;transform:translateX(-50%)}
+.benchmark-ticks span:first-child{transform:none}
+.benchmark-ticks span:last-child{transform:translateX(-100%)}
+.benchmark-map h3{margin:12px 0;font-size:17px}
+.benchmark-map+.benchmark-map{margin-top:22px;padding-top:10px;border-top:1px solid var(--line)}
+.benchmark-map dl{display:grid;gap:10px;margin:0}
+.benchmark-row{display:grid;grid-template-columns:70px minmax(0,1fr);align-items:center;column-gap:12px}
+.benchmark-row dt{color:var(--muted);font-size:14px}
+.benchmark-row dd{display:grid;grid-template-columns:minmax(0,1fr) 60px;align-items:center;column-gap:12px;margin:0}
+.benchmark-track{height:18px;background:rgba(247,240,237,.06)}
+.benchmark-bar{display:block;width:calc(var(--seconds) * 100% / 12);height:100%;border-radius:0 2px 2px 0}
+.benchmark-value{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.benchmark-note{max-width:92ch;margin-top:24px;color:var(--muted);font-size:14px;line-height:1.5}
+.install{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:clamp(48px,9vw,135px);padding-block:100px 110px}
+.install-intro h2{max-width:10ch}
+.install-intro p{max-width:31ch;margin-top:20px;color:var(--muted)}
+.install-intro .download{margin-top:25px}
+.install-intro .compatibility{font-size:14px;line-height:1.5}
+.steps{margin:0;padding-left:1.4em}
+.steps>li{padding-left:.55em}
+.steps>li+li{margin-top:23px;padding-top:23px;border-top:1px solid var(--line)}
+.steps>li::marker{color:var(--rose);font-weight:700}
+.steps strong{font-size:18px}
+.steps p{margin-top:5px;color:var(--muted)}
+code{font:700 14px/1.45 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;color:var(--text)}
+.addresses{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px;margin-top:13px}
+.address{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:1px 8px;padding:9px 0;border-bottom:1px solid var(--line)}
+.address span{grid-column:1/-1;color:var(--muted);font-size:13px}
+.address code{overflow-wrap:anywhere}
+.copy{padding:2px 0;border:0;background:none;color:var(--foam);font:700 13px/1.4 "Instrument Sans",ui-sans-serif,system-ui,sans-serif;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.copy[hidden]{display:none}
+.install-note{margin-top:36px}
+.install-note p{margin-top:9px;color:var(--muted)}
+.guide-link{display:inline-block;margin-top:30px;font-weight:700}
+footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+.footer-inner{display:flex;justify-content:space-between;gap:16px 32px;padding-block:27px 36px}
+.footer-inner p{max-width:60ch}
+.footer-inner a{color:var(--text)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media (max-width:800px){
+  .hero{padding-top:42px}
+  .hero-intro{grid-template-columns:1fr;gap:25px;padding-bottom:38px}
+  .hero-copy{max-width:540px}
+  .replay-strip{padding-bottom:88px}
+  .hud-story{grid-template-columns:1fr;gap:28px;padding-bottom:88px}
+  .hud-story .story-copy,.hud-story figure{grid-column:auto;grid-row:auto}
+  .hud-story .story-copy{max-width:560px}
+  .history-layout{grid-template-columns:minmax(0,1fr) minmax(220px,.8fr);gap:36px;padding-block:70px}
+  .install{gap:42px;padding-block:76px 88px}
+}
+@media (max-width:600px){
   body{font-size:16px}
-  .hero{padding-top:20px}
-  .hero p{font-size:17px}
-  section{padding-top:56px}
-  .split{grid-template-columns:1fr}
-  .split img{max-width:420px}
-  .value b{font-size:34px}
+  .wrap{width:calc(100% - 40px)}
+  .site-header{gap:10px;padding-block:19px}
+  .site-header nav{gap:14px}
+  .site-header nav a{font-size:14px}
+  .brand{gap:8px;font-size:16px}
+  .mark{width:6px;height:17px}
+  .hero{padding-top:34px}
+  h1{font-size:clamp(44px,11vw,62px)}
+  .hero-copy>p:first-child{font-size:17px}
+  .actions{margin-top:22px}
+  .replay-copy{grid-template-columns:1fr;gap:18px;padding:34px 0 28px}
+  .replay-strip{padding-bottom:80px}
+  .replay-copy h2,.story-copy h2,.community h2{max-width:15ch}
+  .hud-story{padding-bottom:80px}
+  .hud-visual .preview-frame{aspect-ratio:5/4}
+  .hud-story .screenshot img{aspect-ratio:5/4;object-fit:cover;object-position:center}
+  .controls{grid-template-columns:1fr;gap:28px;padding-block:60px 0}
+  .control-items{grid-template-columns:1fr}
+  .history-layout{grid-template-columns:1fr;gap:32px;padding-block:64px}
+  .history-layout figure{width:min(100%,425px)}
+  .community,.performance{grid-template-columns:1fr;gap:22px;padding-block:68px}
+  .community figure{grid-column:auto}
+  .loading-benchmark{grid-column:auto;padding:22px 20px}
+  .benchmark-scale{grid-template-columns:50px minmax(0,1fr) 52px;column-gap:8px}
+  .benchmark-row{grid-template-columns:50px minmax(0,1fr);column-gap:8px}
+  .benchmark-row dd{grid-template-columns:minmax(0,1fr) 52px;column-gap:8px}
+  .install{grid-template-columns:1fr;gap:40px;padding-block:70px 76px}
+  .install-intro h2{max-width:none}
+  .addresses{grid-template-columns:1fr}
+  .footer-inner{flex-direction:column}
 }
 </style>
 </head>
 <body>
-<header class="top wrap">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header wrap">
   <a class="brand" href="./"><span class="mark" aria-hidden="true"></span>Surfd QoL</a>
-  <nav><a href="https://github.com/EduardR02/surfd-qol">Source on GitHub</a></nav>
+  <nav aria-label="Main navigation">
+    <a href="#replays">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/EduardR02/surfd-qol">GitHub</a>
+  </nav>
 </header>
 
-<main>
-  <div class="hero wrap">
-    <h1>See where your speed goes.</h1>
-    <p class="measure">Surfd QoL is a Chrome extension for <a href="https://surfd.net/">surfd.net</a>. See where you lose speed on each ramp and in the air, review the moment in a replay, then try the section yourself.</p>
-    <p class="measure">Choose the feedback you want, with a configurable HUD, replay tools and local run history.</p>
-    <div class="cta">
-      <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Download for Chrome
+<main id="main">
+  <section class="hero wrap" aria-labelledby="hero-title">
+    <div class="hero-intro">
+      <h1 id="hero-title">Compare runs<br>in a replay.</h1>
+      <div class="hero-copy">
+        <p>Surfd QoL adds cinematic replays, ramp-by-ramp feedback and local run history to <a href="https://surfd.net/">surfd.net</a>.</p>
+        <div class="actions">
+          <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13"/></svg>
+            Download the zip
+          </a>
+          <a class="install-link" href="#install">How to install</a>
+        </div>
+        <p class="availability">For desktop Chrome 118+, Edge, Brave and Opera.</p>
+      </div>
+    </div>
+    <figure class="screenshot hero-shot" data-preview>
+      <div class="preview-views" role="group" aria-label="Replay bar appearance" hidden>
+        <button type="button" data-preview-view="native" aria-controls="hero-preview" aria-pressed="false">Native bar</button>
+        <button type="button" data-preview-view="custom" aria-controls="hero-preview" aria-pressed="true">Custom bar</button>
+      </div>
+      <div class="preview-frame" id="hero-preview">
+        <img src="cinematic.jpg" width="1440" height="810" alt="Five runs compared as coloured ghosts and trails on Fiellu, with the native replay bar below." data-preview-content="native" hidden>
+        <img src="cinematic-custom.jpg" width="1440" height="810" alt="The same five-run Fiellu cinematic replay with the custom replay bar below." data-preview-content="custom">
+      </div>
+      <figcaption aria-live="polite">
+        <span data-preview-content="native" hidden>Five runs on Fiellu in Cinematic, with the native replay bar.</span>
+        <span data-preview-content="custom">Five runs on Fiellu in Cinematic, with the custom replay bar.</span>
+        <a class="preview-fallback" href="cinematic.jpg">View the native bar screenshot</a>
+      </figcaption>
+    </figure>
+    <div class="replay-copy" id="replays">
+      <h2>Compare the lines.</h2>
+      <div class="prose">
+        <p>Add your PB, recent best, a record or a leaderboard run as a ghost. Watch in real time or line them up side by side, and switch between POV, Steady and Cinematic cameras.</p>
+        <p>In a single-run replay or POV, the timeline shows graded ramp touches and saved locations. Use Saveloc to bookmark a moment, then load it in practice after leaving the replay.</p>
+        <p>The custom replay bar is on by default; switch to Surfd's bar under <b>QoL → History</b>. In Steady or Cinematic with other runs added, the watched run's marks hide and Saveloc is disabled.</p>
+        <a class="story-link" href="https://github.com/EduardR02/surfd-qol#cinematic-replays">More about replays</a>
+      </div>
+    </div>
+    <figure class="replay-strip">
+      <div class="strip-window" role="region" aria-label="Custom replay bar; scroll horizontally if needed" tabindex="0">
+        <img src="replay-custom.jpg" width="2200" height="240" alt="A single-run custom replay bar with coloured ramp-touch marks and diamond-shaped saved-location marks." loading="lazy">
+      </div>
+      <figcaption>Example data: the custom bar in a single-run replay. Coloured slashes are graded ramp touches; diamonds are saved locations. Scroll to see the full bar on a narrow screen.</figcaption>
+    </figure>
+  </section>
+
+  <section class="hud-story wrap" id="numbers" aria-labelledby="hud-title">
+    <div class="story-copy">
+      <h2 id="hud-title">See where you lose speed.</h2>
+      <div class="prose">
+        <p>The compact HUD shows your speed, checkpoint gaps and what the last flight and ramp cost you. Compare ramp feedback with your PB, the record or custom thresholds.</p>
+        <p id="settings">See your prestrafe exit speed and height above the start platform. Choose individual HUD elements and adjust their colours, vertical position and size.</p>
+        <p>An optional experimental tint shows energy loss in the speed number. Speed and timer text have separate refresh rates; neither caps the game's frame rate.</p>
+        <a class="story-link" href="https://github.com/EduardR02/surfd-qol#the-hud">How the HUD works</a>
+      </div>
+    </div>
+    <figure class="screenshot hud-visual" data-preview>
+      <div class="preview-views" role="group" aria-label="HUD preview" hidden>
+        <button type="button" data-preview-view="compact" aria-controls="hud-preview" aria-pressed="true">Compact</button>
+        <button type="button" data-preview-view="full" aria-controls="hud-preview" aria-pressed="false">Full</button>
+        <button type="button" data-preview-view="energy" aria-controls="hud-preview" aria-pressed="false">Energy tint</button>
+      </div>
+      <div class="preview-frame" id="hud-preview">
+        <img src="hud.jpg" width="1440" height="810" alt="Example compact HUD showing checkpoint gaps, speed, and flight and ramp losses." data-preview-content="compact" loading="lazy">
+        <img src="hud-full.jpg" width="1440" height="810" alt="Example full HUD showing checkpoint splits, timer, speed and detailed ramp feedback." data-preview-content="full" loading="lazy" hidden>
+        <img src="hud-energy.jpg" width="1440" height="810" alt="Example full HUD with a red speed number indicating an energy loss." data-preview-content="energy" loading="lazy" hidden>
+      </div>
+      <figcaption aria-live="polite">
+        <span data-preview-content="compact">Example feedback: compact HUD after a checkpoint on Utopia. Air and Surf labels are on by default and can be turned off.</span>
+        <span data-preview-content="full" hidden>Example feedback: full HUD after the same checkpoint.</span>
+        <span data-preview-content="energy" hidden>Example data: energy tint showing a loss at constant height.</span>
+        <a class="preview-fallback" href="hud-full.jpg">View the full HUD screenshot</a>
+        <a class="preview-fallback" href="hud-energy.jpg">View the energy tint screenshot</a>
+        <span class="hud-note">Enlarged for clarity. HUD size and position are adjustable.</span>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="controls wrap" id="controls" aria-labelledby="controls-title">
+    <div class="controls-intro">
+      <h2 id="controls-title">More control over your binds.</h2>
+      <p>Both are optional and off by default. Enable them under <b>QoL → Controls</b>.</p>
+    </div>
+    <div class="control-items">
+      <article>
+        <h3>Nullbinds</h3>
+        <p>For left/right or forward/jump, the most recently pressed key takes priority. Release it and the other takes over if still held. Forward/jump nulling releases forward input, not your momentum.</p>
+      </article>
+      <article>
+        <h3>Crouch-jump</h3>
+        <p>Add a one-tick crouch to each jump for the crouched jump impulse without staying crouched. Use Space or choose another free key.</p>
+      </article>
+      <a class="story-link" href="https://github.com/EduardR02/surfd-qol#binds">More about binds</a>
+    </div>
+  </section>
+
+  <section class="community wrap" id="rooms" aria-labelledby="rooms-title">
+    <h2 id="rooms-title">Surf together, too.</h2>
+    <div class="prose">
+      <p>Open <b>Find a server</b> in Surfd. When community rooms are listed, choose <b>Community</b> beside the region filters. Enter a room code above the list, open a shared link, or choose <b>Host a room</b> to make one.</p>
+      <p>Everyone needs Surfd QoL. Hosting also needs a surfd.net account and an open tab. Share a room code or link.</p>
+      <a class="story-link" href="https://github.com/EduardR02/surfd-qol#private-rooms">More about community rooms</a>
+    </div>
+    <figure class="screenshot">
+      <a href="community.jpg">
+        <img src="community.jpg" width="1440" height="810" alt="Find a server, with the room-code field above the list and Host a room below it." loading="lazy">
       </a>
-      <small>Free and open source (MIT).<br>Desktop Chrome 118 or newer.</small>
+      <figcaption>Room code is above the list; Host a room is below it. Open the image to inspect the controls.</figcaption>
+    </figure>
+  </section>
+
+  <section class="history" id="history" aria-labelledby="history-title">
+    <div class="history-layout wrap">
+      <div class="story-copy">
+        <h2 id="history-title">Run history and ramp stats.</h2>
+        <div class="prose">
+          <p>Open Runs for your latest attempt, recent runs and best recorded finish, with replays.</p>
+          <p>In Ramps, compare your best, average or the mean of your last 10 measurements on each ramp against your PB or the WR. See which ramps cost you the most speed.</p>
+          <p>Settings and recorded runs stay in your browser.</p>
+          <a class="story-link" href="https://github.com/EduardR02/surfd-qol#run-history">More about run history</a>
+        </div>
+      </div>
+      <div class="history-visual" data-preview>
+        <div class="preview-views" role="group" aria-label="Run history screenshot" hidden>
+          <button type="button" data-preview-view="runs" aria-controls="history-preview" aria-pressed="true">Recent runs</button>
+          <button type="button" data-preview-view="ramps" aria-controls="history-preview" aria-pressed="false">Ramp stats</button>
+        </div>
+        <figure class="screenshot">
+          <div class="preview-frame history-frame" id="history-preview">
+            <img src="ramps.jpg" width="870" height="1182" alt="The Ramps view on Utopia, showing example data with Last 10 selected and comparisons against the KSF record." data-preview-content="ramps" loading="lazy" hidden>
+            <img src="runs.jpg" width="870" height="1365" alt="The Runs view on Utopia, showing example data for the best finish, latest attempt and recent runs." data-preview-content="runs" loading="lazy">
+          </div>
+          <figcaption aria-live="polite">
+            <span data-preview-content="ramps" hidden>Example data: Last 10 ramp stats on Utopia.</span>
+            <span data-preview-content="runs">Example data: recent runs on Utopia.</span>
+          </figcaption>
+        </figure>
+        <a class="preview-fallback" href="ramps.jpg">View the ramp stats screenshot</a>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <figure class="shot wrap">
-    <img src="hud.jpg" width="1440" height="810" alt="Surfd QoL's compact HUD on Utopia just after a checkpoint: PB and KSF deltas above the speed 2950, and the ramp bar below it with the last flight's and the ramp's loss underneath.">
-    <figcaption>The compact HUD you surf with, just after a checkpoint: your gap to the PB and the KSF record above the speed, and the last ramp as a bar below it. Utopia.</figcaption>
-  </figure>
+  <section class="performance wrap" id="performance" aria-labelledby="performance-title">
+    <h2 id="performance-title">Loading improvements.</h2>
+    <div class="prose">
+      <p>Get into maps sooner, at full texture quality. Textures outside your starting view can finish loading while you surf.</p>
+    </div>
+    <figure class="loading-benchmark">
+      <figcaption><strong>Time until playable (seconds)</strong><span>Median of 3 cached-load runs per map and variant</span></figcaption>
+      <div class="benchmark-legend">
+        <span><i class="benchmark-native" aria-hidden="true"></i>Native game</span>
+        <span><i class="benchmark-qol" aria-hidden="true"></i>Surfd QoL</span>
+      </div>
+      <div class="benchmark-scale" aria-hidden="true">
+        <div class="benchmark-ticks">
+          <span style="left:0">0</span><span style="left:25%">3</span><span style="left:50%">6</span><span style="left:75%">9</span><span style="left:100%">12</span>
+        </div>
+      </div>
+      <section class="benchmark-map" aria-labelledby="benchmark-demise">
+        <h3 id="benchmark-demise">Demise</h3>
+        <dl>
+          <div class="benchmark-row">
+            <dt>Native</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:10.43"></span></span><span class="benchmark-value">10.43 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+          <div class="benchmark-row">
+            <dt>QoL</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:2.61"></span></span><span class="benchmark-value">2.61 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+        </dl>
+      </section>
+      <section class="benchmark-map" aria-labelledby="benchmark-mesa">
+        <h3 id="benchmark-mesa">Mesa</h3>
+        <dl>
+          <div class="benchmark-row">
+            <dt>Native</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:3.04"></span></span><span class="benchmark-value">3.04 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+          <div class="benchmark-row">
+            <dt>QoL</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.52"></span></span><span class="benchmark-value">1.52 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+        </dl>
+      </section>
+      <p class="benchmark-note">Measured 31 Oct 2026 using the same browser and window size (<a href="https://github.com/EduardR02/surfd-qol/commit/e79ddcf">test build</a>). Includes extension setup; background textures may finish later. Results vary by device and map.</p>
+    </figure>
+  </section>
 
-  <section id="install">
-    <div class="wrap">
-      <h2>Install</h2>
-      <p class="lede measure">It isn't on the Chrome Web Store, so you load it into <span data-browser>Chrome</span> yourself. It works in Chrome, Edge, Brave and Opera.</p>
-      <p class="note measure" id="firefox" hidden>Surfd QoL needs a Chromium browser: Chrome, Edge, Brave or Opera. Firefox isn't supported yet.</p>
+  <section class="install wrap" id="install" aria-labelledby="install-title">
+    <div class="install-intro">
+      <h2 id="install-title">Install Surfd QoL</h2>
+      <p>The extension isn't on the Chrome Web Store, so you'll load it into your browser yourself.</p>
+      <a class="download" href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2.5v10m0 0 4-4m-4 4-4-4M3.5 15.5h13"/></svg>
+        Download the zip
+      </a>
+      <p class="compatibility">For desktop Chrome 118 or newer, Edge, Brave and Opera. Firefox is not supported.</p>
+    </div>
+    <div>
       <ol class="steps">
-        <li><b>Download the zip and unzip it.</b><span>Keep the unzipped folder somewhere it can stay; your browser loads the extension from it.</span></li>
-        <li><b>Open <code data-extensions>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions" data-extensions-copy>Copy</button></b><span>Paste it into the address bar, then switch on <b>Developer mode</b> in the top right.</span></li>
-        <li><b>Click Load unpacked and pick the unzipped folder.</b><span>It's the folder that contains <code>manifest.json</code>.</span></li>
-        <li><b>Open surfd.net.</b><span>The tab reloads once while the extension hooks in. Settings are under <b>QoL</b>, bottom right of the game menu.</span></li>
+        <li>
+          <strong>Download and unzip.</strong>
+          <p>Keep the unzipped folder somewhere it can stay; your browser loads the extension from it.</p>
+        </li>
+        <li>
+          <strong>Open your extensions page.</strong>
+          <p>Paste the address for your browser into its address bar.</p>
+          <div class="addresses" aria-label="Browser extensions page addresses">
+            <div class="address"><span>Chrome</span><code>chrome://extensions</code><button class="copy" type="button" data-copy="chrome://extensions" data-name="Chrome" aria-label="Copy Chrome extensions address" hidden>Copy</button></div>
+            <div class="address"><span>Edge</span><code>edge://extensions</code><button class="copy" type="button" data-copy="edge://extensions" data-name="Edge" aria-label="Copy Edge extensions address" hidden>Copy</button></div>
+            <div class="address"><span>Brave</span><code>brave://extensions</code><button class="copy" type="button" data-copy="brave://extensions" data-name="Brave" aria-label="Copy Brave extensions address" hidden>Copy</button></div>
+            <div class="address"><span>Opera</span><code>opera://extensions</code><button class="copy" type="button" data-copy="opera://extensions" data-name="Opera" aria-label="Copy Opera extensions address" hidden>Copy</button></div>
+          </div>
+          <span class="sr-only" id="copy-status" role="status"></span>
+        </li>
+        <li>
+          <strong>Turn on Developer mode.</strong>
+          <p>The switch is on your browser's extensions page. Enabling it reveals the <b>Load unpacked</b> button.</p>
+        </li>
+        <li>
+          <strong>Click Load unpacked.</strong>
+          <p>Choose the unzipped folder that contains <code>manifest.json</code>.</p>
+        </li>
+        <li>
+          <strong>Open or refresh <a href="https://surfd.net/">surfd.net</a>.</strong>
+          <p>The tab reloads once while the extension hooks in. Find its settings under <b>QoL</b> in the game menu.</p>
+        </li>
       </ol>
-      <p class="note measure"><span data-browser>Chrome</span> will show a “started debugging this browser” bar. The extension needs the debugger permission to read the game's physics, and only attaches to surfd.net. You can close the bar; everything keeps working until you reload.</p>
-      <div class="update-guide" id="update">
+      <div class="install-note" id="update">
         <h3>Updating</h3>
-        <p class="lede measure">A link above Runs and QoL in the game menu lets you know when a new version is available. <span data-browser>Chrome</span> won't install it automatically.</p>
-        <ol class="steps">
-          <li><b><a href="https://github.com/EduardR02/surfd-qol/releases/latest/download/surfd-qol.zip">Download the latest zip</a> and unzip it.</b><span>Replace the contents of the extension folder you already loaded.</span></li>
-          <li><b>Reload the extension, then refresh Surfd.</b><span>Open <code data-extensions>chrome://extensions</code> and click the reload icon on Surfd QoL. Your settings and saved runs stay in this browser.</span></li>
-        </ol>
+        <p>Updates are manual. Download and unzip the latest zip, replace the contents of the folder you loaded, reload the extension on your extensions page, then refresh Surfd. Your settings and saved runs stay in your browser.</p>
       </div>
-    </div>
-  </section>
-
-  <section id="rooms">
-    <div class="wrap">
-      <h2>Private rooms</h2>
-      <p class="lede measure">Surf with friends in a room of your own: no time limit, no map votes, and the host picks the map. Everyone in the room needs Surfd QoL.</p>
-      <dl class="defs">
-        <div><dt>Host a room</dt><dd>Open Find a server and click Host a room. Pick a map, a name, a player limit, and Private (code or link) or Public (listed under Community). Hosting needs a surfd.net account, and your browser runs the room, so keep the tab open.</dd></div>
-        <div><dt>Join</dt><dd>Pick a room in Find a server's Community tab, type its code next to the filters, or open an invite link.</dd></div>
-        <div><dt>In the room</dt><dd>Chat, spectating, map changes and finished runs work like on Surfd's servers, and savelocs are shared: everyone's saves show in the list, up to 20 each per map. Runs count for the leaderboard as in solo play, checked by Surfd.</dd></div>
-      </dl>
-    </div>
-  </section>
-
-  <section id="replays">
-    <div class="wrap">
-      <h2>Replays and run history</h2>
-      <p class="lede measure">Surfd’s replay player gets savelocs, Runs and a mark on the timeline for each touch, in the color of its grade. Prefer Surfd QoL’s own bar? Switch to it in settings. Both work on your recorded runs, leaderboard replays and the KSF record route, with the touches marked on every one.</p>
-      <dl class="defs">
-        <div><dt>Cinematic replays</dt><dd>Switch any replay from POV to a Steady or Cinematic camera planned around the route. Add your PB, your recent best, the WR or any leaderboard run as ghosts with their trails, racing in real time or side by side, each with its gap to the run you’re watching.</dd></div>
-        <div><dt>Practice from a replay</dt><dd>Save a position with Saveloc or your usual save bind, then leave the replay and load it in practice to try the section yourself.</dd></div>
-        <div><dt>Local run history</dt><dd>Open Runs for your latest attempt, recent runs, best recorded finish and recent best. In Ramps, compare your best, last 10 measurements or average with your PB or the WR. Each ramp shows how often you reach it and the measurement you pick (Surf, Touch, Angle, Down, Up, speed in or out) against the reference; click it for the touch angle (how far your landing was from parallel to the ramp; 0° loses no speed), your speed in and out, and replays to watch it in. Recording and storage settings are under QoL → History.</dd></div>
-      </dl>
-      <figure class="shot full">
-        <img src="cinematic.jpg" width="1440" height="810" alt="A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and below them the replay bar with a chip and gap for each run, Add run and the Cinematic view menu." loading="lazy">
-        <figcaption>A cinematic replay of the Fiellu record with four more runs added: each ghost leaves a trail in its colour, and its chip on the bar shows its gap to the run you’re watching.</figcaption>
-      </figure>
-      <figure class="shot full">
-        <div class="replay-scroll" role="region" aria-label="Surfd’s replay bar screenshot; scroll horizontally to see all controls" tabindex="0">
-          <img src="replay-native.jpg" width="2200" height="240" alt="Surfd’s replay bar, paused on another player’s leaderboard replay: playback buttons and the time under a timeline with a mark for each touch in its grade’s color and three savelocs above it, and Saveloc, Keys and Runs on the right." loading="lazy">
-        </div>
-        <figcaption>The default: Surfd’s own replay bar with touch marks, savelocs and Runs added, on another player’s leaderboard replay of Utopia. Scroll sideways on smaller screens to see all the controls.</figcaption>
-      </figure>
-      <figure class="shot full">
-        <div class="replay-scroll" role="region" aria-label="Custom replay bar screenshot; scroll horizontally to see all controls" tabindex="0">
-          <img src="replay-custom.jpg" width="2200" height="240" alt="Surfd QoL’s custom replay bar on the same replay: play, the run time, speed, Saveloc, shortcuts, Runs and Exit replay above a timeline split at the start and each checkpoint, with the same touch marks and savelocs." loading="lazy">
-        </div>
-        <figcaption>The custom replay bar on the same replay, with the same touch marks and savelocs. It’s a setting: turn on Custom replay bar under QoL → History.</figcaption>
-      </figure>
-    </div>
-  </section>
-
-  <section id="numbers">
-    <div class="wrap">
-      <h2>What the numbers mean</h2>
-      <p class="lede measure">Under the speed, a bar of fixed width splits your last flight and the ramp you landed on into their parts, in the order they happened, each in the color of its grade. A tick marks where the ramp would have ended at the reference's cost; past it is what you lost. Each value stays up until the next ramp or flight replaces it, so you can read it in the air instead of mid-ramp. All of them are in units per second. Turn the bar off to keep just the values.</p>
-      <div class="row" aria-hidden="true">
-        <div class="value"><b class="good">−2<small>.6</small></b><span class="lab">touch</span></div>
-        <div class="value"><b class="warn">−34<small>.4</small></b><span class="lab">down</span></div>
-        <div class="value"><b class="bad">−16<small>.2</small></b><span class="lab">up</span></div>
+      <div class="install-note">
+        <h3>About the debugger bar</h3>
+        <p>Your browser shows a “started debugging this browser” bar because the extension uses debugger permission to patch the game script as it loads and read its physics. It only attaches to surfd.net. You can close the bar; everything already loaded keeps working until you reload the page.</p>
       </div>
-      <dl class="defs">
-        <div><dt>Touch</dt><dd>Speed clipped off as you land on a ramp. Height conversion doesn't count.</dd></div>
-        <div><dt>Down</dt><dd>What the ramp cost from the touch to the lowest point you reached, the touch included.</dd></div>
-        <div><dt>Up</dt><dd>What it cost from the lowest point to where you left the ramp. Down and Up add up to the whole ramp, touch included.</dd></div>
-        <div><dt>Air</dt><dd>Your last flight: speed lost to braking plus gain missed by imperfect strafes. It's the left part of the bar.</dd></div>
-        <div><dt>Surf</dt><dd>The whole ramp, touch included. While you surf, the bar shows just Air and this, the ramp's loss so far.</dd></div>
-      </dl>
-      <ul class="legend">
-        <li class="good"><i></i><span>As good as the reference or better</span></li>
-        <li class="warn"><i></i><span>A little worse</span></li>
-        <li class="bad"><i></i><span>Worse</span></li>
-        <li style="color:var(--dust)"><i></i><span>No matching reference</span></li>
-      </ul>
-      <p class="note measure">You choose what to compare against: the KSF record route (the default), Surfd's leaderboard #1, or your own PB. Even the record loses real speed on most ramps, so the comparison tells you more than the raw number.</p>
-      <figure class="shot full">
-        <img src="hud-full.jpg" width="1440" height="810" alt="The full HUD on Boreas just after a checkpoint: the split with its PB and KSF deltas above the timer and sync, speed 2950, and the ramp bar with air, touch, down, up and surf written out below." loading="lazy">
-        <figcaption>The full HUD, as replays and spectating show it: the split with its PB and KSF deltas for a few seconds, the timer and sync, and every ramp value under the bar. Each part can be shown or hidden on its own. Boreas.</figcaption>
-      </figure>
-    </div>
-  </section>
-
-
-  <section id="settings">
-    <div class="wrap split">
-      <div>
-        <h2>Settings</h2>
-        <ul class="measure">
-          <li>Turn any value on or off; the rest re-centre.</li>
-          <li>A compact HUD while you surf (no timer unless you want one) and the full one in replays, or the full one everywhere.</li>
-          <li>Zen mode for just speed and brief start stats, without hiding the replay’s hull indicator.</li>
-          <li>Move, resize and recolor the HUD with a live preview.</li>
-          <li>Grade each value against fixed targets, your PB, the KSF record or Surfd's #1.</li>
-          <li>Optional crouch-jump on any key: one tick of crouch per jump.</li>
-          <li>Optional nullbinds for left/right and forward/jump, following your game's movement bindings.</li>
-          <li>A strafe preview: from the start zone, watch your view turn the way a good strafe would at any speed, on the ground or in the air, with the key to hold.</li>
-          <li>Speed counter and timer refresh rates, so digits stay readable.</li>
-        </ul>
-        <p class="note measure">The game's physics and timing stay unchanged. Settings and recorded runs stay in your browser. Hidden feedback skips its analysis.</p>
-      </div>
-      <img src="settings.jpg" width="590" height="830" alt="The Surfd QoL settings panel open in the game menu: a live preview of the compact HUD, Zen mode, the While surfing choice and layout sliders.">
+      <a class="guide-link" href="https://github.com/EduardR02/surfd-qol#install">Full guide and troubleshooting</a>
     </div>
   </section>
 </main>
 
 <footer>
-  <div class="wrap">
-    <span>MIT licensed. Not affiliated with Surfd. Font: Instrument Sans, <a href="fonts/OFL.txt">SIL Open Font License</a>.</span>
-    <a href="https://github.com/EduardR02/surfd-qol">github.com/EduardR02/surfd-qol</a>
+  <div class="footer-inner wrap">
+    <p>MIT licensed. Not affiliated with Surfd. Instrument Sans is used under the <a href="fonts/OFL.txt">SIL Open Font License</a>.</p>
+    <a href="https://github.com/EduardR02/surfd-qol">Source on GitHub</a>
   </div>
 </footer>
 <script>
-// Each browser has its own extensions page; Brave only identifies itself through navigator.brave.
-const agent = navigator.userAgent;
-const browser = agent.includes('Edg/') ? ['Edge', 'edge://extensions'] : agent.includes('OPR/') ? ['Opera', 'opera://extensions']
-  : agent.includes('Firefox/') ? null : ['Chrome', 'chrome://extensions'];
-function useBrowser([name, page]) {
-  for (const node of document.querySelectorAll('[data-browser]')) node.textContent = name;
-  for (const node of document.querySelectorAll('[data-extensions]')) node.textContent = page;
-  for (const node of document.querySelectorAll('[data-extensions-copy]')) node.dataset.copy = page;
+for (const preview of document.querySelectorAll('[data-preview]')) {
+  const views = preview.querySelector('.preview-views');
+  const buttons = views.querySelectorAll('[data-preview-view]');
+  const content = preview.querySelectorAll('[data-preview-content]');
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.previewView;
+      for (const choice of buttons) choice.setAttribute('aria-pressed', String(choice === button));
+      for (const item of content) item.hidden = item.dataset.previewContent !== view;
+    });
+  }
+  views.hidden = false;
+  for (const fallback of preview.querySelectorAll('.preview-fallback')) fallback.hidden = true;
 }
-if (browser) useBrowser(browser);
-else document.getElementById('firefox').hidden = false;
-navigator.brave?.isBrave?.().then(brave => { if (brave) useBrowser(['Brave', 'brave://extensions']); }, () => {});
+
+const copyStatus = document.getElementById('copy-status');
 for (const button of document.querySelectorAll('[data-copy]')) {
+  button.hidden = false;
+  let reset;
   button.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = 'Copied'; }
-    catch { button.textContent = 'Select and copy it'; }
-    setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+    let copied = false;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(button.dataset.copy);
+      copied = true;
+    } catch {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(button.parentElement.querySelector('code'));
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    button.textContent = copied ? 'Copied' : 'Select';
+    copyStatus.textContent = copied ? `${button.dataset.name} address copied.` : `Select and copy the ${button.dataset.name} address.`;
+    clearTimeout(reset);
+    reset = setTimeout(() => { button.textContent = 'Copy'; }, 2000);
   });
 }
 </script>
