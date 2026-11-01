@@ -6,13 +6,16 @@ import {trackPoint} from './cinema-track.js';
 // Each stretch between shared checkpoints is matched on at most this many
 // samples per run: about 360k cells, a few milliseconds.
 const MAX_SAMPLES = 600;
+const ROWS_PER_SLICE = 16;
+// A bounded row batch needs less reserve than a camera preprocessing pass.
+const idleLeft = deadline => deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 0.5;
 // The match is smoothed over this long to avoid stutter in the slowed run.
 const EASE_SECONDS = 0.35;
 
 // Dynamic time warping between run a's [a0, a1] and run b's [b0, b1]: the
 // monotonic pairing of their positions with the least total distance. Returns
 // b's fractional index for each of a's ticks in the stretch.
-function warp(a, b, a0, a1, b0, b1, out) {
+async function warp(a, b, a0, a1, b0, b1, out, yieldTask, isCurrent) {
   const na = Math.max(2, Math.min(MAX_SAMPLES, a1 - a0 + 1)), nb = Math.max(2, Math.min(MAX_SAMPLES, b1 - b0 + 1));
   const at = (from, to, n, k) => from + (to - from) * k / (n - 1);
   const pa = new Float32Array(na * 3), pb = new Float32Array(nb * 3), point = {x: 0, y: 0, z: 0};
@@ -25,7 +28,13 @@ function warp(a, b, a0, a1, b0, b1, out) {
     pb[j * 3] = point.x; pb[j * 3 + 1] = point.y; pb[j * 3 + 2] = point.z;
   }
   const cost = new Float32Array(na * nb);
+  let deadline = null;
   for (let i = 0; i < na; i++) {
+    // At most 16 * MAX_SAMPLES cells before checking the idle budget.
+    if (i % ROWS_PER_SLICE === 0) {
+      if (yieldTask && !idleLeft(deadline)) deadline = await yieldTask();
+      if (!isCurrent()) return false;
+    }
     for (let j = 0; j < nb; j++) {
       const dx = pa[i * 3] - pb[j * 3], dy = pa[i * 3 + 1] - pb[j * 3 + 1], dz = pa[i * 3 + 2] - pb[j * 3 + 2];
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -53,6 +62,7 @@ function warp(a, b, a0, a1, b0, b1, out) {
     const sample = sum[low] + (sum[high] - sum[low]) * (k - low);
     out[tick] = at(b0, b1, nb, sample);
   }
+  return true;
 }
 
 // Shared anchors: the start, each checkpoint both runs crossed in order, and
@@ -65,13 +75,13 @@ function anchors(a, b) {
 }
 
 // b's fractional index for each of a's ticks, by place along the route.
-export function alignByPlace(a, b) {
+export async function alignByPlace(a, b, {yieldTask = null, isCurrent = () => true} = {}) {
   const out = new Float32Array(a.count);
   const pairs = anchors(a, b);
   const radius = Math.max(1, Math.round(EASE_SECONDS / a.dt));
   for (let i = 1; i < pairs.length; i++) {
     const [from, otherFrom] = pairs[i - 1], [to, otherTo] = pairs[i];
-    warp(a, b, from, to, otherFrom, otherTo, out);
+    if (!await warp(a, b, from, to, otherFrom, otherTo, out, yieldTask, isCurrent)) return null;
     // DTW may average several samples at a boundary. Timer anchors are exact.
     out[from] = otherFrom;
     out[to] = otherTo;

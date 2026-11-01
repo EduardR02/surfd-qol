@@ -140,6 +140,8 @@ First use re-simulates the replay in the background. The camera can start once a
 
 While already in Steady or Cinematic, composition changes blend an offset around the moving destination. Adding or removing a run, changing focus or switching styles keeps following the replay rather than stopping at the previous camera position. Another reframe during the flight preserves its current motion, including when an added run becomes ready during the initial flight out of POV.
 
+Route matching and camera preparation share idle time in bounded batches, so adding a run does not chain those calculations into one playback-blocking task. The matching, checkpoint anchors and planned shots are unchanged.
+
 Both cameras check the finished plan and the final interpolated or blended view against opaque map geometry. Cramped shots ease into a clear chase along the travelled route where possible; moving closer than the usual shot distance is the fallback when there is no room. Clear shots retain their planned framing.
 
 Solo and focused planning reuse unchanged framing calculations across correction passes. Route-fallback searches yield according to actual search work, including sparse obstructions and inner candidate loops, so one difficult camera sample cannot skip cancellation checks.

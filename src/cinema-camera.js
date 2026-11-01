@@ -296,10 +296,11 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   // Samples since and until each other run's own teleports.
   const since = others.map(() => new Float32Array(count).fill(Infinity)), until = others.map(() => new Float32Array(count).fill(Infinity));
   const point = {x: 0, y: 0, z: 0};
-  // Spend the current idle window before scheduling another one. Checks stay
-  // at bounded trace batches, including across validation passes and retries.
-  let deadline = null;
-  const idleLeft = () => deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
+  // Larger preprocessing batches keep 2ms in reserve. Individual collision
+  // queries use 0.5ms, so high-refresh idle windows are not surrendered unused.
+  let deadline = yieldTask ? await yieldTask() : null;
+  if (!isCurrent()) return null;
+  const idleLeft = (reserve = 2) => deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > reserve;
   let cutAt = 0;
   for (let s = 0; s < count; s++) {
     const tick = sampleTick(s), previous = s ? sampleTick(s - 1) : 0;
@@ -330,6 +331,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       if (Math.hypot(track.normal[at * 3], track.normal[at * 3 + 1]) > 1e-3) unit(track.normal, at, faces[index + 1], s * 3);
     }
   }
+  if (yieldTask && !idleLeft()) deadline = await yieldTask();
+  if (!isCurrent()) return null;
   // Another run's teleport doesn't cut the shot (only the played run's do):
   // that run leaves the framing for a moment around it, so the camera glides.
   for (let index = 0; index < others.length; index++) {
@@ -397,6 +400,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   if (leaving) for (let s = zone; s < first; s++) { travel[0][s] = lx / away; travel[1][s] = ly / away; }
   const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
   const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
+  if (yieldTask && !idleLeft()) deadline = await yieldTask();
+  if (!isCurrent()) return null;
   // Solo framing never changes with corrective weights or safer shot choices.
   const fixedFocus = !group || !others.length;
   let composedFocus = null;
@@ -447,8 +452,12 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     // Shots ease into each other everywhere but at teleports.
     const view = segment;
     const ease = seconds(look.transition);
+    if (yieldTask && !idleLeft()) deadline = await yieldTask();
+    if (!isCurrent()) return null;
     const swing = blur(swingAt, ease, view), rise = blur(riseAt, ease * 1.25, view), widen = blur(widenAt, ease * 1.5, view), leadShare = blur(leadAt, ease, view);
     const toLanding = ahead.map(values => blur(values, seconds(0.3), view));
+    if (yieldTask && !idleLeft()) deadline = await yieldTask();
+    if (!isCurrent()) return null;
     const azimuth = new Float32Array(count), elevation = new Float32Array(count), distance = new Float32Array(count), fov = new Float32Array(count), halfViews = new Float32Array(count), above = new Float32Array(count);
     for (let s = 0; s < count; s++) {
       fov[s] = FOV + look.fov * smoothstep(FOV_SLOW, FOV_FAST, smoothSpeed[s]);
@@ -488,13 +497,11 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     if (trace) {
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0};
       for (let s = 0; s < count; s += TRACE_EVERY) {
-        if (s % (SLICE * TRACE_EVERY) === 0) {
-          if (yieldTask && !idleLeft()) deadline = await yieldTask();
-          if (!isCurrent()) return null;
-        }
         from.x = focus[0][s]; from.y = focus[1][s]; from.z = focus[2][s];
         let best = null;
         for (let index = 0; index < DETOURS.length; index++) {
+          if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+          if (!isCurrent()) return null;
           const [turn, up] = DETOURS[index];
           const az = azimuth[s] + turn * DEGREES, d = distance[s];
           const el = clamp(elevation[s] + up * DEGREES, Math.min(elevation[s], DETOUR_FLOOR * DEGREES), 1.35);
@@ -513,6 +520,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         }
       }
     }
+    if (yieldTask && !idleLeft()) deadline = await yieldTask();
+    if (!isCurrent()) return null;
     const smoothDetour = blur(detour, seconds(0.45), view);
     const smoothLift = blur(strongest(lift, Math.round(seconds(0.3)), view), seconds(0.45), view);
     const room = blur(lowest(limit, Math.round(seconds(0.45)), view), seconds(0.2), view);
@@ -578,10 +587,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0}, body = {x: 0, y: 0, z: 0};
       let found = false;
       for (let s = 0; s < count; s += TRACE_EVERY) {
-        if (s % (SLICE * TRACE_EVERY) === 0) {
-          if (yieldTask && !idleLeft()) deadline = await yieldTask();
-          if (!isCurrent()) return null;
-        }
+        if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+        if (!isCurrent()) return null;
         from.x = shot.focus[0][s]; from.y = shot.focus[1][s]; from.z = shot.focus[2][s];
         to.x = shot.eye[s * 3]; to.y = shot.eye[s * 3 + 1]; to.z = shot.eye[s * 3 + 2];
         body.x = runs[0][s * 3]; body.y = runs[0][s * 3 + 1]; body.z = runs[0][s * 3 + 2] + EYE_HEIGHT;
@@ -592,6 +599,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         let lost = false;
         for (let index = 0; index < others.length && !lost && pass < 2 && s % (TRACE_EVERY * 2) === 0; index++) {
           if (shares[index][s] * weight[s] < 0.25) continue;
+          if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+          if (!isCurrent()) return null;
           const r = runs[index + 1];
           body.x = r[s * 3]; body.y = r[s * 3 + 1]; body.z = r[s * 3 + 2] + EYE_HEIGHT;
           lost = framed(shot, s, body, fov[s]) && trace(body, to) < 0.97;

@@ -187,9 +187,9 @@ describe('tracks', () => {
 });
 
 describe('matching the runs', () => {
-  test('side by side pairs the same place on the route, so the faster run waits', () => {
+  test('side by side pairs the same place on the route, so the faster run waits', async () => {
     const slow = straight({count: 401, speed: 10}), fast = straight({count: 221, speed: 20});
-    const map = alignByPlace(slow, fast);
+    const map = await alignByPlace(slow, fast);
     for (const tick of [60, 120, 220, 300]) {
       const here = trackPoint(slow, tick).x, there = trackPoint(fast, map[tick]).x;
       expect(Math.abs(here - there)).toBeLessThan(25);
@@ -200,33 +200,33 @@ describe('matching the runs', () => {
     const a = straight({lead: 20}), b = straight({lead: 50});
     expect(alignByTime(a, b)[120]).toBe(150);
   });
-  test('the gap is how much sooner the other run got here', () => {
+  test('the gap is how much sooner the other run got here', async () => {
     const slow = straight({count: 401, speed: 10}), fast = straight({count: 221, speed: 20});
-    const gap = gapAt(slow, fast, alignByPlace(slow, fast), 220);
+    const gap = gapAt(slow, fast, await alignByPlace(slow, fast), 220);
     // 200 ticks of the slow run cover what the fast one does in 100.
     expect(gap).toBeCloseTo(-100 * slow.dt, 1);
     // The faster added run's chip shows its lead over the watched run.
     expect(gapText(gap)).toMatchObject({value: `−${(-gap).toFixed(3)}`, tone: 'good'});
     expect(gapText(-gap)).toMatchObject({value: `+${(-gap).toFixed(3)}`, tone: 'loss'});
-    expect(gapAt(slow, fast, alignByPlace(slow, fast), 5)).toBeNull();
+    expect(gapAt(slow, fast, await alignByPlace(slow, fast), 5)).toBeNull();
   });
-  test('close finish deltas retain the correct sign and colour through route smoothing', () => {
+  test('close finish deltas retain the correct sign and colour through route smoothing', async () => {
     const watched = straight({count: 1001, speed: 10});
     const slower = straight({count: 1007, speed: 9800 / 986});
-    const map = alignByPlace(watched, slower);
+    const map = await alignByPlace(watched, slower);
     expect(map[watched.start]).toBe(slower.start);
     expect(map[watched.finish]).toBe(slower.finish);
     const gap = gapAt(watched, slower, map, watched.finish);
     expect(gap).toBeCloseTo(0.09, 6);
     expect(gapText(gap)).toMatchObject({value: '+0.090', tone: 'loss'});
-    const reverse = gapAt(slower, watched, alignByPlace(slower, watched), slower.finish);
+    const reverse = gapAt(slower, watched, await alignByPlace(slower, watched), slower.finish);
     expect(gapText(reverse)).toMatchObject({value: '−0.090', tone: 'good'});
   });
 
-  test('route smoothing preserves checkpoints and stays monotonic between anchors', () => {
+  test('route smoothing preserves checkpoints and stays monotonic between anchors', async () => {
     const a = straight({count: 801}), b = straight({count: 901, speed: 17.5});
     a.splits = [200, 500]; b.splits = [240, 560];
-    const map = alignByPlace(a, b);
+    const map = await alignByPlace(a, b);
     for (const [from, to] of [[a.start, b.start], [200, 240], [500, 560], [a.finish, b.finish]]) expect(map[from]).toBe(to);
     for (let tick = 1; tick < map.length; tick++) expect(map[tick]).toBeGreaterThanOrEqual(map[tick - 1]);
   });
@@ -270,7 +270,7 @@ describe('the planned camera', () => {
   };
   const plan = async (normal, trace = null, style) => {
     const a = straight({normal}), b = straight({normal, y: 40});
-    return {a, plan: await planCamera({a, b, map: alignByPlace(a, b), trace, style})};
+    return {a, plan: await planCamera({a, b, map: await alignByPlace(a, b), trace, style})};
   };
   const at = (result, tick) => shotAt(result.plan, tick);
   for (const style of ['cinematic', 'steady']) describe(style, () => {
@@ -304,7 +304,7 @@ describe('the planned camera', () => {
         const crossing = [200, 400].map(y => (y - from.y) / (to.y - from.y)).filter(t => t > 0 && t < 1);
         return crossing.length ? Math.min(...crossing) : 1;
       };
-      const planned = await planCamera({a, b, map: alignByPlace(a, b), trace, style});
+      const planned = await planCamera({a, b, map: await alignByPlace(a, b), trace, style});
       expect(shotAt(planned, 200).eye.y).toBeLessThan(200);
     });
     test('an odd-tick teleport changes the camera at the cut, not the following sample', async () => {
@@ -991,6 +991,30 @@ describe('cinematic replay lifecycle', () => {
     expect(await cinema.add(run('next'))).toBe(true);
     release.resolve();
     expect(cinema.status().runs.map(item => item.id)).toEqual(['next']);
+    cinema.close();
+  });
+  test('removing a run during matching cannot replace the shown camera or publish a stale run', async () => {
+    const entered = deferred(), release = deferred();
+    let waiting = false;
+    const {cinema, renderer, counts} = rig({loadIdle: async () => {
+      if (waiting) { entered.resolve(); await release.promise; }
+      return null;
+    }});
+    await cinema.setEnabled(true);
+    const shown = counts().made[0];
+    waiting = true;
+    const adding = cinema.add(run('cancelled'));
+    await entered.promise;
+    cinema.remove('cancelled');
+    expect(await adding).toBe(false);
+    waiting = false;
+    expect(await cinema.add(run('replacement'))).toBe(true);
+    release.resolve();
+    await Promise.resolve();
+    renderer.render({state: {tick: 30}, qolAlpha: 1});
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['replacement']);
+    expect(counts().made).toHaveLength(2);
+    expect(shown.disposed).toBe(true);
     cinema.close();
   });
   test('a recording failure cleans up activation and allows a clean retry', async () => {

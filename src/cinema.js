@@ -272,8 +272,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // group only afterwards, so it cannot supersede the camera's first plan.
     await activation;
     if (!owned()) return false;
+    const place = await alignByPlace(current.track, track, {yieldTask: loadIdle, isCurrent: owned});
+    if (!owned() || !place) return false;
+    // Recording, matching, scene construction and planning must not all spend
+    // the last recording callback's already exhausted idle window.
+    await loadIdle();
+    if (!owned()) return false;
     const entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track,
-      maps: {time: alignByTime(current.track, track), place: alignByPlace(current.track, track)}, time: track.time};
+      maps: {time: alignByTime(current.track, track), place}, time: track.time};
     current.runs = [...current.runs, entry];
     current.plans = {};
     if (current.renderer) rebuild(current);
@@ -285,7 +291,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   const planKey = (sync, focus, style) => `${sync}|${focus ?? ''}|${style}`;
   async function planFor(current, runs, sync, focus, style, owned) {
-    for (const run of runs) run.maps[sync] ??= sync === 'place' ? alignByPlace(current.track, run.track) : alignByTime(current.track, run.track);
+    for (const run of runs) {
+      if (!run.maps[sync]) {
+        const map = sync === 'place' ? await alignByPlace(current.track, run.track, {yieldTask: loadIdle, isCurrent: owned}) : alignByTime(current.track, run.track);
+        if (!owned() || !map) return null;
+        run.maps[sync] = map;
+      }
+    }
     const options = {style, trace: current.trace, yieldTask: loadIdle, isCurrent: owned};
     const chosen = runs.find(run => run.id === focus);
     if (!chosen) return planCamera({a: current.track, others: runs.map(run => ({track: run.track, map: run.maps[sync]})), group: focus !== 'played', ...options});
