@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {createTrack, trackPoint} from '../src/cinema-track.js';
-import {planCamera, shotAt, STEP} from '../src/cinema-camera.js';
+import {blur, planCamera, shotAt, STEP} from '../src/cinema-camera.js';
 
 function straight({count = 400, speed = 20} = {}) {
   const track = createTrack(count, 0.015);
@@ -60,6 +60,38 @@ function bodyBearing(shot, body) {
   const forward = direction(shot.eye, shot.target), bearing = direction(shot.eye, body);
   return forward.x * bearing.x + forward.y * bearing.y + forward.z * bearing.z;
 }
+
+describe('Gaussian blur', () => {
+  // Independent pre-optimization implementation: segment labels need not
+  // describe contiguous ranges, and each pair is accumulated left then right.
+  const reference = (values, sigma, segment) => {
+    if (sigma <= 0) return values.slice();
+    const radius = Math.ceil(sigma * 3), weights = new Float32Array(radius + 1), out = new Float32Array(values.length);
+    for (let k = 0; k <= radius; k++) weights[k] = Math.exp(-(k * k) / (2 * sigma * sigma));
+    for (let i = 0; i < values.length; i++) {
+      let total = values[i], weight = 1;
+      for (let k = 1; k <= radius; k++) {
+        if (i - k >= 0 && segment[i - k] === segment[i]) { total += values[i - k] * weights[k]; weight += weights[k]; }
+        if (i + k < values.length && segment[i + k] === segment[i]) { total += values[i + k] * weights[k]; weight += weights[k]; }
+      }
+      out[i] = total / weight;
+    }
+    return out;
+  };
+  test('matches the original across cuts, repeated labels and non-finite values', () => {
+    const values = Float32Array.from({length: 101}, (_, i) => Math.sin(i) * 1e5);
+    values[8] = NaN;
+    values[40] = Infinity;
+    for (const segment of [
+      Uint32Array.from(values, (_, i) => Math.floor(i / 7)),
+      Uint32Array.from(values, (_, i) => i % 4),
+      Array.from(values, (_, i) => i % 3),
+    ]) for (const sigma of [0, 0.1, 1, 4.25, 40]) {
+      const actual = blur(values, sigma, segment), expected = reference(values, sigma, segment);
+      for (let i = 0; i < values.length; i++) expect(actual[i]).toBe(expected[i]);
+    }
+  });
+});
 
 describe('final camera visibility', () => {
   for (const style of ['cinematic', 'steady']) describe(style, () => {

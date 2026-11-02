@@ -64,9 +64,35 @@ function cameraWorld(session) {
         return fallback.trace(from, to, probe);
       }
     };
+    filtered.cameraMayHit = cameraBoundsQuery(filtered.tree.query);
     return filtered;
   }
   return rebuild();
+}
+
+// The caller supplies the same conservative BVH query as the camera trace.
+// Only the recognized native world above exposes this certificate; an
+// arbitrary world's tree may not cover all geometry its trace can hit.
+export function cameraBoundsQuery(query) {
+  const bounds = {min: {x: 0, y: 0, z: 0}, max: {x: 0, y: 0, z: 0}};
+  return points => {
+    if (!points.length) return true;
+    bounds.min.x = bounds.min.y = bounds.min.z = Infinity;
+    bounds.max.x = bounds.max.y = bounds.max.z = -Infinity;
+    for (const point of points) {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z) ||
+        Math.max(Math.abs(point.x), Math.abs(point.y), Math.abs(point.z)) > 1e7) return true;
+      bounds.min.x = Math.min(bounds.min.x, point.x); bounds.max.x = Math.max(bounds.max.x, point.x);
+      bounds.min.y = Math.min(bounds.min.y, point.y); bounds.max.y = Math.max(bounds.max.y, point.y);
+      bounds.min.z = Math.min(bounds.min.z, point.z); bounds.max.z = Math.max(bounds.max.z, point.z);
+    }
+    // Include the probe and more than the native plane/BVH epsilon. Equality
+    // at a brush boundary is a possible hit, never an empty certificate.
+    bounds.min.x += PROBE.min.x - 1; bounds.max.x += PROBE.max.x + 1;
+    bounds.min.y += PROBE.min.y - 1; bounds.max.y += PROBE.max.y + 1;
+    bounds.min.z += PROBE.min.z - 1; bounds.max.z += PROBE.max.z + 1;
+    try { return query(bounds).length !== 0; } catch { return true; }
+  };
 }
 
 // Replanning a tracking shot blends an offset from the moving destination,
@@ -198,6 +224,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         // Native fractions already preserve that hit and allow a clear escape.
         return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
+      if (current.trace && world.cameraMayHit) current.trace.mayHit = world.cameraMayHit;
       const track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle,
         onProgress: (track, count) => progress(current, track, count)});
       if (!owns(current)) return;

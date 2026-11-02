@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'bun:test';
 import {createTrack} from '../src/cinema-track.js';
-import {planCamera} from '../src/cinema-camera.js';
+import {planCamera, STEP} from '../src/cinema-camera.js';
 
 function straight(count = 400) {
   const track = createTrack(count, 0.015);
@@ -41,38 +41,72 @@ describe('camera preparation efficiency', () => {
     expect(cached).toEqual(reference);
   });
 
-  test('fallback yields within candidate searches instead of counting only affected samples', async () => {
-    const a = straight();
-    let candidates = 0, previous = 0, longest = 0, fallbackYields = 0;
-    const plan = await planCamera({a,
-      trace: (from, to) => {
-        if (routeCandidate(from, to)) candidates++;
-        return 0;
-      },
+  test('long-track convolution yields without changing the camera', async () => {
+    const a = straight(16385);
+    for (let tick = 0; tick < a.count; tick++) {
+      a.position[tick * 3 + 1] = Math.sin(tick / 90) * 100;
+      if (tick === 7000) a.cut[tick] = 1;
+    }
+    const reference = await planCamera({a});
+    const planned = await planCamera({a, yieldTask: async () => ({didTimeout: true, timeRemaining: () => 0})});
+    expect(planned).toEqual(reference);
+  });
+
+  test('cancellation discards long-track preparation', async () => {
+    const a = straight(16385);
+    let current = true;
+    const planned = await planCamera({a, yieldTask: async () => {
+      current = false;
+      return {didTimeout: true, timeRemaining: () => 0};
+    }, isCurrent: () => current});
+    expect(planned).toBeNull();
+  });
+
+  test('final validation respects a bounded native-trace workload between opportunities to render', async () => {
+    const a = straight(), budget = 3;
+    let work = 0, previous = 0, longest = 0;
+    const plan = await planCamera({a, trace: () => { work++; return 1; },
       yieldTask: async () => {
-        longest = Math.max(longest, candidates - previous);
-        if (candidates > previous) fallbackYields++;
-        previous = candidates;
-        return {didTimeout: true, timeRemaining: () => 0};
+        longest = Math.max(longest, work - previous);
+        previous = work;
+        const start = work;
+        return {didTimeout: false, timeRemaining: () => Math.max(0, budget - (work - start))};
       },
     });
-    longest = Math.max(longest, candidates - previous);
-    expect(plan).not.toBeNull();
-    expect(candidates).toBeGreaterThan(80);
-    expect(fallbackYields).toBeGreaterThan(1);
-    expect(longest).toBeLessThanOrEqual(80);
+    longest = Math.max(longest, work - previous);
+    expect(plan).toEqual(await planCamera({a, trace: () => 1}));
+    expect(longest).toBeLessThanOrEqual(budget);
+  });
+
+  test('blocked fallback searches respect the native-trace budget and keep the camera at the visible body', async () => {
+    const a = straight(), budget = 3;
+    let work = 0, previous = 0, longest = 0;
+    const plan = await planCamera({a,
+      trace: () => { work++; return 0; },
+      yieldTask: async () => {
+        longest = Math.max(longest, work - previous);
+        previous = work;
+        const start = work;
+        return {didTimeout: false, timeRemaining: () => Math.max(0, budget - (work - start))};
+      },
+    });
+    longest = Math.max(longest, work - previous);
+    expect(longest).toBeLessThanOrEqual(budget);
+    for (let sample = 0; sample < plan.count; sample++) {
+      expect(plan.eye[sample * 3]).toBe(Math.min(a.count - 1, sample * STEP) * 20);
+      expect(plan.eye[sample * 3 + 1]).toBe(0);
+      expect(plan.eye[sample * 3 + 2]).toBe(40);
+    }
   });
 
   test('sparse fallback checks cancellation even when no affected sample is a slice boundary', async () => {
     const a = straight();
-    let current = true, candidates = 0;
+    let current = true;
     const plan = await planCamera({a,
-      // Stored sample 119 is skipped by the anticipatory traces. Its final
-      // eye is clipped to the body, producing fallback support around samples
-      // 84..154: neither 80 nor 160 is affected. Route candidates stay blocked.
+      // Cancel during an obstructed route-candidate search, not during the
+      // initial composition. No partially prepared plan should be published.
       trace: (from, to) => {
         if (routeCandidate(from, to)) {
-          candidates++;
           current = false;
           return 0;
         }
@@ -81,8 +115,7 @@ describe('camera preparation efficiency', () => {
       isCurrent: () => current,
       yieldTask: async () => ({didTimeout: false, timeRemaining: () => 50}),
     });
-    expect(candidates).toBeGreaterThan(0);
-    expect(candidates).toBeLessThanOrEqual(80);
+    expect(current).toBe(false);
     expect(plan).toBeNull();
   });
 });

@@ -12,11 +12,12 @@
 // low along the face, beside a long flight's arc), drifts round the
 // prestrafe, opens wider after a teleport and pulls back at the finish. The
 // view widens a little with speed.
-// Geometry between the ghosts and the camera first turns the camera (a little
-// round, then higher or lower), then pulls it in, both before the obstruction
-// arrives; a ghost the shot would hide sends it back towards a low chase.
-// The final smoothed eye is clipped against the played run's sightline, even
-// where staying clear requires coming closer than the preferred shot distance.
+// Obstructed shots first get conservative turning/pull-in corrections, then a
+// bounded local trajectory search tries to recover a wide connected view of
+// the group. It checks swept eyes, intermediate sightlines and each ridden
+// face before replacing a window; clear shots keep their original composition.
+// The final eye is still clipped against the played run's sightline where no
+// connected shot fits, even below the preferred minimum distance.
 import {trackPoint, trackYaw} from './cinema-track.js';
 
 export const STEP = 2;               // ticks per planned sample
@@ -79,10 +80,8 @@ const OVER_RIDGE = 0.4;
 // Near behind, the camera stays at least this high above the ghosts (degrees),
 // clear of the face they ride along; only out to the side can it go low.
 const BEHIND_LOW = 8;
-// Where a framed ghost would be hidden, the shot eases back towards behind
-// (or straight ahead) at this elevation (degrees), from RETREAT seconds
-// either side; a shot that would for more than TROUBLE of its stretch is
-// planned again with the style's safest one.
+// The conservative baseline retries a persistently blocked stretch with its
+// safest shot. Local repair may replace it, but never weakens that fallback.
 const RETREAT_ELEVATION = 10, RETREAT = 0.45, TROUBLE = 0.25;
 // The lead turns the view from the ghosts by at most this much (degrees).
 const LEAD_TURN = 14;
@@ -130,19 +129,47 @@ const unit = (normals, at, out, offset) => {
 const smoothstep = (low, high, value) => { const t = clamp((value - low) / (high - low), 0, 1); return t * t * (3 - 2 * t); };
 
 // A centred Gaussian blur that never reaches across a cut.
-export function blur(values, sigma, segment) {
-  if (sigma <= 0) return values.slice();
+function prepareBlur(values, sigma, segment) {
   const radius = Math.ceil(sigma * 3), weights = new Float32Array(radius + 1), out = new Float32Array(values.length);
   for (let k = 0; k <= radius; k++) weights[k] = Math.exp(-(k * k) / (2 * sigma * sigma));
-  for (let i = 0; i < values.length; i++) {
+  // Camera IDs are monotonic; arbitrary labels still use the generic path.
+  let ordered = segment instanceof Uint32Array && segment.length >= values.length;
+  for (let i = 1; ordered && i < values.length; i++) ordered = segment[i] >= segment[i - 1];
+  return {values, segment, radius, weights, out, ordered, from: 0, to: 0};
+}
+
+function blurRange(state, start, end) {
+  const {values, segment, radius, weights, out, ordered} = state;
+  let {from, to} = state;
+  for (let i = start; i < end; i++) {
     let total = values[i], weight = 1;
-    for (let k = 1; k <= radius; k++) {
-      if (i - k >= 0 && segment[i - k] === segment[i]) { total += values[i - k] * weights[k]; weight += weights[k]; }
-      if (i + k < values.length && segment[i + k] === segment[i]) { total += values[i + k] * weights[k]; weight += weights[k]; }
+    if (ordered) {
+      if (i >= to) {
+        from = i;
+        to = i + 1;
+        while (to < values.length && segment[to] === segment[i]) to++;
+      }
+      const left = Math.min(radius, i - from), right = Math.min(radius, to - i - 1), last = Math.max(left, right);
+      for (let k = 1; k <= last; k++) {
+        if (k <= left) { total += values[i - k] * weights[k]; weight += weights[k]; }
+        if (k <= right) { total += values[i + k] * weights[k]; weight += weights[k]; }
+      }
+    } else {
+      for (let k = 1; k <= radius; k++) {
+        if (i - k >= 0 && segment[i - k] === segment[i]) { total += values[i - k] * weights[k]; weight += weights[k]; }
+        if (i + k < values.length && segment[i + k] === segment[i]) { total += values[i + k] * weights[k]; weight += weights[k]; }
+      }
     }
     out[i] = total / weight;
   }
-  return out;
+  state.from = from; state.to = to;
+}
+
+export function blur(values, sigma, segment) {
+  if (sigma <= 0) return values.slice();
+  const state = prepareBlur(values, sigma, segment);
+  blurRange(state, 0, values.length);
+  return state.out;
 }
 // The value furthest from zero within radius, so a rise or drop is held
 // across the whole obstruction instead of blurring into one that clips.
@@ -260,8 +287,7 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
     stretch.shot = look.flight;
     stretch.swing = stretch.last = 0;
   });
-  // A plain flight blends the ramps either side, their swings known now; a
-  // safe one stays behind.
+  // A plain flight blends the ramps either side; a safe one stays behind.
   stretches.forEach((stretch, index) => {
     if (stretch.shot !== look.flight || stretch.ramp || safe.has(stretch.from)) return;
     const near = other => other && segment[other.from] === segment[stretch.from] ? other : null;
@@ -280,6 +306,8 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
 // style is 'cinematic' or 'steady' (see STYLES).
 // Returns {count, eye, target, fov, segment, cutTick}: one entry every STEP ticks of run a.
 export async function planCamera({a, b = null, map = null, others = b ? [{track: b, map}] : [], group = true, style = 'cinematic', trace = null, yieldTask = null, isCurrent = () => true}) {
+  const cancelled = Symbol();
+  try {
   const look = STYLES[style] ?? STYLES.cinematic;
   const count = Math.ceil(a.count / STEP) + 1;
   const sampleTick = s => Math.min(a.count - 1, s * STEP);
@@ -301,6 +329,18 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   let deadline = yieldTask ? await yieldTask() : null;
   if (!isCurrent()) return null;
   const idleLeft = (reserve = 2) => deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > reserve;
+  // Long convolutions share one output and kernel, but check the idle budget
+  // between bounded ranges. Short tracks retain the synchronous fast path.
+  const smooth = async (values, sigma, ids) => {
+    if (!yieldTask || values.length < 8192 || sigma <= 0) return blur(values, sigma, ids);
+    const state = prepareBlur(values, sigma, ids);
+    for (let start = 0; start < values.length; start += 128) {
+      if (!idleLeft()) deadline = await yieldTask();
+      if (!isCurrent()) throw cancelled;
+      blurRange(state, start, Math.min(values.length, start + 128));
+    }
+    return state.out;
+  };
   let cutAt = 0;
   for (let s = 0; s < count; s++) {
     const tick = sampleTick(s), previous = s ? sampleTick(s - 1) : 0;
@@ -398,15 +438,13 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   const lx = runs[0][leave * 3] - runs[0][first * 3], ly = runs[0][leave * 3 + 1] - runs[0][first * 3 + 1], away = Math.hypot(lx, ly);
   const leaving = zone < first && segment[leave] === segment[first] && away > 50;
   if (leaving) for (let s = zone; s < first; s++) { travel[0][s] = lx / away; travel[1][s] = ly / away; }
-  const tx = blur(travel[0], seconds(1), segment), ty = blur(travel[1], seconds(1), segment);
-  const smoothSpan = blur(span, seconds(0.6), segment), smoothSpeed = blur(speed, seconds(0.8), segment);
+  const tx = await smooth(travel[0], seconds(1), segment), ty = await smooth(travel[1], seconds(1), segment);
+  const smoothSpan = await smooth(span, seconds(0.6), segment), smoothSpeed = await smooth(speed, seconds(0.8), segment);
   if (yieldTask && !idleLeft()) deadline = await yieldTask();
   if (!isCurrent()) return null;
-  // Solo framing never changes with corrective weights or safer shot choices.
+  // Solo framing never changes with corrective group weights.
   const fixedFocus = !group || !others.length;
-  let composedFocus = null;
-  // Plans the shots and checks them; safe holds the stretches (by their first
-  // sample) that must take the style's safest shot.
+  let composedFocus = null, originalFocus = null;
   const shoot = async safe => {
     const stretches = planStretches(ramps, segment, count, first, look, seconds, spread, safe);
     const swingAt = new Float32Array(count), riseAt = new Float32Array(count), widenAt = new Float32Array(count), leadAt = new Float32Array(count);
@@ -454,8 +492,9 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     const ease = seconds(look.transition);
     if (yieldTask && !idleLeft()) deadline = await yieldTask();
     if (!isCurrent()) return null;
-    const swing = blur(swingAt, ease, view), rise = blur(riseAt, ease * 1.25, view), widen = blur(widenAt, ease * 1.5, view), leadShare = blur(leadAt, ease, view);
-    const toLanding = ahead.map(values => blur(values, seconds(0.3), view));
+    const swing = await smooth(swingAt, ease, view), rise = await smooth(riseAt, ease * 1.25, view), widen = await smooth(widenAt, ease * 1.5, view), leadShare = await smooth(leadAt, ease, view);
+    const toLanding = [];
+    for (const values of ahead) toLanding.push(await smooth(values, seconds(0.3), view));
     if (yieldTask && !idleLeft()) deadline = await yieldTask();
     if (!isCurrent()) return null;
     const azimuth = new Float32Array(count), elevation = new Float32Array(count), distance = new Float32Array(count), fov = new Float32Array(count), halfViews = new Float32Array(count), above = new Float32Array(count);
@@ -494,6 +533,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     }
     unwrap(azimuth, view);
     const detour = new Float32Array(count), lift = new Float32Array(count), limit = new Float32Array(count).fill(MAX_DISTANCE);
+    const repairTrouble = new Uint8Array(count);
     if (trace) {
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0};
       for (let s = 0; s < count; s += TRACE_EVERY) {
@@ -517,26 +557,39 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         }
         for (let k = s; k < Math.min(count, s + TRACE_EVERY); k++) {
           detour[k] = best.turn * DEGREES; lift[k] = best.lift; limit[k] = Math.max(MIN_DISTANCE, best.room);
+          if (best.room < distance[s] * 0.8) repairTrouble[k] = 1;
         }
       }
     }
     if (yieldTask && !idleLeft()) deadline = await yieldTask();
     if (!isCurrent()) return null;
-    const smoothDetour = blur(detour, seconds(0.45), view);
-    const smoothLift = blur(strongest(lift, Math.round(seconds(0.3)), view), seconds(0.45), view);
-    const room = blur(lowest(limit, Math.round(seconds(0.45)), view), seconds(0.2), view);
+    const smoothDetour = await smooth(detour, seconds(0.45), view);
+    const smoothLift = await smooth(strongest(lift, Math.round(seconds(0.3)), view), seconds(0.45), view);
+    const room = await smooth(lowest(limit, Math.round(seconds(0.45)), view), seconds(0.2), view);
     // The face floor is held from just before a landing, then eased.
-    const floor = blur(strongest(above.map(value => value + Math.PI / 2), Math.round(seconds(0.25)), view).map(value => value - Math.PI / 2), seconds(0.3), view);
-    const az = blur(azimuth, seconds(0.3), view), far = blur(distance, seconds(0.5), view);
-    const el = blur(elevation, seconds(0.3), view).map((value, s) => Math.max(value, floor[s]));
-    const out = blur(swing, seconds(0.3), view);
+    const floor = await smooth(strongest(above.map(value => value + Math.PI / 2), Math.round(seconds(0.25)), view).map(value => value - Math.PI / 2), seconds(0.3), view);
+    const az = await smooth(azimuth, seconds(0.3), view), far = await smooth(distance, seconds(0.5), view);
+    const el = (await smooth(elevation, seconds(0.3), view)).map((value, s) => Math.max(value, floor[s]));
+    const out = await smooth(swing, seconds(0.3), view);
     // Where a retreat heads: the nearer of behind and ahead, eased so the
     // choice never flips between them from one frame to the next.
-    const axis = blur(out.map(value => Math.abs(value) > Math.PI / 2 ? Math.sign(value) * Math.PI : 0), seconds(0.45), view);
+    const axis = await smooth(out.map(value => Math.abs(value) > Math.PI / 2 ? Math.sign(value) * Math.PI : 0), seconds(0.45), view);
     // The shot from the smoothed choices. weight scales how far the framing
     // leans towards the other runs; limitTo caps the distance; retreat eases
     // the shot back towards a low chase.
-    const compose = (weight, limitTo, retreat) => {
+    // One composition calculation serves both the unchanged full shot and
+    // sparse repair layers. Repairs never blur/recompose the entire route.
+    const place = (s, d, yaw, pitch, centre, eye, target, o) => {
+      const length = Math.hypot(tx[s], ty[s]) || 1, lead = Math.min(LEAD_MAX, far[s] * leadShare[s]);
+      const ex = Math.cos(yaw) * Math.cos(pitch) * d, ey = Math.sin(yaw) * Math.cos(pitch) * d, ez = Math.sin(pitch) * d;
+      let lx = tx[s] / length * lead + toLanding[0][s] * look.landing, ly = ty[s] / length * lead + toLanding[1][s] * look.landing, lz = toLanding[2][s] * look.landing;
+      const along = -(lx * ex + ly * ey + lz * ez) / d, across = Math.sqrt(Math.max(0, lx * lx + ly * ly + lz * lz - along * along));
+      const most = Math.max(1, Math.min(Math.tan(LEAD_TURN * DEGREES) * Math.max(d * 0.5, d + along), Math.tan(halfViews[s]) * d * 0.85 - smoothSpan[s] * 0.5));
+      if (across > 1e-6) { const k = most * Math.tanh(across / most) / across; lx *= k; ly *= k; lz *= k; }
+      target[o] = centre[0][s] + lx; target[o + 1] = centre[1][s] + ly; target[o + 2] = centre[2][s] + lz;
+      eye[o] = centre[0][s] + ex; eye[o + 1] = centre[1][s] + ey; eye[o + 2] = centre[2][s] + ez;
+    };
+    const compose = async (weight, limitTo, retreat) => {
       let centre = fixedFocus && composedFocus;
       if (!centre) {
         const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
@@ -549,33 +602,28 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
           }
           fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
         }
-        centre = [blur(fx, seconds(0.12), segment), blur(fy, seconds(0.12), segment), blur(fz, seconds(0.2), segment)];
+        centre = [await smooth(fx, seconds(0.12), segment), await smooth(fy, seconds(0.12), segment), await smooth(fz, seconds(0.2), segment)];
         if (fixedFocus) composedFocus = centre;
       }
-      const [cx, cy, cz] = centre;
+      originalFocus ??= centre;
       const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
       for (let s = 0; s < count; s++) {
         const d = clamp(Math.min(far[s], room[s], limitTo[s]), MIN_DISTANCE, MAX_DISTANCE);
         const yaw = az[s] + (axis[s] - out[s]) * retreat[s] + smoothDetour[s];
         const pitch = clamp(Math.max(el[s] + (RETREAT_ELEVATION * DEGREES - el[s]) * retreat[s], floor[s]) + smoothLift[s], -1.35, 1.35);
-        const length = Math.hypot(tx[s], ty[s]) || 1, lead = Math.min(LEAD_MAX, far[s] * leadShare[s]);
-        const ex = Math.cos(yaw) * Math.cos(pitch) * d, ey = Math.sin(yaw) * Math.cos(pitch) * d, ez = Math.sin(pitch) * d;
-        // Room ahead and, in flight, towards the landing.
-        let lx = tx[s] / length * lead + toLanding[0][s] * look.landing, ly = ty[s] / length * lead + toLanding[1][s] * look.landing, lz = toLanding[2][s] * look.landing;
-        // Never so much that the ghosts drift from the middle: the part across
-        // the view turns it by at most LEAD_TURN, and only into room the group
-        // doesn't need, eased so it never jolts.
-        const along = -(lx * ex + ly * ey + lz * ez) / d, across = Math.sqrt(Math.max(0, lx * lx + ly * ly + lz * lz - along * along));
-        const most = Math.max(1, Math.min(Math.tan(LEAD_TURN * DEGREES) * Math.max(d * 0.5, d + along), Math.tan(halfViews[s]) * d * 0.85 - smoothSpan[s] * 0.5));
-        if (across > 1e-6) { const k = most * Math.tanh(across / most) / across; lx *= k; ly *= k; lz *= k; }
-        target[s * 3] = cx[s] + lx; target[s * 3 + 1] = cy[s] + ly; target[s * 3 + 2] = cz[s] + lz;
-        eye[s * 3] = cx[s] + ex; eye[s * 3 + 1] = cy[s] + ey; eye[s * 3 + 2] = cz[s] + ez;
+        place(s, d, yaw, pitch, centre, eye, target, s * 3);
       }
-      calm(eye, target, view, seconds);
+      await calm(eye, target, view, seconds, smooth);
       return {eye, target, focus: centre};
     };
+    const desiredEye = new Float32Array(3), desiredTarget = new Float32Array(3);
+    const desired = s => {
+      place(s, far[s], az[s], el[s], originalFocus, desiredEye, desiredTarget, 0);
+      return {x: desiredEye[0], y: desiredEye[1], z: desiredEye[2], tx: desiredTarget[0], ty: desiredTarget[1], tz: desiredTarget[2],
+        cx: originalFocus[0][s], cy: originalFocus[1][s], cz: originalFocus[2][s]};
+    };
     let weight = new Float32Array(count).fill(1), closest = new Float32Array(count).fill(MAX_DISTANCE), retreat = new Float32Array(count);
-    let shot = compose(weight, closest, retreat), firstLook = null;
+    let shot = await compose(weight, closest, retreat), firstLook = null;
     // The smoothed shot can still end up behind something no detour was tested
     // against, and two lines either side of a wall can put the framing inside
     // it. Check what the camera really sees. Where any ghost in frame is
@@ -592,7 +640,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         from.x = shot.focus[0][s]; from.y = shot.focus[1][s]; from.z = shot.focus[2][s];
         to.x = shot.eye[s * 3]; to.y = shot.eye[s * 3 + 1]; to.z = shot.eye[s * 3 + 2];
         body.x = runs[0][s * 3]; body.y = runs[0][s * 3 + 1]; body.z = runs[0][s * 3 + 2] + EYE_HEIGHT;
-        const d = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z), clear = trace(from, to), seen = trace(body, to);
+        const d = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z), clear = trace(from, to);
+        if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+        if (!isCurrent()) return null;
+        const seen = trace(body, to);
         // The played run out of frame (a group that can't fit) frames it alone.
         const outside = others.length > 0 && !framed(shot, s, body, fov[s]);
         // The other runs are checked half as often, and not on the last pass.
@@ -608,6 +659,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         if (lost) for (let k = s; k < Math.min(count, s + TRACE_EVERY * 2); k++) obstructed[k] = 1;
         lost ||= seen < 0.97;
         for (let k = s; k < Math.min(count, s + TRACE_EVERY); k++) {
+          if (lost || clear < 0.97) repairTrouble[k] = 1;
           if (clear < 0.97) { blocked[k] = Math.max(MIN_DISTANCE, clear * d - CLEARANCE); found = true; }
           // Hemmed in (it would have to come in to under half its distance) counts too: behind is usually clearest.
           if (lost || clear * d < far[k] * 0.5) { obstructed[k] = 1; found = true; }
@@ -616,28 +668,35 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       }
       firstLook ??= {obstructed, blocked};
       if (!found) break;
-      const back = blur(strongest(obstructed, Math.round(seconds(RETREAT)), view), seconds(0.35), view);
+      const back = await smooth(strongest(obstructed, Math.round(seconds(RETREAT)), view), seconds(0.35), view);
       retreat = retreat.map((value, s) => Math.max(value, back[s]));
-      const lose = blur(lowest(hidden.map(value => 1 - value), Math.round(seconds(0.5)), view), seconds(0.4), view);
+      const lose = await smooth(lowest(hidden.map(value => 1 - value), Math.round(seconds(0.5)), view), seconds(0.4), view);
       weight = weight.map((value, s) => Math.min(value, lose[s]));
-      const closer = blur(lowest(blocked, Math.round(seconds(0.45)), view), seconds(0.2), view);
+      const closer = await smooth(lowest(blocked, Math.round(seconds(0.45)), view), seconds(0.2), view);
       closest = closest.map((value, s) => Math.min(value, closer[s]));
-      shot = compose(weight, closest, retreat);
+      shot = await compose(weight, closest, retreat);
     }
-    // A stretch whose shot hides a ghost or is pinned in by walls for much of
-    // it is planned again with the safe shot rather than patched.
     const troubled = new Set();
     for (const stretch of stretches) {
       if (safe.has(stretch.from) || stretch.shot === look.flight || stretch.shot === look.gentle.at(-1)) continue;
       let bad = 0;
-      for (let s = stretch.from; s <= stretch.to && firstLook; s++) if (firstLook.obstructed[s] || firstLook.blocked[s] < far[s] * 0.5) bad++;
+      for (let s = stretch.from; s <= stretch.to && firstLook; s++)
+        if (firstLook.obstructed[s] || firstLook.blocked[s] < far[s] * 0.5) bad++;
       if (bad > (stretch.to - stretch.from + 1) * TROUBLE) troubled.add(stretch.from);
     }
-    return {shot, fov, view, cutTicks: cutTick, troubled};
+    const affected = new Uint8Array(segment[count - 1] + 1);
+    for (let s = 0; s < count; s++) if (repairTrouble[s]) affected[segment[s]] = 1;
+    for (let s = 0; s < count; s++) {
+      const o = s * 3, d = Math.hypot(shot.eye[o] - shot.focus[0][s], shot.eye[o + 1] - shot.focus[1][s], shot.eye[o + 2] - shot.focus[2][s]);
+      repairTrouble[s] = affected[segment[s]] && (retreat[s] > 0.2 || weight[s] < 0.95 || d < far[s] * 0.6) ? 1 : 0;
+    }
+    return {shot, fov, view, cutTicks: cutTick, troubled, desired, trouble: repairTrouble, weight};
   };
   let planned = await shoot(new Set());
+  const desiredPlan = planned;
   if (planned?.troubled.size) planned = await shoot(planned.troubled);
   if (!planned) return null;
+  const baselineClearance = trace ? new Float64Array(count) : null;
   if (trace) {
     const body = {x: 0, y: 0, z: 0}, eye = {x: 0, y: 0, z: 0};
     let cramped = null;
@@ -652,7 +711,12 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         const o = s * 3;
         body.x = runs[0][o]; body.y = runs[0][o + 1]; body.z = runs[0][o + 2] + EYE_HEIGHT;
         eye.x = planned.shot.eye[o]; eye.y = planned.shot.eye[o + 1]; eye.z = planned.shot.eye[o + 2];
+        // A native trace cannot be interrupted, so check the idle budget
+        // between queries rather than allowing a whole sample batch through.
+        if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+        if (!isCurrent()) return null;
         const clear = trace(body, eye);
+        baselineClearance[s] = clear;
         const dx = eye.x - body.x, dy = eye.y - body.y, dz = eye.z - body.z;
         const distance = Math.hypot(dx, dy, dz);
         if (!pass && (clear < 1 || distance < BASE_DISTANCE * 0.5)) (cramped ??= new Float32Array(count))[s] = 1;
@@ -673,7 +737,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         }
       }
       if (pass || !cramped) break;
-      const blend = blur(strongest(cramped, Math.ceil(seconds(0.45)), segment), seconds(0.2), segment);
+      const blend = await smooth(strongest(cramped, Math.ceil(seconds(0.45)), segment), seconds(0.2), segment);
       const history = Math.ceil(seconds(1));
       // Count search work, not absolute sample indices: sparse fallback regions
       // can miss sample boundaries, and one sample can try many native traces.
@@ -712,6 +776,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
           if (distance < MIN_DISTANCE) continue;
           const scale = Math.min(1, BASE_DISTANCE / distance);
           eye.x = body.x + dx * scale; eye.y = body.y + dy * scale; eye.z = body.z + dz * scale;
+          if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+          if (!isCurrent()) return null;
           if (trace(body, eye) < 1) continue;
           const weight = blend[s];
           planned.shot.eye[o] += (eye.x - planned.shot.eye[o]) * weight;
@@ -726,13 +792,443 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       }
       if (!changed) break;
     }
+    // Search on the completed conservative baseline. A failed window leaves
+    // its eyes, framing and group participation exactly as they were.
+    let sliceStarted = performance.now();
+    const checkpoint = () => {
+      if (!isCurrent()) throw cancelled;
+      if (yieldTask && (!idleLeft(0.5) || performance.now() - sliceStarted > 3))
+        return Promise.resolve(yieldTask()).then(next => {
+          deadline = next; sliceStarted = performance.now();
+          if (!isCurrent()) throw cancelled;
+        });
+      return null;
+    };
+    const sampleBody = (r, s, out) => {
+      const tick = Math.min(a.count - 1, s * STEP);
+      if (!r) trackPoint(a, tick, out);
+      else {
+        const {track, map: where} = others[r - 1], lo = Math.floor(tick), hi = Math.min(a.count - 1, lo + 1);
+        trackPoint(track, where[lo] + (where[hi] - where[lo]) * (tick - lo), out);
+      }
+      out.z += EYE_HEIGHT;
+      return out;
+    };
+    const bodyBounds = (r, from, to, low, high) => {
+      from = Math.min(a.count - 1, from * STEP); to = Math.min(a.count - 1, to * STEP);
+      const track = r ? others[r - 1].track : a, where = r ? others[r - 1].map : null;
+      let first = from, last = to;
+      if (where) {
+        first = Infinity; last = -Infinity;
+        for (let tick = from; tick <= to; tick++) {
+          first = Math.min(first, where[tick]); last = Math.max(last, where[tick]);
+        }
+      }
+      first = Math.max(0, Math.floor(first)); last = Math.min(track.count - 1, Math.ceil(last));
+      // Unusually large time warps cannot be certified with bounded work.
+      if (!Number.isFinite(first) || !Number.isFinite(last) || last - first > 48 || first > last) return false;
+      low.x = low.y = low.z = Infinity; high.x = high.y = high.z = -Infinity;
+      for (let tick = first; tick <= last; tick++) {
+        const o = tick * 3, x = track.position[o], y = track.position[o + 1], z = track.position[o + 2] + EYE_HEIGHT;
+        low.x = Math.min(low.x, x); low.y = Math.min(low.y, y); low.z = Math.min(low.z, z);
+        high.x = Math.max(high.x, x); high.y = Math.max(high.y, y); high.z = Math.max(high.z, z);
+      }
+      return true;
+    };
+    // An earlier correction is not an invitation to restyle a now-good safe
+    // shot. Search only persistent group loss or strong final compression.
+    for (let s = 0; s < count; s++) {
+      if (s % SLICE === 0) {
+        const pause = checkpoint();
+        if (pause) await pause;
+      }
+      if (!planned.trouble[s]) { desiredPlan.trouble[s] = 0; continue; }
+      const reference = desiredPlan.desired(s), o = s * 3;
+      const wanted = Math.hypot(reference.x - reference.cx, reference.y - reference.cy, reference.z - reference.cz);
+      const actual = Math.hypot(planned.shot.eye[o] - reference.cx, planned.shot.eye[o + 1] - reference.cy, planned.shot.eye[o + 2] - reference.cz);
+      const compressed = actual < wanted * 0.6;
+      let lost = false;
+      if (!compressed && planned.weight[s] < 0.95) {
+        eye.x = planned.shot.eye[o]; eye.y = planned.shot.eye[o + 1]; eye.z = planned.shot.eye[o + 2];
+        for (let r = 1; r < runs.length && !lost; r++) {
+          if (shares[r - 1][s] < 0.25) continue;
+          sampleBody(r, s, body);
+          if (!framed(planned.shot, s, body, planned.fov[s])) { lost = true; break; }
+          const pause = checkpoint();
+          if (pause) await pause;
+          lost = trace(body, eye) < 0.97;
+        }
+      }
+      desiredPlan.trouble[s] = compressed || lost ? 1 : 0;
+    }
+    await repairPaths({shot: planned.shot, desired: desiredPlan.desired,
+      trouble: desiredPlan.trouble, runs, faces, shares, fov: planned.fov,
+      segment, dt: a.dt * STEP, style, trace, checkpoint, sampleBody, bodyBounds, baselineClearance});
   }
   return {count, eye: planned.shot.eye, target: planned.shot.target, fov: planned.fov, segment: planned.view, cutTick: planned.cutTicks};
+  } catch (error) {
+    if (error === cancelled) return null;
+    throw error;
+  }
+}
+
+// Bounded, time-layered local repair. Clear shots never enter the search.
+// Each window has at most 160 samples, 25 candidates per layer, four
+// predecessors and an 8/16-node connected beam. No eye blur follows repair.
+async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, segment, dt, style, trace, checkpoint, sampleBody, bodyBounds, baselineClearance}) {
+  const count = segment.length, bad = new Uint8Array(count), repaired = new Uint8Array(count);
+  const clearance = baselineClearance, references = new Map();
+  const layers = new Map(), connections = new Map(), originalIds = new Map();
+  let nextNode = 0;
+  const referenceAt = s => {
+    let reference = references.get(s);
+    if (!reference) { reference = desired(s); references.set(s, reference); }
+    return reference;
+  };
+  const eye = {x: 0, y: 0, z: 0}, body = {x: 0, y: 0, z: 0}, previous = {x: 0, y: 0, z: 0};
+  const sweptBounds = Array.from({length: runs.length * 2 + 2}, () => ({x: 0, y: 0, z: 0}));
+  const emptySweep = (from, to, a, b) => {
+    if (!trace.mayHit) return false;
+    sweptBounds[0].x = a.x; sweptBounds[0].y = a.y; sweptBounds[0].z = a.z;
+    sweptBounds[1].x = b.x; sweptBounds[1].y = b.y; sweptBounds[1].z = b.z;
+    // Bound every native path vertex, including intervening ghost ticks in
+    // time-warped groups. Two corners suffice for the enclosing AABB.
+    for (let r = 0; r < runs.length; r++)
+      if (!bodyBounds(r, from, to, sweptBounds[r * 2 + 2], sweptBounds[r * 2 + 3])) return false;
+    return trace.mayHit(sweptBounds) === false;
+  };
+  const query = (from, to, fraction = false) => {
+    const result = () => {
+      // A positive swept certificate already performed the BVH lookup.
+      // Repeating that lookup for each radial ray costs more than tracing it.
+      const clear = trace(from, to);
+      return fraction ? clear : clear === 1;
+    };
+    const pause = checkpoint();
+    return pause ? pause.then(result) : result();
+  };
+  const point = (array, s, out, height = 0) => {
+    const lo = Math.floor(s), hi = Math.min(count - 1, lo + 1), t = s - lo;
+    out.x = array[lo * 3] + (array[hi * 3] - array[lo * 3]) * t;
+    out.y = array[lo * 3 + 1] + (array[hi * 3 + 1] - array[lo * 3 + 1]) * t;
+    out.z = array[lo * 3 + 2] + (array[hi * 3 + 2] - array[lo * 3 + 2]) * t + height;
+  };
+  // Radial passes miss a blocked eye chord and intermediate body sightlines.
+  for (let s = 0; s < count; s++) {
+    point(shot.eye, s, eye); point(runs[0], s, body, EYE_HEIGHT);
+    const pause = checkpoint();
+    if (pause) await pause;
+    const joined = s && segment[s] === segment[s - 1];
+    if (joined) {
+      point(shot.eye, s - 1, previous);
+      if (emptySweep(s - 1, s, previous, eye)) {
+        clearance[s] = 1;
+        if (trouble[s]) bad[s] = 1;
+        continue;
+      }
+    }
+    if (clearance[s] !== 1) clearance[s] = await query(body, eye, true);
+    if (trouble[s] || clearance[s] < 1) bad[s] = 1;
+    if (joined) {
+      point(shot.eye, s - 1, previous);
+      if (!await query(previous, eye)) bad[s - 1] = bad[s] = 1;
+      point(shot.eye, s - 0.5, eye); sampleBody(0, s - 0.5, body);
+      if (!await query(body, eye)) bad[s - 1] = bad[s] = 1;
+    }
+  }
+  if (!bad.some(Boolean)) return {repaired, clearance};
+  const stride = Math.max(1, Math.min(8, Math.round(0.18 / dt))), padding = Math.max(stride, Math.ceil(0.8 / dt));
+  const wrap = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
+  const nodeAt = (source, s) => ({
+    s, x: source.eye[s * 3], y: source.eye[s * 3 + 1], z: source.eye[s * 3 + 2],
+    tx: source.target[s * 3], ty: source.target[s * 3 + 1], tz: source.target[s * 3 + 2],
+    cost: Infinity, parent: null, rate: 0,
+  });
+  const frame = {eye: new Float32Array(3), target: new Float32Array(3)};
+  const baselineFrames = new Map(), required = new Uint8Array(runs.length);
+  const screen = new Float64Array(runs.length * 2), inside = new Uint8Array(runs.length);
+  const ranges = new Float64Array(runs.length);
+  const target = {x: 0, y: 0, z: 0};
+  const bodies = Array.from({length: runs.length}, () => ({x: 0, y: 0, z: 0}));
+  const baselineAt = s => {
+    let baseline = baselineFrames.get(s);
+    if (baseline) return baseline;
+    const lo = Math.floor(s), hi = Math.min(count - 1, lo + 1), t = s - lo;
+    baseline = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0},
+      screen: new Float64Array(runs.length * 2), inside: new Uint8Array(runs.length),
+      ranges: new Float64Array(runs.length), seen: new Int8Array(runs.length).fill(-1)};
+    point(shot.eye, s, baseline.eye); point(shot.target, s, baseline.target);
+    for (let r = 0; r < runs.length; r++) {
+      if (r && !(shares[r - 1][lo] * (1 - t) + shares[r - 1][hi] * t)) continue;
+      sampleBody(r, s, body);
+      baseline.ranges[r] = Math.hypot(body.x - baseline.eye.x, body.y - baseline.eye.y, body.z - baseline.eye.z);
+      baseline.inside[r] = projected(baseline.eye, baseline.target, body,
+        fov[lo] * (1 - t) + fov[hi] * t, baseline.screen, r * 2) ? 1 : 0;
+    }
+    baselineFrames.set(s, baseline);
+    return baseline;
+  };
+  const baselineSeen = (baseline, r, s) => {
+    if (baseline.seen[r] >= 0) return baseline.seen[r] === 1;
+    const remember = visible => { baseline.seen[r] = visible ? 1 : 0; return visible; };
+    if (!r && Number.isInteger(s) && clearance[s] === 1) return remember(true);
+    const visible = query(bodies[r], baseline.eye);
+    return typeof visible === 'boolean' ? remember(visible) : visible.then(remember);
+  };
+  const participating = (r, s, lo, hi, t) => {
+    if (!r) return true;
+    const share = shares[r - 1][lo] * (1 - t) + shares[r - 1][hi] * t;
+    if (share >= 0.25) return true;
+    if (!share) return false; // A legitimate cut/fade must not be pulled back.
+    const baseline = baselineAt(s);
+    return baseline.inside[r] ? baselineSeen(baseline, r, s) : false;
+  };
+  const valid = async (node, s, geometryClear = false, score = false) => {
+    eye.x = node.x; eye.y = node.y; eye.z = node.z;
+    target.x = node.tx; target.y = node.ty; target.z = node.tz;
+    inside.fill(0);
+    node.separation = 0;
+    frame.eye[0] = node.x; frame.eye[1] = node.y; frame.eye[2] = node.z;
+    frame.target[0] = node.tx; frame.target[1] = node.ty; frame.target[2] = node.tz;
+    const lo = Math.floor(s), hi = Math.min(count - 1, lo + 1), t = s - lo;
+    const field = fov[lo] * (1 - t) + fov[hi] * t;
+    // Reject all cheap composition/face failures before any candidate ray.
+    for (let r = 0; r < runs.length; r++) {
+      sampleBody(r, s, bodies[r]);
+      const included = participating(r, s, lo, hi, t);
+      required[r] = (typeof included === 'boolean' ? included : await included) ? 1 : 0;
+      if (!required[r]) continue;
+      const body = bodies[r];
+      if (!r) {
+        point(shot.eye, s, previous);
+        const original = Math.hypot(previous.x - body.x, previous.y - body.y, previous.z - body.z);
+        if (Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z) + 1 < original * 0.98) return false;
+      }
+      // Candidate-specific face guards; do not average opposing landing faces.
+      for (let at = lo; at <= hi; at++) {
+        const nx = faces[r][at * 3], ny = faces[r][at * 3 + 1], nz = faces[r][at * 3 + 2];
+        if (!nx && !ny) continue;
+        const dx = eye.x - body.x, dy = eye.y - body.y, dz = eye.z - body.z;
+        if (dx * nx + dy * ny + dz * nz < Math.sin(FACE_MARGIN * DEGREES) * Math.hypot(dx, dy, dz)) return false;
+      }
+      if (!framed(frame, 0, body, fov[lo])) return false;
+      ranges[r] = Math.hypot(body.x - eye.x, body.y - eye.y, body.z - eye.z);
+      inside[r] = projected(eye, target, body, field, screen, r * 2) ? 1 : 0;
+      if (!inside[r]) return false;
+    }
+    if (runs.length > 1) {
+      const baseline = baselineAt(s);
+      for (let a = 0; a < runs.length; a++) for (let b = a + 1; b < runs.length; b++) {
+        if (!baseline.inside[a] || !baseline.inside[b]) continue;
+        const before = Math.hypot(baseline.screen[a * 2] - baseline.screen[b * 2],
+          baseline.screen[a * 2 + 1] - baseline.screen[b * 2 + 1]);
+        if (before < 1e-6) continue;
+        const after = Math.hypot(screen[a * 2] - screen[b * 2], screen[a * 2 + 1] - screen[b * 2 + 1]);
+        // Allow the expected perspective shrink when restoring a wide shot,
+        // but not foreshortening distinct subjects into the same sightline.
+        const scale = Math.min(1, (baseline.ranges[a] + baseline.ranges[b]) / (ranges[a] + ranges[b]));
+        const retained = after / (before * scale);
+        const collapsed = !inside[a] || !inside[b] || after + 1e-6 < Math.min(before * scale * 0.6, 0.45);
+        if (!collapsed && (!score || retained >= 1)) continue;
+        const seenA = baselineSeen(baseline, a, s);
+        if (!(typeof seenA === 'boolean' ? seenA : await seenA)) continue;
+        const seenB = baselineSeen(baseline, b, s);
+        if (!(typeof seenB === 'boolean' ? seenB : await seenB)) continue;
+        if (collapsed) return false;
+        if (score) node.separation += (1 - retained) ** 2 * 2;
+      }
+    }
+    if (!geometryClear) for (let r = 0; r < runs.length; r++)
+      if (required[r] && !await query(bodies[r], eye)) return false;
+    return true;
+  };
+  const edge = async (a, b) => {
+    previous.x = a.x; previous.y = a.y; previous.z = a.z;
+    eye.x = b.x; eye.y = b.y; eye.z = b.z;
+    const pause = checkpoint();
+    if (pause) await pause;
+    const geometryClear = emptySweep(a.s, b.s, previous, eye);
+    if (!geometryClear && !await query(previous, eye)) return false;
+    // Search uses three geometric intermediates, but all half-tick face and
+    // framing checks. Only the selected path pays for dense native visibility.
+    const between = {...a};
+    for (let s = a.s + 0.25; s < b.s; s += 0.25) {
+      const t = (s - a.s) / (b.s - a.s);
+      between.x = a.x + (b.x - a.x) * t; between.y = a.y + (b.y - a.y) * t; between.z = a.z + (b.z - a.z) * t;
+      between.tx = a.tx + (b.tx - a.tx) * t; between.ty = a.ty + (b.ty - a.ty) * t; between.tz = a.tz + (b.tz - a.tz) * t;
+      const geometric = t === 0.25 || t === 0.5 || t === 0.75;
+      if (!await valid(between, s, geometryClear || !geometric)) return false;
+    }
+    return true;
+  };
+  const connected = async (a, b) => {
+    // A window has fewer than 8192 node IDs, including expanded anchors.
+    const key = a.id * 8192 + b.id;
+    let clear = connections.get(key);
+    if (clear === undefined) { clear = await edge(a, b); connections.set(key, clear); }
+    return clear;
+  };
+  const buildCandidates = async (s, anchor) => {
+    const original = nodeAt(shot, s);
+    original.original = true;
+    if (anchor) return await valid(original, s) ? [original] : [];
+    const reference = referenceAt(s), {cx, cy, cz} = reference;
+    const dx = reference.x - cx, dy = reference.y - cy, dz = reference.z - cz;
+    const yaw = Math.atan2(dy, dx), pitch = Math.atan2(dz, Math.hypot(dx, dy)), radius = Math.hypot(dx, dy, dz);
+    const nodes = [];
+    // Full orbits, with distance scored up to the reference (no 70% plateau).
+    for (let turn = 0; turn < 12; turn++) {
+      let full = false, close = false;
+      // Keep one wide and one shorter option per bearing.
+      for (const variant of [0, 3, 1, 2]) {
+        if (variant === 3 && full || variant === 2 && close) continue;
+        const angle = wrap(turn * Math.PI / 6), az = yaw + angle;
+        const scale = variant === 1 ? 0.72 : variant === 2 ? 0.48 : 1;
+        let el = pitch + (variant === 3 ? 18 * DEGREES : 0);
+        const nx = faces[0][s * 3], ny = faces[0][s * 3 + 1], nz = faces[0][s * 3 + 2];
+        if (nx || ny) {
+          const A = Math.cos(az) * nx + Math.sin(az) * ny, reach = Math.hypot(A, nz);
+          el = Math.max(el, Math.atan2(nz, A) - Math.acos(Math.min(1, Math.sin(FACE_MARGIN * DEGREES) / reach)));
+        }
+        if (el > Math.min(1.35, pitch + 18 * DEGREES)) continue;
+        const d = Math.max(MIN_DISTANCE, radius * scale), flat = Math.cos(el) * d;
+        const node = {s, x: Math.fround(cx + Math.cos(az) * flat), y: Math.fround(cy + Math.sin(az) * flat), z: Math.fround(cz + Math.sin(el) * d),
+          tx: Math.fround(cx + (reference.tx - cx) * scale),
+          ty: Math.fround(cy + (reference.ty - cy) * scale),
+          tz: Math.fround(cz + (reference.tz - cz) * scale),
+          cost: Infinity, parent: null, rate: 0,
+          composition: angle * angle * (style === 'steady' ? 0.9 : 0.45) + (1 - scale) ** 2 * 16 + (el - pitch) ** 2 * 8};
+        if (await valid(node, s, false, true)) {
+          node.composition += node.separation;
+          nodes.push(node);
+          if (scale === 1) full = true; else close = true;
+        }
+      }
+    }
+    if (await valid(original, s)) {
+      const ox = original.x - cx, oy = original.y - cy, oz = original.z - cz;
+      const angle = wrap(Math.atan2(oy, ox) - yaw), scale = Math.hypot(ox, oy, oz) / radius;
+      original.composition = angle * angle * (style === 'steady' ? 0.9 : 0.45) + (1 - scale) ** 2 * 16 +
+        (Math.atan2(oz, Math.hypot(ox, oy)) - pitch) ** 2 * 8;
+      nodes.push(original);
+    }
+    return nodes;
+  };
+  const candidates = async (s, anchor) => {
+    const key = s * 2 + (anchor ? 1 : 0);
+    let nodes = layers.get(key);
+    if (!nodes) {
+      nodes = await buildCandidates(s, anchor);
+      for (const node of nodes) {
+        if (node.original && originalIds.has(s)) node.id = originalIds.get(s);
+        else {
+          node.id = nextNode++;
+          if (node.original) originalIds.set(s, node.id);
+        }
+      }
+      layers.set(key, nodes);
+    }
+    // Search state belongs to an attempt; geometry results belong to the
+    // bounded window and can be reused by its second anchor expansion.
+    return nodes.map(node => ({...node, cost: Infinity, parent: null, rate: 0}));
+  };
+  for (let cursor = 0; cursor < count;) {
+    if (!bad[cursor] || repaired[cursor]) { cursor++; continue; }
+    references.clear(); layers.clear(); connections.clear(); originalIds.clear(); baselineFrames.clear(); nextNode = 0;
+    const start = cursor, id = segment[start];
+    let end = start;
+    for (let next = start + 1; next < count && segment[next] === id && next - start < 112 && next - end <= padding; next++)
+      if (bad[next] && !repaired[next]) end = next;
+    let accepted = false;
+    for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
+      let from = start, to = end;
+      while (from > 0 && segment[from - 1] === id && start - from < padding * attempt && to - from < 159) from--;
+      while (to + 1 < count && segment[to + 1] === id && to - end < padding * attempt && to - from < 159) to++;
+      if (from === to) continue;
+      const intervals = Math.max(1, Math.ceil((to - from) / stride));
+      const times = Array.from({length: intervals + 1}, (_, i) => from + Math.round((to - from) * i / intervals));
+      let layer = await candidates(from, from > 0 && segment[from - 1] === id);
+      for (const node of layer) node.cost = node.composition ?? 0;
+      for (let index = 1; index < times.length && layer.length; index++) {
+        const pause = checkpoint();
+        if (pause) await pause;
+        const s = times[index], next = await candidates(s, index === times.length - 1 && to + 1 < count && segment[to + 1] === id);
+        const ranked = [];
+        for (const node of next) {
+          const {cx, cy} = referenceAt(s), yaw = Math.atan2(node.y - cy, node.x - cx);
+          const predecessors = [];
+          for (const before of layer) {
+            const {cx: bx, cy: by} = referenceAt(before.s);
+            const turn = wrap(yaw - Math.atan2(before.y - by, before.x - bx)), duration = (s - before.s) * dt, rate = turn / duration;
+            if (Math.abs(rate) > (style === 'steady' ? 300 : 540) * DEGREES) continue;
+            const cost = before.cost + (node.composition ?? 0) * duration + turn * turn * 3 +
+              (rate - before.rate) ** 2 * (style === 'steady' ? 0.06 : 0.025);
+            let at = 0;
+            while (at < predecessors.length && predecessors[at].cost <= cost) at++;
+            if (at < 4) { predecessors.splice(at, 0, {before, cost, rate}); if (predecessors.length > 4) predecessors.pop(); }
+          }
+          if (predecessors.length) ranked.push({node, predecessors});
+        }
+        ranked.sort((a, b) => a.predecessors[0].cost - b.predecessors[0].cost);
+        layer = [];
+        // Most alternatives cannot compete compositionally. Trace connected
+        // contenders in cost order; expand the beam on the second attempt.
+        for (const {node, predecessors} of ranked) {
+          for (const candidate of predecessors) if (await connected(candidate.before, node)) {
+            node.cost = candidate.cost; node.parent = candidate.before; node.rate = candidate.rate; break;
+          }
+          if (Number.isFinite(node.cost)) layer.push(node);
+          if (layer.length >= attempt * 8) break;
+        }
+      }
+      if (!layer.length || layer[0].s !== to) continue;
+      const best = layer.reduce((a, b) => a.cost <= b.cost ? a : b);
+      const proposedEye = new Float32Array((to - from + 1) * 3), proposedTarget = new Float32Array(proposedEye.length);
+      for (let node = best; node.parent; node = node.parent) {
+        const before = node.parent;
+        for (let s = before.s; s <= node.s; s++) {
+          const t = (s - before.s) / (node.s - before.s), o = (s - from) * 3;
+          proposedEye[o] = before.x + (node.x - before.x) * t; proposedEye[o + 1] = before.y + (node.y - before.y) * t; proposedEye[o + 2] = before.z + (node.z - before.z) * t;
+          proposedTarget[o] = before.tx + (node.tx - before.tx) * t; proposedTarget[o + 1] = before.ty + (node.ty - before.ty) * t; proposedTarget[o + 2] = before.tz + (node.tz - before.tz) * t;
+        }
+      }
+      // Float32 storage slightly changes chords. Validate that stored path,
+      // including its fractional interpolation, before replacing any sample.
+      let clear = true;
+      const stored = {...best}, last = {x: 0, y: 0, z: 0};
+      for (let s = from; s <= to && clear; s += 0.25) {
+        const lo = (Math.floor(s) - from) * 3, hi = Math.min(to - from, Math.floor(s) - from + 1) * 3, t = s - Math.floor(s);
+        stored.x = proposedEye[lo] + (proposedEye[hi] - proposedEye[lo]) * t;
+        stored.y = proposedEye[lo + 1] + (proposedEye[hi + 1] - proposedEye[lo + 1]) * t;
+        stored.z = proposedEye[lo + 2] + (proposedEye[hi + 2] - proposedEye[lo + 2]) * t;
+        stored.tx = proposedTarget[lo] + (proposedTarget[hi] - proposedTarget[lo]) * t;
+        stored.ty = proposedTarget[lo + 1] + (proposedTarget[hi + 1] - proposedTarget[lo + 1]) * t;
+        stored.tz = proposedTarget[lo + 2] + (proposedTarget[hi + 2] - proposedTarget[lo + 2]) * t;
+        clear = await valid(stored, s);
+        if (clear && s > from) clear = await query(last, {x: stored.x, y: stored.y, z: stored.z});
+        last.x = stored.x; last.y = stored.y; last.z = stored.z;
+        if (!clear) for (let node = best; node.parent; node = node.parent) {
+          const before = node.parent;
+          if (s > before.s && s <= node.s || s === from && before.s === from) {
+            connections.set(before.id * 8192 + node.id, false);
+            break;
+          }
+        }
+      }
+      if (!clear) continue;
+      shot.eye.set(proposedEye, from * 3); shot.target.set(proposedTarget, from * 3);
+      repaired.fill(1, from, to + 1);
+      clearance.fill(1, from, to + 1);
+      accepted = true;
+    }
+    cursor = end + 1;
+  }
+  return {repaired, clearance};
 }
 
 // Smooths the eye in place wherever the view turns faster than TURN_LIMIT:
 // the camera glides instead of whipping round, still aimed at the ghosts.
-function calm(eye, target, view, seconds) {
+async function calm(eye, target, view, seconds, smoothBlur) {
   const count = view.length, rate = new Float32Array(count);
   const direction = (s, out) => {
     const x = target[s * 3] - eye[s * 3], y = target[s * 3 + 1] - eye[s * 3 + 1], z = target[s * 3 + 2] - eye[s * 3 + 2], length = Math.hypot(x, y, z) || 1;
@@ -745,14 +1241,28 @@ function calm(eye, target, view, seconds) {
     const turn = Math.acos(clamp(before[0] * after[0] + before[1] * after[1] + before[2] * after[2], -1, 1));
     rate[s] = turn / (2 * seconds(1) ** -1) / DEGREES;
   }
-  const weight = blur(strongest(rate.map(value => smoothstep(TURN_LIMIT * 0.8, TURN_LIMIT * 1.5, value)), Math.round(seconds(0.25)), view), seconds(0.15), view);
+  const weight = await smoothBlur(strongest(rate.map(value => smoothstep(TURN_LIMIT * 0.8, TURN_LIMIT * 1.5, value)), Math.round(seconds(0.25)), view), seconds(0.15), view);
   if (!weight.some(value => value > 0.01)) return;
   for (let axis = 0; axis < 3; axis++) {
     const values = new Float32Array(count);
     for (let s = 0; s < count; s++) values[s] = eye[s * 3 + axis];
-    const smooth = blur(values, seconds(0.35), view);
+    const smooth = await smoothBlur(values, seconds(0.35), view);
     for (let s = 0; s < count; s++) eye[s * 3 + axis] += (smooth[s] - values[s]) * weight[s];
   }
+}
+
+// Full viewport projection using the planner's existing 16:9 convention.
+// FOV is horizontal at 4:3: .75 converts it to vertical, not a safety margin.
+function projected(eye, target, body, fov, out, offset) {
+  let fx = target.x - eye.x, fy = target.y - eye.y, fz = target.z - eye.z;
+  const length = Math.hypot(fx, fy, fz) || 1;
+  fx /= length; fy /= length; fz /= length;
+  const x = body.x - eye.x, y = body.y - eye.y, z = body.z - eye.z;
+  const depth = x * fx + y * fy + z * fz, flat = Math.hypot(fx, fy) || 1;
+  const tall = Math.tan(fov * Math.PI / 360) * 0.75;
+  out[offset] = (x * fy - y * fx) / (flat * depth * tall * 16 / 9);
+  out[offset + 1] = (z * flat - (x * fx + y * fy) * fz / flat) / (depth * tall);
+  return depth >= 1 && Math.abs(out[offset]) <= 1 && Math.abs(out[offset + 1]) <= 1;
 }
 
 // Whether a point is in a shot's frame at sample s, for a 16:9 screen.
