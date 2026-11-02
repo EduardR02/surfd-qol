@@ -520,6 +520,14 @@ describe('cinematic replay lifecycle', () => {
     expect(Math.abs(across) / depth).toBeLessThanOrEqual(tall * innerWidth / innerHeight);
     expect(Math.abs(up) / depth).toBeLessThanOrEqual(tall);
   }
+  function expectNearbyCamera(view, body) {
+    const eye = view.eyePosition;
+    for (const value of [eye.x, eye.y, eye.z, view.yaw, view.pitch, view.fov]) expect(Number.isFinite(value)).toBe(true);
+    const distance = Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z);
+    expect(distance).toBeGreaterThan(1);
+    expect(distance).toBeLessThan(2000);
+    expectInCameraFrame(view, body);
+  }
 
   for (const focus of [false, true]) test(`the final fractional frame stays visible through a corner-cut blend${focus ? ' from a focused run' : ''}`, async () => {
     const played = straight({count: 60, speed: 0, lead: 0}), focused = straight({count: 60, speed: 0, lead: 0, y: 600});
@@ -622,6 +630,201 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().recorded).toBe(1);
     cinema.close();
   });
+  test('a completed track shows its nearby camera while the whole plan waits, including after reopening', async () => {
+    const gate = deferred(), entered = deferred(), track = straight({count: 2000});
+    let hold = true, block = false, time = 0;
+    const fixture = rig({
+      record: () => track, now: () => time,
+      loadIdle: () => {
+        if (hold && block) { entered.resolve(); return gate.promise; }
+        return Promise.resolve(null);
+      },
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.active && status.pending === null) block = true;
+      },
+    });
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.index = 700;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    await entered.promise;
+    const near = {state: {tick: 700}, eyePosition: {x: track.position[2100], y: 0, z: 64}};
+    renderer.render(near); time = 2000; renderer.render(near);
+    expectNearbyCamera(renderer.drawn, near.eyePosition);
+    const far = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    renderer.render(far);
+    expect(renderer.drawn).toBe(far);
+    cinema.close();
+    block = false;
+    expect(await cinema.setView('steady')).toBe(true);
+    expect(counts().recorded).toBe(1);
+    renderer.render(near); time = 4000; renderer.render(near);
+    expectNearbyCamera(renderer.drawn, near.eyePosition);
+    hold = false; gate.resolve();
+    await Promise.resolve();
+    expect(cinema.status().style).toBe('steady');
+    cinema.close();
+  });
+  test('a failed whole plan keeps its nearby view and can be retried at a later seek', async () => {
+    const failed = deferred(), track = straight({count: 2000});
+    let failFull = false, time = 0;
+    const fixture = rig({
+      record: () => track, now: () => time,
+      loadIdle: () => failFull ? Promise.reject(new Error('Whole plan failed')) : Promise.resolve(null),
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.planError) failed.resolve();
+        else if (status?.active && status.pending === null) failFull = true;
+      },
+    });
+    const {cinema, renderer, control} = fixture;
+    control.playback.index = 100;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    await failed.promise;
+    const near = {state: {tick: 100}, eyePosition: {x: track.position[300], y: 0, z: 64}};
+    renderer.render(near); time = 2000; renderer.render(near);
+    expectNearbyCamera(renderer.drawn, near.eyePosition);
+    const far = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    renderer.render(far);
+    expect(renderer.drawn).toBe(far);
+    control.playback.index = 1800;
+    failFull = false;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    renderer.render(far); time = 4000; renderer.render(far);
+    expectNearbyCamera(renderer.drawn, far.eyePosition);
+    cinema.close();
+  });
+  test('closing settles activation even when recording is still suspended', async () => {
+    const entered = deferred(), suspended = deferred();
+    const {cinema} = rig({record: async () => { entered.resolve(); await suspended.promise; return straight(); }});
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    cinema.close();
+    expect(await enabling).toBe(false);
+    suspended.resolve();
+  });
+  test('a seek during nearby planning recenters before activating the camera', async () => {
+    const entered = deferred(), firstWindow = deferred(), full = deferred();
+    const track = straight({count: 2000});
+    let first = true, blockFull = false, time = 0;
+    const fixture = rig({
+      record: () => track, now: () => time,
+      loadIdle: () => {
+        if (first) { first = false; entered.resolve(); return firstWindow.promise; }
+        return blockFull ? full.promise : Promise.resolve(null);
+      },
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.active && status.pending === null) blockFull = true;
+      },
+    });
+    const {cinema, renderer, control} = fixture;
+    control.playback.index = 100;
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    control.playback.index = 1800;
+    firstWindow.resolve(null);
+    expect(await enabling).toBe(true);
+    const current = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    renderer.render(current); time = 2000; renderer.render(current);
+    expectNearbyCamera(renderer.drawn, current.eyePosition);
+    cinema.close();
+    full.resolve(null);
+  });
+  test('recording completion does not cancel a window already being planned', async () => {
+    const entered = deferred(), gate = deferred(), whole = deferred(), track = straight({count: 2000});
+    let first = true, blockFull = false, time = 0;
+    const fixture = rig({
+      now: () => time,
+      record: async ({onProgress}) => { onProgress(track, 480); return track; },
+      loadIdle: () => {
+        if (first) { first = false; entered.resolve(); return gate.promise; }
+        return blockFull ? whole.promise : Promise.resolve(null);
+      },
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.active && status.pending === null) blockFull = true;
+      },
+    });
+    const {cinema, renderer} = fixture;
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    gate.resolve(null);
+    expect(await enabling).toBe(true);
+    const near = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(near); time = 2000; renderer.render(near);
+    expectNearbyCamera(renderer.drawn, {x: track.position[90], y: 0, z: 64});
+    const far = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    renderer.render(far);
+    expect(renderer.drawn).toBe(far);
+    whole.resolve(null);
+    cinema.close();
+  });
+  test('an added run gets a nearby group view on the watched clock before the whole group plan', async () => {
+    const gate = deferred(), entered = deferred();
+    const watched = straight({count: 2000, lead: 20}), added = straight({count: 2000, lead: 50, speed: 18, y: 150});
+    let block = false, time = 0;
+    const fixture = rig({
+      now: () => time,
+      record: ({replay}) => replay === fixture.control.playback.replay ? watched : added,
+      loadIdle: () => {
+        if (block) { entered.resolve(); return gate.promise; }
+        return Promise.resolve(null);
+      },
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.runs.length && status.pending === null) block = true;
+      },
+    });
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.replay.initialState.tick = 100;
+    control.playback.index = 700;
+    await cinema.setView('cinematic');
+    await cinema.add(run('other'));
+    await entered.promise;
+    const view = {state: {tick: 800}, eyePosition: {x: watched.position[2100], y: 0, z: 64}};
+    renderer.render(view); time = 2000; renderer.render(view);
+    for (const [track, tick] of [[watched, 700], [added, alignByTime(watched, added)[700]]]) {
+      const body = trackPoint(track, tick); body.z += 40;
+      expectInCameraFrame(renderer.drawn, body);
+    }
+    expect(counts().positions[0]).toBe(700);
+    expect(counts().positions[1]).toBeCloseTo(alignByTime(watched, added)[700]);
+    const seek = {state: {tick: 1900}, eyePosition: {x: watched.position[5400], y: 0, z: 64}};
+    renderer.render(seek);
+    expect(renderer.drawn).toBe(seek);
+    gate.resolve(null);
+    cinema.close();
+  });
+  test('adding a spread-out run replaces the nearby solo shot before whole-group planning finishes', async () => {
+    const full = deferred();
+    const watched = straight({count: 2000, lead: 20});
+    const added = straight({count: 2000, lead: 50, y: 1800});
+    let holdFull = false, time = 0;
+    const fixture = rig({
+      now: () => time,
+      record: ({replay}) => replay === fixture.control.playback.replay ? watched : added,
+      loadIdle: () => holdFull ? full.promise : Promise.resolve(null),
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (status?.loading.length && !status.runs.length) holdFull = false;
+        else if (status?.active && status.pending === null) holdFull = true;
+      },
+    });
+    const {cinema, renderer, control} = fixture;
+    control.playback.index = 700;
+    await cinema.setView('cinematic');
+    holdFull = false;
+    await cinema.add(run('spread-out'));
+    const frame = {state: {tick: 700}, eyePosition: {x: watched.position[2100], y: 0, z: 64}};
+    renderer.render(frame); time = 2000; renderer.render(frame);
+    for (const [track, tick] of [[watched, 700], [added, alignByTime(watched, added)[700]]]) {
+      const body = trackPoint(track, tick); body.z += 40;
+      expectInCameraFrame(renderer.drawn, body);
+    }
+    cinema.close();
+    full.resolve(null);
+  });
   function progressing({tick = 0, base = 0} = {}) {
     const finished = deferred(), activated = deferred(), time = {now: 0}, track = straight({count: 2000});
     let first = true;
@@ -646,6 +849,7 @@ describe('cinematic replay lifecycle', () => {
     const {cinema, renderer, finished, activated, time, counts} = progressing();
     const enabling = cinema.setEnabled(true);
     await activated.promise;
+    expect(await enabling).toBe(true);
     expect(cinema.tracks[0].count).toBe(480);
     const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
     renderer.render(pov);
@@ -653,8 +857,7 @@ describe('cinematic replay lifecycle', () => {
     expect(renderer.drawn.eyePosition).not.toEqual(pov.eyePosition);
     const eye = {...renderer.drawn.eyePosition};
     finished.resolve();
-    expect(await enabling).toBe(true);
-    expect(cinema.tracks[0].count).toBe(2000);
+    while (cinema.tracks[0].count !== 2000) await Promise.resolve();
     renderer.render(pov);
     expect(renderer.drawn.eyePosition).toEqual(eye);
     cinema.close();
@@ -706,9 +909,62 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().made.at(-1).shown[0]).toBe(false);
     finished.resolve();
     expect(await enabling).toBe(true);
+    while (cinema.tracks[0].count !== 2000) await Promise.resolve();
+    cinema.close();
+  });
+  for (const view of ['cinematic', 'pov']) test(`${view} hides all comparison objects when seeking beyond the recorded window`, async () => {
+    const finished = deferred(), track = straight({count: 2000}), added = straight({count: 2000, y: 30}), time = {now: 0};
+    const fixture = rig({now: () => time.now, record: async ({replay, onProgress}) => {
+      const recording = replay.commands[0]?.run ? added : track;
+      onProgress(recording, 480);
+      await finished.promise;
+      return recording;
+    }});
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.replay.commands = new Array(track.count - 1).fill({});
+    control.playback.index = 0;
+    await cinema.setView('cinematic');
+    await cinema.add(run('other'));
+    if (view === 'pov') await cinema.setView('pov');
+    const frame = {state: {tick: 30}, eyePosition: {x: track.position[90], y: 0, z: 64}};
+    renderer.render(frame); time.now = 2000; renderer.render(frame);
+    expect(counts().made.at(-1).shown[1]).toBe(true);
+    const seek = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
+    control.playback.index = 1800;
     renderer.render(seek);
-    expect(renderer.drawn).not.toBe(seek);
-    expect(counts().positions[0]).toBe(1800);
+    expect(renderer.drawn).toBe(seek);
+    expect(counts().made.at(-1).shown).toEqual([false, false]);
+    finished.resolve();
+    while (cinema.tracks.some(recording => recording.count !== 2000)) await Promise.resolve();
+    if (view === 'cinematic') await cinema.setView(view);
+    renderer.render(seek);
+    expect(counts().made.at(-1).shown[1]).toBe(true);
+    cinema.close();
+  });
+  test('POV does not freeze an incomplete added run at its last recorded position after a seek', async () => {
+    const finished = deferred(), watched = straight({count: 2000}), added = straight({count: 2000, y: 30});
+    const fixture = rig({record: async ({replay, onProgress}) => {
+      if (!replay.commands[0]?.run) return watched;
+      onProgress(added, 480);
+      await finished.promise;
+      return added;
+    }});
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.replay.commands = new Array(watched.count - 1).fill({});
+    control.playback.index = 0;
+    await cinema.setView('cinematic');
+    await cinema.add(run('other'));
+    await cinema.setView('pov');
+    const seek = {state: {tick: 900}, eyePosition: {x: watched.position[2700], y: 0, z: 64}};
+    control.playback.index = 900;
+    renderer.render(seek);
+    expect(counts().made.at(-1).shown).toEqual([false, false]);
+    finished.resolve();
+    while (cinema.tracks[1].count !== 2000) await Promise.resolve();
+    renderer.render(seek);
+    expect(cinema.view).toBe('pov');
+    expect(counts().made.at(-1).shown[1]).toBe(true);
+    expect(counts().positions[1]).toBe(alignByTime(watched, added)[900]);
     cinema.close();
   });
   test('returning to POV cancels a partial camera and never caches its unfinished track', async () => {
@@ -724,6 +980,29 @@ describe('cinematic replay lifecycle', () => {
     expect(cinema.tracks[0].count).toBe(2000);
     expect(counts().recorded).toBe(2);
     cinema.close();
+  });
+  test('a replay replaced at first-region publication cannot report a stale activation', async () => {
+    const finished = deferred(), track = straight({count: 2000});
+    let replaced = false, first = true;
+    const fixture = rig({
+      record: async ({onProgress}) => {
+        if (first) { first = false; onProgress(track, 480); await finished.promise; }
+        return track;
+      },
+      onChange: () => {
+        if (!replaced && fixture.cinema.camera) {
+          replaced = true;
+          fixture.control.playback.replay = structuredClone(fixture.control.playback.replay);
+        }
+      },
+    });
+    const enabling = fixture.cinema.setView('cinematic');
+    expect(await enabling).toBe(false);
+    fixture.renderer.render({state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}});
+    await Promise.resolve();
+    expect(fixture.cinema.status()).toBeNull();
+    expect(fixture.renderer.render).toBe(fixture.native);
+    finished.resolve();
   });
   test('adding from POV activates the solo camera before download and respects a later POV choice', async () => {
     const entered = deferred(), downloaded = deferred(), activated = deferred();
@@ -1102,6 +1381,7 @@ describe('cinematic replay lifecycle', () => {
     const fixture = rig({now: () => time.now,
       record: async () => straight({count: 2000, y: runs++ * 200})});
     fixture.control.playback.replay.commands = new Array(1999).fill({});
+    fixture.control.playback.index = 300;
     const render = ms => {
       time.now = ms;
       const tick = 300 + ms / 15;

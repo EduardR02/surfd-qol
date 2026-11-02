@@ -7,6 +7,15 @@ const origin = 'https://surfd.net';
 const isSurfd = url => { try { const parsed = new URL(url); return parsed.origin === origin && parsed.pathname === '/'; } catch { return false; } };
 const command = (tabId, method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
 const checkForUpdate = createUpdateChecker({storage: chrome.storage.local, version: chrome.runtime.getManifest().version});
+// Read our own packaged source once; it is inserted into the intercepted
+// native worker response, so CSP needs neither eval nor another worker origin.
+let cinemaRuntime;
+function loadCinemaRuntime() {
+  return cinemaRuntime ??= fetch(chrome.runtime.getURL('cinema-worker.js')).then(response => {
+    if (!response.ok) throw new Error('Cinematic worker asset unavailable');
+    return response.text();
+  }).catch(error => { cinemaRuntime = null; throw error; });
+}
 
 async function status(tabId, message, error = false) {
   try { await chrome.tabs.sendMessage(tabId, { type: 'surfd-qol-status', message, error }); } catch { /* navigation */ }
@@ -68,7 +77,12 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       text = response.base64Encoded ? new TextDecoder().decode(Uint8Array.from(atob(response.body), c => c.charCodeAt(0))) : response.body;
     }
     text = await loadGameSource(params.request.url, text);
-    const patched = isGame ? instrumentGame(text) : instrumentPhysicsWorker(text);
+    let runtime = '';
+    if (!isGame && new URL(params.request.url).pathname.startsWith('/assets/replay-index.worker-')) {
+      try { runtime = await loadCinemaRuntime(); }
+      catch (error) { console.warn('[Surfd QoL] Worker camera unavailable:', error.message); }
+    }
+    const patched = isGame ? instrumentGame(text) : instrumentPhysicsWorker(text, runtime);
     const bytes = new TextEncoder().encode(patched);
     // Modules are ASCII in current builds; conversion also handles future UTF-8 assets.
     let binary = '';

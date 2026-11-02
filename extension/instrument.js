@@ -68,7 +68,7 @@ function __surfdQolIndexes(){
   } catch { return source; }
 }
 
-function preparedIndexWorkerHooks(source) {
+function preparedIndexWorkerHooks(source, workerRuntime) {
   if (source.includes('__surfdQolWorlds')) return source;
   try {
     const world = unique(source, new RegExp(`class (${identifier})\\{constructor\\((${identifier}),(${identifier})=\\[\\],(${identifier})=!1,(${identifier})=!1\\)\\{this\\.brushes=\\2,this\\.triangles=\\3,this\\.vphysicsFeatureFix=\\4,this\\.bspCornerFix=\\5,this\\.triangleBounds=\\3\\.map\\(`, 'g'), 'native collision world');
@@ -83,6 +83,17 @@ function preparedIndexWorkerHooks(source) {
     const loop = unique(source, new RegExp(`const (${identifier})=new (${identifier})\\(${literal(load[1])},${replay}\\);for\\(;;\\)\\{const (${identifier})=performance\\.now\\(\\)\\+(${identifier}),(${identifier})=\\1\\.run\\(\\(\\)=>performance\\.now\\(\\)<\\3\\);if\\(${literal(receiver[1])}\\.postMessage\\(\\{ok:!0,batch:\\5\\},\\{transfer:\\[\\5\\.elapsed\\.buffer,\\5\\.phases\\.buffer\\]\\}\\),\\5\\.done\\)return\\}`, 'g'), 'index worker chunks');
     const failure = unique(source, new RegExp(`${literal(receiver[1])}\\.postMessage\\(\\{ok:!1,error:(${identifier}) instanceof Error\\?\\1\\.message:String\\(\\1\\)\\}\\)`, 'g'), 'index worker failure');
     const strict = unique(source, /"use strict";/g, 'worker scope');
+    // Direct source instrumentation remains usable without a generated asset.
+    // Only the recognized native Session can enable the cinema protocol.
+    const session = [...source.matchAll(new RegExp(`this\\.session=new (${identifier})\\((${identifier}),(${identifier})\\.config\\)`, 'g'))];
+    const cinema = workerRuntime && session.length === 1 ? `
+${workerRuntime}
+const __surfdQolCinema=globalThis.__surfdQolCreateCinemaWorker({
+  post:(data,options)=>${receiver[1]}.postMessage(data,options),
+  createSession:(map,replay)=>{const session=new ${session[0][1]}(map,replay.config);session.loadReplay(replay);return session;}
+});
+delete globalThis.__surfdQolCreateCinemaWorker;
+` : 'const __surfdQolCinema=null;';
     const map = load[1];
     const prepare = `let ${map}=__surfdQolMap;
 if(!${map}||${map}.id!==${handler[5]}.mapId||${map}.version!==${handler[5]}.mapVersion){
@@ -99,31 +110,47 @@ if(!__surfdQolJob.current())return;
     // Native world caching keeps flag variants separate; native Sessions and
     // their movement/timer/replay state are still freshly constructed each run.
     const helper = `
+${cinema}
 const __surfdQolWorlds=new WeakMap;
+const __surfdQolWorldVariants=new WeakMap;
 let __surfdQolMap=null;
 function __surfdQolWorkerWorld(map,feature,corner){
+  let variants=__surfdQolWorldVariants.get(map.brushes);
+  if(!variants)__surfdQolWorldVariants.set(map.brushes,variants=new Map);
+  const key=(feature?1:0)|(corner?2:0);
+  if(variants.has(key))return variants.get(key);
   const prepared=__surfdQolWorlds.get(map.brushes);
-  if(!prepared)return new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
-  const world=new ${world[1]}([],[],feature,corner);
-  world.brushes=map.brushes;world.triangles=map.displacementTriangles;
-  world.triangleBounds=prepared.triangleBounds;world.tree=prepared.tree;
-  return world;
+  const world=prepared?new ${world[1]}([],[],feature,corner):new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
+  if(prepared){
+    world.brushes=map.brushes;world.triangles=map.displacementTriangles;
+    world.triangleBounds=prepared.triangleBounds;world.tree=prepared.tree;
+  }
+  variants.set(key,world);return world;
 }
 `;
     const chunks = `const ${loop[1]}=new ${loop[2]}(${map},${handler[5]});
+__surfdQolCinema?.attach(${loop[1]}.session,${handler[5]},${handler[2]}.job);
 __surfdQolJob.world(${map});
-for(;;){
+try{for(;;){
   if(!__surfdQolJob.current())return;
-  const ${loop[3]}=performance.now()+${loop[4]},${loop[5]}=${loop[1]}.run(()=>__surfdQolJob.current()&&performance.now()<${loop[3]});
+  if(__surfdQolCinema)await __surfdQolCinema.before(${handler[2]}.job,()=>{
+    const batch=${loop[1]}.run(()=>!1);
+    __surfdQolJob.emit({ok:!0,batch},{transfer:[batch.elapsed.buffer,batch.phases.buffer]});
+  });
+  if(!__surfdQolJob.current())return;
+  let __surfdQolSteps=0;const __surfdQolCameraActive=__surfdQolCinema?.active;
+  const ${loop[3]}=performance.now()+(__surfdQolCameraActive?8:${loop[4]}),${loop[5]}=${loop[1]}.run(()=>__surfdQolJob.current()&&(!__surfdQolCameraActive||__surfdQolSteps++<64)&&performance.now()<${loop[3]});
+  const __surfdQolBatchReady=__surfdQolCinema?.batch(${handler[2]}.job,${loop[1]}.position,${loop[5]});
   __surfdQolJob.emit({ok:!0,batch:${loop[5]}},{transfer:[${loop[5]}.elapsed.buffer,${loop[5]}.phases.buffer]});
+  if(__surfdQolBatchReady)await __surfdQolBatchReady;
   if(${loop[5]}.done)return;
   await __surfdQolJob.pause();
-}`;
+}}finally{__surfdQolCinema?.detach(${handler[2]}.job);}`;
     const changes = [
       {at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]})`},
       {at: load.index, length: load[0].length, text: prepare},
       {at: strict.index + strict[0].length, length: 0, text: helper},
-      {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]});${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
+      {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]},__surfdQolCinema?.pause,__surfdQolCinema);${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
       {at: handler.index, length: handler[0].length, text: handler[0].replace(`(${handler[2]})`, `(${handler[2]},__surfdQolJob)`)},
       {at: loop.index, length: loop[0].length, text: chunks},
       {at: failure.index, length: failure[0].length, text: failure[0].replace(`${receiver[1]}.postMessage`, '__surfdQolJob.emit')},
@@ -139,9 +166,9 @@ function alreadyInstrumented(source) {
   throw new Error('Stale Surfd QoL adapter');
 }
 
-export function instrumentPhysicsWorker(source) {
+export function instrumentPhysicsWorker(source, workerRuntime = '') {
   if (alreadyInstrumented(source)) return source;
-  const patched = preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)));
+  const patched = preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)), workerRuntime);
   return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision preparation */`;
 }
 
@@ -478,6 +505,7 @@ function cinemaHooks(source) {
     return {source, adapter: `
     cinema: {
       renderer: () => ${call} ?? null,
+      worker: session => typeof __surfdQolIndexes === "function" ? __surfdQolIndexes().camera(session) : null,
     },`};
   } catch (error) {
     console.warn('[Surfd QoL] Compare view unavailable:', error.message);

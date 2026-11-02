@@ -3,22 +3,13 @@
 // one run in the game's own player and draws the others from their tracks;
 // recorded windows can already be viewed while the rest is being simulated.
 import {MAX_COMMANDS} from './replay-store.js';
+import {captureTrack} from './cinema-recording.js';
+export {createTrack} from './cinema-recording.js';
 
 const SLICE_COMMANDS = 64;
 const defer = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
 const idleLeft = deadline => !!deadline && !deadline.didTimeout && typeof deadline.timeRemaining === 'function' && deadline.timeRemaining() > 2;
-// A move this far within one tick is treated as a teleport: the camera cuts there.
-const JUMP_UNITS = 600;
-const TELEPORTS = new Set(['fall', 'teleport', 'restart', 'stage-restarted', 'stage-return']);
-
-// Positions of index i are the state after i commands, so a track has one
-// more entry than the replay has commands.
-export function createTrack(count, dt) {
-  // elapsed is the game's own run clock on each tick, 0 before the start.
-  return {dt, count, position: new Float32Array(count * 3), yaw: new Float32Array(count), ducked: new Uint8Array(count), elapsed: new Float64Array(count),
-    normal: new Float32Array(count * 3), cut: new Uint8Array(count), start: 0, startTick: null, finish: count - 1, splits: [], time: null};
-}
 
 // Linear interpolation at a fractional index, into out {x, y, z}.
 export function trackPoint(track, at, out = {x: 0, y: 0, z: 0}) {
@@ -39,90 +30,41 @@ export function trackYaw(track, at) {
   return a + delta * (track.cut[high] ? 0 : index - low);
 }
 
-// Native surf planes have normal.z above a small floor and below groundNormal.
-function rampNormal(contacts, from, groundNormal) {
-  for (let i = from; i < contacts.length; i++) {
-    const normal = contacts[i]?.normal;
-    if (normal && Number.isFinite(normal.x) && Number.isFinite(normal.y) && normal.z > 0.02 && normal.z < groundNormal) return normal;
-  }
-  return null;
-}
 
 // Re-simulates the replay on the loaded map in idle-time slices. Null when it
 // isn't for this map, is too long, or stops being wanted (isCurrent()).
 // onProgress borrows the first `count` recorded positions, never the suffix.
 // Only the shadow movement instance is observed; callbacks run between batches.
-export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null}) {
+export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null, signal = null}) {
   if (typeof adapter?.Session !== 'function' || typeof adapter.Movement !== 'function' || !session?.map ||
     !Array.isArray(replay?.commands) || !replay.commands.length || replay.commands.length > MAX_COMMANDS ||
     replay.mapId !== session.map.id || replay.mapVersion !== session.map.version) return null;
+  const worker = adapter.cinema?.worker?.(session);
+  if (worker) {
+    try {
+      const playback = adapter.replay?.playback?.();
+      const track = await worker.record({replay, onProgress, signal, tick: playback?.replay === replay ? playback.index ?? 0 : 0});
+      if (!isCurrent() || signal?.aborted) return null;
+      if (track) return track;
+    } catch {
+      if (!isCurrent() || signal?.aborted) return null;
+      // Unsupported or failed workers keep the original native fallback.
+    }
+  }
   let deadline = await yieldTask();
-  if (!isCurrent()) return null;
+  if (!isCurrent() || signal?.aborted) return null;
   const shadow = new adapter.Session(session.map, replay.config, replay.format);
   shadow.loadReplay(replay);
-  const dt = Number.isFinite(shadow.config?.dt) && shadow.config.dt > 0 ? shadow.config.dt : 0.015;
-  const groundNormal = Number.isFinite(shadow.config?.groundNormal) ? shadow.config.groundNormal : 0.7;
-  const track = createTrack(replay.commands.length + 1, dt);
-  track.phase = new Uint8Array(track.count);
-  const base = shadow.state.tick ?? replay.initialState?.tick ?? 0;
-  let index = 0, normal = null, startTick = null, splits = 0;
-  // A replay can open with the player dropping from where the game put them
-  // onto the floor. That isn't part of the route, so the ghost and its path
-  // start where they land; a run that starts before landing keeps its fall.
-  let landed = null;
-  const keep = at => {
-    const state = shadow.state, p = state.position, o = at * 3;
-    if (landed === null && (state.grounded || state.grounded === undefined)) landed = at;
-    track.position[o] = p.x; track.position[o + 1] = p.y; track.position[o + 2] = p.z;
-    track.yaw[at] = state.yaw;
-    track.ducked[at] = state.ducked ? 1 : 0;
-    if (normal) { track.normal[o] = normal.x; track.normal[o + 1] = normal.y; track.normal[o + 2] = normal.z; }
-    if (at && Math.hypot(p.x - track.position[o - 3], p.y - track.position[o - 2], p.z - track.position[o - 1]) > JUMP_UNITS) track.cut[at] = 1;
-    const timer = shadow.timer?.state;
-    if (Number.isFinite(timer?.elapsed)) track.elapsed[at] = timer.elapsed;
-    track.phase[at] = timer?.phase === 'finished' ? 2 : timer?.phase === 'running' ? 1 : 0;
-    if (track.phase[at] && landed === null) landed = 0;
-    if (track.phase[at] && (startTick !== timer.startTick || track.startTick === null)) {
-      startTick = timer.startTick;
-      track.startTick = Number.isFinite(startTick) ? startTick - base : at;
-      track.start = Math.max(0, Math.min(track.count - 1, Math.ceil(track.startTick)));
-      track.finish = track.count - 1;
-      track.time = null;
-      track.splits.length = splits = 0;
-    }
-    const count = Array.isArray(timer?.splits) ? timer.splits.length : 0;
-    while (splits < count) { splits++; track.splits.push(at); }
-    if (timer?.phase === 'finished' && track.time === null) { track.finish = at; track.time = timer.elapsed; }
-    if (timer?.phase === 'ready') startTick = null;
-    if (landed === at) for (let before = 0; before < at; before++) track.position.copyWithin(before * 3, at * 3, at * 3 + 3);
-  };
-  const movement = shadow.movement, slide = movement.slide;
-  movement.slide = function (state, result) {
-    if (state.grounded) return slide.apply(this, arguments);
-    const firstContact = result.contacts.length;
-    const returned = slide.apply(this, arguments);
-    normal ??= rampNormal(result.contacts, firstContact, groundNormal);
-    return returned;
-  };
+  const capture = captureTrack(shadow, replay);
+  let index = 0;
   try {
-    keep(0);
     while (index < replay.commands.length) {
-      if (!isCurrent()) return null;
+      if (!isCurrent() || signal?.aborted) return null;
       const end = Math.min(index + SLICE_COMMANDS, replay.commands.length);
-      while (index < replay.commands.length && (index < end || idleLeft(deadline))) {
-        normal = null;
-        const events = shadow.step(replay.commands[index++]);
-        keep(index);
-        if (events.some(event => TELEPORTS.has(event))) track.cut[index] = 1;
-        // A start-zone re-entry resets only the clock, not the physics path.
-        // keep() follows the final departure, including sub-tick startTick.
-      }
-      if (landed !== null && isCurrent()) onProgress?.(track, index + 1);
+      while (index < replay.commands.length && (index < end || idleLeft(deadline))) shadow.step(replay.commands[index++]);
+      if (capture.publishable && isCurrent()) onProgress?.(capture.track, capture.count);
       if (index < replay.commands.length) deadline = await yieldTask();
     }
-  } finally { movement.slide = slide; }
-  if (!isCurrent()) return null;
-  // The finish counts as a split in the game's timer; keep checkpoints only.
-  if (track.time !== null && track.splits.at(-1) === track.finish) track.splits.pop();
-  return track;
+    return isCurrent() ? capture.finish() : null;
+  } finally { capture.dispose(); }
 }

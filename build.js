@@ -12,7 +12,7 @@ const sources = ['metrics.js', 'observer.js', 'replay-store.js', 'start.js', 'su
 const hash = createHash('sha256');
 for (const name of sources) hash.update(name).update(await readFile(`src/${name}`));
 const define = { __QOL_ANALYSIS__: JSON.stringify(hash.digest('hex').slice(0, 16)) };
-for (const [entry, name] of [['src/main.js', 'page.js'], ['src/bridge.js', 'bridge.js']]) {
+for (const [entry, name] of [['src/main.js', 'page.js'], ['src/bridge.js', 'bridge.js'], ['src/cinema-worker.js', 'cinema-worker.js']]) {
   const result = await Bun.build({ entrypoints: [entry], outdir: 'dist', naming: name, target: 'browser', format: 'iife', minify: false, define });
   if (!result.success) throw new AggregateError(result.logs, `Failed to build ${name}`);
 }
