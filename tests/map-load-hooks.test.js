@@ -56,6 +56,42 @@ test('first frame is available before background work and every remaining resour
   expect(state.frames).toBe(1);
 });
 
+test('background geometry waits for parallel shaders while textures continue uploading', () => {
+  const {state, config} = fixture();
+  let ready = false;
+  const material = {}, program = {isReady: () => ready};
+  config.renderer.extensions = {has: () => true};
+  config.renderer.properties = {get: () => ({programs: new Map([['map', program]])})};
+  config.renderer.compile = () => new Set([material]);
+  const warm = config.warm;
+  config.warm = selected => {
+    if (!ready) throw Error('Background draw would wait synchronously for its shader');
+    warm(selected);
+  };
+  prepareMapRenderer(config);
+  while (state.uploaded.size < state.textures.size) state.next();
+  state.next();
+  expect(state.frames).toBe(1);
+  expect(state.warmed.size).toBe(0);
+  expect(state.queued).toBe(1);
+  ready = true;
+  state.finish();
+  expect(state.warmed).toEqual(new Set(state.objects));
+});
+
+test('disposing while parallel shaders are pending cancels background geometry', () => {
+  const {state, config} = fixture();
+  config.textures = [];
+  config.renderer.extensions = {has: () => true};
+  config.renderer.properties = {get: () => ({programs: new Map([['map', {isReady: () => false}]])})};
+  config.renderer.compile = () => new Set([{}]);
+  prepareMapRenderer(config);
+  state.next();
+  state.dispose();
+  state.finish();
+  expect(state.warmed.size).toBe(0);
+});
+
 test('an exhausted idle deadline defers work, but timeout callbacks still make progress', () => {
   const {state, config} = fixture();
   prepareMapRenderer(config);

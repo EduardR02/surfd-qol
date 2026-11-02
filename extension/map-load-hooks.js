@@ -43,7 +43,14 @@ export function prepareMapRenderer({renderer, scenes, camera, textures, alive, r
   now = () => performance.now(),
 }) {
   if (!alive()) return;
-  for (const scene of scenes) renderer.compile(scene, camera);
+  const programs = new Set();
+  const parallel = renderer.extensions?.has?.('KHR_parallel_shader_compile') && renderer.properties?.get;
+  for (const scene of scenes) {
+    const materials = renderer.compile(scene, camera);
+    if (parallel && materials) for (const material of materials)
+      for (const program of renderer.properties.get(material).programs?.values() ?? [])
+        if (typeof program.isReady === 'function') programs.add(program);
+  }
   render();
   if (!alive()) return;
   const pendingTextures = [...textures], objects = [];
@@ -64,6 +71,12 @@ export function prepareMapRenderer({renderer, scenes, camera, textures, alive, r
     }
     while (textureIndex === pendingTextures.length && objectIndex < objects.length && alive()) {
       if (worked && (now() >= end || deadline && !deadline.didTimeout && deadline.timeRemaining() < 2)) break;
+      // Drawing an unfinished program synchronises the driver even with a
+      // parallel compiler. Leave uploads running, but defer off-screen draws.
+      for (const program of programs) {
+        if (!program.isReady()) { schedule(batch); return; }
+        programs.delete(program);
+      }
       const selected = new Set(objects.slice(objectIndex, objectIndex + 8));
       objectIndex += selected.size;
       // A zero-area scissor submits buffers/programs without painting over the
