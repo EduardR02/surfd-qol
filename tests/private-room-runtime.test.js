@@ -1101,7 +1101,8 @@ describe('private room runtime', () => {
       await pending;
       expect(f.requestOptions[0].signal.aborted).toBe(true);
       expect(f.runtime.mergeRooms([{id: 'available-official'}]).map(value => value.id)).toEqual(['available-official']);
-      expect(f.notices).toEqual([SERVICE]);
+      expect(f.notices).toEqual([]);
+      expect(f.runtime.directoryError()).toBe(SERVICE);
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
       await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(1);
@@ -1109,11 +1110,12 @@ describe('private room runtime', () => {
       resolve(stage === 'headers' ? {ok: true, json: async () => ({rooms: [row()]})} : {rooms: [row()]});
       await flush();
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER]);
-      expect(f.notices).toEqual([SERVICE]);
+      expect(f.notices).toEqual([]);
+      expect(f.runtime.directoryError()).toBe('');
     } finally { f.runtime.destroy(); }
   });
 
-  test('directory errors retain officials and report the service copy', async () => {
+  test('failed or malformed directory responses retain official rows without gameplay notices', async () => {
     const f = fixture();
     try {
       f.open(true);
@@ -1124,9 +1126,9 @@ describe('private room runtime', () => {
       ]) {
         f.response(response);
         await f.runtime.refreshDirectory({open: true});
-        expect(f.notices).toEqual([SERVICE]);
+        expect(f.notices).toEqual([]);
+        expect(f.runtime.directoryError()).toBe(SERVICE);
         expect(f.rows().map(value => value.id)).toEqual(['official']);
-        f.notices.length = 0;
         f.timers.advance(10000);
       }
     } finally { f.runtime.destroy(); }
