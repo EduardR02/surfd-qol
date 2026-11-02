@@ -14,8 +14,12 @@
 // view widens a little with speed.
 // Obstructed shots first get conservative turning/pull-in corrections, then a
 // bounded local trajectory search tries to recover a wide connected view of
-// the group. It checks swept eyes, intermediate sightlines and each ridden
-// face before replacing a window; clear shots keep their original composition.
+// the group. A fixed orbit/radius/lift with moving endpoint tangents is tried
+// first, then a small connected beam proposes a cubic control corridor. Stored
+// chords, native body sightlines, screen separation and ridden faces validate
+// the resulting curve, never merely its individually safe control poses.
+// Windows retain both shoulders without overwriting an earlier repair; clear
+// shots outside those local joins keep their original composition exactly.
 // The final eye is still clipped against the played run's sightline where no
 // connected shot fits, even below the preferred minimum distance.
 import {trackPoint, trackYaw} from './cinema-track.js';
@@ -112,11 +116,12 @@ const EYE_HEIGHT = 40;               // aim at the body, not the feet
 const LEAD_MAX = 320;
 const CLEARANCE = 14;
 // Detours tried when the planned spot is blocked: [swing, rise] in degrees.
-// Lowering stops at a few degrees above the ghosts (or where the shot already is).
+// Preserve the conservative baseline; expanded downward routes are validated
+// locally against every protected body, face and stored connecting chord.
 const DETOURS = [[0, 0], [18, 0], [-18, 0], [0, 16], [0, -14], [36, 6], [-36, 6], [0, 32], [0, -24], [65, 12], [-65, 12]];
 const DETOUR_CEILING = DETOURS.map(([turn, up]) => 1 - Math.abs(turn) * 0.004 - Math.max(up * 0.018, -up * 0.005));
-for (let index = DETOURS.length - 2; index >= 0; index--) DETOUR_CEILING[index] = Math.max(DETOUR_CEILING[index], DETOUR_CEILING[index + 1]);
 const DETOUR_FLOOR = 4;
+for (let index = DETOURS.length - 2; index >= 0; index--) DETOUR_CEILING[index] = Math.max(DETOUR_CEILING[index], DETOUR_CEILING[index + 1]);
 const TRACE_EVERY = 2;               // samples per occlusion test
 const SLICE = 80;
 const DEGREES = Math.PI / 180;
@@ -445,6 +450,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   // Solo framing never changes with corrective group weights.
   const fixedFocus = !group || !others.length;
   let composedFocus = null, originalFocus = null;
+  // A safer-shot retry changes only a few stretches. Reuse its exact radial
+  // detour result everywhere azimuth/elevation/distance are unchanged; focus
+  // is immutable here. This avoids retracing the rest of the route.
+  const detourChoices = trace ? new Float64Array(count * 6) : null;
   const shoot = async safe => {
     const stretches = planStretches(ramps, segment, count, first, look, seconds, spread, safe);
     const swingAt = new Float32Array(count), riseAt = new Float32Array(count), widenAt = new Float32Array(count), leadAt = new Float32Array(count);
@@ -537,9 +546,12 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
     if (trace) {
       const from = {x: 0, y: 0, z: 0}, to = {x: 0, y: 0, z: 0};
       for (let s = 0; s < count; s += TRACE_EVERY) {
+        if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
+        if (!isCurrent()) return null;
         from.x = focus[0][s]; from.y = focus[1][s]; from.z = focus[2][s];
-        let best = null;
-        for (let index = 0; index < DETOURS.length; index++) {
+        const o = s * 6, cached = detourChoices[o] === azimuth[s] && detourChoices[o + 1] === elevation[s] && detourChoices[o + 2] === distance[s];
+        let best = cached ? {turn: detourChoices[o + 3], lift: detourChoices[o + 4], room: detourChoices[o + 5]} : null;
+        for (let index = 0; !cached && index < DETOURS.length; index++) {
           if (yieldTask && !idleLeft(0.5)) deadline = await yieldTask();
           if (!isCurrent()) return null;
           const [turn, up] = DETOURS[index];
@@ -554,6 +566,10 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
           if (!best || score > best.score) best = {score, turn, lift: el - elevation[s], room: clear * d - CLEARANCE};
           // Stop when even a perfectly clear remaining detour cannot win.
           if (clear >= 0.98 || best.score >= (DETOUR_CEILING[index + 1] ?? -Infinity)) break;
+        }
+        if (!cached) {
+          detourChoices[o] = azimuth[s]; detourChoices[o + 1] = elevation[s]; detourChoices[o + 2] = distance[s];
+          detourChoices[o + 3] = best.turn; detourChoices[o + 4] = best.lift; detourChoices[o + 5] = best.room;
         }
         for (let k = s; k < Math.min(count, s + TRACE_EVERY); k++) {
           detour[k] = best.turn * DEGREES; lift[k] = best.lift; limit[k] = Math.max(MIN_DISTANCE, best.room);
@@ -872,14 +888,14 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   }
 }
 
-// Bounded, time-layered local repair. Clear shots never enter the search.
-// Each window has at most 160 samples, 25 candidates per layer, four
-// predecessors and an 8/16-node connected beam. No eye blur follows repair.
+// Bounded local trajectory search. Contenders pay for sparse swept geometry;
+// only the selected, continuously joined curve pays for dense validation.
+// Clear shots never enter the search, and no eye blur follows repair.
 async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, segment, dt, style, trace, checkpoint, sampleBody, bodyBounds, baselineClearance}) {
   const count = segment.length, bad = new Uint8Array(count), repaired = new Uint8Array(count);
   const clearance = baselineClearance, references = new Map();
-  const layers = new Map(), connections = new Map(), originalIds = new Map();
-  let nextNode = 0;
+  const layers = new Map(), visibility = new Map(), originalIds = new Map();
+  let nextNode = 0, coreStart = 0, coreEnd = count - 1;
   const referenceAt = s => {
     let reference = references.get(s);
     if (!reference) { reference = desired(s); references.set(s, reference); }
@@ -887,7 +903,8 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
   };
   const eye = {x: 0, y: 0, z: 0}, body = {x: 0, y: 0, z: 0}, previous = {x: 0, y: 0, z: 0};
   const sweptBounds = Array.from({length: runs.length * 2 + 2}, () => ({x: 0, y: 0, z: 0}));
-  const emptySweep = (from, to, a, b) => {
+  const controls = [{x: 0, y: 0, z: 0}, {x: 0, y: 0, z: 0}], curveBounds = [...sweptBounds, ...controls];
+  const emptySweep = (from, to, a, b, curved = false) => {
     if (!trace.mayHit) return false;
     sweptBounds[0].x = a.x; sweptBounds[0].y = a.y; sweptBounds[0].z = a.z;
     sweptBounds[1].x = b.x; sweptBounds[1].y = b.y; sweptBounds[1].z = b.z;
@@ -895,7 +912,7 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
     // time-warped groups. Two corners suffice for the enclosing AABB.
     for (let r = 0; r < runs.length; r++)
       if (!bodyBounds(r, from, to, sweptBounds[r * 2 + 2], sweptBounds[r * 2 + 3])) return false;
-    return trace.mayHit(sweptBounds) === false;
+    return trace.mayHit(curved ? curveBounds : sweptBounds) === false;
   };
   const query = (from, to, fraction = false) => {
     const result = () => {
@@ -937,19 +954,48 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
     }
   }
   if (!bad.some(Boolean)) return {repaired, clearance};
-  const stride = Math.max(1, Math.min(8, Math.round(0.18 / dt))), padding = Math.max(stride, Math.ceil(0.8 / dt));
+  const stride = Math.max(1, Math.min(8, Math.round(0.18 / dt))), padding = Math.max(stride, Math.ceil(1.2 / dt));
   const wrap = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
+  const positionKeys = ['x', 'y', 'z', 'tx', 'ty', 'tz'], velocityKeys = ['vx', 'vy', 'vz', 'vtx', 'vty', 'vtz'];
   const nodeAt = (source, s) => ({
     s, x: source.eye[s * 3], y: source.eye[s * 3 + 1], z: source.eye[s * 3 + 2],
     tx: source.target[s * 3], ty: source.target[s * 3 + 1], tz: source.target[s * 3 + 2],
     cost: Infinity, parent: null, rate: 0,
   });
-  const frame = {eye: new Float32Array(3), target: new Float32Array(3)};
+  const derivative = (source, s, key) => {
+    const lo = s > 0 && segment[s - 1] === segment[s] ? s - 1 : s;
+    const hi = s + 1 < count && segment[s + 1] === segment[s] ? s + 1 : s;
+    return (source[hi * 3 + key] - source[lo * 3 + key]) / Math.max(dt, (hi - lo) * dt);
+  };
+  const velocity = node => {
+    for (let k = 0; k < 6; k++) node[velocityKeys[k]] = derivative(k < 3 ? shot.eye : shot.target, node.s, k % 3);
+    return node;
+  };
+  const interpolate = (a, b, s, out) => {
+    const duration = (b.s - a.s) * dt, t = (s - a.s) / (b.s - a.s);
+    const t2 = t * t, t3 = t2 * t;
+    const h0 = 2 * t3 - 3 * t2 + 1, h1 = t3 - 2 * t2 + t;
+    const h2 = -2 * t3 + 3 * t2, h3 = t3 - t2;
+    for (let k = 0; k < 6; k++) {
+      const key = positionKeys[k], speed = velocityKeys[k];
+      out[key] = h0 * a[key] + h1 * duration * a[speed] + h2 * b[key] + h3 * duration * b[speed];
+    }
+    return out;
+  };
   const baselineFrames = new Map(), required = new Uint8Array(runs.length);
   const screen = new Float64Array(runs.length * 2), inside = new Uint8Array(runs.length);
   const ranges = new Float64Array(runs.length);
   const target = {x: 0, y: 0, z: 0};
-  const bodies = Array.from({length: runs.length}, () => ({x: 0, y: 0, z: 0}));
+  const bodySamples = new Map();
+  let bodies;
+  const bodiesAt = s => {
+    let sample = bodySamples.get(s);
+    if (!sample) {
+      sample = Array.from({length: runs.length}, (_, r) => sampleBody(r, s, {x: 0, y: 0, z: 0}));
+      bodySamples.set(s, sample);
+    }
+    return sample;
+  };
   const baselineAt = s => {
     let baseline = baselineFrames.get(s);
     if (baseline) return baseline;
@@ -959,8 +1005,7 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
       ranges: new Float64Array(runs.length), seen: new Int8Array(runs.length).fill(-1)};
     point(shot.eye, s, baseline.eye); point(shot.target, s, baseline.target);
     for (let r = 0; r < runs.length; r++) {
-      if (r && !(shares[r - 1][lo] * (1 - t) + shares[r - 1][hi] * t)) continue;
-      sampleBody(r, s, body);
+      const body = bodiesAt(s)[r];
       baseline.ranges[r] = Math.hypot(body.x - baseline.eye.x, body.y - baseline.eye.y, body.z - baseline.eye.z);
       baseline.inside[r] = projected(baseline.eye, baseline.target, body,
         fov[lo] * (1 - t) + fov[hi] * t, baseline.screen, r * 2) ? 1 : 0;
@@ -975,34 +1020,37 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
     const visible = query(bodies[r], baseline.eye);
     return typeof visible === 'boolean' ? remember(visible) : visible.then(remember);
   };
-  const participating = (r, s, lo, hi, t) => {
+  const participating = (r, s, lo, hi, t, fullGroup) => {
     if (!r) return true;
     const share = shares[r - 1][lo] * (1 - t) + shares[r - 1][hi] * t;
-    if (share >= 0.25) return true;
-    if (!share) return false; // A legitimate cut/fade must not be pulled back.
+    // A shoulder must retain everybody the baseline actually showed, but a
+    // previously missing participant can enter smoothly. Requiring that
+    // participant in the unchanged anchor makes any recovery impossible.
+    // The entire relevant group is mandatory throughout the repair's core.
+    if (fullGroup && share >= 0.25) return true;
+    // Composition weight is not rendered opacity: even a zero-weight ghost
+    // must retain the visibility and framing the original shot gave it.
     const baseline = baselineAt(s);
     return baseline.inside[r] ? baselineSeen(baseline, r, s) : false;
   };
-  const valid = async (node, s, geometryClear = false, score = false) => {
+  const valid = async (node, s, geometryClear = false, score = false, fullGroup = s >= coreStart && s <= coreEnd) => {
     eye.x = node.x; eye.y = node.y; eye.z = node.z;
     target.x = node.tx; target.y = node.ty; target.z = node.tz;
     inside.fill(0);
     node.separation = 0;
-    frame.eye[0] = node.x; frame.eye[1] = node.y; frame.eye[2] = node.z;
-    frame.target[0] = node.tx; frame.target[1] = node.ty; frame.target[2] = node.tz;
+    bodies = bodiesAt(s);
     const lo = Math.floor(s), hi = Math.min(count - 1, lo + 1), t = s - lo;
     const field = fov[lo] * (1 - t) + fov[hi] * t;
     // Reject all cheap composition/face failures before any candidate ray.
     for (let r = 0; r < runs.length; r++) {
-      sampleBody(r, s, bodies[r]);
-      const included = participating(r, s, lo, hi, t);
+      const included = participating(r, s, lo, hi, t, fullGroup);
       required[r] = (typeof included === 'boolean' ? included : await included) ? 1 : 0;
       if (!required[r]) continue;
       const body = bodies[r];
       if (!r) {
         point(shot.eye, s, previous);
         const original = Math.hypot(previous.x - body.x, previous.y - body.y, previous.z - body.z);
-        if (Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z) + 1 < original * 0.98) return false;
+        if (Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z) + 1 < Math.min(BASE_DISTANCE, original * 0.98)) return false;
       }
       // Candidate-specific face guards; do not average opposing landing faces.
       for (let at = lo; at <= hi; at++) {
@@ -1011,7 +1059,6 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
         const dx = eye.x - body.x, dy = eye.y - body.y, dz = eye.z - body.z;
         if (dx * nx + dy * ny + dz * nz < Math.sin(FACE_MARGIN * DEGREES) * Math.hypot(dx, dy, dz)) return false;
       }
-      if (!framed(frame, 0, body, fov[lo])) return false;
       ranges[r] = Math.hypot(body.x - eye.x, body.y - eye.y, body.z - eye.z);
       inside[r] = projected(eye, target, body, field, screen, r * 2) ? 1 : 0;
       if (!inside[r]) return false;
@@ -1042,49 +1089,167 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
       if (required[r] && !await query(bodies[r], eye)) return false;
     return true;
   };
+  const anchorClear = new Uint8Array(count);
+  const anchorValid = async s => {
+    if (repaired[s] || anchorClear[s] === 1) return true;
+    if (anchorClear[s] === 2) return false;
+    const clear = await valid(nodeAt(shot, s), s, false, false, false);
+    anchorClear[s] = clear ? 1 : 2;
+    return clear;
+  };
+  const validateStored = async (eyes, targets, from, to, coreStart = from, coreEnd = to, certified = null) => {
+    const stored = {x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 0};
+    const a = {x: 0, y: 0, z: 0}, b = {x: 0, y: 0, z: 0};
+    let geometryClear = false;
+    for (let s = from; s <= to; s += 0.25) {
+      const sample = (s - from) * 4;
+      if (certified?.samples[sample]) continue;
+      const edge = Math.min(to - from - 1, Math.floor(s) - from);
+      if (certified) geometryClear = certified.edges[edge] === 1;
+      const lo = (Math.floor(s) - from) * 3, hi = Math.min(to - from, Math.floor(s) - from + 1) * 3, t = s - Math.floor(s);
+      if (!t && s < to && !certified?.edges[edge]) {
+        a.x = eyes[lo]; a.y = eyes[lo + 1]; a.z = eyes[lo + 2];
+        b.x = eyes[hi]; b.y = eyes[hi + 1]; b.z = eyes[hi + 2];
+        geometryClear = emptySweep(s, s + 1, a, b);
+        // Stored eyes interpolate linearly. One complete chord query covers
+        // every subdivision; repeating it four times adds no information.
+        if (!geometryClear && !await query(a, b)) return s + 0.5;
+        if (certified) certified.edges[edge] = geometryClear ? 1 : 2;
+      }
+      stored.x = eyes[lo] + (eyes[hi] - eyes[lo]) * t;
+      stored.y = eyes[lo + 1] + (eyes[hi + 1] - eyes[lo + 1]) * t;
+      stored.z = eyes[lo + 2] + (eyes[hi + 2] - eyes[lo + 2]) * t;
+      stored.tx = targets[lo] + (targets[hi] - targets[lo]) * t;
+      stored.ty = targets[lo + 1] + (targets[hi + 1] - targets[lo + 1]) * t;
+      stored.tz = targets[lo + 2] + (targets[hi + 2] - targets[lo + 2]) * t;
+      if (!await valid(stored, s, geometryClear, false, s >= coreStart && s <= coreEnd)) return s;
+      if (certified) certified.samples[sample] = 1;
+    }
+    return null;
+  };
+  const fitCorridor = (path, eyes, targets) => {
+    // Clamped cubic B-spline: selected safe poses are corridor controls, not
+    // interpolation knots. Moving between their convex hulls removes the
+    // quantized layer impulses. The two extra controls retain the unchanged
+    // entry/exit's actual eye AND target derivatives, without stopping there.
+    // Individual safe controls do not certify this curve; validateStored is
+    // still authoritative for every published Float32 chord and sightline.
+    const first = path[0], last = path.at(-1), n = path.length;
+    const controls = new Float64Array((n + 2) * 6), knots = new Float64Array(n + 6);
+    const work = new Float64Array(24);
+    for (let k = 0; k < 6; k++) {
+      const key = positionKeys[k], speed = velocityKeys[k];
+      controls[k] = first[key];
+      controls[6 + k] = first[key] + first[speed] * (path[1].s - first.s) * dt / 3;
+      for (let index = 1; index < n - 1; index++) controls[(index + 1) * 6 + k] = path[index][key];
+      controls[n * 6 + k] = last[key] - last[speed] * (last.s - path[n - 2].s) * dt / 3;
+      controls[(n + 1) * 6 + k] = last[key];
+    }
+    knots.fill(first.s, 0, 4);
+    for (let index = 1; index < n - 1; index++) knots[index + 3] = path[index].s;
+    knots.fill(last.s, n + 2);
+    const write = () => {
+      let span = 3;
+      for (let s = first.s; s <= last.s; s++) {
+        while (span < n + 1 && s >= knots[span + 1]) span++;
+        for (let j = 0; j < 4; j++) for (let k = 0; k < 6; k++)
+          work[j * 6 + k] = controls[(span - 3 + j) * 6 + k];
+        for (let degree = 1; degree <= 3; degree++) for (let j = 3; j >= degree; j--) {
+          const low = knots[span - 3 + j], high = knots[span + 1 + j - degree];
+          const alpha = high === low ? 0 : (s - low) / (high - low);
+          for (let k = 0; k < 6; k++) work[j * 6 + k] = work[(j - 1) * 6 + k] * (1 - alpha) + work[j * 6 + k] * alpha;
+        }
+        const o = (s - first.s) * 3;
+        for (let k = 0; k < 3; k++) { eyes[o + k] = work[18 + k]; targets[o + k] = work[21 + k]; }
+      }
+    };
+    const weights = new Float64Array(n + 2), basis = new Float64Array(16), delta = new Float64Array(6);
+    const addWeights = (s, weight) => {
+      let span = 3;
+      while (span < n + 1 && s >= knots[span + 1]) span++;
+      basis.fill(0);
+      for (let j = 0; j < 4; j++) basis[j * 5] = 1;
+      for (let degree = 1; degree <= 3; degree++) for (let j = 3; j >= degree; j--) {
+        const low = knots[span - 3 + j], high = knots[span + 1 + j - degree];
+        const alpha = high === low ? 0 : (s - low) / (high - low);
+        for (let k = 0; k < 4; k++) basis[j * 4 + k] = basis[(j - 1) * 4 + k] * (1 - alpha) + basis[j * 4 + k] * alpha;
+      }
+      for (let k = 0; k < 4; k++) weights[span - 3 + k] += basis[12 + k] * weight;
+    };
+    write();
+    return (s, reference) => {
+      // Correct only the controls influencing the actual failed stored chord.
+      // The least-norm update retains C2 continuity; fixed endpoint handles
+      // cannot be moved by a late geometry counterexample.
+      const lo = Math.floor(s), hi = Math.min(last.s, lo + 1), fraction = s - lo;
+      weights.fill(0); addWeights(lo, 1 - fraction); addWeights(hi, fraction);
+      let squared = 0;
+      for (let index = 2; index < n; index++) squared += weights[index] ** 2;
+      if (squared < 1e-8) return false;
+      for (let k = 0; k < 6; k++) {
+        const source = k < 3 ? eyes : targets, axis = k % 3;
+        const value = source[(lo - first.s) * 3 + axis] * (1 - fraction) + source[(hi - first.s) * 3 + axis] * fraction;
+        delta[k] = reference[positionKeys[k]] - value;
+      }
+      let scale = 1;
+      const movement = Math.hypot(delta[0], delta[1], delta[2]);
+      for (let index = 2; index < n; index++) if (weights[index]) {
+        const o = index * 6;
+        const span = Math.hypot(controls[o + 6] - controls[o - 6], controls[o + 7] - controls[o - 5], controls[o + 8] - controls[o - 4]);
+        scale = Math.min(scale, Math.max(BASE_DISTANCE * 0.5, span * 0.5) * squared / Math.max(1e-8, movement * weights[index]));
+      }
+      let from = last.s, to = first.s;
+      for (let index = 2; index < n; index++) if (weights[index]) {
+        from = Math.min(from, knots[index]); to = Math.max(to, knots[index + 4]);
+        for (let k = 0; k < 6; k++) controls[index * 6 + k] += delta[k] * weights[index] / squared * scale;
+      }
+      write();
+      return {from, to};
+    };
+  };
   const edge = async (a, b) => {
-    previous.x = a.x; previous.y = a.y; previous.z = a.z;
-    eye.x = b.x; eye.y = b.y; eye.z = b.z;
-    const pause = checkpoint();
-    if (pause) await pause;
-    const geometryClear = emptySweep(a.s, b.s, previous, eye);
-    if (!geometryClear && !await query(previous, eye)) return false;
-    // Search uses three geometric intermediates, but all half-tick face and
-    // framing checks. Only the selected path pays for dense native visibility.
-    const between = {...a};
-    for (let s = a.s + 0.25; s < b.s; s += 0.25) {
-      const t = (s - a.s) / (b.s - a.s);
-      between.x = a.x + (b.x - a.x) * t; between.y = a.y + (b.y - a.y) * t; between.z = a.z + (b.z - a.z) * t;
-      between.tx = a.tx + (b.tx - a.tx) * t; between.ty = a.ty + (b.ty - a.ty) * t; between.tz = a.tz + (b.tz - a.tz) * t;
-      const geometric = t === 0.25 || t === 0.5 || t === 0.75;
-      if (!await valid(between, s, geometryClear || !geometric)) return false;
+    const between = {...a}, last = {x: a.x, y: a.y, z: a.z};
+    // Endpoint visibility is shared by every predecessor, but the curved
+    // sweep is specific to its incoming velocity and must not be cached by ID.
+    let visible = visibility.get(b.id);
+    if (visible === undefined) { visible = await valid(b, b.s); visibility.set(b.id, visible); }
+    if (!visible) return false;
+    for (let s = a.s + 0.25; s < b.s; s += 0.25)
+      if (!await valid(interpolate(a, b, s, between), s, true)) return false;
+    // A cubic lies inside its Bezier control hull, not necessarily inside
+    // its endpoint AABB. Certify the whole curved eye together with all
+    // intermediate native body vertices before omitting any visibility ray.
+    const third = (b.s - a.s) * dt / 3;
+    for (let k = 0; k < 3; k++) {
+      const key = positionKeys[k], speed = velocityKeys[k];
+      controls[0][key] = a[key] + third * a[speed];
+      controls[1][key] = b[key] - third * b[speed];
+    }
+    const geometryClear = emptySweep(a.s, b.s, a, b, true);
+    for (let step = 1; step <= 2; step++) {
+      const s = a.s + (b.s - a.s) * step / 2;
+      interpolate(a, b, s, between);
+      eye.x = between.x; eye.y = between.y; eye.z = between.z;
+      if (!geometryClear && !await query(last, eye)) return false;
+      if (step < 2 && !await valid(between, s, geometryClear)) return false;
+      last.x = between.x; last.y = between.y; last.z = between.z;
     }
     return true;
-  };
-  const connected = async (a, b) => {
-    // A window has fewer than 8192 node IDs, including expanded anchors.
-    const key = a.id * 8192 + b.id;
-    let clear = connections.get(key);
-    if (clear === undefined) { clear = await edge(a, b); connections.set(key, clear); }
-    return clear;
   };
   const buildCandidates = async (s, anchor) => {
     const original = nodeAt(shot, s);
     original.original = true;
-    if (anchor) return await valid(original, s) ? [original] : [];
+    if (anchor) { original.anchor = true; return await valid(original, s) ? [velocity(original)] : []; }
     const reference = referenceAt(s), {cx, cy, cz} = reference;
     const dx = reference.x - cx, dy = reference.y - cy, dz = reference.z - cz;
     const yaw = Math.atan2(dy, dx), pitch = Math.atan2(dz, Math.hypot(dx, dy)), radius = Math.hypot(dx, dy, dz);
     const nodes = [];
     // Full orbits, with distance scored up to the reference (no 70% plateau).
     for (let turn = 0; turn < 12; turn++) {
-      let full = false, close = false;
-      // Keep one wide and one shorter option per bearing.
-      for (const variant of [0, 3, 1, 2]) {
-        if (variant === 3 && full || variant === 2 && close) continue;
+      for (const variant of [0, 3, 4, 1, 2]) {
         const angle = wrap(turn * Math.PI / 6), az = yaw + angle;
         const scale = variant === 1 ? 0.72 : variant === 2 ? 0.48 : 1;
-        let el = pitch + (variant === 3 ? 18 * DEGREES : 0);
+        let el = pitch + (variant === 3 ? 18 * DEGREES : variant === 4 ? -18 * DEGREES : 0);
         const nx = faces[0][s * 3], ny = faces[0][s * 3 + 1], nz = faces[0][s * 3 + 2];
         if (nx || ny) {
           const A = Math.cos(az) * nx + Math.sin(az) * ny, reach = Math.hypot(A, nz);
@@ -1093,19 +1258,18 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
         if (el > Math.min(1.35, pitch + 18 * DEGREES)) continue;
         const d = Math.max(MIN_DISTANCE, radius * scale), flat = Math.cos(el) * d;
         const node = {s, x: Math.fround(cx + Math.cos(az) * flat), y: Math.fround(cy + Math.sin(az) * flat), z: Math.fround(cz + Math.sin(el) * d),
-          tx: Math.fround(cx + (reference.tx - cx) * scale),
-          ty: Math.fround(cy + (reference.ty - cy) * scale),
-          tz: Math.fround(cz + (reference.tz - cz) * scale),
+          tx: Math.fround(reference.tx),
+          ty: Math.fround(reference.ty),
+          tz: Math.fround(reference.tz),
           cost: Infinity, parent: null, rate: 0,
           composition: angle * angle * (style === 'steady' ? 0.9 : 0.45) + (1 - scale) ** 2 * 16 + (el - pitch) ** 2 * 8};
-        if (await valid(node, s, false, true)) {
+        if (await valid(node, s, true, true)) {
           node.composition += node.separation;
           nodes.push(node);
-          if (scale === 1) full = true; else close = true;
         }
       }
     }
-    if (await valid(original, s)) {
+    if (await valid(original, s, true)) {
       const ox = original.x - cx, oy = original.y - cy, oz = original.z - cz;
       const angle = wrap(Math.atan2(oy, ox) - yaw), scale = Math.hypot(ox, oy, oz) / radius;
       original.composition = angle * angle * (style === 'steady' ? 0.9 : 0.45) + (1 - scale) ** 2 * 16 +
@@ -1132,23 +1296,119 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
     // bounded window and can be reused by its second anchor expansion.
     return nodes.map(node => ({...node, cost: Infinity, parent: null, rate: 0}));
   };
+  // Prefer one continuous shot intention to independently chosen layer nodes.
+  // The bearing, radius and lift stay fixed relative to the original composed
+  // route. Quintic shoulders preserve the baseline's position and velocity at
+  // both ends; every resulting stored chord is checked before publication.
+  const coherent = async (from, to, start, end) => {
+    // A fixed neighbour needs a shoulder to meet its pose continuously.
+    // The endpoint-anchored beam can still search when no shoulder fits.
+    if (from === start && from > 0 && segment[from - 1] === segment[from] ||
+        to === end && to + 1 < count && segment[to + 1] === segment[to]) return false;
+    const length = to - from + 1, eyes = new Float32Array(length * 3), targets = new Float32Array(length * 3);
+    const at = {x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 0};
+    const ease = t => { t = clamp(t, 0, 1); return t * t * t * (10 + t * (-15 + 6 * t)); };
+    const coordinates = [];
+    for (let s = from; s <= to; s++) {
+      const reference = referenceAt(s), {cx, cy, cz} = reference;
+      const dx = reference.x - cx, dy = reference.y - cy, dz = reference.z - cz;
+      coordinates.push({...reference, az: Math.atan2(dy, dx),
+        el: Math.atan2(dz, Math.hypot(dx, dy)), radius: Math.hypot(dx, dy, dz)});
+    }
+    const residual = s => {
+      const p = referenceAt(s), o = s * 3;
+      const dx = p.x - p.cx, dy = p.y - p.cy, dz = p.z - p.cz;
+      const bx = shot.eye[o] - p.cx, by = shot.eye[o + 1] - p.cy, bz = shot.eye[o + 2] - p.cz;
+      return [wrap(Math.atan2(by, bx) - Math.atan2(dy, dx)),
+        Math.hypot(bx, by, bz) / Math.max(1, Math.hypot(dx, dy, dz)),
+        Math.atan2(bz, Math.hypot(bx, by)) - Math.atan2(dz, Math.hypot(dx, dy)),
+        shot.target[o] - p.tx, shot.target[o + 1] - p.ty, shot.target[o + 2] - p.tz];
+    };
+    const anchor = s => {
+      const low = s > 0 && segment[s - 1] === segment[s] ? s - 1 : s;
+      const high = s + 1 < count && segment[s + 1] === segment[s] ? s + 1 : s;
+      const value = residual(s), a = residual(low), b = residual(high);
+      return {value, speed: value.map((_, k) => (k ? b[k] - a[k] : wrap(b[k] - a[k])) / Math.max(1, high - low))};
+    };
+    const entry = from > 0 && segment[from - 1] === segment[from] ? anchor(from) : null;
+    const exit = to + 1 < count && segment[to + 1] === segment[to] ? anchor(to) : null;
+    const parameters = new Float64Array(6);
+    const compose = (s, choice) => {
+      const p = coordinates[s - from];
+      parameters[0] = choice.turn;
+      parameters[1] = choice.scale; parameters[2] = choice.rise;
+      parameters[3] = parameters[4] = parameters[5] = 0;
+      const entering = s < start, boundary = entering ? entry : s > end ? exit : null;
+      if (boundary) {
+        const duration = entering ? Math.max(1, start - from) : Math.max(1, to - end);
+        const t = clamp((entering ? s - from : to - s) / duration, 0, 1), weight = ease(t);
+        const tangent = t - 6 * t ** 3 + 8 * t ** 4 - 3 * t ** 5;
+        for (let k = 0; k < 6; k++) {
+          const delta = k ? boundary.value[k] - parameters[k] : wrap(boundary.value[k] - parameters[k]);
+          parameters[k] += delta * (1 - weight) + tangent * duration * boundary.speed[k] * (entering ? 1 : -1);
+        }
+      }
+      const bearing = p.az + parameters[0], elevation = p.el + parameters[2];
+      const radius = p.radius * parameters[1], flat = radius * Math.cos(elevation);
+      at.x = Math.fround(p.cx + Math.cos(bearing) * flat);
+      at.y = Math.fround(p.cy + Math.sin(bearing) * flat);
+      at.z = Math.fround(p.cz + Math.sin(elevation) * radius);
+      at.tx = Math.fround(p.tx + parameters[3]); at.ty = Math.fround(p.ty + parameters[4]); at.tz = Math.fround(p.tz + parameters[5]);
+      return at;
+    };
+    const choices = [];
+    for (const turn of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6])
+      for (const scale of [1, 0.84, 0.68, 0.5])
+        for (const rise of [0, -18 * DEGREES, 18 * DEGREES, -36 * DEGREES])
+          choices.push({turn: turn * Math.PI / 6, scale, rise,
+            cost: turn * turn * (style === 'steady' ? 0.24 : 0.12) + (1 - scale) ** 2 * 16 + rise * rise * 8});
+    choices.sort((a, b) => a.cost - b.cost);
+    for (const choice of choices) {
+      // Reject an entire intention at its most constrained samples before
+      // paying for its shoulders or its full interpolation.
+      let clear = true;
+      for (let s = from; s <= to && clear; s += stride) clear = await valid(compose(s, choice), s, true, false, s >= start && s <= end);
+      if (!clear) continue;
+      for (let s = start; s <= end && clear; s += stride) clear = await valid(compose(s, choice), s);
+      if (!clear) continue;
+      for (let s = from; s <= to; s++) {
+        compose(s, choice);
+        const o = (s - from) * 3;
+        eyes[o] = at.x; eyes[o + 1] = at.y; eyes[o + 2] = at.z;
+        targets[o] = at.tx; targets[o + 1] = at.ty; targets[o + 2] = at.tz;
+      }
+      if (await validateStored(eyes, targets, from, to, start, end) !== null) continue;
+      shot.eye.set(eyes, from * 3); shot.target.set(targets, from * 3);
+      repaired.fill(1, from, to + 1); clearance.fill(1, from, to + 1);
+      return true;
+    }
+    return false;
+  };
   for (let cursor = 0; cursor < count;) {
     if (!bad[cursor] || repaired[cursor]) { cursor++; continue; }
-    references.clear(); layers.clear(); connections.clear(); originalIds.clear(); baselineFrames.clear(); nextNode = 0;
+    references.clear(); layers.clear(); visibility.clear(); originalIds.clear(); baselineFrames.clear(); bodySamples.clear(); nextNode = 0;
     const start = cursor, id = segment[start];
     let end = start;
     for (let next = start + 1; next < count && segment[next] === id && next - start < 112 && next - end <= padding; next++)
       if (bad[next] && !repaired[next]) end = next;
+    coreStart = start; coreEnd = end;
     let accepted = false;
     for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
       let from = start, to = end;
-      while (from > 0 && segment[from - 1] === id && start - from < padding * attempt && to - from < 159) from--;
-      while (to + 1 < count && segment[to + 1] === id && to - end < padding * attempt && to - from < 159) to++;
+      const shoulder = Math.min(padding * attempt, Math.floor((159 - (end - start)) / 2));
+      while (from > 0 && !repaired[from - 1] && segment[from - 1] === id && start - from < shoulder) from--;
+      while (to + 1 < count && !repaired[to + 1] && segment[to + 1] === id && to - end < shoulder) to++;
       if (from === to) continue;
+      // No trajectory can meet an invalid fixed endpoint. Expand the window
+      // before testing speculative bearings, rather than rediscovering the
+      // same failure for every candidate and every predecessor.
+      if (from > 0 && segment[from - 1] === id && !await anchorValid(from)) continue;
+      if (to + 1 < count && segment[to + 1] === id && !await anchorValid(to)) continue;
+      if (await coherent(from, to, start, end)) { accepted = true; break; }
       const intervals = Math.max(1, Math.ceil((to - from) / stride));
       const times = Array.from({length: intervals + 1}, (_, i) => from + Math.round((to - from) * i / intervals));
       let layer = await candidates(from, from > 0 && segment[from - 1] === id);
-      for (const node of layer) node.cost = node.composition ?? 0;
+      for (const node of layer) { node.cost = node.composition ?? 0; velocity(node); }
       for (let index = 1; index < times.length && layer.length; index++) {
         const pause = checkpoint();
         if (pause) await pause;
@@ -1158,14 +1418,27 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
           const {cx, cy} = referenceAt(s), yaw = Math.atan2(node.y - cy, node.x - cx);
           const predecessors = [];
           for (const before of layer) {
-            const {cx: bx, cy: by} = referenceAt(before.s);
+            const {cx: bx, cy: by, cz: bz} = referenceAt(before.s);
             const turn = wrap(yaw - Math.atan2(before.y - by, before.x - bx)), duration = (s - before.s) * dt, rate = turn / duration;
             if (Math.abs(rate) > (style === 'steady' ? 300 : 540) * DEGREES) continue;
+            const candidate = {...node};
+            let acceleration = 0;
+            const normalization = Math.max(BASE_DISTANCE, Math.hypot(node.x - cx, node.y - cy));
+            for (let k = 0; k < 6; k++) {
+              const key = positionKeys[k], speed = velocityKeys[k];
+              const secant = (node[key] - before[key]) / duration;
+              candidate[speed] = node.anchor ? node[speed] : (before[speed] + secant) * 0.5;
+              acceleration += ((secant - before[speed]) / normalization) ** 2;
+            }
+            const radius = Math.hypot(node.x - cx, node.y - cy, node.z - referenceAt(s).cz);
+            const oldRadius = Math.hypot(before.x - bx, before.y - by, before.z - bz);
+            const radial = (radius - oldRadius) / duration / Math.max(300, radius);
+            const reversed = before.rate * rate < 0 ? Math.min(Math.abs(before.rate), Math.abs(rate)) ** 2 : 0;
             const cost = before.cost + (node.composition ?? 0) * duration + turn * turn * 3 +
-              (rate - before.rate) ** 2 * (style === 'steady' ? 0.06 : 0.025);
+              (rate - before.rate) ** 2 * 0.08 + acceleration * 0.3 + radial * radial * 0.6 + reversed * 0.4;
             let at = 0;
             while (at < predecessors.length && predecessors[at].cost <= cost) at++;
-            if (at < 4) { predecessors.splice(at, 0, {before, cost, rate}); if (predecessors.length > 4) predecessors.pop(); }
+            if (at < 4) { predecessors.splice(at, 0, {before, node: candidate, cost, rate}); if (predecessors.length > 4) predecessors.pop(); }
           }
           if (predecessors.length) ranked.push({node, predecessors});
         }
@@ -1174,48 +1447,58 @@ async function repairPaths({shot, desired, trouble, runs, faces, shares, fov, se
         // Most alternatives cannot compete compositionally. Trace connected
         // contenders in cost order; expand the beam on the second attempt.
         for (const {node, predecessors} of ranked) {
-          for (const candidate of predecessors) if (await connected(candidate.before, node)) {
+          for (const candidate of predecessors) if (await edge(candidate.before, candidate.node)) {
+            Object.assign(node, candidate.node);
             node.cost = candidate.cost; node.parent = candidate.before; node.rate = candidate.rate; break;
           }
           if (Number.isFinite(node.cost)) layer.push(node);
-          if (layer.length >= attempt * 8) break;
+          if (layer.length >= attempt * 4) break;
         }
       }
       if (!layer.length || layer[0].s !== to) continue;
       const best = layer.reduce((a, b) => a.cost <= b.cost ? a : b);
       const proposedEye = new Float32Array((to - from + 1) * 3), proposedTarget = new Float32Array(proposedEye.length);
-      for (let node = best; node.parent; node = node.parent) {
+      const path = [];
+      for (let node = best; node; node = node.parent) path.push(node);
+      path.reverse();
+      const refine = fitCorridor(path, proposedEye, proposedTarget);
+      const certified = {samples: new Uint8Array((to - from) * 4 + 1), edges: new Uint8Array(to - from)};
+      let failed = await validateStored(proposedEye, proposedTarget, from, to, start, end, certified);
+      const reference = {};
+      for (let correction = 0; failed !== null && correction < 4; correction++) {
+        let before = path[0], after = path[1];
+        for (let index = 1; index < path.length; index++) {
+          after = path[index];
+          if (failed <= after.s) break;
+          before = after;
+        }
+        interpolate(before, after, failed, reference);
+        if (!await valid(reference, failed, false, false, failed >= start && failed <= end)) break;
+        const changed = refine(failed, reference);
+        if (!changed) break;
+        // Only this control support and its adjacent stored chords changed.
+        // Retain every other native geometry/body/composition certificate,
+        // including any prefix already checked before the counterexample.
+        const low = Math.max(from, Math.floor(changed.from) - 1), high = Math.min(to, Math.ceil(changed.to) + 1);
+        certified.samples.fill(0, (low - from) * 4, (high - from) * 4 + 1);
+        certified.edges.fill(0, low - from, high - from);
+        failed = await validateStored(proposedEye, proposedTarget, from, to, start, end, certified);
+      }
+      const smooth = failed === null;
+      if (!smooth) for (let node = best; node.parent; node = node.parent) {
         const before = node.parent;
         for (let s = before.s; s <= node.s; s++) {
-          const t = (s - before.s) / (node.s - before.s), o = (s - from) * 3;
-          proposedEye[o] = before.x + (node.x - before.x) * t; proposedEye[o + 1] = before.y + (node.y - before.y) * t; proposedEye[o + 2] = before.z + (node.z - before.z) * t;
-          proposedTarget[o] = before.tx + (node.tx - before.tx) * t; proposedTarget[o + 1] = before.ty + (node.ty - before.ty) * t; proposedTarget[o + 2] = before.tz + (node.tz - before.tz) * t;
+          const o = (s - from) * 3, value = interpolate(before, node, s, {});
+          proposedEye[o] = value.x; proposedEye[o + 1] = value.y; proposedEye[o + 2] = value.z;
+          proposedTarget[o] = value.tx; proposedTarget[o + 1] = value.ty; proposedTarget[o + 2] = value.tz;
         }
       }
       // Float32 storage slightly changes chords. Validate that stored path,
       // including its fractional interpolation, before replacing any sample.
-      let clear = true;
-      const stored = {...best}, last = {x: 0, y: 0, z: 0};
-      for (let s = from; s <= to && clear; s += 0.25) {
-        const lo = (Math.floor(s) - from) * 3, hi = Math.min(to - from, Math.floor(s) - from + 1) * 3, t = s - Math.floor(s);
-        stored.x = proposedEye[lo] + (proposedEye[hi] - proposedEye[lo]) * t;
-        stored.y = proposedEye[lo + 1] + (proposedEye[hi + 1] - proposedEye[lo + 1]) * t;
-        stored.z = proposedEye[lo + 2] + (proposedEye[hi + 2] - proposedEye[lo + 2]) * t;
-        stored.tx = proposedTarget[lo] + (proposedTarget[hi] - proposedTarget[lo]) * t;
-        stored.ty = proposedTarget[lo + 1] + (proposedTarget[hi + 1] - proposedTarget[lo + 1]) * t;
-        stored.tz = proposedTarget[lo + 2] + (proposedTarget[hi + 2] - proposedTarget[lo + 2]) * t;
-        clear = await valid(stored, s);
-        if (clear && s > from) clear = await query(last, {x: stored.x, y: stored.y, z: stored.z});
-        last.x = stored.x; last.y = stored.y; last.z = stored.z;
-        if (!clear) for (let node = best; node.parent; node = node.parent) {
-          const before = node.parent;
-          if (s > before.s && s <= node.s || s === from && before.s === from) {
-            connections.set(before.id * 8192 + node.id, false);
-            break;
-          }
-        }
-      }
-      if (!clear) continue;
+      failed = smooth ? null : await validateStored(proposedEye, proposedTarget, from, to, start, end);
+      // A failure belongs to this curve's endpoint tangents, not just the
+      // endpoint IDs. The wider attempt may use that edge with a safe tangent.
+      if (failed !== null) continue;
       shot.eye.set(proposedEye, from * 3); shot.target.set(proposedTarget, from * 3);
       repaired.fill(1, from, to + 1);
       clearance.fill(1, from, to + 1);

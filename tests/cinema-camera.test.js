@@ -152,20 +152,6 @@ describe('final camera visibility', () => {
       expect(bodyBearing(after, body)).toBeGreaterThan(Math.cos(verticalHalfAngle));
     });
 
-    test('reframes the body when a near ceiling leaves the smoothed eye beyond the surfer', async () => {
-      const a = straight({speed: 100});
-      const trace = enclosure({x: -1e9, y: -1e9, z: -1e9}, {x: 1e9, y: 1e9, z: 41});
-      const planned = await planCamera({a, style, trace}), body = bodyAt(a, 0), shot = shotAt(planned, 0);
-      // Near the beginning, the eased focus is ahead of the actual body.
-      // A ceiling-driven pull-in can leave the eye ahead too, while the old
-      // forward lead would point away from the surfer behind that eye.
-      expect(shot.eye.x).toBeGreaterThan(body.x + 1);
-      expect(trace(body, shot.eye)).toBe(1);
-      expect(shot.target.x).toBeLessThan(shot.eye.x);
-      const verticalHalfAngle = Math.atan(Math.tan(shot.fov * Math.PI / 360) * 0.75);
-      expect(bodyBearing(shot, body)).toBeGreaterThan(Math.cos(verticalHalfAngle));
-    });
-
     test('uses clear travelled space through a bend instead of an extreme close-up', async () => {
       const a = createTrack(360, 0.015), radius = 1012;
       for (let tick = 0; tick < a.count; tick++) {

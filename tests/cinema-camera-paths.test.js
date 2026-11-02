@@ -1,7 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {createTrack, trackPoint} from '../src/cinema-track.js';
 import {planCamera, shotAt, STEP} from '../src/cinema-camera.js';
-import {cameraBoundsQuery} from '../src/cinema.js';
+import {cameraBoundsQuery} from '../src/cinema-world.js';
 
 // These solids include the camera probe's clearance. Unlike a trace echo,
 // each reports the first actual entry into a geometric obstacle.
@@ -108,6 +108,28 @@ function expectConnected(plan, tracks, trace, minDistance = 0) {
   }
 }
 
+function motion(plan, track) {
+  const dt = track.dt * STEP, radius = [], forward = [];
+  let acceleration = 0, radial = 0, rotation = 0, distance = 0;
+  for (let s = 0; s < plan.count; s++) {
+    const o = s * 3, body = bodyAt(track, Math.min(track.count - 1, s * STEP));
+    radius.push(Math.hypot(plan.eye[o] - body.x, plan.eye[o + 1] - body.y, plan.eye[o + 2] - body.z));
+    const direction = [0, 1, 2].map(k => plan.target[o + k] - plan.eye[o + k]), length = Math.hypot(...direction);
+    forward.push(direction.map(value => value / length));
+    if (s) distance += Math.hypot(...[0, 1, 2].map(k => plan.eye[o + k] - plan.eye[o - 3 + k]));
+  }
+  for (let s = 1; s < plan.count - 1; s++) {
+    if (plan.segment[s - 1] !== plan.segment[s] || plan.segment[s + 1] !== plan.segment[s]) continue;
+    const o = s * 3;
+    acceleration = Math.max(acceleration, Math.hypot(...[0, 1, 2].map(k =>
+      plan.eye[o + 3 + k] - 2 * plan.eye[o + k] + plan.eye[o - 3 + k])) / (dt * dt * radius[s]));
+    radial = Math.max(radial, Math.abs(radius[s + 1] - 2 * radius[s] + radius[s - 1]) / (dt * dt * radius[s]));
+    rotation = Math.max(rotation, Math.hypot(...[0, 1, 2].map(k =>
+      forward[s + 1][k] - 2 * forward[s][k] + forward[s - 1][k])) / (dt * dt));
+  }
+  return {acceleration, radial, rotation, distance};
+}
+
 describe('connected local camera paths', () => {
   test('keeps radially staggered runners distinct instead of aligning them behind a pillar', async () => {
     const scene = groupScenario('pillar'), second = createTrack(scene.a.count, scene.a.dt);
@@ -134,6 +156,18 @@ describe('connected local camera paths', () => {
     }
   });
   for (const style of ['cinematic', 'steady']) {
+    for (const kind of ['pillar', 'tunnel']) test(`${style}: carries a coherent moving shot through ${kind} repairs and their joins`, async () => {
+      const scene = groupScenario(kind), plan = await planCamera({...scene, style});
+      expectConnected(plan, scene.tracks, scene.trace, kind === 'pillar' ? 280 : 300);
+      const movement = motion(plan, scene.a);
+      // Normalize translation/radius by shot size, not world speed: deliberate
+      // fast moves remain possible, but layer changes must not introduce an
+      // impulse in position, distance or the actual 3-D viewing direction.
+      expect(movement.acceleration).toBeLessThan(35);
+      expect(movement.radial).toBeLessThan(30);
+      expect(movement.rotation).toBeLessThan(30);
+      expect(movement.distance).toBeGreaterThan(kind === 'pillar' ? 2000 : 3000);
+    });
     test(`${style}: keeps a staggered three-run group wide and visible through a pillar half-turn`, async () => {
       const scene = groupScenario('pillar');
       const plan = await planCamera({...scene, style});
@@ -166,6 +200,75 @@ describe('connected local camera paths', () => {
     });
   }
 
+  test('uses the open space below a low ceiling instead of compressing a flying group', async () => {
+    const tracks = [0, -1, 1].map(shift => {
+      const track = straight();
+      for (let tick = 0; tick < track.count; tick++) {
+        track.position[tick * 3] += shift * 80;
+        track.position[tick * 3 + 1] = shift * 30;
+      }
+      return track;
+    });
+    const a = tracks[0], map = Float32Array.from({length: a.count}, (_, tick) => tick);
+    const roof = box({x: 2000, y: -1e6, z: 55}, {x: 6000, y: 1e6, z: 1e6});
+    const floor = box({x: -1e6, y: -1e6, z: -1e6}, {x: 1e6, y: 1e6, z: -500});
+    const trace = (from, to) => Math.min(roof(from, to), floor(from, to));
+    const plan = await planCamera({a, others: tracks.slice(1).map(track => ({track, map})), trace});
+    expectConnected(plan, tracks, trace, 300);
+    for (let tick = 140; tick <= 260; tick += 0.5) {
+      const shot = shotAt(plan, tick), body = bodyAt(a, tick);
+      expect(shot.eye.z).toBeLessThan(body.z - 10);
+      expect(Math.hypot(shot.eye.x - body.x, shot.eye.y - body.y, shot.eye.z - body.z)).toBeGreaterThan(450);
+    }
+  });
+
+  test('keeps adjacent long repair windows connected around an intervening solid', async () => {
+    const tracks = [0, -1, 1].map(shift => {
+      const track = straight(801);
+      for (let tick = 0; tick < track.count; tick++) {
+        track.position[tick * 3] += shift * 80;
+        track.position[tick * 3 + 1] = shift * 30;
+      }
+      return track;
+    });
+    const a = tracks[0], map = Float32Array.from({length: a.count}, (_, tick) => tick);
+    // Sustained compression outlasts a bounded repair window. Its successor
+    // meets the already-repaired shoulder without room for another shoulder.
+    const roof = box({x: -1000, y: -1e6, z: 55}, {x: 15000, y: 1e6, z: 1e6});
+    const floor = box({x: -1e6, y: -1e6, z: -1e6}, {x: 1e6, y: 1e6, z: -500});
+    // Both windows' individual poses see the runners around this solid, but
+    // jumping directly from the first shoulder to the next intention hits it.
+    const obstruction = sphere({x: 5076, y: 0, z: 15}, 4);
+    const trace = (from, to) => Math.min(roof(from, to), floor(from, to), obstruction(from, to));
+    const plan = await planCamera({a, others: tracks.slice(1).map(track => ({track, map})), trace});
+    expectConnected(plan, tracks, trace);
+    for (let s = 1; s < plan.count; s++) {
+      const before = shotAt(plan, (s - 1) * STEP).eye, after = shotAt(plan, s * STEP).eye;
+      expect(trace(before, after)).toBe(1);
+      expect(Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)).toBeLessThan(80);
+    }
+  });
+
+  test('replans a continuous pillar move when its intermediate curve clips a second obstacle', async () => {
+    const scene = groupScenario('pillar'), first = await planCamera(scene);
+    const tick = 307, center = shotAt(first, tick).eye, obstruction = sphere(center, 0.1);
+    const trace = (from, to) => Math.min(scene.trace(from, to), obstruction(from, to));
+    // The endpoints of the already connected move remain safe. Its actual
+    // interpolated trajectory does not, so preserving safe knots alone is
+    // insufficient; another incoming/outgoing curve must remain searchable.
+    for (const at of [tick - 1, tick + 1]) {
+      const shot = shotAt(first, at);
+      for (const track of scene.tracks) expect(trace(bodyAt(track, at), shot.eye)).toBe(1);
+    }
+    expect(trace(bodyAt(scene.a, tick), center)).toBeLessThan(1);
+    const plan = await planCamera({...scene, trace});
+    expectConnected(plan, scene.tracks, trace, 280);
+    const movement = motion(plan, scene.a);
+    expect(movement.acceleration).toBeLessThan(50);
+    expect(movement.rotation).toBeLessThan(50);
+    expect(movement.distance).toBeGreaterThan(2000);
+  });
+
   for (const obstruction of ['eye chord', 'intermediate sightline']) test(`repairs a blocked ${obstruction} between clear endpoints`, async () => {
     const a = straight(), baseline = await planCamera({a, trace: () => 1});
     const tick = 201, middle = shotAt(baseline, tick), body = bodyAt(a, tick);
@@ -186,6 +289,25 @@ describe('connected local camera paths', () => {
     const options = {a, others: [{track: b, map}], style: 'cinematic'};
     const baseline = await planCamera({...options, trace: () => 1}), middle = shotAt(baseline, 201);
     const trace = sphere(middle.eye, 0.1), plan = await planCamera({...options, trace});
+    let protectedSamples = 0;
+    for (let tick = 0; tick < a.count - 1; tick += 0.5) {
+      const body = bodyAt(b, tick), before = shotAt(baseline, tick);
+      if (!inFrame(before, body) || trace(body, before.eye) < 1) continue;
+      protectedSamples++;
+      const after = shotAt(plan, tick);
+      expect(trace(body, after.eye)).toBe(1);
+      expect(inFrame(after, body)).toBe(true);
+    }
+    expect(protectedSamples).toBeGreaterThan(0);
+    expectConnected(plan, [a], trace);
+  });
+
+  test('preserves an already-visible ghost when solo framing gives it zero composition weight', async () => {
+    const a = straight(), b = straight(), map = Float32Array.from({length: a.count}, (_, tick) => tick);
+    for (let tick = 0; tick < b.count; tick++) b.position[tick * 3 + 1] = 80;
+    const options = {a, others: [{track: b, map}], group: false};
+    const baseline = await planCamera({...options, trace: () => 1}), center = shotAt(baseline, 201).eye;
+    const trace = sphere(center, 0.1), plan = await planCamera({...options, trace});
     let protectedSamples = 0;
     for (let tick = 0; tick < a.count - 1; tick += 0.5) {
       const body = bodyAt(b, tick), before = shotAt(baseline, tick);

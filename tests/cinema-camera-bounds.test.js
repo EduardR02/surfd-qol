@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {cameraBoundsQuery} from '../src/cinema.js';
+import {cameraBoundsQuery} from '../src/cinema-world.js';
 import {planCamera} from '../src/cinema-camera.js';
 import {createTrack} from '../src/cinema-track.js';
 
