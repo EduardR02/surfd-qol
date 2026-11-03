@@ -1,5 +1,6 @@
 import {expect, test} from 'bun:test';
 import {loadProgressiveAssets} from '../extension/progressive-assets.js';
+import {nativeProgressiveMapHooks} from '../extension/progressive-map-hooks.js';
 
 function deferred() {
   let resolve, reject;
@@ -24,7 +25,7 @@ function image(url) {
   return {url, closed: 0, close() { this.closed++; }};
 }
 
-function harness(packs, {sky = [], compressedTextures = {}, useCompressed = false, validateDDS = () => {}} = {}, loader = loadProgressiveAssets) {
+function harness(packs, {sky = [], skyTransforms, compressedTextures = {}, useCompressed = false, validateDDS = () => {}, prepareSky} = {}, loader = loadProgressiveAssets) {
   const controller = new AbortController();
   const reads = new Map(packs.map(value => [value.url, deferred()]));
   const readStarts = new Map(packs.map(value => [value.url, deferred()]));
@@ -36,7 +37,7 @@ function harness(packs, {sky = [], compressedTextures = {}, useCompressed = fals
     }
   }
   const readOrder = [], decodeOrder = [], aborts = [];
-  const initial = loader({sky, compressedTextures}, packs, useCompressed, controller.signal, {
+  const initial = loader({sky, skyTransforms, compressedTextures}, packs, useCompressed, controller.signal, {
     readPack(value) {
       readOrder.push(value.url);
       readStarts.get(value.url).resolve();
@@ -48,7 +49,7 @@ function harness(packs, {sky = [], compressedTextures = {}, useCompressed = fals
       decodeStarts.get(url).resolve();
       return decodes.get(url).promise;
     },
-    validateDDS,
+    validateDDS, prepareSky,
     abort(error) {
       aborts.push(error);
       controller.abort(error);
@@ -138,6 +139,70 @@ for (const [name, loader] of [
     const run = harness([], {sky: Array(6).fill('missing')}, loader);
     await expect(run.initial).rejects.toThrow('Missing sky image');
     expect(run.aborts).toHaveLength(1);
+  });
+}
+
+for (const [name, loader] of [
+  ['module', loadProgressiveAssets],
+  ['standalone injection', Function(`return (${loadProgressiveAssets.toString()})`)()],
+]) {
+  test(`${name}: sky processing starts on the final face, before mesh handoff, without awaiting it`, async () => {
+    const urls = Array.from({length: 6}, (_, index) => `sky-${index}`);
+    const transforms = ['rotate 90'], started = deferred(), skyReady = deferred(), cancellations = [];
+    const preparation = {ready: skyReady.promise, cancel: reason => cancellations.push(reason)};
+    const run = harness([
+      pack('sky-pack', urls.map((url, index) => ({url, bytes: [index]}))),
+      pack('mesh-pack', [{url: 'world', kind: 'mesh', bytes: [9]}]),
+    ], {sky: urls, skyTransforms: transforms, prepareSky(faces, values, signal) {
+      started.resolve({faces, values, signal});
+      return preparation;
+    }}, loader);
+    run.read('sky-pack');
+    await run.decodeStarted(urls[3]);
+    const images = urls.slice(0, 4).map(url => run.decode(url));
+    await run.decodeStarted(urls[5]);
+    images.push(run.decode(urls[4]), run.decode(urls[5]));
+    const call = await started.promise;
+    expect(call.faces).toEqual(images);
+    expect(call.values).toBe(transforms);
+    expect(call.signal).toBe(run.controller.signal);
+
+    let handedOff = false;
+    run.initial.then(() => { handedOff = true; });
+    await Promise.resolve();
+    expect(handedOff).toBe(false);
+    run.read('mesh-pack');
+    const resources = await run.initial;
+    expect(resources.skyPreparation).toBe(preparation);
+    expect(handedOff).toBe(true);
+    await resources.ready;
+    const reason = new Error('map switched');
+    run.controller.abort(reason);
+    resources.cancel();
+    expect(cancellations).toEqual([reason]);
+    expect(images.map(value => value.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+    skyReady.resolve();
+  });
+
+  test(`${name}: aborting before handoff cancels sky work and closes its source images`, async () => {
+    const started = deferred(), cancellations = [], face = image('shared-sky');
+    const run = harness([
+      pack('sky-pack', [{url: 'shared-sky', bytes: [1]}]),
+      pack('mesh-pack', [{url: 'world', kind: 'mesh', bytes: [2]}]),
+    ], {sky: Array(6).fill('shared-sky'), prepareSky(faces) {
+      expect(faces).toEqual(Array(6).fill(face));
+      started.resolve();
+      return {cancel: reason => cancellations.push(reason)};
+    }}, loader);
+    run.read('sky-pack');
+    await run.decodeStarted('shared-sky');
+    run.decode('shared-sky', face);
+    await started.promise;
+    const reason = new Error('cancelled while installing');
+    run.controller.abort(reason);
+    await expect(run.initial).rejects.toBe(reason);
+    expect(cancellations).toEqual([reason]);
+    expect(face.closed).toBe(1);
   });
 }
 
@@ -439,4 +504,143 @@ test('DDS publication excludes unrelated pack bytes for whole buffers and subvie
     expect(buffer.byteLength).toBe(4);
     expect(Array.from(new Uint8Array(buffer))).toEqual([1, 2, 3, 4]);
   }
+});
+
+// Complete, deliberately renamed native signatures. The generated functions
+// execute, including their probe, CubeTexture construction and first draw.
+const progressiveFixture = `
+const __qolPrepareSky=(images,transforms,signal)=>deps.prepareSky(images,transforms,signal);
+function qb(images,transforms=[]){return deps.nativeSky(images,transforms)}
+function parseDDS(buffer,descriptor){validateDDS(buffer,descriptor);const parsed=new DDSParser().parse(buffer,!0),format={DXT1:D1,DXT1A:D1A,DXT3:D3,DXT5:D5}[descriptor.format],texture=new DDSTexture(parsed.mipmaps,parsed.width,parsed.height,format);return texture.generateMipmaps=!1,texture}
+async function nativeLoader(slug,options,controller){const path=Object.hasOwn(index,slug)?index[slug]:void 0;if(!path)throw new Error(\`Unknown BSP visual map: \${slug}\`);const signal=controller.signal,response=await fetchNative(path,signal),manifest=await fetchJson(response);validateManifest(manifest,slug);const data=manifest.data;normalize(data);const meshes=new Map,images=new Map,compressed=new Map,using=options.compressedTextures!==!1&&Object.keys(data.compressedTextures??{}).length>0&&supported(),packs=selectPacks(manifest,using),unused=0;for(const pack of packs){const bytes=await readBytes(await fetchNative(pack.url,signal),pack.byteLength);for(const entry of pack.entries){if(entry.kind==="mesh")meshes.set(entry.url,bytes);else images.set(entry.url,await decodeImage(bytes,entry.url,signal));validateDDS(bytes,{})}}return data.resources={meshes:meshes,images:images,compressed:compressed},data}
+async function relay(slug,options={}){const controller=new AbortController,listener=()=>controller.abort(options.signal?.reason);options.signal?.addEventListener("abort",listener,{once:!0}),options.signal?.aborted&&listener();try{return await nativeLoader(slug,options,controller)}finally{options.signal?.removeEventListener("abort",listener)}}
+function factory(canvas,data,map){const gpu=new Renderer({canvas:canvas,antialias:!0,alpha:!1,powerPreference:"high-performance"});
+let disposed=!1,previous=null;const alive=()=>!disposed,sky={},cache=new Map;
+const makeTexture=(url,srgb=!0,nearest=!1)=>{let texture;if(url){const buffer=data.resources.compressed?.get(url),descriptor=data.compressedTextures?.[url];if(buffer&&descriptor)texture=parseDDS(buffer,descriptor);else{const image=data.resources.images.get(url);if(!image)throw new Error(\`Missing loaded image \${url}\`);texture=new ImageTexture(image)}}else texture=new DataTexture(new Uint8Array([255,255,255,255]),1,1);texture.magFilter=nearest?NEAR:LINEAR,texture.minFilter=nearest?NEAR:isDDS&&texture.mipmaps.length===1?LINEAR:MIP;return texture};
+const makeCube=urls=>{const key=urls.join("|");let texture=cache.get(key);return texture||(texture=new CubeTexture([0,1,4,5,3,2].map(face=>data.resources.images.get(urls[face]))),texture.colorSpace=SRGB,texture.needsUpdate=!0,cache.set(key,texture),texture)};
+data.sky.length===6&&data.sky.every(Boolean)&&(sky.background=new CubeTexture(qb(data.sky.map(face=>data.resources.images.get(face)),data.skyTransforms))),sky.background instanceof CubeTexture&&(sky.background.colorSpace=SRGB,sky.background.needsUpdate=!0);
+const view={prepare:async frame=>{globalThis.__SURFD_QOL__?.prepareMap?.();const __qolProgressiveMap=frame??previous;if(__qolProgressiveMap&&alive())view.render(__qolProgressiveMap)},render(frame){previous=frame;gpu.draw(frame,sky.background)},dispose(){disposed=!0;gpu.dispose();for(const image of data.resources.images.values())if(typeof image.close==="function")image.close();}};return view}
+async function startMap(entry,resume=!1,bypass=!1){const controller=new AbortController;try{const[collision,visual]=await Promise.all([geometry(entry,controller.signal),relay(entry.slug,{signal:controller.signal})]);ready=!1;const frame=install(collision,visual,resume,bypass);await currentView.prepare?.(frame),ready=!0,success()}catch(error){if(controller.abort(error),error instanceof Error){failed(error);return}error instanceof Error&&(controls.unlock(),overlay.hidden=!1,failed(error))}finally{loading=!1,element("play").disabled=!ready,clock=performance.now(),input.reset()}if(ready)done()}async function next(){}
+`;
+
+function progressiveFixtureRunner(prepareSky, {unknownSky = false} = {}) {
+  const urls = Array.from({length: 6}, (_, index) => `face-${index}`);
+  const faces = urls.map(image), selected = pack('visual', urls.map((url, index) => ({url, bytes: [index]})));
+  const data = {sky: urls, skyTransforms: ['rotate 90'], compressedTextures: {}};
+  const manifest = {data, packs: [selected]}, calls = {fallback: 0, real: [], passes: []}, probe = deferred();
+  class CubeTexture { constructor(images) { this.image = images; } }
+  class Renderer {
+    constructor() {
+      this.renderBufferDirect = (camera, scene, geometry, material, object, group) => {
+        calls.real.push({frame: this.frame, faces: this.sky.image});
+      };
+    }
+    draw(frame, sky) {
+      this.frame = frame;
+      this.sky = sky;
+      calls.passes.push(sky.image);
+      probe.resolve();
+      this.renderBufferDirect(null, null, null, {}, null, null);
+    }
+    dispose() {}
+  }
+  const deps = {prepareSky, nativeSky(images) { calls.fallback++; return images.map(face => ({native: face})); }};
+  const source = unknownSky ? progressiveFixture.replace('sky.background.needsUpdate=!0', 'sky.background.generateMipmaps=!0') : progressiveFixture;
+  const run = new Function('deps', 'Renderer', 'CubeTexture', 'manifest', 'faces', `
+    const index={map:"manifest"},SRGB="srgb",validateDDS=()=>{},validateManifest=()=>{},normalize=()=>{};
+    const fetchNative=async url=>url,fetchJson=async()=>manifest,supported=()=>false,selectPacks=value=>value.packs;
+    const readBytes=async()=>manifest.packs[0].bytes,decodeImage=async(bytes,url)=>faces[Number(url.slice(5))];
+    ${nativeProgressiveMapHooks(source)}
+    return {relay,factory};
+  `)(deps, Renderer, CubeTexture, manifest, faces);
+  return {run, data, faces, calls, probe: probe.promise};
+}
+
+test('progressive sky delays the first real draw but not renderer construction or its visibility probe', async () => {
+  const gate = deferred(), converted = Array.from({length: 6}, (_, index) => ({canvas: index}));
+  const preparation = {ready: gate.promise, finish: async () => { await gate.promise; return converted; }, cancel() {}};
+  const fixture = progressiveFixtureRunner(() => preparation);
+  const data = await fixture.run.relay('map');
+  const view = fixture.run.factory({}, data, {});
+  expect(fixture.calls.fallback).toBe(0);
+  const frame = {id: 'first'}, preparing = view.prepare(frame);
+  await fixture.probe;
+  expect(fixture.calls.passes[0]).toEqual(fixture.faces);
+  expect(fixture.calls.real).toEqual([]);
+  gate.resolve();
+  await preparing;
+  expect(fixture.calls.real).toEqual([{frame, faces: converted}]);
+  expect(fixture.calls.real[0].faces).toBe(converted);
+  expect(fixture.calls.fallback).toBe(0);
+  view.dispose();
+});
+
+test('a failed worker falls back through native sky conversion exactly once before drawing', async () => {
+  const preparation = {ready: Promise.resolve(), finish: async native => native(), cancel() {}};
+  const fixture = progressiveFixtureRunner(() => preparation), data = await fixture.run.relay('map');
+  const view = fixture.run.factory({}, data, {});
+  expect(fixture.calls.fallback).toBe(0);
+  await view.prepare({id: 'first'});
+  await view.prepare({id: 'again'});
+  expect(fixture.calls.fallback).toBe(1);
+  expect(fixture.calls.real).toHaveLength(2);
+  expect(fixture.calls.real[0].faces).toEqual(fixture.faces.map(face => ({native: face})));
+  expect(fixture.calls.real[1].faces).toBe(fixture.calls.real[0].faces);
+  view.dispose();
+});
+
+test('disposing while the sky worker is pending cancels it and prevents a real draw', async () => {
+  const gate = deferred();
+  gate.promise.catch(() => {});
+  const preparation = {ready: gate.promise, finish: async () => { await gate.promise; return []; },
+    cancel(reason) { gate.reject(reason); }};
+  const fixture = progressiveFixtureRunner(() => preparation), data = await fixture.run.relay('map');
+  const view = fixture.run.factory({}, data, {}), preparing = view.prepare({id: 'cancelled'});
+  await fixture.probe;
+  view.dispose();
+  await expect(preparing).rejects.toMatchObject({name: 'AbortError'});
+  expect(fixture.calls.real).toEqual([]);
+  expect(fixture.faces.map(face => face.closed)).toEqual([1, 1, 1, 1, 1, 1]);
+});
+
+test('external map cancellation remains relayed after other assets finish while the sky is pending', async () => {
+  const controller = new AbortController(), gate = deferred(), aborted = deferred();
+  gate.promise.catch(() => {});
+  const fixture = progressiveFixtureRunner((faces, transforms, signal) => {
+    signal.addEventListener('abort', () => { aborted.resolve(signal.reason); gate.reject(signal.reason); }, {once: true});
+    return {ready: gate.promise, finish: async () => gate.promise, cancel: reason => gate.reject(reason)};
+  });
+  const data = await fixture.run.relay('map', {signal: controller.signal});
+  await data.resources.ready;
+  const reason = new Error('external switch');
+  controller.abort(reason);
+  expect(await aborted.promise).toBe(reason);
+  await expect(data.resources.skyPreparation.ready).rejects.toBe(reason);
+  data.resources.cancel();
+});
+
+test('external cancellation also reaches a completed but not yet installed sky', async () => {
+  const controller = new AbortController(), aborted = deferred();
+  const fixture = progressiveFixtureRunner((faces, transforms, signal) => {
+    signal.addEventListener('abort', () => aborted.resolve(signal.reason), {once: true});
+    return {ready: Promise.resolve(), finish: async () => faces, cancel() {}};
+  });
+  const data = await fixture.run.relay('map', {signal: controller.signal});
+  await Promise.all([data.resources.ready, data.resources.skyPreparation.ready]);
+  const reason = new Error('cancel before installation');
+  controller.abort(reason);
+  expect(await aborted.promise).toBe(reason);
+  data.resources.cancel();
+});
+
+test('an unknown native sky layout retains the complete original loader and draw', async () => {
+  let preparations = 0;
+  const fixture = progressiveFixtureRunner(() => { preparations++; }, {unknownSky: true});
+  const data = await fixture.run.relay('map'), view = fixture.run.factory({}, data, {});
+  await view.prepare({id: 'native'});
+  expect(preparations).toBe(0);
+  expect(fixture.calls.fallback).toBe(1);
+  expect(fixture.calls.real).toHaveLength(1);
+  expect(fixture.calls.real[0].faces).toEqual(fixture.faces.map(face => ({native: face})));
+  view.dispose();
 });

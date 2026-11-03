@@ -1,3 +1,6 @@
+import {nativeBspShaderSignature} from './bsp-shader-signature.js';
+export {nativeBspShaderSignature} from './bsp-shader-signature.js';
+
 // Observe the existing native request; failures keep its optional fallback.
 // The outcome settles only after the native callback has updated its owner.
 export function loadNativeAtlas(load, onLoad, onError) {
@@ -14,10 +17,10 @@ export function loadNativeAtlas(load, onLoad, onError) {
 
 // This function is injected into the native module via toString(): keep every
 // helper inside it and leave texture construction/decoding to the native hooks.
-export function createProgressiveTextureBindings(resources) {
-  const bindings = new WeakMap(), completions = [];
+export function createProgressiveTextureBindings(resources, bspShader = nativeBspShaderSignature()) {
+  const bindings = new WeakMap(), completions = [], signatureCache = new WeakMap(), preparations = new Set();
   const signal = resources.signal;
-  let disposed = false, cancelledResources = false, disposalReason, rejectDisposed, completion;
+  let disposed = false, cancelledResources = false, disposalReason, rejectDisposed, completion, pendingBindings = 0;
 
   function handled(promise) {
     // Observe background failures immediately without changing what callers await.
@@ -33,6 +36,7 @@ export function createProgressiveTextureBindings(resources) {
     disposed = true;
     disposalReason = reason ?? new DOMException('Texture bindings disposed', 'AbortError');
     signal.removeEventListener('abort', aborted);
+    for (const cancel of preparations) cancel(disposalReason);
     rejectDisposed(disposalReason);
   }
 
@@ -59,7 +63,7 @@ export function createProgressiveTextureBindings(resources) {
   }
 
   function bind(texture, urls, apply) {
-    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null};
+    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null, pending: false};
     let registered = bindings.get(texture);
     if (!registered) bindings.set(texture, registered = []);
     registered.push(binding);
@@ -82,7 +86,19 @@ export function createProgressiveTextureBindings(resources) {
         if (image) pending.push(image);
         if (compressed) pending.push(compressed);
       }
-      if (pending.length) binding.promise = Promise.all(pending).then(finish);
+      if (pending.length) {
+        binding.pending = true;
+        pendingBindings++;
+        binding.promise = Promise.all(pending).then(finish).then(value => {
+          binding.pending = false;
+          pendingBindings--;
+          return value;
+        }, error => {
+          binding.pending = false;
+          pendingBindings--;
+          throw error;
+        });
+      }
       else {
         // Already-published sky faces and cache hits keep native synchronous setup.
         finish();
@@ -111,6 +127,62 @@ export function createProgressiveTextureBindings(resources) {
     }
 
     const selected = new Set();
+    const nativeDefines = new Set(['SECOND_MAP', 'DETAIL_MAP', 'UNLIT', 'TRANSLUCENT', 'PROP_FADE',
+      'LIGHTING_RESPONSE', 'COLORED_SHADOW_LIFT', 'VIEW_BRIGHTNESS', 'ENV_MASK', 'ENV_SHAPING',
+      'REFLECTION_ONLY', 'NO_FOG', 'PROP_LIGHT', 'WORLD_LIGHT', 'VERTEX_ALPHA', 'ALPHA_TEST',
+      'SEAMLESS', 'ENVIRONMENT', 'NORMAL_MAP', 'NORMAL_ALPHA_MASK']);
+
+    function defaultHooks(material) {
+      return typeof material.onBeforeCompile === 'function' &&
+        /^onBeforeCompile\s*\(\s*\)\s*\{\s*\}$/.test(Function.prototype.toString.call(material.onBeforeCompile)) &&
+        typeof material.customProgramCacheKey === 'function' &&
+        /^customProgramCacheKey\s*\(\s*\)\s*\{\s*return\s+this\.onBeforeCompile\.toString\(\)\s*;?\s*\}$/
+          .test(Function.prototype.toString.call(material.customProgramCacheKey));
+    }
+
+    function nativeSamplers(material) {
+      const vertex = material.vertexShader, fragment = material.fragmentShader;
+      const hook = material.onBeforeCompile, key = material.customProgramCacheKey;
+      let signature = signatureCache.get(material);
+      if (!signature || signature.vertex !== vertex || signature.fragment !== fragment ||
+          signature.hook !== hook || signature.key !== key ||
+          signature.shader !== material.isShaderMaterial || signature.raw !== material.isRawShaderMaterial) {
+        signature = {vertex, fragment, hook, key, shader: material.isShaderMaterial, raw: material.isRawShaderMaterial,
+          recognized: !!material.isShaderMaterial && !material.isRawShaderMaterial &&
+            typeof bspShader?.vertexShader === 'string' && typeof bspShader.fragmentShader === 'string' &&
+            vertex === bspShader.vertexShader && fragment === bspShader.fragmentShader && defaultHooks(material)};
+        signatureCache.set(material, signature);
+      }
+      if (!signature.recognized) return null;
+      const enabled = new Set();
+      for (const name in material.defines) {
+        const value = material.defines[name];
+        // A macro can otherwise introduce declarations or even new #defines.
+        if (!nativeDefines.has(name) || !(typeof value === 'number' || typeof value === 'boolean' ||
+            typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value))) return null;
+        // Three emits #define for every enumerable value other than false;
+        // in particular, zero is still defined for #ifdef.
+        if (value !== false) enabled.add(name);
+      }
+      return enabled;
+    }
+
+    function sampled(key, enabled) {
+      if (!enabled) return true;
+      switch (key) {
+        case 'secondMap': return enabled.has('SECOND_MAP');
+        case 'detailMap': return enabled.has('DETAIL_MAP');
+        case 'lightMap': return enabled.has('WORLD_LIGHT');
+        case 'propLight': return enabled.has('PROP_LIGHT');
+        // The captured shader reads normalMap unconditionally inside the
+        // environment block, including the normal-alpha-mask path.
+        case 'normalMap':
+        case 'environment': return enabled.has('ENVIRONMENT');
+        case 'envMask': return enabled.has('ENVIRONMENT') && enabled.has('ENV_MASK');
+        default: return true;
+      }
+    }
+
     function collectTexture(value) {
       const registered = bindings.get(value);
       if (registered) for (const binding of registered) selected.add(binding);
@@ -124,10 +196,10 @@ export function createProgressiveTextureBindings(resources) {
       for (const key in material) {
         if (Object.prototype.hasOwnProperty.call(material, key)) collectTexture(material[key]);
       }
-      const seen = new Set(), stack = [];
+      const seen = new Set(), stack = [], enabled = nativeSamplers(material);
       const uniforms = material.uniforms;
       if (uniforms) for (const key in uniforms) {
-        if (Object.prototype.hasOwnProperty.call(uniforms, key)) stack.push(uniforms[key]?.value);
+        if (Object.prototype.hasOwnProperty.call(uniforms, key) && sampled(key, enabled)) stack.push(uniforms[key]?.value);
       }
       while (stack.length) {
         const value = stack.pop();
@@ -140,27 +212,314 @@ export function createProgressiveTextureBindings(resources) {
       }
     }
 
+    const extensions = renderer.extensions;
+    const parallel = pendingBindings > 0 && (typeof extensions?.has === 'function' ? extensions.has('KHR_parallel_shader_compile') :
+      typeof extensions?.get === 'function' && extensions.get('KHR_parallel_shader_compile') != null);
+    const canCompile = parallel && typeof renderer.compileAsync === 'function' && typeof renderer.compile === 'function' &&
+      typeof renderer.properties?.get === 'function' && typeof renderer.__qolProbeLights === 'function' &&
+      typeof renderer.getRenderTarget === 'function' && renderer.localClippingEnabled !== true &&
+      !(renderer.clippingPlanes?.length > 0) &&
+      typeof renderer.getContext === 'function' && typeof renderer.getContext()?.isContextLost === 'function';
+    const views = [], submissions = [], byMaterial = new Map();
+
+    function sameArray(left, right) {
+      return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+
+    function geometryShape(object, geometry) {
+      const attributes = geometry.attributes, morph = geometry.morphAttributes;
+      return [!!object.isMesh, !!object.isLine, !!object.isPoints, !!object.isSprite, !!object.isInstancedMesh,
+        !!object.isSkinnedMesh, !!object.isBatchedMesh, object.instanceColor !== null, object.morphTexture !== null,
+        object._colorsTexture !== null, object.colorTexture !== null, !!attributes.tangent, attributes.color?.itemSize,
+        !!attributes.uv, !!morph.position, morph.position?.length, !!morph.normal, morph.normal?.length,
+        !!morph.color, morph.color?.length];
+    }
+
+    // Only plain scalar defines and extensions can be replayed without
+    // executing user code. Other materials keep their normal first-draw path.
+    function scalarFields(value) {
+      if (value == null) return value;
+      if (typeof value !== 'object' || ![null, Object.prototype].includes(Object.getPrototypeOf(value))) return null;
+      const copy = Object.create(null);
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) return null;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key), field = descriptor.value;
+        if (!('value' in descriptor) || !['string', 'number', 'boolean'].includes(typeof field)) return null;
+        copy[key] = field;
+      }
+      return copy;
+    }
+
+    function sameFields(value, snapshot) {
+      if (value == null || snapshot == null) return value === snapshot;
+      if (typeof value !== 'object' || ![null, Object.prototype].includes(Object.getPrototypeOf(value))) return false;
+      let count = 0;
+      for (const key in value) {
+        if (!Object.hasOwn(value, key) || !Object.hasOwn(snapshot, key)) return false;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!('value' in descriptor) || descriptor.value !== snapshot[key]) return false;
+        count++;
+      }
+      return count === Object.keys(snapshot).length;
+    }
+
+    function materialSnapshot(material) {
+      if (!material.isShaderMaterial || material.isRawShaderMaterial || material.lights || material.clipping ||
+          material.clippingPlanes || !defaultHooks(material)) return null;
+      const side = Object.getOwnPropertyDescriptor(material, 'side');
+      const defines = Object.getOwnPropertyDescriptor(material, 'defines');
+      if (!side?.writable || !defines?.writable) return null;
+      const macros = scalarFields(defines.value), extensions = scalarFields(material.extensions);
+      if (macros === null || extensions === null) return null;
+      const fields = Object.create(null);
+      for (const key of Object.keys(material)) {
+        if (key === '_listeners' || key === 'version' || key === 'side' || key === 'defines') continue;
+        const descriptor = Object.getOwnPropertyDescriptor(material, key);
+        if (!('value' in descriptor) || descriptor.value?.isTexture) return null;
+        fields[key] = descriptor.value;
+      }
+      return {fields, side: side.value, macros, extensions,
+        hook: material.onBeforeCompile, cacheKey: material.customProgramCacheKey};
+    }
+
+    function sameMaterial(material, state, matchVariant) {
+      if (material.onBeforeCompile !== state.hook || material.customProgramCacheKey !== state.cacheKey ||
+          !Object.getOwnPropertyDescriptor(material, 'side')?.writable ||
+          !Object.getOwnPropertyDescriptor(material, 'defines')?.writable ||
+          !sameFields(material.extensions, state.extensions) ||
+          matchVariant && (material.side !== state.side || !sameFields(material.defines, state.macros))) return false;
+      let count = 0;
+      for (const key of Object.keys(material)) {
+        if (key === '_listeners' || key === 'version' || key === 'side' || key === 'defines') continue;
+        const descriptor = Object.getOwnPropertyDescriptor(material, key);
+        if (!Object.hasOwn(state.fields, key) || !('value' in descriptor) ||
+            descriptor.value !== state.fields[key]) return false;
+        count++;
+      }
+      return count === Object.keys(state.fields).length;
+    }
+
+    function lightShape(light) {
+      return [light.isLight, light.isAmbientLight, light.isLightProbe, light.isDirectionalLight,
+        light.isPointLight, light.isSpotLight, light.isRectAreaLight, light.isHemisphereLight,
+        light.layers?.mask, light.castShadow, light.map, light.shadow, light.shadow?.map];
+    }
+
+    function renderShape() {
+      const target = renderer.getRenderTarget();
+      return [target, target?.isXRRenderTarget, target?.texture?.colorSpace, renderer.outputColorSpace,
+        renderer.toneMapping, renderer.shadowMap?.enabled, renderer.shadowMap?.type,
+        renderer.localClippingEnabled, renderer.clippingPlanes?.length,
+        renderer.state?.buffers?.depth?.getReversed?.()];
+    }
+
+    function unchangedView(view) {
+      return view.scene.fog === view.fog && view.fog?.isFogExp2 === view.fogType &&
+        view.scene.environment === view.environment && view.scene.environmentRotation === view.environmentRotation &&
+        view.camera.layers?.mask === view.cameraLayers && sameArray(renderShape(), view.renderShape) &&
+        view.lights.every((light, index) => sameArray(lightShape(light), view.lightShapes[index]));
+    }
+
+    const watched = new Set(), deadOwners = new WeakSet();
+    function ownerDisposed(event) { deadOwners.add(event.target); }
+    function watch(owner) {
+      if (!watched.has(owner) && typeof owner.addEventListener === 'function' &&
+          typeof owner.removeEventListener === 'function') {
+        watched.add(owner);
+        owner.addEventListener('dispose', ownerDisposed);
+      }
+    }
+
+    function capture(camera, scene, geometry, material, object) {
+      if (!canCompile || !camera?.isCamera || !scene?.isScene || !material?.isMaterial ||
+          !geometry?.attributes || !geometry.morphAttributes || renderer.localClippingEnabled === true ||
+          renderer.clippingPlanes?.length > 0 ||
+          !(object?.isMesh || object?.isLine || object?.isPoints || object?.isSprite)) return;
+      const lights = renderer.__qolProbeLights();
+      if (!Array.isArray(lights) || lights.some(light => !light?.isLight)) return;
+      const shape = geometryShape(object, geometry);
+      let view = views.find(item => item.scene === scene && item.camera === camera &&
+        sameArray(item.lights, lights) && unchangedView(item));
+      if (!view) {
+        view = {scene, camera, lights: lights.slice(), lightShapes: lights.map(lightShape),
+          fog: scene.fog, fogType: scene.fog?.isFogExp2, environment: scene.environment,
+          environmentRotation: scene.environmentRotation, cameraLayers: camera.layers?.mask, renderShape: renderShape()};
+        view.compileScene = Object.create(scene);
+        Object.defineProperties(view.compileScene, {
+          fog: {value: view.fog}, environment: {value: view.environment},
+          environmentRotation: {value: view.environmentRotation},
+          traverseVisible: {value: visit => { for (const light of view.lights) visit(light); }}
+        });
+        views.push(view);
+      }
+      let variants = byMaterial.get(material);
+      if (!variants) byMaterial.set(material, variants = []);
+      if (variants.some(entry => entry.view === view && sameArray(entry.shape, shape) &&
+          sameMaterial(material, entry.state, true))) return;
+      const state = materialSnapshot(material);
+      // Three's compile() would otherwise add both sides rather than this
+      // particular renderBufferDirect submission.
+      if (!state || material.transparent === true && state.side === 2 && material.forceSinglePass === false) return;
+      const properties = {};
+      for (const key of ['isMesh', 'isLine', 'isPoints', 'isSprite', 'isInstancedMesh', 'isSkinnedMesh',
+        'isBatchedMesh', 'instanceColor', 'morphTexture', '_colorsTexture', 'colorTexture']) properties[key] = object[key];
+      const entry = {camera, geometry, material, object, view, state, shape, properties};
+      variants.push(entry);
+      submissions.push(entry);
+      watch(material);
+      watch(geometry);
+    }
+
+    function preparePrograms() {
+      let cancel;
+      const promise = handled(new Promise((resolve, reject) => {
+        const context = renderer.getContext(), canvas = renderer.domElement;
+        const originalDispose = renderer.dispose, ownsDispose = Object.hasOwn(renderer, 'dispose');
+        const programs = new Set(), materials = new Set(), geometries = new Set();
+        let timer = null, settled = false;
+
+        function cleanup() {
+          clearTimeout(timer);
+          canvas?.removeEventListener('webglcontextlost', contextLost);
+          for (const material of materials) material.removeEventListener?.('dispose', objectDisposed);
+          for (const geometry of geometries) geometry.removeEventListener?.('dispose', objectDisposed);
+          if (renderer.dispose === disposeRenderer) {
+            if (ownsDispose) renderer.dispose = originalDispose;
+            else delete renderer.dispose;
+          }
+          preparations.delete(cancel);
+          programs.clear();
+          materials.clear();
+          geometries.clear();
+        }
+
+        function finish(error) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (error) reject(error);
+          else resolve();
+        }
+
+        cancel = reason => finish(reason ?? new DOMException('Shader preparation cancelled', 'AbortError'));
+        function contextLost() { cancel(new DOMException('WebGL context lost during shader preparation', 'AbortError')); }
+        function objectDisposed() { cancel(new DOMException('Shader owner disposed during preparation', 'AbortError')); }
+        function disposeRenderer(...args) {
+          cancel(new DOMException('Renderer disposed during shader preparation', 'AbortError'));
+          return originalDispose.apply(this, args);
+        }
+
+        function poll() {
+          timer = null;
+          if (settled) return;
+          try {
+            if (context.isContextLost()) { contextLost(); return; }
+            for (const program of programs) {
+              if (program.program === undefined) { objectDisposed(); return; }
+              if (!program.isReady()) continue;
+              // Reflection is cached by Three; never ask for it until KHR says
+              // linking is complete and never on an unsupported driver.
+              program.getUniforms();
+              program.getAttributes();
+              if (program.diagnostics?.runnable === false) throw new Error('Map shader failed to link');
+              programs.delete(program);
+            }
+            if (programs.size) timer = setTimeout(poll, 10);
+            else finish();
+          } catch (error) {
+            finish(error);
+          }
+        }
+
+        preparations.add(cancel);
+        canvas?.addEventListener('webglcontextlost', contextLost);
+        if (typeof originalDispose === 'function') renderer.dispose = disposeRenderer;
+        try {
+          if (context.isContextLost()) { contextLost(); return; }
+          for (const entry of submissions) {
+            if (settled) return;
+            const {material, geometry, object, view, state, camera} = entry;
+            // Probe callbacks may mutate or dispose an earlier submission.
+            // Only replay side/defines; skip any other uncertain state.
+            if (deadOwners.has(material) || deadOwners.has(geometry) || !unchangedView(view) ||
+                !sameArray(geometryShape(object, geometry), entry.shape) || !sameMaterial(material, state, false)) continue;
+            if (!materials.has(material)) {
+              materials.add(material);
+              material.addEventListener?.('dispose', objectDisposed);
+            }
+            if (!geometries.has(geometry)) {
+              geometries.add(geometry);
+              geometry.addEventListener?.('dispose', objectDisposed);
+            }
+            const objectView = Object.create(object);
+            for (const [key, value] of Object.entries({...entry.properties, geometry, material})) {
+              Object.defineProperty(objectView, key, {value, configurable: true, writable: true});
+            }
+            const root = {traverse: visit => visit(objectView), traverseVisible() {}};
+            const properties = renderer.properties.get(material);
+            const savedSide = material.side, savedDefines = material.defines;
+            try {
+              material.side = state.side;
+              material.defines = state.macros;
+              renderer.compile(root, camera, view.compileScene);
+            } finally {
+              material.side = savedSide;
+              material.defines = savedDefines;
+              // compile() changes the material's current program and lighting
+              // state. Make the next real draw select its own native variant.
+              properties.__version = -1;
+            }
+            if (settled) return;
+            const program = properties.currentProgram;
+            if (program && typeof program.isReady === 'function' &&
+                typeof program.getUniforms === 'function' && typeof program.getAttributes === 'function') programs.add(program);
+          }
+          poll();
+        } catch (error) {
+          finish(error);
+        }
+      }));
+      return {promise, cancel};
+    }
+
     const original = renderer.renderBufferDirect;
     const owned = Object.prototype.hasOwnProperty.call(renderer, 'renderBufferDirect');
-    renderer.renderBufferDirect = function(camera, scene, geometry, material, object, group) {
+    const probe = function(camera, scene, geometry, material, object, group) {
       collectMaterial(material);
+      capture(camera, scene, geometry, material, object);
     };
+    renderer.renderBufferDirect = probe;
     try {
       // draw is the synchronous native render path. It retains native PVS,
       // frustum tests and material selection, but submits no geometry draws.
       draw();
     } finally {
-      if (owned) renderer.renderBufferDirect = original;
-      else delete renderer.renderBufferDirect;
+      if (renderer.renderBufferDirect === probe) {
+        if (owned) renderer.renderBufferDirect = original;
+        else delete renderer.renderBufferDirect;
+      }
+      for (const owner of watched) owner.removeEventListener('dispose', ownerDisposed);
     }
     active();
     const urls = new Set(), pending = [];
+    let needsShaders = false;
     for (const binding of selected) {
       for (const url of binding.urls) if (!published(url)) urls.add(url);
       pending.push(binding.promise);
+      needsShaders ||= binding.pending;
     }
     resources.prioritize(urls);
-    await wait(Promise.all(pending));
+    active();
+    // Three's compileAsync uses uncancellable internal timers and can throw
+    // after renderer disposal. Submit the same KHR-parallel work through its
+    // native compile path, but own the cancellable readiness polling.
+    const shaders = canCompile && submissions.length && needsShaders ? preparePrograms() : null;
+    try {
+      await wait(Promise.all([Promise.all(pending), ...(shaders ? [shaders.promise] : [])]));
+    } catch (error) {
+      shaders?.cancel(error);
+      throw error;
+    }
   }
 
   function prepare(renderer, draw) {

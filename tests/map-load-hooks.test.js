@@ -22,7 +22,7 @@ for(const node of groups)for(const{object:mesh,matrices:matrices,offsets:offsets
 }finally{prepareMs=performance.now()-started;const initial=frame??previous;initial&&!disposed&&view.render(initial)}},setTriggersVisible:()=>{},render(frame){zones?.update();previous=frame;gpu.drawVisible(frame)},getStats:()=>({prepareMs}),dispose(){disposed=true;zones?.dispose();gpu.dispose()}};return view}
 `;
 
-function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = false, drawError = null, map = null} = {}) {
+function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = false, drawError = null, map = null, probeLights = false, unknownLights = false} = {}) {
   const calls = {compile: 0, upload: 0, all: 0, visible: [], disposed: 0, closed: 0, traverse: 0,
     geometry: [], indices: [], streams: [], textures: [], resets: 0};
   class Texture { isTexture = true; version = 0; dispose() {} }
@@ -61,6 +61,12 @@ function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = fal
   let input = unknown ? nativeFixture.replace('powerPreference:"high-performance"', 'powerPreference:"default"') : nativeFixture;
   if (unknownGpu) input = input.replace('new Objects(gl,geometries,attributes,info)', 'new Objects(gl,geometries,attributes,{})');
   if (unknownZones) input = input.replace('texture:texture,material:material', 'source:texture,material:material');
+  if (probeLights) {
+    input = input.replace('this.renderBufferDirect=function',
+      'let previousState=null,currentState=null;const lightStack=[],lightStates={get:()=>this.testLightState};this.renderBufferDirect=function');
+    input = input.replace('this.nativeUpdate=',
+      `this.render=function(scene,camera){currentState=lightStates.get(scene,lightStack.length),currentState.init(camera),lightStack.push(currentState);const shadows=currentState.state.shadowsArray;currentState.setupLights();const light=camera.light;if(light.isLight)currentState.${unknownLights ? 'collectLight' : 'pushLight'}(light),light.castShadow&&currentState.pushShadow(light);this.onProbe?.();lightStack.pop();currentState=null};this.nativeUpdate=`);
+  }
   const factory = new Function('Driver', 'Texture', 'Group', 'Attributes', 'Bindings', 'Geometries',
     nativeMapLoadHooks(input) + ';return factory')(Renderer, Texture, Group, Attributes, Bindings, Geometries);
   const view = factory({}, data, map);
@@ -139,6 +145,27 @@ test('native GPU upload uses owned geometry and index resources without drawing 
   expect(object.visible).toBe(false);
   expect(object.frustumCulled).toBe(true);
   expect([...object.instanceMatrix.array]).toEqual([1, 2, 3, 4]);
+  view.dispose();
+});
+
+test('native probe exposes the active render-state light array without copying it', () => {
+  const {view, renderer} = nativeRenderer({probeLights: true});
+  const lights = [{name: 'sun'}], seen = [];
+  renderer.testLightState = {state: {lightsArray: lights, shadowsArray: []},
+    init() {}, setupLights() {}, pushLight() {}, pushShadow() {}};
+  expect(renderer.__qolProbeLights()).toBeUndefined();
+  renderer.onProbe = () => seen.push(renderer.__qolProbeLights());
+  renderer.render({}, {light: {isLight: true, castShadow: true}});
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toBe(lights);
+  expect(renderer.__qolProbeLights()).toBeUndefined();
+  view.dispose();
+});
+
+test('unknown native light-state collection leaves the optional accessor absent', () => {
+  const {view, renderer} = nativeRenderer({probeLights: true, unknownLights: true});
+  expect(renderer.__qolProbeLights).toBeUndefined();
+  expect(typeof renderer.__qolPrepareGeometry).toBe('function');
   view.dispose();
 });
 

@@ -1,5 +1,5 @@
 import {expect, test} from 'bun:test';
-import {createSkyResampler} from '../extension/sky-resample.js';
+import {createSkyPreparation, createSkyResampler, runSkyResampleWorker} from '../extension/sky-resample.js';
 import {nativeMapLoadHooks} from '../extension/map-load-hooks.js';
 
 const identity = [1, 0, 0, 0, 1, 0];
@@ -242,3 +242,195 @@ test('mixed sky transforms reuse unchanged faces and resample only changed faces
   expect(output[1].data).toEqual(nativeResample(images[1].data, 2, 2, 2, rotation));
   expect(canvases).toBe(2);
 });
+
+function workerEnvironment({csp = false, cloneFailure = false, canvasFailure = false} = {}) {
+  const blobs = new Map(), revoked = [], workers = [], clones = [];
+  let nextUrl = 0;
+  class ImageBitmap {
+    constructor(width, height, data) {
+      this.width = width;
+      this.height = height;
+      this.data = data;
+      this.closed = 0;
+    }
+    close() { this.closed++; }
+  }
+  class Canvas {
+    constructor(width = 0, height = 0) { this.width = width; this.height = height; }
+    getContext() {
+      if (canvasFailure) throw new Error('Offscreen canvas unavailable');
+      let image;
+      return {
+        drawImage(value) { image = value; },
+        getImageData() { return {data: image.data.slice()}; },
+        createImageData: (width, height) => ({data: new Uint8ClampedArray(width * height * 4)}),
+        putImageData: value => { this.data = value.data.slice(); },
+      };
+    }
+  }
+  class Worker {
+    constructor(url) {
+      if (csp) throw new Error('Blocked by CSP');
+      this.terminated = 0;
+      const owner = this;
+      this.self = {postMessage(data) { queueMicrotask(() => {
+        if (!owner.terminated) owner.onmessage?.({data});
+      }); }};
+      Function('self', 'OffscreenCanvas', blobs.get(url))(this.self, Canvas);
+      workers.push(this);
+    }
+    postMessage(data, ...transfers) {
+      if (cloneFailure) throw new DOMException('Not serializable', 'DataCloneError');
+      this.transfers = transfers;
+      this.images = data.images.map(image => {
+        if (!image) return null;
+        const copy = new ImageBitmap(image.width, image.height, image.data.slice());
+        clones.push(copy);
+        return copy;
+      });
+      this.pending = {...data, images: this.images};
+    }
+    flush() {
+      if (!this.terminated) this.self.onmessage({data: this.pending});
+    }
+    terminate() {
+      this.terminated++;
+      for (const image of this.images ?? []) if (image && !image.closed) image.close();
+    }
+    fail() {
+      this.onerror({preventDefault() {}});
+    }
+  }
+  return {
+    ImageBitmap, Worker, OffscreenCanvas: Canvas,
+    Blob: class { constructor(parts) { this.text = parts.join(''); } },
+    ImageData: class { constructor(data, width, height) { Object.assign(this, {data, width, height}); } },
+    URL: {
+      createObjectURL(blob) { const url = `blob:test-${++nextUrl}`; blobs.set(url, blob.text); return url; },
+      revokeObjectURL(url) { blobs.delete(url); revoked.push(url); },
+    },
+    document: {createElement: () => new Canvas()},
+    workers, clones, revoked,
+  };
+}
+
+function skyFaces(environment) {
+  return [[3, 3], [3, 3], [1, 1], [3, 2], [2, 3], [3, 3]].map(([width, height]) =>
+    new environment.ImageBitmap(width, height, patternedInput(width, height)));
+}
+
+const preparations = [
+  ['module', createSkyPreparation],
+  ['standalone injected factory', Function(`return (${createSkyPreparation.toString()})`)()],
+];
+
+for (const [name, factory] of preparations) {
+  test(`${name}: worker pixels match native conversion and preserve unchanged face upload types`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), originals = faces.map(face => face.data.slice());
+    const rotation = [0, 1, 0, -1, 0, 1], affine = [.8, .2, -.1, -.3, 1.1, .1];
+    const transforms = [identity, rotation, affine, identity, rotation, affine];
+    const controller = new AbortController();
+    const prepared = factory(faces, transforms, controller.signal, value => value ?? identity,
+      createSkyResampler, runSkyResampleWorker, environment);
+    const worker = environment.workers[0];
+    expect(worker.transfers).toEqual([]);
+    expect(worker.images[0]).toBeNull();
+    expect(environment.revoked).toEqual(['blob:test-1']);
+    let finished = false;
+    const result = prepared.finish(() => { throw new Error('Unexpected native fallback'); })
+      .then(value => { finished = true; return value; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    worker.flush();
+    const output = await result;
+    expect(output[0]).toBe(faces[0]);
+    for (let index = 1; index < faces.length; index++) {
+      expect(output[index]).not.toBe(faces[index]);
+      expect(output[index].data).toEqual(nativeResample(originals[index], faces[index].width,
+        faces[index].height, 3, transforms[index]));
+    }
+    expect(worker.terminated).toBe(1);
+    expect(environment.clones.map(image => image.closed)).toEqual([1, 1, 1, 1, 1]);
+    expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(faces.map(face => face.data)).toEqual(originals);
+    expect(await prepared.finish(() => { throw new Error('Repeated fallback'); })).toBe(output);
+  });
+
+  test(`${name}: an identity sky bypasses workers and returns the original bitmaps`, async () => {
+    const environment = workerEnvironment();
+    const faces = Array.from({length: 6}, () => new environment.ImageBitmap(3, 3, patternedInput(3, 3)));
+    const prepared = factory(faces, [], new AbortController().signal, value => value ?? identity,
+      createSkyResampler, runSkyResampleWorker, environment);
+    expect(await prepared.finish(() => { throw new Error('Unexpected native fallback'); })).toBe(faces);
+    expect(environment.workers).toEqual([]);
+    expect(environment.revoked).toEqual([]);
+  });
+
+  for (const failure of ['unsupported worker', 'unsupported canvas', 'native image', 'CSP', 'clone', 'worker', 'worker canvas', 'malformed result', 'sparse result']) {
+    test(`${name}: ${failure} uses one deferred native conversion`, async () => {
+      const environment = workerEnvironment({csp: failure === 'CSP', cloneFailure: failure === 'clone',
+        canvasFailure: failure === 'worker canvas'});
+      const faces = skyFaces(environment);
+      if (failure === 'unsupported worker') environment.Worker = undefined;
+      if (failure === 'unsupported canvas') environment.OffscreenCanvas = undefined;
+      if (failure === 'native image') faces[1] = {width: 3, height: 3, data: patternedInput(3, 3)};
+      const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
+        value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+      if (failure === 'worker') environment.workers[0].fail();
+      if (failure === 'worker canvas') environment.workers[0].flush();
+      if (failure === 'malformed result') environment.workers[0].onmessage({data: {buffers: [new ArrayBuffer(1)]}});
+      if (failure === 'sparse result') environment.workers[0].onmessage({data: {buffers: new Array(6)}});
+      let calls = 0;
+      const expected = [{native: true}];
+      const convert = () => { calls++; return expected; };
+      expect(calls).toBe(0);
+      expect(await prepared.finish(convert)).toBe(expected);
+      expect(await prepared.finish(convert)).toBe(expected);
+      expect(calls).toBe(1);
+      expect(faces.filter(face => face instanceof environment.ImageBitmap).map(face => face.closed))
+        .toEqual(Array(faces.filter(face => face instanceof environment.ImageBitmap).length).fill(0));
+      if (environment.workers.length) expect(environment.workers[0].terminated).toBe(1);
+      expect(environment.clones.every(image => image.closed === 1)).toBe(true);
+    });
+  }
+
+  test(`${name}: cancellation terminates pending work without closing renderer-owned faces`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    const worker = environment.workers[0], reason = new Error('map switched');
+    const finished = prepared.finish(() => { throw new Error('Fallback after abort'); });
+    controller.abort(reason);
+    await expect(prepared.ready).rejects.toBe(reason);
+    await expect(finished).rejects.toBe(reason);
+    prepared.cancel();
+    worker.onmessage({data: {buffers: []}});
+    expect(worker.terminated).toBe(1);
+    expect(environment.clones.every(image => image.closed === 1)).toBe(true);
+    expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  test(`${name}: an already-aborted load never starts a worker`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
+    const reason = new Error('already cancelled');
+    controller.abort(reason);
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await expect(prepared.ready).rejects.toBe(reason);
+    await expect(prepared.finish(() => { throw new Error('Fallback after abort'); })).rejects.toBe(reason);
+    expect(environment.workers).toEqual([]);
+    expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  test(`${name}: cancellation after worker completion prevents late publication`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    environment.workers[0].flush();
+    await prepared.ready;
+    const reason = new Error('map disposed');
+    prepared.cancel(reason);
+    await expect(prepared.finish(() => { throw new Error('Fallback after disposal'); })).rejects.toBe(reason);
+    expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+}

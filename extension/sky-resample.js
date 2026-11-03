@@ -81,3 +81,168 @@ export function createSkyResampler() {
     return output;
   };
 }
+
+// The worker receives structured clones, never transfers of the renderer's
+// ImageBitmaps. It returns raw pixels so changed faces still upload as canvases,
+// while unchanged faces retain native ImageBitmap upload/orientation behavior.
+export function runSkyResampleWorker(createResampler) {
+  const resample = createResampler();
+  self.onmessage = ({data: {images, matrices, size}}) => {
+    try {
+      const buffers = images.map((image, index) => {
+        if (!image) return null;
+        const canvas = new OffscreenCanvas(image.width, image.height);
+        const context = canvas.getContext('2d', {willReadFrequently: true});
+        context.drawImage(image, 0, 0);
+        const input = context.getImageData(0, 0, image.width, image.height).data;
+        const output = new Uint8ClampedArray(size * size * 4);
+        resample(input, image.width, image.height, size, matrices[index], output);
+        return output.buffer;
+      });
+      self.postMessage({buffers}, buffers.filter(Boolean));
+    } catch {
+      self.postMessage({failed: true});
+    } finally {
+      for (const image of images) image?.close();
+    }
+  };
+}
+
+// Self-contained for injection. A missing capability, CSP rejection, clone
+// failure, or worker error defers exactly one native conversion until finish().
+// In particular, the original images are never detached from their owner.
+export function createSkyPreparation(images, transforms, signal, parse, createResampler, workerMain, environment = globalThis) {
+  let worker = null, buffers = null, unchanged = null, finishPromise = null;
+  let settled = false, cancelled = false, cancellationReason, resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  ready.catch(() => {});
+
+  function stopWorker() {
+    if (!worker) return;
+    worker.terminate();
+    worker = null;
+  }
+
+  function settle() {
+    if (settled) return;
+    settled = true;
+    stopWorker();
+    resolveReady();
+  }
+
+  function fallback(event) {
+    event?.preventDefault?.();
+    buffers = null;
+    settle();
+  }
+
+  function cancel(reason = signal.reason) {
+    if (cancelled) return;
+    cancelled = true;
+    cancellationReason = reason ?? new DOMException('Sky preparation aborted', 'AbortError');
+    buffers = null;
+    unchanged = null;
+    images = null;
+    signal.removeEventListener('abort', abort);
+    stopWorker();
+    if (!settled) {
+      settled = true;
+      rejectReady(cancellationReason);
+    }
+  }
+
+  function abort() {
+    cancel(signal.reason);
+  }
+
+  function finish(nativeConversion) {
+    if (finishPromise) return finishPromise;
+    finishPromise = ready.then(() => {
+      if (cancelled) throw cancellationReason;
+      let faces;
+      if (unchanged) {
+        faces = images;
+      } else if (buffers) {
+        try {
+          faces = images.map((image, index) => {
+            if (!buffers[index]) return image;
+            const canvas = environment.document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const context = canvas.getContext('2d');
+            const pixels = new Uint8ClampedArray(buffers[index]);
+            let data;
+            if (typeof environment.ImageData === 'function') data = new environment.ImageData(pixels, size, size);
+            else {
+              data = context.createImageData(size, size);
+              data.data.set(pixels);
+            }
+            context.putImageData(data, 0, 0);
+            return canvas;
+          });
+        } catch {
+          faces = nativeConversion();
+        }
+      } else {
+        faces = nativeConversion();
+      }
+      buffers = null;
+      unchanged = null;
+      images = null;
+      return faces;
+    });
+    finishPromise.catch(() => {});
+    return finishPromise;
+  }
+
+  let size;
+  if (signal.aborted) cancel(signal.reason);
+  else {
+    signal.addEventListener('abort', abort, {once: true});
+    try {
+      size = Math.max(...images.map(image => Math.max(image.width, image.height)));
+      const identity = [1, 0, 0, 0, 1, 0];
+      if (transforms === undefined) transforms = [];
+      const matrices = images.map((image, index) => parse(transforms[index]));
+      const reused = images.map((image, index) => image.width === size && image.height === size &&
+        matrices[index].every((value, axis) => Math.abs(value - identity[axis]) < 1e-12));
+      if (reused.every(Boolean)) {
+        unchanged = true;
+        settle();
+      } else if (typeof environment.Worker !== 'function' || typeof environment.OffscreenCanvas !== 'function' ||
+          typeof environment.ImageBitmap !== 'function' || typeof environment.Blob !== 'function' ||
+          typeof environment.URL?.createObjectURL !== 'function' ||
+          images.some((image, index) => !reused[index] && !(image instanceof environment.ImageBitmap))) {
+        fallback();
+      } else {
+        const script = `(${workerMain.toString()})(${createResampler.toString()})`;
+        const url = environment.URL.createObjectURL(new environment.Blob([script], {type: 'text/javascript'}));
+        try {
+          worker = new environment.Worker(url);
+        } finally {
+          environment.URL.revokeObjectURL(url);
+        }
+        worker.onmessage = ({data}) => {
+          if (settled || cancelled) return;
+          const result = data?.buffers;
+          if (!Array.isArray(result) || result.length !== images.length ||
+              reused.some((identity, index) => identity ? result[index] !== null :
+                !(result[index] instanceof ArrayBuffer) || result[index].byteLength !== size * size * 4)) {
+            fallback();
+            return;
+          }
+          buffers = result;
+          settle();
+        };
+        worker.onerror = fallback;
+        worker.onmessageerror = fallback;
+        // ImageBitmap is serializable. Omitting a transfer list makes worker
+        // copies without changing the images used by other native textures.
+        worker.postMessage({images: images.map((image, index) => reused[index] ? null : image), matrices, size});
+      }
+    } catch {
+      fallback();
+    }
+  }
+
+  return {ready, finish, cancel};
+}

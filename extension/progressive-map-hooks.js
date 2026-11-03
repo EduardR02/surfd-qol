@@ -1,10 +1,11 @@
 import {loadProgressiveAssets} from './progressive-assets.js';
-import {createProgressiveTextureBindings} from './progressive-textures.js';
+import {createProgressiveTextureBindings, nativeBspShaderSignature} from './progressive-textures.js';
 
 // Match the loader, factories, preparation and failure path together. Never
 // expose partial resources to a renderer whose delayed bindings are unknown.
 export function nativeProgressiveMapHooks(source) {
-  if (source.includes('__qolMapBindings') || !source.includes('__qolProgressiveMap')) return source;
+  if (source.includes('__qolMapBindings') || !source.includes('__qolProgressiveMap') ||
+      !source.includes('const __qolPrepareSky=')) return source;
   const id = '[\\w$]+';
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const one = matches => matches.length === 1 ? matches[0] : null;
@@ -25,13 +26,16 @@ export function nativeProgressiveMapHooks(source) {
   const branch = one([...scope.matchAll(/if\((?<url>[\w$]+)\)\{const (?<buffer>[\w$]+)=(?<owner>[\w$]+)\.resources\.compressed\?\.get\(\k<url>\),(?<descriptor>[\w$]+)=\k<owner>\.compressedTextures\?\.\[\k<url>\];if\(\k<buffer>&&\k<descriptor>\)(?<texture>[\w$]+)=(?<dds>[\w$]+)\(\k<buffer>,\k<descriptor>\);else\{const (?<image>[\w$]+)=\k<owner>\.resources\.images\.get\(\k<url>\);if\(!\k<image>\)throw new Error\(`Missing loaded image \$\{\k<url>\}`\);\k<texture>=new (?<imageType>[\w$]+)\(\k<image>\)\}\}else \k<texture>=new (?<dataType>[\w$]+)\(new Uint8Array\(\[255,255,255,255\]\),1,1\)/g)]);
   const textureFactory = one([...scope.matchAll(/(?<name>[\w$]+)=\((?<url>[\w$]+),(?<srgb>[\w$]+)=!0,(?<nearest>[\w$]+)=!1\)=>\{/g)]);
   const cube = one([...scope.matchAll(/(?<name>[\w$]+)=(?<urls>[\w$]+)=>\{const (?<key>[\w$]+)=\k<urls>\.join\("\|"\);let (?<texture>[\w$]+)=(?<cache>[\w$]+)\.get\(\k<key>\);return \k<texture>\|\|\(\k<texture>=new (?<type>[\w$]+)\(\[0,1,4,5,3,2\]\.map\((?<face>[\w$]+)=>(?<owner>[\w$]+)\.resources\.images\.get\(\k<urls>\[\k<face>\]\)\)\),\k<texture>\.colorSpace=(?<color>[\w$]+),\k<texture>\.needsUpdate=!0,\k<cache>\.set\(\k<key>,\k<texture>\),\k<texture>\)\}/g)]);
+  const sky = one([...scope.matchAll(/(?<owner>[\w$]+)\.sky\.length===6&&\k<owner>\.sky\.every\(Boolean\)&&\((?<scene>[\w$]+)\.background=new (?<type>[\w$]+)\((?<call>(?<resample>[\w$]+)\(\k<owner>\.sky\.map\((?<face>[\w$]+)=>\k<owner>\.resources\.images\.get\(\k<face>\)\),\k<owner>\.skyTransforms\))\)\),\k<scene>\.background instanceof \k<type>&&\(\k<scene>\.background\.colorSpace=(?<color>[\w$]+),\k<scene>\.background\.needsUpdate=!0\)/g)]);
   const draw = one([...scope.matchAll(/const __qolProgressiveMap=(?<frame>[\w$]+)\?\?(?<previous>[\w$]+);if\(__qolProgressiveMap&&(?<alive>[\w$]+)\(\)\)(?<view>[\w$]+)\.render\(__qolProgressiveMap\)/g)]);
   const preparation = 'const __qolProgressiveMap=';
-  if (!branch || !textureFactory || !cube || !draw || branch.groups.owner !== f.data ||
+  const rampPreparation = 'globalThis.__SURFD_QOL__?.prepareMap?.();';
+  if (!branch || !textureFactory || !cube || !sky || !draw || branch.groups.owner !== f.data ||
       branch.groups.dds !== d.name || textureFactory.groups.url !== branch.groups.url ||
-      cube.groups.owner !== f.data || draw.groups.view !== footer.groups.view ||
-      scope.split(preparation).length !== 2) return source;
-  const b = branch.groups, t = textureFactory.groups, c = cube.groups, v = draw.groups;
+      cube.groups.owner !== f.data || sky.groups.owner !== f.data || draw.groups.view !== footer.groups.view ||
+      !source.includes(`function ${sky.groups.resample}(images,transforms=[])`) ||
+      scope.split(preparation).length !== 2 || scope.split(rampPreparation).length !== 2) return source;
+  const b = branch.groups, t = textureFactory.groups, c = cube.groups, s = sky.groups, v = draw.groups;
   const filter = scope.match(new RegExp(`${escape(b.texture)}\\.magFilter=${escape(t.nearest)}\\?(${id}):(${id}),${escape(b.texture)}\\.minFilter=${escape(t.nearest)}\\?\\1:(${id})&&${escape(b.texture)}\\.mipmaps\\.length===1\\?\\2:(${id})`));
   if (!filter) return source;
   const load = one([...source.matchAll(/async function (?<name>[\w$]+)\((?<entry>[\w$]+),(?<resume>[\w$]+)=!1,(?<bypass>[\w$]+)=!1\)\{(?<before>[\s\S]{0,1000}?)try\{const\[(?<collision>[\w$]+),(?<visual>[\w$]+)\]=await Promise\.all\(\[(?<geometry>[\w$]+)\(\k<entry>,(?<controller>[\w$]+)\.signal\),(?<visualLoad>[\w$]+)\(\k<entry>\.slug,\{signal:\k<controller>\.signal\}\)\]\);(?<ready>[\w$]+)=!1;const (?<frame>[\w$]+)=(?<install>[\w$]+)\(\k<collision>,\k<visual>,\k<resume>,\k<bypass>\);await (?<view>[\w$]+)\.prepare\?\.\(\k<frame>\),\k<ready>=!0,(?<success>[\s\S]{0,300}?)\}catch\((?<error>[\w$]+)\)\{(?<failure>[\s\S]{0,1400}?)\}finally\{(?<finalize>[\s\S]{0,200}?)\}(?<after>if[\s\S]{0,200}?)\}(?=async function)/g)]);
@@ -43,7 +47,7 @@ export function nativeProgressiveMapHooks(source) {
   if (!finalize || !unlock || finalize.groups.ready !== k.ready ||
       !k.failure.startsWith(abortPrefix) || k.failure.split(';return}').length !== 2) return source;
 
-  const factoryHelpers = `const __qolMapBindings=(${createProgressiveTextureBindings.toString()})(${f.data}.resources);
+  const factoryHelpers = `let __qolSkyApplied=false;const __qolMapBindings=(${createProgressiveTextureBindings.toString()})(${f.data}.resources,(${nativeBspShaderSignature.toString()})());
     let __qolWhiteImage;const __qolDxtImages=new Map;
     function __qolWhite(){if(!__qolWhiteImage){const canvas=document.createElement("canvas");canvas.width=canvas.height=1;const context=canvas.getContext("2d");context.fillStyle="#fff";context.fillRect(0,0,1,1);__qolWhiteImage=canvas}return __qolWhiteImage}
     function __qolDxt(format){const size=format==="DXT1"||format==="DXT1A"?8:16;let levels=__qolDxtImages.get(size);if(!levels){const bytes=new Uint8Array(size);bytes.fill(255);bytes.fill(0,size-4);levels=[4,2,1].map(width=>({data:bytes,width,height:width}));__qolDxtImages.set(size,levels)}return levels}
@@ -65,9 +69,20 @@ export function nativeProgressiveMapHooks(source) {
     const faces=[0,1,4,5,3,2];texture=new ${c.type}(faces.map(index=>${f.data}.resources.images.get(urls[index])??__qolWhite()));
     texture.colorSpace=${c.color};texture.needsUpdate=true;${c.cache}.set(key,texture);
     if(urls.some(url=>!${f.data}.resources.images.has(url)))__qolMapBindings.bind(texture,urls,()=>{texture.dispose();texture.image=faces.map(index=>${f.data}.resources.images.get(urls[index]));texture.needsUpdate=true});return texture}`;
-  let renderer = scope.replace(branch[0], () => textureBranch).replace(cube[0], () => cubeFactory);
+  const skyConstruction = sky[0].replace(s.call,
+    `${f.data}.resources.skyPreparation?${f.data}.sky.map(url=>${f.data}.resources.images.get(url)):${s.call}`);
+  let renderer = scope.replace(branch[0], () => textureBranch).replace(cube[0], () => cubeFactory)
+    .replace(sky[0], () => skyConstruction);
+  renderer = renderer.replace(draw[0], () => `const __qolProgressiveMap=${v.frame}??${v.previous};
+    if(!__qolSkyApplied&&${f.data}.resources.skyPreparation&&${v.alive}()){
+      const faces=await ${f.data}.resources.skyPreparation.finish(()=>${s.call});
+      if(${v.alive}()){${s.scene}.background.image=faces;${s.scene}.background.needsUpdate=true;__qolSkyApplied=true}
+    }
+    if(__qolProgressiveMap&&${v.alive}())${v.view}.render(__qolProgressiveMap)`);
   renderer = renderer.replace(factory[0], () => factory[0] + factoryHelpers);
-  renderer = renderer.replace(preparation, () => `await __qolMapBindings.prepare(${f.renderer},()=>{const frame=${v.frame}??${v.previous};if(frame&&${v.alive}())${v.view}.render(frame)});\n${preparation}`);
+  renderer = renderer.replace(rampPreparation, () => `const __qolFirstViewReady=__qolMapBindings.prepare(${f.renderer},()=>{const __qolProbeFrame=${v.frame}??${v.previous};if(__qolProbeFrame&&${v.alive}())${v.view}.render(__qolProbeFrame)});
+    ${rampPreparation}`);
+  renderer = renderer.replace(preparation, () => `await __qolFirstViewReady;\n${preparation}`);
   renderer = renderer.replace(footer[0], () => `${footerText.slice(0, footerText.lastIndexOf('return '))}
     const __qolAssetsReady=__qolMapBindings.complete();${footer.groups.view}.__qolAssetsReady=__qolAssetsReady;
     let __qolRendererDisposed=false;const __qolDispose=${footer.groups.view}.dispose;
@@ -78,9 +93,9 @@ export function nativeProgressiveMapHooks(source) {
     const ${l.using}=${l.options}.compressedTextures!==false&&Object.keys(${l.data}.compressedTextures??{}).length>0&&${l.supported}(),${l.packs}=${l.select}(${l.manifest},${l.using});
     ${l.data}.resources=await (${loadProgressiveAssets.toString()})(${l.data},${l.packs},${l.using},${l.signal},{
       readPack:async pack=>${packRead[1]}(await ${l.fetch}(pack.url,${l.signal}),pack.byteLength),
-      decodeImage:(bytes,url)=>${imageDecode[2]}(bytes,url,${l.signal}),validateDDS:${d.validate},abort:error=>${l.controller}.abort(error)});return ${l.data}}`;
+      decodeImage:(bytes,url)=>${imageDecode[2]}(bytes,url,${l.signal}),validateDDS:${d.validate},prepareSky:__qolPrepareSky,abort:error=>${l.controller}.abort(error)});return ${l.data}}`;
   const r = relay.groups;
-  const relayText = `async function ${r.name}(${r.slug},${r.options}={}){const ${r.controller}=new AbortController,${r.listener}=()=>${r.controller}.abort(${r.options}.signal?.reason);${r.options}.signal?.addEventListener("abort",${r.listener},{once:true});if(${r.options}.signal?.aborted)${r.listener}();const remove=()=>${r.options}.signal?.removeEventListener("abort",${r.listener});try{const data=await ${r.load}(${r.slug},${r.options},${r.controller});data.resources.ready.finally(remove).catch(()=>{});return data}catch(error){remove();throw error}}`;
+  const relayText = `async function ${r.name}(${r.slug},${r.options}={}){const ${r.controller}=new AbortController,${r.listener}=()=>${r.controller}.abort(${r.options}.signal?.reason);${r.options}.signal?.addEventListener("abort",${r.listener},{once:true});if(${r.options}.signal?.aborted)${r.listener}();const remove=()=>${r.options}.signal?.removeEventListener("abort",${r.listener});try{const data=await ${r.load}(${r.slug},${r.options},${r.controller});const resources=data.resources,cancel=resources.cancel;resources.signal.addEventListener("abort",remove,{once:true});resources.cancel=()=>{remove();resources.signal.removeEventListener("abort",remove);cancel()};return data}catch(error){remove();throw error}}`;
   const errorBody = k.failure.slice(abortPrefix.length).replace(';return}', ';return true}');
   const j = finalize.groups;
   const loadText = `async function ${k.name}(${k.entry},${k.resume}=false,${k.bypass}=false){${k.before}

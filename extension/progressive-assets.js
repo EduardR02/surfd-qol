@@ -5,6 +5,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
   const assets = new Map(), alternatives = new Map();
   // Native rendering falls back to fog unless all six sky faces are present.
   const sky = new Set(data.sky?.length === 6 && data.sky.every(Boolean) ? data.sky : []);
+  let skyRemaining = sky.size;
   const unread = [], decodeQueue = [];
   // Collision JSON shares bandwidth with visual packs. More pack producers can
   // delay collision readiness even when visual transfers finish sooner.
@@ -55,7 +56,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
 
   const resources = {
     meshes, images, compressed, pendingImages, pendingCompressed,
-    ready: completion.promise, prioritize, cancel, signal,
+    ready: completion.promise, prioritize, cancel, signal, skyPreparation: null,
   };
 
   function sortWork() {
@@ -80,6 +81,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     if (stopped) return;
     stopped = true;
     const failure = signal.aborted ? signal.reason ?? error : error;
+    resources.skyPreparation?.cancel(failure);
     signal.removeEventListener('abort', onAbort);
     unread.length = decodeQueue.length = 0;
     for (const asset of assets.values()) {
@@ -132,6 +134,11 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     if (asset.kind === 'mesh') meshes.set(asset.url, value);
     else if (asset.kind === 'compressed-texture') compressed.set(asset.alternative.key, value);
     else images.set(asset.url, value);
+    if (sky.has(asset.url) && --skyRemaining === 0 && hooks.prepareSky) {
+      // Begin as soon as the last face is decoded, not when meshes or the
+      // renderer finish. Preparation never takes ownership of these images.
+      resources.skyPreparation = hooks.prepareSky(data.sky.map(url => images.get(url)), data.skyTransforms, signal);
+    }
     asset.settled = true;
     asset.bytes = null;
     asset.packs.length = 0;

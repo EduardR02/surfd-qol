@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createMapGpuPreparation, createProgressiveTextureBindings, loadNativeAtlas} from '../extension/progressive-textures.js';
+import {createMapGpuPreparation, createProgressiveTextureBindings, loadNativeAtlas, nativeBspShaderSignature} from '../extension/progressive-textures.js';
 
 function deferred() {
   let resolve, reject;
@@ -60,6 +60,18 @@ test('a native traversal failure restores renderer submission before rejecting',
   run.bindings.dispose();
 });
 
+test('probe cleanup preserves a renderer method replaced by native callbacks', async () => {
+  const run = fixture(), replacement = () => 'replacement';
+  const initial = run.bindings.prepare(run.renderer, () => {
+    run.draw();
+    run.renderer.renderBufferDirect = replacement;
+  });
+  assert.equal(run.renderer.renderBufferDirect, replacement);
+  run.publish('visible');
+  await initial;
+  run.bindings.dispose();
+});
+
 test('disposing a waiting view rejects preparation and prevents late texture mutation', async () => {
   const run = fixture(), initial = run.bindings.prepare(run.renderer, run.draw);
   run.bindings.dispose();
@@ -95,6 +107,380 @@ test('an unsupported renderer keeps complete-resource readiness before returning
   run.finished.resolve();
   await initial;
   assert.equal(run.textures.offscreen.image, run.resources.images.get('offscreen'));
+});
+
+function bspMaterial(uniforms, defines = {}) {
+  return {
+    ...nativeBspShaderSignature(), isMaterial: true, isShaderMaterial: true,
+    defines, uniforms,
+    onBeforeCompile() {},
+    customProgramCacheKey() { return this.onBeforeCompile.toString(); }
+  };
+}
+
+test('disabled native BSP samplers do not gate or prioritize the initial view', async () => {
+  const run = fixture();
+  let prioritized;
+  run.resources.prioritize = urls => { prioritized = new Set(urls); };
+  const uniforms = {baseMap: {value: run.textures.visible}};
+  for (const key of ['secondMap', 'normalMap', 'detailMap', 'lightMap', 'propLight', 'environment', 'envMask']) {
+    uniforms[key] = {value: run.textures.offscreen};
+  }
+  // Neither NORMAL_MAP nor ENV_MASK can sample when ENVIRONMENT is disabled.
+  const material = bspMaterial(uniforms, {NORMAL_MAP: 1, ENV_MASK: 1, DETAIL_MAP: false});
+  const initial = run.bindings.prepare(run.renderer, () => run.renderer.renderBufferDirect(null, null, null, material));
+  assert.deepEqual(prioritized, new Set(['visible']));
+  run.publish('visible');
+  await initial;
+  assert.equal(run.textures.offscreen.image, null);
+  run.bindings.dispose();
+});
+
+for (const [uniform, defines] of [
+  ['baseMap', {}], ['secondMap', {SECOND_MAP: 0}], ['detailMap', {DETAIL_MAP: 1}],
+  ['lightMap', {WORLD_LIGHT: 1}], ['propLight', {PROP_LIGHT: 1}],
+  ['environment', {ENVIRONMENT: 1}], ['normalMap', {ENVIRONMENT: 1}],
+  ['normalMap', {ENVIRONMENT: 1, NORMAL_MAP: 1}], ['normalMap', {ENVIRONMENT: 1, NORMAL_ALPHA_MASK: 1}],
+  ['envMask', {ENVIRONMENT: 1, ENV_MASK: 1}]
+]) {
+  test(`an active native ${uniform} sampler gates the first view`, async () => {
+    const run = fixture();
+    let prioritized, settled = false;
+    run.resources.prioritize = urls => { prioritized = new Set(urls); };
+    const material = bspMaterial({[uniform]: {value: run.textures.offscreen}}, defines);
+    const initial = run.bindings.prepare(run.renderer, () => run.renderer.renderBufferDirect(null, null, null, material))
+      .then(() => { settled = true; });
+    assert.deepEqual(prioritized, new Set(['offscreen']));
+    run.publish('visible');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(settled, false);
+    const image = run.publish('offscreen');
+    await initial;
+    assert.equal(run.textures.offscreen.image, image);
+    run.bindings.dispose();
+  });
+}
+
+test('successive submissions reread changed defines and the current shader signature', async () => {
+  for (const change of [
+    material => { material.defines.SECOND_MAP = 1; },
+    material => { material.fragmentShader += '\n// a different shader'; }
+  ]) {
+    const run = fixture();
+    let prioritized;
+    run.resources.prioritize = urls => { prioritized = new Set(urls); };
+    const material = bspMaterial({baseMap: {value: run.textures.visible}, secondMap: {value: run.textures.offscreen}});
+    const initial = run.bindings.prepare(run.renderer, () => {
+      run.renderer.renderBufferDirect(null, null, null, material);
+      change(material);
+      run.renderer.renderBufferDirect(null, null, null, material);
+    });
+    assert.deepEqual(prioritized, new Set(['visible', 'offscreen']));
+    run.publish('visible');
+    run.publish('offscreen');
+    await initial;
+    run.bindings.dispose();
+  }
+});
+
+test('unknown shaders, injected defines, and shader hooks conservatively wait for every uniform', async () => {
+  for (const change of [
+    material => { material.vertexShader += '\n// changed'; },
+    material => { material.defines.UNRECOGNIZED = 1; },
+    material => { material.onBeforeCompile = shader => { shader.fragmentShader += '\n// custom'; }; },
+    material => { material.customProgramCacheKey = () => 'unknown'; },
+  ]) {
+    const run = fixture();
+    let prioritized, settled = false;
+    run.resources.prioritize = urls => { prioritized = new Set(urls); };
+    const material = bspMaterial({secondMap: {value: run.textures.offscreen}});
+    change(material);
+    const initial = run.bindings.prepare(run.renderer, () => run.renderer.renderBufferDirect(null, null, null, material))
+      .then(() => { settled = true; });
+    assert.deepEqual(prioritized, new Set(['offscreen']));
+    await Promise.resolve();
+    assert.equal(settled, false);
+    run.publish('offscreen');
+    await initial;
+    run.bindings.dispose();
+  }
+});
+
+function eventSource(target = {}) {
+  const listeners = new Map();
+  target.addEventListener = (type, listener) => {
+    if (!listeners.has(type)) listeners.set(type, new Set());
+    listeners.get(type).add(listener);
+  };
+  target.removeEventListener = (type, listener) => listeners.get(type)?.delete(listener);
+  target.emit = type => {
+    for (const listener of [...(listeners.get(type) ?? [])]) listener({type, target});
+  };
+  return target;
+}
+
+function firstViewFixture() {
+  const run = fixture(), context = {lost: false, isContextLost() { return this.lost; }};
+  const canvas = eventSource(), properties = new WeakMap(), compiled = [], order = [];
+  const linked = {value: false}, polls = {value: 0}, reflected = [];
+  const renderer = {
+    domElement: canvas,
+    extensions: {has: name => name === 'KHR_parallel_shader_compile'},
+    properties: {get(material) {
+      if (!properties.has(material)) properties.set(material, {programs: new Map(), __version: material.version});
+      return properties.get(material);
+    }},
+    getContext() { return context; },
+    getRenderTarget() { return this.target ?? null; },
+    __qolProbeLights() { return this.lights; },
+    compileAsync() { throw new Error('Uncancellable compileAsync was called'); },
+    renderBufferDirect() { throw new Error('Probe submitted a draw'); },
+    compile(root, camera, scene) {
+      order.push('compile');
+      if (this.failure) throw this.failure;
+      const lights = [];
+      scene.traverseVisible(light => {
+        if (light.isLight && light.layers.test(camera.layers)) lights.push(light);
+      });
+      root.traverseVisible(() => { throw new Error('A hidden light was traversed'); });
+      root.traverse(object => {
+        const material = object.material, owned = this.properties.get(material);
+        const entry = {camera, fog: scene.fog, environment: scene.environment, lights,
+          material, geometry: object.geometry, instanced: !!object.isInstancedMesh, skinned: !!object.isSkinnedMesh,
+          skeleton: object.skeleton,
+          side: material.side, defines: {...material.defines}};
+        entry.program = {
+          program: {},
+          isReady() { polls.value++; return linked.value; },
+          getUniforms() { assert.equal(linked.value, true); reflected.push([entry, 'uniforms']); },
+          getAttributes() { assert.equal(linked.value, true); reflected.push([entry, 'attributes']); }
+        };
+        owned.programs.set(compiled.length, entry.program);
+        owned.currentProgram = entry.program;
+        compiled.push(entry);
+      });
+    },
+    drawFromCache(camera, scene, geometry, material, object, lights) {
+      const owned = this.properties.get(material);
+      if (owned.__version !== material.version) {
+        const entry = compiled.find(item => item.camera === camera && item.fog === scene.fog &&
+          item.geometry === geometry && item.side === material.side &&
+          item.instanced === !!object.isInstancedMesh && item.skinned === !!object.isSkinnedMesh &&
+          JSON.stringify(item.defines) === JSON.stringify(material.defines) &&
+          item.lights.length === lights.length && item.lights.every((light, index) => light === lights[index]));
+        if (!entry) throw new Error('First draw missed its selected program');
+        owned.currentProgram = entry.program;
+        owned.__version = material.version;
+      }
+      return owned.currentProgram;
+    },
+    dispose() { this.disposals = (this.disposals ?? 0) + 1; }
+  };
+  const light = name => ({name, isLight: true, isDirectionalLight: true, castShadow: false,
+    layers: {mask: 1, test(layers) { return !!(this.mask & layers.mask); }}});
+  const scene = name => ({name, isScene: true, fog: {name}, environment: {name},
+    traverseVisible() { throw new Error('The complete scene was traversed'); }});
+  const camera = name => ({name, isCamera: true, layers: {mask: 1}});
+  const geometry = () => eventSource({attributes: {uv: {}}, morphAttributes: {}});
+  const object = (geom, instanced = false) => ({isMesh: true, isInstancedMesh: instanced,
+    geometry: geom, instanceColor: null, morphTexture: null});
+  run.resources.prioritize = urls => { order.push('prioritize'); run.prioritized = new Set(urls); };
+  Object.assign(run, {renderer, canvas, context, compiled, order, linked, polls, reflected,
+    light, scene, camera, geometry, object});
+  return run;
+}
+
+function visibleShader(run) {
+  return eventSource(Object.assign(bspMaterial({baseMap: {value: run.textures.visible},
+    secondMap: {value: run.textures.offscreen}}), {side: 0, version: 7}));
+}
+
+test('pending textures overlap only selected shader variants, with native owners and current views', async () => {
+  const run = firstViewFixture(), material = visibleShader(run), defines = material.defines;
+  const sceneA = run.scene('world'), sceneB = run.scene('sky');
+  const cameraA = run.camera('world'), cameraB = run.camera('sky');
+  const lightA = run.light('sun'), lightB = run.light('sky light');
+  const geometryA = run.geometry(), geometryB = run.geometry();
+  const ordinary = run.object(geometryB), instanced = run.object(geometryB, true);
+  const skinned = Object.assign(run.object(geometryB), {isSkinnedMesh: true, skeleton: {}});
+  const original = run.renderer.renderBufferDirect;
+  let settled = false;
+  const initial = run.bindings.prepare(run.renderer, () => {
+    run.renderer.lights = [lightA];
+    run.renderer.renderBufferDirect(cameraA, sceneA, geometryA, material, ordinary);
+    run.renderer.renderBufferDirect(cameraA, sceneA, geometryA, material, ordinary);
+    material.side = 1;
+    defines.SECOND_MAP = 1;
+    run.renderer.renderBufferDirect(cameraA, sceneA, geometryB, material, instanced);
+    run.renderer.renderBufferDirect(cameraA, sceneA, geometryB, material, skinned);
+    run.renderer.lights = [lightA, lightB];
+    run.renderer.renderBufferDirect(cameraA, sceneA, geometryB, material, instanced);
+    run.renderer.lights = [lightB];
+    run.renderer.renderBufferDirect(cameraB, sceneB, geometryA, material, ordinary);
+  }).then(() => { settled = true; });
+
+  assert.deepEqual(run.order, ['prioritize', 'compile', 'compile', 'compile', 'compile', 'compile']);
+  assert.deepEqual(run.prioritized, new Set(['visible', 'offscreen']));
+  assert.equal(run.renderer.renderBufferDirect, original);
+  assert.equal(material.defines, defines);
+  assert.deepEqual(defines, {SECOND_MAP: 1});
+  assert.equal(material.side, 1);
+  assert.equal(ordinary.geometry, geometryB);
+  assert.deepEqual(run.compiled.map(entry => ({
+    camera: entry.camera.name, fog: entry.fog.name, lights: entry.lights.map(light => light.name),
+    instanced: entry.instanced, skinned: entry.skinned, side: entry.side, defines: entry.defines
+  })), [
+    {camera: 'world', fog: 'world', lights: ['sun'], instanced: false, skinned: false, side: 0, defines: {}},
+    {camera: 'world', fog: 'world', lights: ['sun'], instanced: true, skinned: false, side: 1, defines: {SECOND_MAP: 1}},
+    {camera: 'world', fog: 'world', lights: ['sun'], instanced: false, skinned: true, side: 1, defines: {SECOND_MAP: 1}},
+    {camera: 'world', fog: 'world', lights: ['sun', 'sky light'], instanced: true, skinned: false, side: 1, defines: {SECOND_MAP: 1}},
+    {camera: 'sky', fog: 'sky', lights: ['sky light'], instanced: false, skinned: false, side: 1, defines: {SECOND_MAP: 1}}
+  ]);
+  assert.equal(run.compiled[0].geometry, geometryA);
+  assert.equal(run.compiled[1].geometry, geometryB);
+  assert.equal(run.compiled[2].skeleton, skinned.skeleton);
+  assert.ok(run.compiled.every(entry => entry.material === material));
+  const owned = run.renderer.properties.get(material);
+  assert.equal(owned.programs.size, 5);
+  assert.equal(owned.__version, -1);
+  run.publish('visible');
+  run.publish('offscreen');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.deepEqual(run.reflected, []);
+  run.linked.value = true;
+  await initial;
+  assert.equal(run.reflected.length, 10);
+  assert.equal(material.defines, defines);
+  assert.equal(material.side, 1);
+  assert.equal(run.renderer.drawFromCache(cameraA, sceneA, geometryB, material, instanced, [lightA]),
+    run.compiled[1].program);
+  material.side = 0;
+  delete defines.SECOND_MAP;
+  material.version++;
+  assert.equal(run.renderer.drawFromCache(cameraA, sceneA, geometryA, material, ordinary, [lightA]),
+    run.compiled[0].program);
+  material.side = 1;
+  defines.SECOND_MAP = 1;
+  material.version++;
+  assert.equal(run.renderer.drawFromCache(cameraB, sceneB, geometryA, material, ordinary, [lightB]),
+    run.compiled[4].program);
+  assert.equal(run.compiled.length, 5);
+  run.bindings.dispose();
+});
+
+test('completed visible textures do not cause shader preparation for unrelated background work', async () => {
+  const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
+  const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+  run.renderer.lights = [run.light('sun')];
+  run.publish('visible');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await run.bindings.prepare(run.renderer,
+    () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
+  assert.deepEqual(run.compiled, []);
+  assert.deepEqual(run.prioritized, new Set());
+  assert.equal(run.textures.offscreen.image, null);
+  run.bindings.dispose();
+});
+
+test('unsupported parallel compilation waits only for the selected textures without compiling', async () => {
+  for (const disable of [
+    run => { run.renderer.extensions.has = () => false; },
+    run => { delete run.renderer.compileAsync; },
+    run => { delete run.renderer.__qolProbeLights; },
+    run => { delete run.context.isContextLost; },
+    run => { delete run.renderer.getRenderTarget; },
+    run => { run.renderer.lights = undefined; },
+    run => { run.renderer.localClippingEnabled = true; },
+    run => { run.renderer.clippingPlanes = [{}]; },
+    run => { delete run.renderer.properties; }
+  ]) {
+    const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
+    const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+    run.renderer.lights = [run.light('sun')];
+    disable(run);
+    const initial = run.bindings.prepare(run.renderer,
+      () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
+    assert.deepEqual(run.prioritized, new Set(['visible']));
+    assert.deepEqual(run.compiled, []);
+    run.publish('visible');
+    await initial;
+    assert.equal(run.textures.offscreen.image, null);
+    run.bindings.dispose();
+  }
+});
+
+test('custom hooks, stale view state and owners disposed during the probe skip speculative compilation', async () => {
+  for (const [custom, mutate] of [
+    [true, ({material}) => { material.onBeforeCompile = () => { throw new Error('Custom hook ran early'); }; }],
+    [true, ({material}) => { material.customProgramCacheKey = () => { throw new Error('Custom key ran early'); }; }],
+    [false, ({scene}) => { scene.fog = {name: 'changed'}; }],
+    [false, ({run}) => { run.renderer.target = {texture: {colorSpace: 'changed'}}; }],
+    [false, ({run}) => { run.renderer.lights[0].castShadow = true; }],
+    [false, ({geometry}) => { geometry.emit('dispose'); }],
+    [false, ({material}) => { material.emit('dispose'); }]
+  ]) {
+    const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
+    const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+    run.renderer.lights = [run.light('sun')];
+    if (custom) mutate({run, material, scene, geometry});
+    const initial = run.bindings.prepare(run.renderer, () => {
+      run.renderer.renderBufferDirect(camera, scene, geometry, material, object);
+      if (!custom) mutate({run, material, scene, geometry});
+    });
+    assert.deepEqual(run.compiled, []);
+    run.publish('visible');
+    // Custom hooks make texture selection conservative as well.
+    if (custom) run.publish('offscreen');
+    await initial;
+    run.bindings.dispose();
+  }
+});
+
+test('a failed speculative compile restores shared material state and the renderer', async () => {
+  const run = firstViewFixture(), material = visibleShader(run), defines = material.defines;
+  const scene = run.scene('world'), camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+  const failure = new Error('Compile failed'), originalDispose = run.renderer.dispose;
+  run.renderer.lights = [run.light('sun')];
+  run.renderer.failure = failure;
+  const initial = run.bindings.prepare(run.renderer, () => {
+    run.renderer.renderBufferDirect(camera, scene, geometry, material, object);
+    material.side = 1;
+    defines.SECOND_MAP = 1;
+  });
+  await assert.rejects(initial, error => error === failure);
+  assert.equal(material.side, 1);
+  assert.equal(material.defines, defines);
+  assert.deepEqual(defines, {SECOND_MAP: 1});
+  assert.equal(run.renderer.dispose, originalDispose);
+  run.bindings.dispose();
+});
+
+test('cancellation, disposal, context loss and texture failure stop first-view shader polling', async () => {
+  for (const kind of ['bindings', 'signal', 'renderer', 'context', 'material', 'geometry', 'texture']) {
+    const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
+    const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+    const failure = new Error('Decode failed'), originalDispose = run.renderer.dispose;
+    run.renderer.lights = [run.light('sun')];
+    const initial = run.bindings.prepare(run.renderer,
+      () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
+    assert.equal(run.compiled.length, 1);
+    const polls = run.polls.value;
+    if (kind === 'bindings') run.bindings.dispose();
+    if (kind === 'signal') run.resources.cancel();
+    if (kind === 'renderer') run.renderer.dispose();
+    if (kind === 'context') { run.context.lost = true; run.canvas.emit('webglcontextlost'); }
+    if (kind === 'material') material.emit('dispose');
+    if (kind === 'geometry') geometry.emit('dispose');
+    if (kind === 'texture') run.gates.get('visible').reject(failure);
+    await assert.rejects(initial, error => kind === 'texture' ? error === failure : error.name === 'AbortError');
+    assert.equal(run.renderer.dispose, originalDispose);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(run.polls.value, polls);
+    run.bindings.dispose();
+  }
 });
 
 async function withGpuQueue(run, {parallel = true, sync = true, count = 180, budget = Infinity, atlases = []} = {}) {

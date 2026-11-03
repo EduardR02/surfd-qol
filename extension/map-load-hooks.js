@@ -1,4 +1,4 @@
-import {createSkyResampler} from './sky-resample.js';
+import {createSkyPreparation, createSkyResampler, runSkyResampleWorker} from './sky-resample.js';
 import {createMapGpuPreparation, loadNativeAtlas} from './progressive-textures.js';
 
 // Keep ImageBitmap's upload/orientation behavior. WebCodecs can decode directly
@@ -92,6 +92,7 @@ function nativeSkyResampleHooks(source) {
   // Keep native transform parsing, dimensions and canvas colour handling.
   // Only the allocation-heavy per-pixel colour conversion changes.
   const replacement = `const __qolSkyResample=(${createSkyResampler.toString()})();
+    const __qolPrepareSky=(images,transforms,signal)=>(${createSkyPreparation.toString()})(images,transforms,signal,${parse},${createSkyResampler.toString()},${runSkyResampleWorker.toString()});
     function ${name}(images,transforms=[]){
       const size=Math.max(...images.map(image=>Math.max(image.width,image.height)));
       const identity=[1,0,0,0,1,0],matrices=images.map((image,index)=>${parse}(transforms[index]));
@@ -132,7 +133,25 @@ function nativeGpuUploadHook(source) {
   // uploader, and that binding-state setup owns the same geometry attributes.
   if (!new RegExp(`const [\\w$]+=${escape(g.objects)}\\.update\\([\\w$]+\\),[\\w$]+=[\\w$]+\\.material`).test(source) ||
       !new RegExp(`${escape(g.bindings)}\\.setup\\([\\w$,]+\\)`).test(source)) return null;
-  const text = `this.__qolPrepareGeometry=object=>{${g.bindings}.reset();try{const geometry=${g.objects}.__qolPrepare(object);if(geometry.index!==null)${g.attributes}.update(geometry.index,${g.gl}.ELEMENT_ARRAY_BUFFER)}finally{${g.bindings}.reset()}};`;
+  let text = `this.__qolPrepareGeometry=object=>{${g.bindings}.reset();try{const geometry=${g.objects}.__qolPrepare(object);if(geometry.index!==null)${g.attributes}.update(geometry.index,${g.gl}.ELEMENT_ARRAY_BUFFER)}finally{${g.bindings}.reset()}};`;
+  // The current native render state is valid during intercepted submissions.
+  // Expose it only when its declaration, collection and setup all belong to
+  // this renderer; otherwise shader preparation conservatively skips lights.
+  const states = [...source.matchAll(/(?<state>[\w$]+)=(?<states>[\w$]+)\.get\((?<scene>[\w$]+),(?<stack>[\w$]+)\.length\),\k<state>\.init\((?<camera>[\w$]+)\),\k<stack>\.push\(\k<state>\)/g)];
+  if (states.length === 1) {
+    const state = escape(states[0].groups.state);
+    const start = source.lastIndexOf('class ', submissions[0].index);
+    const render = source.lastIndexOf('this.render=function(', states[0].index);
+    const prefix = source.slice(start, submissions[0].index);
+    const scope = source.slice(render, states[0].index + 8000);
+    if (start !== -1 && render > submissions[0].index &&
+        new RegExp(`\\blet [^;]{0,300}\\b${state}=null`).test(prefix) &&
+        new RegExp(`\\b${state}\\.state\\.shadowsArray\\b`).test(scope) &&
+        new RegExp(`\\b${state}\\.setupLights\\(\\)`).test(scope) &&
+        new RegExp(`\\b${state}\\.pushLight\\((?<light>[\\w$]+)\\),\\k<light>\\.castShadow&&${state}\\.pushShadow\\(\\k<light>\\)`).test(scope)) {
+      text += `this.__qolProbeLights=()=>${states[0].groups.state}?.state.lightsArray;`;
+    }
+  }
   return {anchor: submissions[0][0], text, owner: owner[0], ownerText};
 }
 
