@@ -595,6 +595,74 @@ test('packing rejects malformed geometry, bounds and topology without changing o
   expect(await packCollisionWorld(map, world, {yieldTask: null})).toBeNull();
 });
 
+test('packing revalidates mutated triangles on every call without reading new accessors', async () => {
+  const {map, world} = variedFixture(3);
+  const first = await packCollisionWorld(map, world);
+  const item = world.triangles[1];
+  item.vertices[2].z = -0;
+  item.surfaceId = 12345678901234567890n;
+  const second = await packCollisionWorld(map, world);
+  expect(second).not.toBeNull();
+  expect(Object.is(second.vertices[17], -0)).toBe(true);
+  expect(second.surfaceIds[1]).toBe(item.surfaceId);
+  expect(Object.is(first.vertices[17], -0)).toBe(false);
+  for (const vertexIndex of [0, 1, 2]) for (const axis of axes) {
+    const vertex = item.vertices[vertexIndex], original = Object.getOwnPropertyDescriptor(vertex, axis);
+    let reads = 0;
+    Object.defineProperty(vertex, axis, {
+      configurable: true, enumerable: true, get() { reads++; return original.value; },
+    });
+    try {
+      expect(await packCollisionWorld(map, world)).toBeNull();
+      expect(reads).toBe(0);
+    } finally { Object.defineProperty(vertex, axis, original); }
+  }
+  expect(await packCollisionWorld(map, world)).not.toBeNull();
+});
+
+test('packing does not reuse pre-yield validation for later geometry', async () => {
+  for (const variant of ['coordinate', 'inherited coordinate', 'map', 'constructor', 'index']) {
+    const {map, world} = variedFixture(513);
+    const item = world.triangles[512];
+    let clock = 0, reads = 0, changed = false;
+    const now = spyOn(performance, 'now').mockImplementation(() => clock += 5);
+    try {
+      const packet = await packCollisionWorld(map, world, {yieldTask: async () => {
+        if (changed) return;
+        changed = true;
+        const getter = {configurable: true, enumerable: true, get() { reads++; return 0; }};
+        if (variant === 'coordinate') Object.defineProperty(item.vertices[2], 'z', getter);
+        if (variant === 'inherited coordinate') {
+          delete item.vertices[1].x;
+          Object.setPrototypeOf(item.vertices[1], Object.defineProperty({}, 'x', getter));
+        }
+        if (variant === 'map') Object.defineProperty(item.vertices, 'map', getter);
+        if (variant === 'constructor') Object.defineProperty(item.vertices, 'constructor', getter);
+        if (variant === 'index') Object.defineProperty(item.vertices, 2, getter);
+      }});
+      expect(changed).toBe(true);
+      expect(packet).toBeNull();
+      expect(reads).toBe(0);
+    } finally { now.mockRestore(); }
+  }
+});
+
+test('triangle coordinate reads remain after native bounds validation', async () => {
+  const {map, world} = variedFixture(3);
+  const item = world.triangles[0], min = world.triangleBounds[0].min;
+  const original = min.x;
+  let reads = 0;
+  Object.defineProperty(min, 'x', {configurable: true, enumerable: true, get() {
+    reads++;
+    item.vertices[0].x = -123.25;
+    return original;
+  }});
+  const packet = await packCollisionWorld(map, world);
+  expect(packet).not.toBeNull();
+  expect(reads).toBe(1);
+  expect(packet.vertices[0]).toBe(-123.25);
+});
+
 test('unpacking rejects malformed or detached packets', async () => {
   const {map, world} = variedFixture(9);
   world.brushes[0].id = 'sample-id';

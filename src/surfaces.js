@@ -65,31 +65,43 @@ function matchingPlane(points, normal, planes) {
   return best;
 }
 
-function convexBoundary(points, normal) {
-  // Imported convex BSP faces can repeat vertices, contain collinear points,
-  // or have noisy angular ordering. Recover their boundary, not interior chords.
+function convexBoundary(points, plane) {
+  // Project once onto the collision plane, and keep the sortable coordinates
+  // on those same points instead of copying them into a second wrapper array.
+  const normal = plane.normal;
   const axis = Math.abs(normal.x) >= Math.abs(normal.y) && Math.abs(normal.x) >= Math.abs(normal.z) ? 'x' :
     Math.abs(normal.y) >= Math.abs(normal.z) ? 'y' : 'z';
-  const projected = points.map(point => ({ point,
-    u: axis === 'x' ? point.y : point.x,
-    v: axis === 'z' ? point.y : point.z,
-  })).sort((a, b) => a.u - b.u || a.v - b.v);
-  const unique = projected.filter((point, i) => !i || point.u !== projected[i - 1].u || point.v !== projected[i - 1].v);
-  if (unique.length < 3) return [];
+  const projected = points.map(point => {
+    const error = dot(normal, point) - plane.distance;
+    const x = point.x - normal.x * error;
+    const y = point.y - normal.y * error;
+    const z = point.z - normal.z * error;
+    return { x, y, z, u: axis === 'x' ? y : x, v: axis === 'z' ? y : z };
+  }).sort((a, b) => a.u - b.u || a.v - b.v);
+  // Imported faces can repeat vertices, contain collinear points, or have
+  // noisy ordering. Compact exact duplicates before recovering the boundary.
+  let count = 0;
+  for (const point of projected) {
+    if (!count || point.u !== projected[count - 1].u || point.v !== projected[count - 1].v) {
+      projected[count++] = point;
+    }
+  }
+  if (count < 3) return [];
+  projected.length = count;
   const turn = (a, b, c) => (b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u);
   const hull = [];
-  for (const point of unique) {
+  for (const point of projected) {
     while (hull.length >= 2 && turn(hull[hull.length - 2], hull[hull.length - 1], point) <= 0) hull.pop();
     hull.push(point);
   }
   const lowerLength = hull.length;
-  for (let i = unique.length - 2; i >= 0; i--) {
-    const point = unique[i];
+  for (let i = projected.length - 2; i >= 0; i--) {
+    const point = projected[i];
     while (hull.length > lowerLength && turn(hull[hull.length - 2], hull[hull.length - 1], point) <= 0) hull.pop();
     hull.push(point);
   }
   hull.pop();
-  return hull.map(value => value.point);
+  return hull;
 }
 
 function makeEdge(a, b) {
@@ -160,7 +172,7 @@ function boundsTree(items) {
     }
   }
   function build(start, end, parentAxis) {
-    const node = { minX: Infinity, minY: Infinity, minZ: Infinity,
+    const node = { count: end - start, minX: Infinity, minY: Infinity, minZ: Infinity,
       maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
     for (let i = start; i < end; i++) {
       const offset = indices[i] * 9;
@@ -232,14 +244,9 @@ const cross = (a, b) => ({ x: a.y * b.z - a.z * b.y,
   y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
 
 function makeFace(points, plane, id) {
-  // Imported render vertices include redundant bevel intersections and can
-  // drift slightly off their collision plane. Work on that exact plane.
-  const projected = points.map(point => {
-    const error = dot(plane.normal, point) - plane.distance;
-    return { x: point.x - plane.normal.x * error, y: point.y - plane.normal.y * error,
-      z: point.z - plane.normal.z * error };
-  });
-  const boundary = convexBoundary(projected, plane.normal);
+  // Bevel intersections can drift off their plane; the projected convex hull
+  // remains authoritative even for unordered or repeated imported vertices.
+  const boundary = convexBoundary(points, plane);
   if (boundary.length < 3) return null;
   const face = { id, normal: plane.normal, distance: plane.distance, boundary,
     edges: [], inward: [], minX: Infinity, minY: Infinity, minZ: Infinity,
@@ -389,23 +396,52 @@ function buildIndex(map, groundNormal) {
     return id;
   }
   const { root: tree, indices } = boundsTree(faces);
-  function connect(face, node) {
-    if (!node || !nearby(face, node)) return;
-    if (node.left) {
-      connect(face, node.left);
-      connect(face, node.right);
-      return;
+  function connect(a, b) {
+    if (a === b) {
+      if (a.left) {
+        connect(a.left, a.left);
+        connect(a.left, a.right);
+        connect(a.right, a.right);
+        return;
+      }
+    } else {
+      if (!nearby(a, b)) return;
+      // Visit each unordered subtree pair once, rather than searching the
+      // entire tree separately for every face in the same neighborhood.
+      if (a.left && (!b.left || a.count >= b.count)) {
+        connect(a.left, b);
+        connect(a.right, b);
+        return;
+      }
+      if (b.left) {
+        connect(a, b.left);
+        connect(a, b.right);
+        return;
+      }
     }
-    for (let i = node.start; i < node.end; i++) {
-      const other = faces[indices[i]];
-      if (other.id <= face.id || !nearby(face, other)) continue;
-      const a = root(face.id);
-      const b = root(other.id);
-      if (a === b || !connectedFaces(face, other)) continue;
-      parents[Math.max(a, b)] = Math.min(a, b);
+    for (let i = a.start; i < a.end; i++) {
+      for (let j = a === b ? i + 1 : b.start; j < b.end; j++) {
+        let face = faces[indices[i]];
+        let other = faces[indices[j]];
+        // Preserve the original predicate orientation, including rounding in
+        // clipping and seam tests, independently of the tree traversal order.
+        if (face.id > other.id) {
+          const swap = face;
+          face = other;
+          other = swap;
+        }
+        if (!nearby(face, other)) continue;
+        const first = root(face.id);
+        const second = root(other.id);
+        // Omitting an edge inside a component cannot alter connectivity.
+        // Always retaining its minimum face ID makes the final labels
+        // independent of which qualifying pair the traversal visits first.
+        if (first === second || !connectedFaces(face, other)) continue;
+        parents[Math.max(first, second)] = Math.min(first, second);
+      }
     }
   }
-  for (const face of faces) connect(face, tree);
+  if (tree) connect(tree, tree);
   // Retain only contact lookup data, not the temporary hulls and spatial tree.
   for (const face of faces) {
     let brushFaces = byBrush.get(face.brushId);

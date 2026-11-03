@@ -220,6 +220,35 @@ class $World{constructor($triangles){this.triangleBounds=$triangles.map($triangl
       min: point(1, 2, 0), max: point(1, 2, 0),
     });
   });
+  test('rechecks reused geometry after coordinate and array-shape mutations', () => {
+    const f = fixture(), vertices = [point(-0, 2, 3), point(4, -5, 6), point(7, 8, -9)];
+    const item = {vertices};
+    function compare() {
+      const actual = f.bounds([item])[0], expected = nativeBounds(vertices);
+      for (const side of ['min', 'max']) for (const axis of ['x', 'y', 'z'])
+        expect(Object.is(actual[side][axis], expected[side][axis])).toBe(true);
+    }
+    compare();
+    vertices[0].x = -17;
+    vertices[1].z = -0;
+    compare();
+    let reads = 0;
+    Object.defineProperty(vertices[2], 'y', {
+      configurable: true, enumerable: true, get() { reads++; return 23; },
+    });
+    const actual = f.bounds([item])[0], actualReads = reads;
+    reads = 0;
+    expect(actual).toEqual(nativeBounds(vertices));
+    expect(actualReads).toBe(reads);
+    Object.defineProperty(vertices[2], 'y', {configurable: true, enumerable: true, writable: true, value: 23});
+    vertices.map = function (callback) {
+      return Array.prototype.map.call(this, callback).map(value => value + 11);
+    };
+    compare();
+    delete vertices.map;
+    vertices.push(point(100, -100, 200));
+    compare();
+  });
 });
 for (const kind of ['game', 'worker']) describe(`native ${kind} sweep scalar comparisons`, () => {
   function fixture(axes = '["x","y","z"]', recognized = true) {

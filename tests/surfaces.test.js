@@ -362,3 +362,42 @@ test('curved surface seams remain transitive across many spatial partitions', ()
   const index = getRampSurfaces(freeze({ brushes }), groundNormal);
   for (const value of brushes) assert.equal(component(index, value), value === isolated ? 17 : 0, value.id);
 });
+
+test('late bridges resolve duplicate brush IDs without merging point-only neighbors across tree leaves', () => {
+  const left = ramp('shared', 0, 10);
+  const right = ramp('shared', 20, 30);
+  const bridge = ramp('bridge', 10, 20);
+  const pointOnly = ramp('point-only', 30, 40, 10, 20);
+  const isolated = Array.from({ length: 29 }, (_, i) => ramp(`isolated-${i}`, 100 + i * 100, 110 + i * 100));
+  assert.equal(getRampSurfaces({ brushes: [left, ...isolated, right] }, groundNormal).find('shared', rampNormal), null);
+  const ordered = [left, ...isolated, right, pointOnly, bridge];
+  const layouts = [ordered, [...ordered].reverse(),
+    [...ordered.filter((_, i) => i % 2), ...ordered.filter((_, i) => !(i % 2))]];
+  for (const brushes of layouts) {
+    const index = getRampSurfaces(freeze({ brushes }), groundNormal);
+    const expected = Math.min(brushes.indexOf(left), brushes.indexOf(right), brushes.indexOf(bridge));
+    assert.equal(index.find('shared', rampNormal), expected);
+    assert.equal(component(index, bridge), expected);
+    for (const value of [...isolated, pointOnly]) {
+      assert.equal(component(index, value), brushes.indexOf(value), value.id);
+    }
+  }
+});
+
+test('projected noisy shuffled boundaries retain seams on every dominant normal axis', () => {
+  for (const normal of [vector(0.8, 0, 0.6), rampNormal, vector(0.55, 0.55, Math.sqrt(0.395))]) {
+    const onPlane = (u, v) => vector(u * normal.y + v * normal.z * normal.x,
+      -u * normal.x + v * normal.z * normal.y, -v * (normal.x ** 2 + normal.y ** 2));
+    const a = brush('noisy', [{ normal, points: [onPlane(0, 0), onPlane(10, 10),
+      onPlane(0, 10), onPlane(10, 0), onPlane(10, 5), onPlane(10, 10), onPlane(5, 5)] }]);
+    // Repeated and off-plane bevel vertices must not turn an interior chord
+    // into the boundary, regardless of which coordinate the hull drops.
+    a.vertices.push(vector(a.vertices[4].x + normal.x * 0.001,
+      a.vertices[4].y + normal.y * 0.001, a.vertices[4].z + normal.z * 0.001));
+    a.faces[0].push(a.vertices.length - 1);
+    const b = brush('neighbor', [{ normal, points: [onPlane(10, 0), onPlane(20, 0),
+      onPlane(20, 10), onPlane(10, 10)] }]);
+    const index = getRampSurfaces(freeze({ brushes: [a, b] }), groundNormal);
+    assert.equal(component(index, a), component(index, b));
+  }
+});
