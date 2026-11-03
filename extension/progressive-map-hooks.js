@@ -25,13 +25,12 @@ export function nativeProgressiveMapHooks(source) {
   const branch = one([...scope.matchAll(/if\((?<url>[\w$]+)\)\{const (?<buffer>[\w$]+)=(?<owner>[\w$]+)\.resources\.compressed\?\.get\(\k<url>\),(?<descriptor>[\w$]+)=\k<owner>\.compressedTextures\?\.\[\k<url>\];if\(\k<buffer>&&\k<descriptor>\)(?<texture>[\w$]+)=(?<dds>[\w$]+)\(\k<buffer>,\k<descriptor>\);else\{const (?<image>[\w$]+)=\k<owner>\.resources\.images\.get\(\k<url>\);if\(!\k<image>\)throw new Error\(`Missing loaded image \$\{\k<url>\}`\);\k<texture>=new (?<imageType>[\w$]+)\(\k<image>\)\}\}else \k<texture>=new (?<dataType>[\w$]+)\(new Uint8Array\(\[255,255,255,255\]\),1,1\)/g)]);
   const textureFactory = one([...scope.matchAll(/(?<name>[\w$]+)=\((?<url>[\w$]+),(?<srgb>[\w$]+)=!0,(?<nearest>[\w$]+)=!1\)=>\{/g)]);
   const cube = one([...scope.matchAll(/(?<name>[\w$]+)=(?<urls>[\w$]+)=>\{const (?<key>[\w$]+)=\k<urls>\.join\("\|"\);let (?<texture>[\w$]+)=(?<cache>[\w$]+)\.get\(\k<key>\);return \k<texture>\|\|\(\k<texture>=new (?<type>[\w$]+)\(\[0,1,4,5,3,2\]\.map\((?<face>[\w$]+)=>(?<owner>[\w$]+)\.resources\.images\.get\(\k<urls>\[\k<face>\]\)\)\),\k<texture>\.colorSpace=(?<color>[\w$]+),\k<texture>\.needsUpdate=!0,\k<cache>\.set\(\k<key>,\k<texture>\),\k<texture>\)\}/g)]);
-  const draw = one([...scope.matchAll(/render:\(\)=>\{const __qolFrame=(?<frame>[\w$]+)\?\?(?<previous>[\w$]+);if\(__qolFrame&&(?<alive>[\w$]+)\(\)\)(?<view>[\w$]+)\.render\(__qolFrame\)\}/g)]);
-  const saved = 'const __qolSaved=new Array(__qolNodes.length*2);';
-  const warmArgs = `({renderer:${f.renderer},scenes:`;
+  const draw = one([...scope.matchAll(/const __qolProgressiveMap=(?<frame>[\w$]+)\?\?(?<previous>[\w$]+);if\(__qolProgressiveMap&&(?<alive>[\w$]+)\(\)\)(?<view>[\w$]+)\.render\(__qolProgressiveMap\)/g)]);
+  const preparation = 'const __qolProgressiveMap=';
   if (!branch || !textureFactory || !cube || !draw || branch.groups.owner !== f.data ||
       branch.groups.dds !== d.name || textureFactory.groups.url !== branch.groups.url ||
       cube.groups.owner !== f.data || draw.groups.view !== footer.groups.view ||
-      scope.split(saved).length !== 2 || scope.split(warmArgs).length !== 2) return source;
+      scope.split(preparation).length !== 2) return source;
   const b = branch.groups, t = textureFactory.groups, c = cube.groups, v = draw.groups;
   const filter = scope.match(new RegExp(`${escape(b.texture)}\\.magFilter=${escape(t.nearest)}\\?(${id}):(${id}),${escape(b.texture)}\\.minFilter=${escape(t.nearest)}\\?\\1:(${id})&&${escape(b.texture)}\\.mipmaps\\.length===1\\?\\2:(${id})`));
   if (!filter) return source;
@@ -68,8 +67,7 @@ export function nativeProgressiveMapHooks(source) {
     if(urls.some(url=>!${f.data}.resources.images.has(url)))__qolMapBindings.bind(texture,urls,()=>{texture.dispose();texture.image=faces.map(index=>${f.data}.resources.images.get(urls[index]));texture.needsUpdate=true});return texture}`;
   let renderer = scope.replace(branch[0], () => textureBranch).replace(cube[0], () => cubeFactory);
   renderer = renderer.replace(factory[0], () => factory[0] + factoryHelpers);
-  renderer = renderer.replace(saved, () => `${saved}\nawait __qolMapBindings.prepare(${f.renderer},()=>{const frame=${v.frame}??${v.previous};if(frame&&${v.alive}())${v.view}.render(frame)});`);
-  renderer = renderer.replace(warmArgs, () => `({ready:__qolAssetsReady,renderer:${f.renderer},scenes:`);
+  renderer = renderer.replace(preparation, () => `await __qolMapBindings.prepare(${f.renderer},()=>{const frame=${v.frame}??${v.previous};if(frame&&${v.alive}())${v.view}.render(frame)});\n${preparation}`);
   renderer = renderer.replace(footer[0], () => `${footerText.slice(0, footerText.lastIndexOf('return '))}
     const __qolAssetsReady=__qolMapBindings.complete();${footer.groups.view}.__qolAssetsReady=__qolAssetsReady;
     let __qolRendererDisposed=false;const __qolDispose=${footer.groups.view}.dispose;

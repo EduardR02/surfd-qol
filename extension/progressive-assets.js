@@ -6,6 +6,8 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
   // Native rendering falls back to fog unless all six sky faces are present.
   const sky = new Set(data.sky?.length === 6 && data.sky.every(Boolean) ? data.sky : []);
   const unread = [], decodeQueue = [];
+  // Collision JSON shares bandwidth with visual packs. More pack producers can
+  // delay collision readiness even when visual transfers finish sooner.
   let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0;
   let stopped = false, handedOff = false;
 
@@ -174,11 +176,15 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
     asset.assembled = true;
     asset.bytes = null;
-    if (entry.kind === 'mesh') publish(asset, bytes.slice().buffer);
-    else if (entry.kind === 'compressed-texture') {
-      if (!asset.alternative) throw new Error('Unexpected native texture');
-      const buffer = bytes.slice().buffer;
-      hooks.validateDDS(buffer, asset.alternative.descriptor);
+    if (entry.kind === 'mesh' || entry.kind === 'compressed-texture') {
+      // Fragment assembly already owns an exact-sized buffer. Only copy views
+      // into a larger pack: native mesh/DDS readers require an exact ArrayBuffer.
+      const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer : bytes.slice().buffer;
+      if (entry.kind === 'compressed-texture') {
+        if (!asset.alternative) throw new Error('Unexpected native texture');
+        hooks.validateDDS(buffer, asset.alternative.descriptor);
+      }
       publish(asset, buffer);
     } else {
       asset.bytes = bytes;

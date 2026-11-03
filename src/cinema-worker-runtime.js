@@ -43,6 +43,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
     for (const [id, record] of records) {
       if ((records.size > 8 || !record.capture) && !record.retained && !record.indexing && !record.running && !record.subscribers.size && record !== lastRecord) {
         record.capture?.dispose?.();
+        record.region = null;
         records.delete(id);
         send('camera-forget', null, {id});
       }
@@ -51,6 +52,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
   function publish(record) {
     const capture = record.capture;
     if (!capture || !capture.publishable && !record.done) return;
+    if (record.region && capture.count >= record.region.end) record.region = null;
     const track = capture.track;
     for (const [request, subscriber] of record.subscribers) {
       const from = subscriber.sent, end = Math.min(capture.count, from + 256);
@@ -74,8 +76,8 @@ export function createCinemaWorkerRuntime({post, createSession}) {
   }
   function stopUnused(record) {
     if (record.subscribers.size || record.done || record.running) return;
-    record.capture?.dispose();
-    record.capture = record.recordingSession = null;
+    record.capture?.dispose?.();
+    record.capture = record.recordingSession = record.region = null;
     record.retained = false;
   }
   function complete(record) {
@@ -209,7 +211,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
   }
   function attach(session, replay, id, indexing = true) {
     map = session.map;
-    if (indexing) primarySession = session;
+    if (indexing || !primarySession) primarySession = session;
     const record = {id, session, replay, position: 0, capture: null, recordingSession: null,
       subscribers: new Map(), keyframes: [], markers: [], finish: null, indexing, catchingUp: false, running: false, done: false, retained: false};
     records.set(id, record);

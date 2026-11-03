@@ -87,6 +87,17 @@ const key = (type, name, path) => ({type, key: name, stopped: false, defaultPrev
   preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() { this.stopped = true; }});
 
 describe('cinematic replay controls', () => {
+  test('unchanged view retains owned controls and annotation markup', () => {
+    const r = rig(solo());
+    let writes = 0;
+    const set = r.viewButton.setAttribute;
+    r.viewButton.setAttribute = (...args) => { writes++; set(...args); };
+    r.ui.render({visible: true});
+    const first = writes, markup = r.runs.innerHTML;
+    r.ui.render({visible: true});
+    expect(writes).toBe(first);
+    expect(r.runs.innerHTML).toBe(markup);
+  });
   test('the view menu turns a camera on and goes back to first person, in either toolbar, without an empty run strip', async () => {
     const r = rig();
     r.ui.render({visible: true});

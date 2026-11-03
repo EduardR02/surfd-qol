@@ -1,3 +1,43 @@
+// Scalar SAT expansion avoids the native temporary vector/edge/map graph.
+// The owning native collision world memoizes the resulting triangle brush.
+export function triangleCollisionBrush(triangle, bounds) {
+  const vertices = triangle.vertices, a = vertices[0], b = vertices[1], c = vertices[2], planes = [];
+  function axis(x, y, z) {
+    const length = Math.hypot(x, y, z);
+    if (length < 1e-8) return;
+    const inverse = 1 / length;
+    x *= inverse; y *= inverse; z *= inverse;
+    // Every accepted axis contributes an opposite pair. Compare one unsigned
+    // axis against one normal from each pair, preserving native plane order.
+    for (let i = 0; i < planes.length; i += 2) {
+      const normal = planes[i].normal;
+      if (Math.abs(normal.x * x + normal.y * y + normal.z * z) > 1 - 1e-9) return;
+    }
+    for (let sign = 1; sign >= -1; sign -= 2) {
+      const nx = x * sign, ny = y * sign, nz = z * sign;
+      planes.push({normal: {x: nx, y: ny, z: nz}, distance:
+        Math.max(nx * a.x + ny * a.y + nz * a.z, nx * b.x + ny * b.y + nz * b.z,
+          nx * c.x + ny * c.y + nz * c.z)});
+    }
+  }
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+  let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+  const length = Math.hypot(nx, ny, nz), inverse = length > 1e-12 ? 1 / length : 0;
+  if (inverse) { nx *= inverse; ny *= inverse; nz *= inverse; } else nx = ny = nz = 0;
+  axis(nx, ny, nz);
+  axis(1, 0, 0); axis(0, 1, 0); axis(0, 0, 1);
+  for (let i = 0; i < 3; i++) {
+    const from = vertices[i], to = vertices[(i + 1) % 3];
+    const x = to.x - from.x, y = to.y - from.y, z = to.z - from.z;
+    axis(y * 0 - z * 0, z * 1 - x * 0, x * 0 - y * 1);
+    axis(y * 0 - z * 1, z * 0 - x * 0, x * 1 - y * 0);
+    axis(y * 1 - z * 0, z * 0 - x * 1, x * 0 - y * 0);
+  }
+  return {id: `disp-${triangle.surfaceId}-${triangle.triangleId}`, vertices, faces: [[0, 1, 2]],
+    planes, ...bounds, color: '#d4dadd', friction: 1, kind: 'snow'};
+}
+
 // Packet v2 transfers collision data only. Render/import brush fields and the
 // unused map importMetadata are deliberately omitted from the worker copy.
 // Bounds use [min.x,min.y,min.z,max.x,max.y,max.z]; vertices use triangle-major XYZ.
@@ -5,7 +45,7 @@
 // brushData rows contain plane/leaf offsets, four scalar codes, and leaf state.
 export async function packCollisionWorld(map, world, {
   isCurrent = () => true,
-  yieldTask = () => new Promise(resolve => setTimeout(resolve, 0)),
+  yieldTask = () => globalThis.scheduler?.yield?.() ?? new Promise(resolve => setTimeout(resolve, 0)),
 } = {}) {
   if (typeof isCurrent !== 'function' || typeof yieldTask !== 'function' || !isCurrent()) return null;
   const brushes = map?.brushes, triangles = world?.triangles, tree = world?.tree;
@@ -27,8 +67,9 @@ export async function packCollisionWorld(map, world, {
     deadline = performance.now() + 4;
     return isCurrent();
   }
-  function writeBounds(target, offset, box) {
+  function writeBounds(target, offset, box, strict = false) {
     const min = box?.min, max = box?.max;
+    if (strict) return writeVertex(target, offset, min) && writeVertex(target, offset + 3, max);
     if (!min || !max) return false;
     const ax = min.x, ay = min.y, az = min.z, bx = max.x, by = max.y, bz = max.z;
     if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(az) ||
@@ -42,10 +83,14 @@ export async function packCollisionWorld(map, world, {
     for (const key in value) if (!Object.hasOwn(value, key) || !keys.includes(key)) return false;
     return true;
   }
-  const vectorKeys = ['x', 'y', 'z'];
-  function isVector(value) {
-    return onlyKeys(value, vectorKeys) && Number.isFinite(value.x) &&
-      Number.isFinite(value.y) && Number.isFinite(value.z);
+  function writeVertex(target, offset, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const x = value.x, y = value.y, z = value.z;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
+    for (const key in value) if (key !== 'x' && key !== 'y' && key !== 'z') return false;
+    if (!Object.hasOwn(value, 'x') || !Object.hasOwn(value, 'y') || !Object.hasOwn(value, 'z')) return false;
+    target[offset] = x; target[offset + 1] = y; target[offset + 2] = z;
+    return true;
   }
   const brushKeys = ['id', 'vertices', 'faces', 'planes', 'min', 'max', 'color', 'friction', 'kind',
     'contents', 'modelIndex', 'sourceBrush', 'broadphaseOnlyVertices', 'surfaceprop', 'propIndex',
@@ -83,12 +128,13 @@ export async function packCollisionWorld(map, world, {
     return code;
   }
   const brushCount = brushes.length, brushData = new Uint32Array((brushCount + 1) * 7);
+  const bounds = new Float64Array(count * 6);
   const brushScalarKeys = ['id', 'friction', 'kind', 'collisionModel'];
   let planeCount = 0, leafCount = 0;
   for (let i = 0; i < brushCount; i++) {
     const brush = brushes[i], offset = i * 7;
-    if (!onlyKeys(brush, brushKeys) || !isVector(brush.min) || !isVector(brush.max) ||
-        !Array.isArray(brush.planes)) return null;
+    if (!onlyKeys(brush, brushKeys) || !Array.isArray(brush.planes)) return null;
+    if (tree.bounds[i] !== brush || !writeBounds(bounds, i * 6, brush, true)) return null;
     brushData[offset] = planeCount;
     brushData[offset + 1] = leafCount;
     planeCount += brush.planes.length;
@@ -122,9 +168,9 @@ export async function packCollisionWorld(map, world, {
           brush.leafBounds.length !== brushData[offset + 8] - leafStart))) return null;
     for (let j = 0; j < brush.planes.length; j++) {
       const plane = brush.planes[j], index = start + j, at = index * 4;
-      if (!onlyKeys(plane, planeKeys) || !isVector(plane.normal) || !Number.isFinite(plane.distance)) return null;
-      planeValues[at] = plane.normal.x; planeValues[at + 1] = plane.normal.y;
-      planeValues[at + 2] = plane.normal.z; planeValues[at + 3] = plane.distance;
+      if (!onlyKeys(plane, planeKeys) || !writeVertex(planeValues, at, plane.normal) ||
+          !Number.isFinite(plane.distance)) return null;
+      planeValues[at + 3] = plane.distance;
       if (Object.hasOwn(plane, 'friction')) {
         const code = scalarCode(plane.friction);
         if (code < 0) return null;
@@ -134,8 +180,7 @@ export async function packCollisionWorld(map, world, {
     }
     if (brushData[offset + 6] === 1) for (let j = 0; j < brush.leafBounds.length; j++) {
       const leaf = brush.leafBounds[j];
-      if (!onlyKeys(leaf, boxKeys) || !isVector(leaf.min) || !isVector(leaf.max) ||
-          !writeBounds(leafBounds, (leafStart + j) * 6, leaf)) return null;
+      if (!onlyKeys(leaf, boxKeys) || !writeBounds(leafBounds, (leafStart + j) * 6, leaf, true)) return null;
       if (shouldYield() && !await pause()) return null;
     }
     if (shouldYield() && !await pause()) return null;
@@ -169,12 +214,8 @@ export async function packCollisionWorld(map, world, {
     if (depth > maxDepth) maxDepth = depth;
     if (Array.isArray(node.items)) {
       if (!node.items.length || node.left != null || node.right != null) return null;
-      for (const index of node.items) {
-        if (!Number.isInteger(index) || index < 0 || index >= count || seen[index]) return null;
-        seen[index] = 1;
-        itemCount++;
-        if (shouldYield() && !await pause()) return null;
-      }
+      itemCount += node.items.length;
+      if (itemCount > count) return null;
     } else {
       if (node.items !== undefined || !node.left || !node.right) return null;
       stack[top] = node.right; depths[top++] = depth + 1;
@@ -197,11 +238,11 @@ export async function packCollisionWorld(map, world, {
   for (let i = 0; i < triangleCount; i++) {
     const triangle = triangles[i];
     if (!onlyKeys(triangle, triangleKeys) || !Array.isArray(triangle.vertices) || triangle.vertices.length !== 3) return null;
-    for (let vertex = 0; vertex < 3; vertex++) {
-      const point = triangle.vertices[vertex], offset = i * 9 + vertex * 3;
-      if (!isVector(point)) return null;
-      vertices[offset] = point.x; vertices[offset + 1] = point.y; vertices[offset + 2] = point.z;
-    }
+    const item = brushCount + i, box = world.triangleBounds[i];
+    if (tree.bounds[item] !== box || !writeBounds(bounds, item * 6, box)) return null;
+    const offset = i * 9, points = triangle.vertices;
+    if (!writeVertex(vertices, offset, points[0]) || !writeVertex(vertices, offset + 3, points[1]) ||
+        !writeVertex(vertices, offset + 6, points[2])) return null;
     const surfaceId = triangle.surfaceId, triangleId = triangle.triangleId;
     if (typeof surfaceId !== 'number' && surfaceIds instanceof Float64Array) {
       surfaceIds = await copyIds(surfaceIds, i);
@@ -213,12 +254,6 @@ export async function packCollisionWorld(map, world, {
     }
     surfaceIds[i] = surfaceId;
     triangleIds[i] = triangleId;
-    if (shouldYield() && !await pause()) return null;
-  }
-  const bounds = new Float64Array(count * 6);
-  for (let i = 0; i < count; i++) {
-    const original = i < brushes.length ? brushes[i] : world.triangleBounds[i - brushes.length];
-    if (tree.bounds[i] !== original || !writeBounds(bounds, i * 6, original)) return null;
     if (shouldYield() && !await pause()) return null;
   }
 
@@ -234,6 +269,8 @@ export async function packCollisionWorld(map, world, {
       nodeData[offset] = -1; nodeData[offset + 1] = -1;
       nodeData[offset + 2] = itemIndex; nodeData[offset + 3] = node.items.length;
       for (const index of node.items) {
+        if (!Number.isInteger(index) || index < 0 || index >= count || seen[index]) return null;
+        seen[index] = 1;
         indices[itemIndex++] = index;
         if (shouldYield() && !await pause()) return null;
       }
@@ -342,15 +379,31 @@ export function unpackCollisionWorld(packet) {
   }
   if (visited !== nodeCount || itemCount !== count || actualDepth !== maxDepth) return null;
 
-  // Preserve normal array mutation semantics without constructing untouched
-  // geometry. Reflection materializes the requested entries only when needed.
+  // Indexed accessors replace themselves with owned geometry. Unlike a Proxy,
+  // already-decoded brushes take the normal array path on every physics sweep.
+  function brushArray(length, materialize) {
+    const target = new Array(length);
+    for (let index = 0; index < length; index++) {
+      function store(value) {
+        Object.defineProperty(target, index, {value, writable: true, configurable: true, enumerable: true});
+        return value;
+      }
+      Object.defineProperty(target, index, {
+        configurable: true, enumerable: true,
+        get() { return store(materialize(index)); },
+        set: store,
+      });
+    }
+    return target;
+  }
+  // Large displacement meshes remain packed; only queried triangles acquire
+  // their native geometry representation. Ordinary array mutation stays local.
   function lazyArray(length, materialize) {
     const target = new Array(length), state = new Uint8Array(length);
     function indexOf(key) {
       if (typeof key !== 'string') return -1;
       const index = Number(key);
-      return Number.isInteger(index) && index >= 0 && index < length &&
-        String(index) === key ? index : -1;
+      return Number.isInteger(index) && index >= 0 && index < length && String(index) === key ? index : -1;
     }
     function realize(index) {
       if (index >= 0 && index < target.length && state[index] === 0) {
@@ -362,10 +415,7 @@ export function unpackCollisionWorld(packet) {
       for (let i = target.length; i < previous && i < length; i++) state[i] = 2;
     }
     return new Proxy(target, {
-      get(_, key, receiver) {
-        realize(indexOf(key));
-        return Reflect.get(target, key, receiver);
-      },
+      get(_, key, receiver) { realize(indexOf(key)); return Reflect.get(target, key, receiver); },
       has(_, key) {
         const index = indexOf(key);
         return index >= 0 && index < target.length && state[index] === 0 || Reflect.has(target, key);
@@ -387,10 +437,7 @@ export function unpackCollisionWorld(packet) {
         else if (result && index >= 0) state[index] = 1;
         return result;
       },
-      getOwnPropertyDescriptor(_, key) {
-        realize(indexOf(key));
-        return Reflect.getOwnPropertyDescriptor(target, key);
-      },
+      getOwnPropertyDescriptor(_, key) { realize(indexOf(key)); return Reflect.getOwnPropertyDescriptor(target, key); },
       ownKeys() {
         for (let i = 0; i < length && i < target.length; i++) realize(i);
         return Reflect.ownKeys(target);
@@ -423,7 +470,7 @@ export function unpackCollisionWorld(packet) {
     return code < 0x80000000 ? string : BigInt(string);
   }
   const brushScalarKeys = ['id', 'friction', 'kind', 'collisionModel'];
-  const brushes = lazyArray(brushCount, index => {
+  const brushes = brushArray(brushCount, index => {
     const offset = index * 7, brush = readBounds(index);
     for (let field = 0; field < brushScalarKeys.length; field++) {
       const code = brushData[offset + 2 + field];

@@ -1,5 +1,5 @@
 import {expect, spyOn, test} from 'bun:test';
-import {packCollisionWorld, unpackCollisionWorld} from '../extension/collision-world.js';
+import {packCollisionWorld, unpackCollisionWorld, triangleCollisionBrush} from '../extension/collision-world.js';
 
 const axes = ['x', 'y', 'z'];
 const point = (x, y, z) => ({x, y, z});
@@ -306,6 +306,17 @@ test('native displacement import fields are accepted without entering worker col
   expect(Object.hasOwn(result, 'contents')).toBe(false);
   expect(Object.hasOwn(result, 'tags')).toBe(false);
 });
+test('triangle packet writes each coordinate once while preserving strict vector shape validation', async () => {
+  let reads = 0;
+  const vertex = {get x() { reads++; return -0; }, y: 1, z: 2};
+  const {map, world} = fixture([], [triangle([vertex, point(3, 4, 5), point(6, 7, 8)])]);
+  reads = 0;
+  const packet = await packCollisionWorld(map, world);
+  expect(packet).not.toBeNull(); expect(reads).toBe(1);
+  expect(Object.is(packet.vertices[0], -0)).toBe(true);
+  world.triangles[0].vertices[1] = Object.assign(Object.create({x: 3}), {y: 4, z: 5});
+  expect(await packCollisionWorld(map, world)).toBeNull();
+});
 
 test('numeric ID columns transfer without narrowing signed zero, large or nonfinite numbers', async () => {
   const ids = [-0, Number.MAX_SAFE_INTEGER, 2 ** 40 + 7, NaN, Infinity, -Infinity, Number.MIN_VALUE];
@@ -580,4 +591,60 @@ test('unpacking rejects malformed or detached packets', async () => {
     expect(unpackCollisionWorld(packet)).toBeNull();
   }
   for (const packet of [null, undefined, {}, {version: 1}]) expect(unpackCollisionWorld(packet)).toBeNull();
+});
+
+// Native displacement SAT expansion, independent of the scalar implementation.
+function nativeTriangleBrush(triangle, bounds) {
+  const vector = (x = 0, y = 0, z = 0) => ({x, y, z});
+  const sub = (a, b) => vector(a.x - b.x, a.y - b.y, a.z - b.z);
+  const scale = (a, n) => vector(a.x * n, a.y * n, a.z * n);
+  const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+  const cross = (a, b) => vector(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  const size = a => Math.hypot(a.x, a.y, a.z);
+  const normalize = a => size(a) > 1e-12 ? scale(a, 1 / size(a)) : vector();
+  const vertices = triangle.vertices, axes = [vector(1, 0, 0), vector(0, 1, 0), vector(0, 0, 1)];
+  const candidates = [normalize(cross(sub(vertices[1], vertices[0]), sub(vertices[2], vertices[0]))), ...axes];
+  for (let i = 0; i < 3; i++) for (const axis of axes) candidates.push(cross(sub(vertices[(i + 1) % 3], vertices[i]), axis));
+  const planes = [];
+  for (const candidate of candidates) if (!(size(candidate) < 1e-8)) for (const sign of [1, -1]) {
+    const normal = scale(normalize(candidate), sign);
+    if (!planes.some(plane => dot(plane.normal, normal) > 1 - 1e-9))
+      planes.push({normal, distance: Math.max(...vertices.map(vertex => dot(normal, vertex)))});
+  }
+  return {id: `disp-${triangle.surfaceId}-${triangle.triangleId}`, vertices, faces: [[0, 1, 2]],
+    planes, ...bounds, color: '#d4dadd', friction: 1, kind: 'snow'};
+}
+
+test('fresh displacement SAT planes match native order, exact numbers and contacts', () => {
+  let seed = 0x12345678;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32 * 65536 - 32768; };
+  const examples = [
+    [point(0, 0, 0), point(16, 0, 0), point(0, 16, 0)],
+    [point(-0, 0, -0), point(0, -0, 0), point(-0, -0, 0)],
+    [point(1, 1, 1), point(1, 1, 1), point(1, 1, 1)],
+    [point(0, 0, 0), point(1e-13, 0, 0), point(0, 1e-13, 0)],
+    [point(0, 0, 0), point(100, 100, 100), point(200, 200, 200)],
+    ...Array.from({length: 128}, () => Array.from({length: 3}, () => point(random(), random(), random()))),
+  ];
+  const implementations = [triangleCollisionBrush, Function(`return (${triangleCollisionBrush.toString()})`)()];
+  for (const vertices of examples) {
+    const item = triangle(vertices, 'surface', 17);
+    const bounds = {min: point(...axes.map(axis => Math.min(...vertices.map(vertex => vertex[axis])))),
+      max: point(...axes.map(axis => Math.max(...vertices.map(vertex => vertex[axis]))))};
+    const expected = nativeTriangleBrush(item, bounds);
+    for (const compile of implementations) {
+      const actual = compile(item, bounds), again = compile(item, bounds);
+      expect(actual).toEqual(expected);
+      expect(actual).not.toBe(again); expect(actual.planes).not.toBe(again.planes);
+      for (let i = 0; i < expected.planes.length; i++) {
+        expect(Object.is(actual.planes[i].distance, expected.planes[i].distance)).toBe(true);
+        for (const axis of axes) expect(Object.is(actual.planes[i].normal[axis], expected.planes[i].normal[axis])).toBe(true);
+      }
+      for (const feature of [false, true]) for (const corner of [false, true]) {
+        const tree = {query: () => [0]}, hull = box(-16, -16, 0, 16, 16, 62);
+        expect(nativeTrace(tree, [actual], point(-100, -100, 100), point(100, 100, -100), hull, feature, corner))
+          .toEqual(nativeTrace(tree, [expected], point(-100, -100, 100), point(100, 100, -100), hull, feature, corner));
+      }
+    }
+  }
 });

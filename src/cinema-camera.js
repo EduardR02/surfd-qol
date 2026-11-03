@@ -447,9 +447,21 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
   const smoothSpan = await smooth(span, seconds(0.6), segment), smoothSpeed = await smooth(speed, seconds(0.8), segment);
   if (yieldTask && !idleLeft()) deadline = await yieldTask();
   if (!isCurrent()) return null;
-  // Solo framing never changes with corrective group weights.
-  const fixedFocus = !group || !others.length;
-  let composedFocus = null, originalFocus = null;
+  const frameFocus = async weight => {
+    const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
+    for (let s = 0; s < count; s++) {
+      const o = s * 3;
+      let x = runs[0][o], y = runs[0][o + 1], z = runs[0][o + 2], total = 1;
+      for (let index = 0; index < others.length; index++) {
+        const k = shares[index][s] * (weight ? weight[s] : 1), r = runs[index + 1];
+        x += r[o] * k; y += r[o + 1] * k; z += r[o + 2] * k; total += k;
+      }
+      fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
+    }
+    return [await smooth(fx, seconds(0.12), segment), await smooth(fy, seconds(0.12), segment), await smooth(fz, seconds(0.2), segment)];
+  };
+  // The original focus is shared by both shot attempts, including group shots.
+  const originalFocus = await frameFocus(null);
   // A safer-shot retry changes only a few stretches. Reuse its exact radial
   // detour result everywhere azimuth/elevation/distance are unchanged; focus
   // is immutable here. This avoids retracing the rest of the route.
@@ -605,23 +617,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       target[o] = centre[0][s] + lx; target[o + 1] = centre[1][s] + ly; target[o + 2] = centre[2][s] + lz;
       eye[o] = centre[0][s] + ex; eye[o + 1] = centre[1][s] + ey; eye[o + 2] = centre[2][s] + ez;
     };
-    const compose = async (weight, limitTo, retreat) => {
-      let centre = fixedFocus && composedFocus;
-      if (!centre) {
-        const fx = new Float32Array(count), fy = new Float32Array(count), fz = new Float32Array(count);
-        for (let s = 0; s < count; s++) {
-          const o = s * 3;
-          let x = runs[0][o], y = runs[0][o + 1], z = runs[0][o + 2], total = 1;
-          for (let index = 0; index < others.length; index++) {
-            const k = shares[index][s] * weight[s], r = runs[index + 1];
-            x += r[o] * k; y += r[o + 1] * k; z += r[o + 2] * k; total += k;
-          }
-          fx[s] = x / total; fy[s] = y / total; fz[s] = z / total + EYE_HEIGHT;
-        }
-        centre = [await smooth(fx, seconds(0.12), segment), await smooth(fy, seconds(0.12), segment), await smooth(fz, seconds(0.2), segment)];
-        if (fixedFocus) composedFocus = centre;
-      }
-      originalFocus ??= centre;
+    const compose = async (limitTo, retreat, centre) => {
       const eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
       for (let s = 0; s < count; s++) {
         const d = clamp(Math.min(far[s], room[s], limitTo[s]), MIN_DISTANCE, MAX_DISTANCE);
@@ -639,7 +635,7 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
         cx: originalFocus[0][s], cy: originalFocus[1][s], cz: originalFocus[2][s]};
     };
     let weight = new Float32Array(count).fill(1), closest = new Float32Array(count).fill(MAX_DISTANCE), retreat = new Float32Array(count);
-    let shot = await compose(weight, closest, retreat), firstLook = null;
+    let shot = await compose(closest, retreat, originalFocus), firstLook = null;
     // The smoothed shot can still end up behind something no detour was tested
     // against, and two lines either side of a wall can put the framing inside
     // it. Check what the camera really sees. Where any ghost in frame is
@@ -690,7 +686,8 @@ export async function planCamera({a, b = null, map = null, others = b ? [{track:
       weight = weight.map((value, s) => Math.min(value, lose[s]));
       const closer = await smooth(lowest(blocked, Math.round(seconds(0.45)), view), seconds(0.2), view);
       closest = closest.map((value, s) => Math.min(value, closer[s]));
-      shot = await compose(weight, closest, retreat);
+      const centre = group && others.length ? await frameFocus(weight) : originalFocus;
+      shot = await compose(closest, retreat, centre);
     }
     const troubled = new Set();
     for (const stretch of stretches) {

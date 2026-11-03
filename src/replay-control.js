@@ -19,8 +19,6 @@ const NOTICE_MS = 4000;
 const EMPTY_MARKS = Object.freeze([]);
 // The game keeps this many savelocs per bank, dropping the oldest.
 const BANK_SIZE = 20;
-// The furthest a seek may skip ahead to a keyframe the analysis then steps to.
-const CATCH_UP_TICKS = 256;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const idle = work => typeof requestIdleCallback === 'function' ? requestIdleCallback(work, {timeout: 1000}) : setTimeout(work, 0);
 // Only settings that change collected analysis, not its presentation or colours.
@@ -83,18 +81,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     if (destroyed || !coaching || typeof prototype?.restorePractice !== 'function' || wrapped?.prototype === prototype) return;
     uninstall();
     const original = prototype.restorePractice;
-    const wrapper = function (snapshot) {
-      // A forward step or slow drag across a keyframe restores it instead of
-      // stepping there, and paused playback never kept it. Step the few ticks
-      // up to it first so the analysis keeps that frame rather than resetting.
-      const ahead = watching;
-      if (ahead && this === ahead.session && ahead.coherent) {
-        const from = (this.state?.tick ?? 0) - ahead.base, to = (snapshot?.state?.tick ?? NaN) - ahead.base;
-        if (Number.isInteger(from) && Number.isInteger(to) && to > from && to - from <= CATCH_UP_TICKS && !ahead.frames.has(to)) {
-          try { for (let index = from; index < to; index++) this.step(ahead.replay.commands[index]); }
-          catch { /* the restore below still applies */ }
-        }
-      }
+    const wrapper = function () {
+      // Restore only analysis captured during real playback. Simulating a
+      // skipped prefix here duplicates native seek work just to fill a cache.
       const restored = original.apply(this, arguments);
       const watched = watching;
       if (restored && watched && this === watched.session) {
@@ -118,7 +107,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     // your own runs through onSpots, kept until you leave for anyone else's.
     const watched = watching = {id: ++watches, replay, session, transport, revision: transport?.revision, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
       start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null,
-      ramps: [], rampsKey: '', nativeMarkers: null, base: replay.initialState?.tick ?? 0, coherent: true,
+      ramps: [], rampsKey: '', base: replay.initialState?.tick ?? 0, coherent: true,
       frames: createCoachingFrames(coaching ?? {save() {}, restore() {}}), ...details};
     const tick = (session.state?.tick ?? 0) - watched.base;
     watched.coherent = tick === 0;
@@ -162,10 +151,16 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   function marks(watched) {
     if (watched.run) return;
     const native = playing(watched)?.index?.markers;
-    if (!Array.isArray(native) || native === watched.nativeMarkers) return;
-    watched.nativeMarkers = native;
+    if (!Array.isArray(native)) return;
     watched.start = native.find(marker => marker.kind === 'start')?.index ?? null;
-    watched.markers = native.filter(marker => marker.kind === 'checkpoint').map(marker => marker.index).filter(Number.isInteger);
+    const length = end(watched);
+    let index = 0, same = true;
+    for (const marker of native) {
+      if (marker.kind !== 'checkpoint' || !Number.isInteger(marker.index) || marker.index > length) continue;
+      if (watched.markers[index++] !== marker.index) same = false;
+    }
+    if (!same || index !== watched.markers.length)
+      watched.markers = native.filter(marker => marker.kind === 'checkpoint').map(marker => marker.index).filter(tick => Number.isInteger(tick) && tick <= length);
   }
   // Anyone else's run (or your PB) gets its ramp boards from the analysis the
   // PB/WR comparisons use. It starts once the game has indexed the replay, so
@@ -214,7 +209,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     const tone = ramp => { try { return visible ? grade?.tone?.(ramp.key, ramp.board) ?? 'muted' : 'muted'; } catch { return 'muted'; } };
     // A board off the map's route (a repeat visit or another line) has no number.
     const number = ramp => { try { return rampNumber?.(watched.run?.mapKey ?? mapKey(watched.session.map), ramp.key) ?? null; } catch { return null; } };
-    return watched.ramps = list.map(ramp => ({tick: ramp.tick, label: number(ramp) ? `Ramp ${number(ramp)}` : 'Ramp', board: ramp.board, tone: tone(ramp)}));
+    return watched.ramps = list.map(ramp => {
+      const label = number(ramp);
+      return {tick: ramp.tick, label: label ? `Ramp ${label}` : 'Ramp', board: ramp.board, tone: tone(ramp)};
+    });
   }
   const end = watched => Math.max(0, Math.min(watched.length, playing(watched)?.index?.end ?? watched.length));
   function position(watched = current()) {

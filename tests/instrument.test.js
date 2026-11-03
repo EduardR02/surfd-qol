@@ -149,6 +149,90 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision broadp
     expect(overlap('["x","y"]')(a, b)).toBe(true);
   });
 });
+for (const kind of ['game', 'worker']) describe(`native ${kind} displacement triangle bounds`, () => {
+  function fixture(axes = '["x","y","z"]', duplicate = false) {
+    const helper = `;const $axes=${axes};function $vector(x=0,y=0,z=0){return{x,y,z}}
+class $World{constructor($triangles){this.triangleBounds=$triangles.map($triangle=>({min:$vector(...$axes.map($axis=>Math.min(...$triangle.vertices.map($vertex=>$vertex[$axis])))),max:$vector(...$axes.map($axis=>Math.max(...$triangle.vertices.map($vertex=>$vertex[$axis]))))}))}}`;
+    const native = helper + (duplicate ? helper.slice(helper.indexOf('class $World')).replace('class $World', 'class $OtherWorld') : '');
+    const source = kind === 'game' ? instrumentReplayFixture(nativeSource + native) : instrumentPhysicsWorker(native);
+    const World = new Function('globalThis', source + ';return $World;')({});
+    return {source, bounds: triangles => new World(triangles).triangleBounds};
+  }
+  const point = (x, y, z) => ({x, y, z});
+  function nativeBounds(vertices) {
+    return Object.fromEntries([['min', Math.min], ['max', Math.max]].map(([side, operation]) =>
+      [side, Object.fromEntries(['x', 'y', 'z'].map(axis => [axis, operation(...vertices.map(vertex => vertex[axis]))]))]));
+  }
+  test('matches native signed zeros, nonfinite coordinates and arbitrary vertex cardinality', () => {
+    const f = fixture();
+    expect(f.source).toContain('__qolVertices');
+    let seed = 19;
+    const coordinate = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed - 2147483648) / 8192; };
+    const examples = [
+      [], [point(1, 2, 3)], [point(-1, -2, -3), point(1, 2, 3)],
+      [point(-0, 0, -0), point(0, -0, 0), point(-0, -0, 0)],
+      [point(Infinity, 2, NaN), point(-Infinity, 3, 1), point(0, 4, 2)],
+      Array.from({length: 4}, () => point(coordinate(), coordinate(), coordinate())),
+      ...Array.from({length: 128}, () => Array.from({length: 3}, () => point(coordinate(), coordinate(), coordinate()))),
+    ];
+    for (const vertices of examples) {
+      const actual = f.bounds([{vertices}])[0], expected = nativeBounds(vertices);
+      for (const side of ['min', 'max']) for (const axis of ['x', 'y', 'z'])
+        expect(Object.is(actual[side][axis], expected[side][axis])).toBe(true);
+    }
+  });
+  test('keeps sparse triples and sparse outer arrays on their native semantics', () => {
+    const vertices = [point(1, 2, 3), , point(4, 5, 6)];
+    const triangles = [{vertices}, , {vertices: []}], bounds = fixture().bounds(triangles);
+    expect(bounds.length).toBe(3); expect(1 in bounds).toBe(false);
+    for (const side of ['min', 'max']) for (const axis of ['x', 'y', 'z'])
+      expect(Object.is(bounds[0][side][axis], nativeBounds(vertices)[side][axis])).toBe(true);
+  });
+  test('leaves unknown axis sets and ambiguous constructors unchanged', () => {
+    const unknown = fixture('["x","y"]'), ambiguous = fixture(undefined, true);
+    expect(unknown.source).not.toContain('__qolVertices');
+    expect(ambiguous.source).not.toContain('__qolVertices');
+    expect(unknown.bounds([{vertices: [point(1, 2, 3)]}])[0]).toEqual({
+      min: point(1, 2, 0), max: point(1, 2, 0),
+    });
+  });
+});
+for (const kind of ['game', 'worker']) describe(`native ${kind} sweep scalar comparisons`, () => {
+  function fixture(axes = '["x","y","z"]', recognized = true) {
+    let helper = `;const $axes=${axes},$epsilon=.03125;function $sweep($start,$end,$hull,$brush){return{skip:$axes.some($axis=>Math.max($start[$axis],$end[$axis])+$hull.max[$axis]<$brush.min[$axis]-$epsilon||Math.min($start[$axis],$end[$axis])+$hull.min[$axis]>$brush.max[$axis]+$epsilon),corner:$brush.planes.every($plane=>$axes.filter($axis=>$plane.normal[$axis]!==0).length===1&&$axes.some($axis=>Math.abs($plane.normal[$axis])===1))}}`;
+    if (!recognized) helper = helper.replace(').length===1', ').length===2');
+    const native = new Function(helper + ';return $sweep;')();
+    const source = kind === 'game' ? instrumentReplayFixture(nativeSource + helper) : instrumentPhysicsWorker(helper);
+    return {native, source, sweep: new Function('globalThis', source + ';return $sweep;')({})};
+  }
+  const point = (x, y, z) => ({x, y, z});
+  const box = (min, max) => ({min: point(min, min, min), max: point(max, max, max)});
+  test('matches candidate rejection and axis-aligned corner classification', () => {
+    const f = fixture(), hull = box(-16, 16);
+    expect(f.source).toContain('__qolNormal');
+    let seed = 61;
+    const coordinate = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed - 2147483648) / 1048576; };
+    const normals = [point(1, 0, 0), point(-1, -0, 0), point(0, 1, 0), point(0, 0, -1),
+      point(0, 0, 0), point(1, 1, 0), point(NaN, 0, 0), point(Infinity, 0, 0), point(0.999999, 0, 0)];
+    for (let i = 0; i < 512; i++) {
+      const start = point(coordinate(), coordinate(), coordinate()), end = point(coordinate(), coordinate(), coordinate());
+      const brush = {...box(coordinate(), coordinate()),
+        planes: Array.from({length: i % 7}, (_, j) => ({normal: normals[(i + j) % normals.length]}))};
+      expect(f.sweep(start, end, hull, brush)).toEqual(f.native(start, end, hull, brush));
+    }
+    const brush = {...box(-0, 0), planes: [{normal: point(-0, 1, 0)}]};
+    for (const value of [-Infinity, Infinity, NaN, -0, 0]) {
+      const start = point(value, value, value), end = point(value, value, value);
+      expect(f.sweep(start, end, hull, brush)).toEqual(f.native(start, end, hull, brush));
+    }
+  });
+  test('leaves unknown axes and unrecognised corner predicates unchanged atomically', () => {
+    for (const f of [fixture('["x","y"]'), fixture(undefined, false)]) {
+      expect(f.source).not.toContain('__qolNormal');
+      expect(f.source).toContain('$axes.some($axis=>Math.max(');
+    }
+  });
+});
 
 describe('native replay instrumentation', () => {
   test('extension reservation cancels an older native download without reserving again at startup', async () => {

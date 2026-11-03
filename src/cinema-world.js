@@ -35,7 +35,9 @@ function buildCameraWorld(session) {
     const visible = index => index >= allowed.length || allowed[index];
     const filtered = Object.assign(Object.create(world), {
       brushes: world.brushes, triangles: world.triangles, triangleBounds: world.triangleBounds,
-      vphysicsFeatureFix: world.vphysicsFeatureFix, bspCornerFix: world.bspCornerFix, triangleCache: new Map(),
+      // Native triangle convexes depend only on these shared vertices/bounds,
+      // not on the probe hull or the camera's brush visibility filter.
+      vphysicsFeatureFix: world.vphysicsFeatureFix, bspCornerFix: world.bspCornerFix, triangleCache: world.triangleCache,
       tree: {query: bounds => tree.query(bounds).filter(visible)},
     });
     let fallback = null;

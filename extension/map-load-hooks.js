@@ -34,76 +34,47 @@ export async function decodeMapImage(bytes, url, signal, nativeDecode) {
   return image;
 }
 
-// The visible frame prepares its own textures first. Remaining uploads and
-// geometry are warmed in short idle batches, without changing the framebuffer.
-export function prepareMapRenderer({renderer, scenes, camera, textures, alive, render, warm, ready,
-  schedule = callback => typeof requestIdleCallback === 'function'
-    ? requestIdleCallback(callback, {timeout: 50})
-    : setTimeout(() => callback(null), 0),
-  now = () => performance.now(),
-}) {
-  if (!alive()) return;
-  const programs = new Set();
-  const parallel = renderer.extensions?.has?.('KHR_parallel_shader_compile') && renderer.properties?.get;
-  for (const scene of scenes) {
-    const materials = renderer.compile(scene, camera);
-    if (parallel && materials) for (const material of materials)
-      for (const program of renderer.properties.get(material).programs?.values() ?? [])
-        if (typeof program.isReady === 'function') programs.add(program);
+// Native meshes retain packed source bytes for other renderer owners. Copy the
+// vertex stream once, combining coordinate conversion with the bounds pass.
+export function decodeMapMesh(buffer, vertexCount) {
+  const vertices = new Float32Array(buffer, 0, vertexCount * 12).slice();
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let offset = 0; offset < vertices.length; offset += 12) {
+    const x = vertices[offset], y = vertices[offset + 2], z = -vertices[offset + 1];
+    const normalY = vertices[offset + 4];
+    vertices[offset + 1] = y;
+    vertices[offset + 2] = z;
+    vertices[offset + 4] = vertices[offset + 5];
+    vertices[offset + 5] = -normalY;
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
   }
-  render();
-  if (!alive()) return;
-  const pendingTextures = [...textures], objects = [];
-  for (const scene of scenes) scene.traverse(object => {
-    if (object.isMesh || object.isLine || object.isPoints || object.isSprite) objects.push(object);
-  });
-  let textureIndex = 0, objectIndex = 0;
-  function batch(deadline) {
-    if (!alive()) return;
-    if (deadline && !deadline.didTimeout && deadline.timeRemaining() < 2) { schedule(batch); return; }
-    const end = now() + 2;
-    // Always allow one unit after a timeout, but never one large all-map draw.
-    let worked = false;
-    while (textureIndex < pendingTextures.length && alive()) {
-      if (worked && (now() >= end || deadline && !deadline.didTimeout && deadline.timeRemaining() < 2)) break;
-      renderer.initTexture(pendingTextures[textureIndex++]);
-      worked = true;
-    }
-    while (textureIndex === pendingTextures.length && objectIndex < objects.length && alive()) {
-      if (worked && (now() >= end || deadline && !deadline.didTimeout && deadline.timeRemaining() < 2)) break;
-      // Drawing an unfinished program synchronises the driver even with a
-      // parallel compiler. Leave uploads running, but defer off-screen draws.
-      for (const program of programs) {
-        if (!program.isReady()) { schedule(batch); return; }
-        programs.delete(program);
-      }
-      const selected = new Set(objects.slice(objectIndex, objectIndex + 8));
-      objectIndex += selected.size;
-      // A zero-area scissor submits buffers/programs without painting over the
-      // live view. Restore it even if the native warm-up throws.
-      const scissor = renderer.getScissor({copy(value) {
-        this.x = value.x; this.y = value.y; this.z = value.z; this.w = value.w;
-        return this;
-      }}), tested = renderer.getScissorTest();
-      try {
-        renderer.setScissor(0, 0, 0, 0);
-        renderer.setScissorTest(true);
-        warm(selected);
-      } finally {
-        renderer.setScissor(scissor.x, scissor.y, scissor.z, scissor.w);
-        renderer.setScissorTest(tested);
-      }
-      worked = true;
-    }
-    if (alive() && (textureIndex < pendingTextures.length || objectIndex < objects.length)) schedule(batch);
+  const empty = maxX < minX || maxY < minY || maxZ < minZ;
+  const centerX = empty ? 0 : (minX + maxX) * .5;
+  const centerY = empty ? 0 : (minY + maxY) * .5;
+  const centerZ = empty ? 0 : (minZ + maxZ) * .5;
+  let radiusSquared = 0;
+  for (let offset = 0; offset < vertices.length; offset += 12) {
+    const x = centerX - vertices[offset], y = centerY - vertices[offset + 1], z = centerZ - vertices[offset + 2];
+    radiusSquared = Math.max(radiusSquared, x * x + y * y + z * z);
   }
-  function startBackground() {
-    if (!alive() || !(pendingTextures.length || objects.length)) return;
-    // The load owner reports ready's failure; never warm incomplete textures.
-    if (ready) Promise.resolve(ready).then(() => { if (alive()) schedule(batch); }, () => {});
-    else schedule(batch);
-  }
-  startBackground();
+  return {vertices, minX, minY, minZ, maxX, maxY, maxZ, centerX, centerY, centerZ, radius: Math.sqrt(radiusSquared)};
+}
+
+function nativeMapMeshHooks(source) {
+  if (source.includes('__qolMapMesh')) return source;
+  const meshes = [...source.matchAll(/const (?<buffer>[\w$]+)=(?<owner>[\w$]+)\.resources\.meshes\.get\((?<mesh>[\w$]+)\.url\),(?<vertices>[\w$]+)=new Float32Array\(\k<buffer>,0,\k<mesh>\.vertexCount\*12\)\.slice\(\);for\(let (?<offset>[\w$]+)=0;\k<offset><\k<vertices>\.length;\k<offset>\+=12\)\{const (?<y>[\w$]+)=\k<vertices>\[\k<offset>\+1\],(?<normal>[\w$]+)=\k<vertices>\[\k<offset>\+4\];\k<vertices>\[\k<offset>\+1\]=\k<vertices>\[\k<offset>\+2\],\k<vertices>\[\k<offset>\+2\]=-\k<y>,\k<vertices>\[\k<offset>\+4\]=\k<vertices>\[\k<offset>\+5\],\k<vertices>\[\k<offset>\+5\]=-\k<normal>\}const (?<interleaved>[\w$]+)=new [\w$]+\(\k<vertices>,12\),(?<geometry>[\w$]+)=new [\w$]+;for\(const\[[\w$]+,[\w$]+,[\w$]+\]of\[\["position",3,0\],\["normal",3,3\],\["uv",2,6\],\["uvLight",2,8\],\["blendAlpha",1,10\],\["lightIndex",1,11\]\]\)[\s\S]{0,150}?return \k<geometry>\.setIndex\(new [\w$]+\(new Uint32Array\(\k<buffer>,\k<mesh>\.vertexCount\*48,\k<mesh>\.indexCount\),1\)\),\k<geometry>\.computeBoundingSphere\(\),\k<geometry>\.computeBoundingBox\(\)/g)];
+  const boxes = [...source.matchAll(/computeBoundingBox\(\)\{this\.boundingBox===null&&\(this\.boundingBox=new ([\w$]+)\);const ([\w$]+)=this\.attributes\.position,([\w$]+)=this\.morphAttributes\.position;/g)];
+  const spheres = [...source.matchAll(/computeBoundingSphere\(\)\{this\.boundingSphere===null&&\(this\.boundingSphere=new ([\w$]+)\);const ([\w$]+)=this\.attributes\.position,([\w$]+)=this\.morphAttributes\.position;/g)];
+  if (meshes.length !== 1 || boxes.length !== 1 || spheres.length !== 1) return source;
+  const match = meshes[0], g = match.groups;
+  const stream = match[0].indexOf(`const ${g.interleaved}=`);
+  const boundStart = match[0].indexOf(`,${g.geometry}.computeBoundingSphere()`);
+  const result = `const ${g.buffer}=${g.owner}.resources.meshes.get(${g.mesh}.url),__qolMapMesh=__qolDecodeMapMesh(${g.buffer},${g.mesh}.vertexCount),${g.vertices}=__qolMapMesh.vertices;` +
+    match[0].slice(stream, boundStart) +
+    `,${g.geometry}.boundingBox=new ${boxes[0][1]},${g.geometry}.boundingBox.min.set(__qolMapMesh.minX,__qolMapMesh.minY,__qolMapMesh.minZ),${g.geometry}.boundingBox.max.set(__qolMapMesh.maxX,__qolMapMesh.maxY,__qolMapMesh.maxZ),${g.geometry}.boundingSphere=new ${spheres[0][1]},${g.geometry}.boundingSphere.center.set(__qolMapMesh.centerX,__qolMapMesh.centerY,__qolMapMesh.centerZ),${g.geometry}.boundingSphere.radius=__qolMapMesh.radius`;
+  return `const __qolDecodeMapMesh=(${decodeMapMesh.toString()});` + source.slice(0, match.index) + result + source.slice(match.index + match[0].length);
 }
 
 function nativeSkyResampleHooks(source) {
@@ -123,8 +94,8 @@ function nativeSkyResampleHooks(source) {
     function ${name}(images,transforms=[]){
       const size=Math.max(...images.map(image=>Math.max(image.width,image.height)));
       const identity=[1,0,0,0,1,0],matrices=images.map((image,index)=>${parse}(transforms[index]));
-      if(images.every((image,index)=>image.width===size&&image.height===size&&matrices[index].every((value,axis)=>Math.abs(value-identity[axis])<1e-12)))return images;
       return images.map((image,index)=>{
+        if(image.width===size&&image.height===size&&matrices[index].every((value,axis)=>Math.abs(value-identity[axis])<1e-12))return image;
         const input=document.createElement("canvas");input.width=image.width;input.height=image.height;
         const reader=input.getContext("2d",{willReadFrequently:true});reader.drawImage(image,0,0);
         const pixels=reader.getImageData(0,0,image.width,image.height).data;
@@ -141,6 +112,7 @@ function nativeSkyResampleHooks(source) {
 // its original complete-before-play preparation.
 export function nativeMapLoadHooks(source) {
   source = nativeSkyResampleHooks(source);
+  source = nativeMapMeshHooks(source);
   if (source.includes('__qolProgressiveMap')) return source;
   const matches = [...source.matchAll(/prepare:async ([\w$]+)=>\{const ([\w$]+)=performance\.now\(\),([\w$]+)=\[([\w$]+),([\w$]+),([\w$]+)\],([\w$]+)=([\w$]+)\.getContext\(\),([\w$]+)=\(\)=>!([\w$]+)&&!\7\.isContextLost\(\),[\s\S]*?\},setTriggersVisible:/g)];
   if (matches.length !== 1) return source;
@@ -155,8 +127,6 @@ export function nativeMapLoadHooks(source) {
       !body.includes(`for(const ${instances[1]} of ${scenes})${renderer}.compile(${instances[1]},`)) return source;
   const compile = body.match(new RegExp(`for\\(const [\\w$]+ of ${scenes}\\)${renderer}\\.compile\\([\\w$]+,([\\w$]+)\\)`));
   if (!compile) return source;
-  const camera = compile[1], object = instances[3];
-  const collect = collection[0].slice(0, collection[0].lastIndexOf('let '));
   const decode = [...source.matchAll(/function ([\w$]+)\(([\w$]+),([\w$]+),([\w$]+)\)\{const ([\w$]+)=\3\.endsWith\("\.png"\)\?"image\/png":[\s\S]*?\}async function ([\w$]+)\(([\w$]+),([\w$]+)=\{\}\)/g)];
   const factory = [...source.matchAll(new RegExp(`function ([\\w$]+)\\(([\\w$]+),([\\w$]+),([\\w$]+)\\)\\{const ${renderer}=new [\\w$]+\\(\\{canvas:\\2,antialias:!0,alpha:!1,powerPreference:"high-performance"\\}\\)`, 'g'))];
   if (decode.length !== 1 || factory.length !== 1) return source;
@@ -164,34 +134,21 @@ export function nativeMapLoadHooks(source) {
   if (source.split(dispose).length !== 2) return source;
   const imageMap = [...source.matchAll(/if\(([\w$]+)\?\.status==="rejected"\)throw ([\w$]+)\.clear\(\),([\w$]+)\.clear\(\),([\w$]+)\.clear\(\),([\w$]+)\.clear\(\),([\w$]+)\.reason\?\?\1\.reason/g)];
   if (imageMap.length !== 1) return source;
+  const eager = [...source.matchAll(/if\((?<data>[\w$]+)\.compressedTextures&&!\k<data>\.resources\.compressed\?\.size\)\{for\(const (?<texture>[\w$]+) of (?<textures>[\w$]+)\.values\(\)\)(?<renderer>[\w$]+)\.initTexture\(\k<texture>\);for\(const (?<cube>[\w$]+) of (?<cubes>[\w$]+)\.values\(\)\)\k<renderer>\.initTexture\(\k<cube>\);(?<sky>[\w$]+)\.background instanceof [\w$]+&&\k<renderer>\.initTexture\(\k<sky>\.background\)\}/g)];
+  if (eager.length !== 1 || eager[0].groups.renderer !== renderer ||
+      eager[0].groups.data !== factory[0][3] || eager[0].groups.sky !== sky ||
+      eager[0].groups.textures !== collection[2] || eager[0].groups.cubes !== collection[3]) return source;
   const text = `prepare:async ${frame}=>{
-    const ${started}=performance.now(),${scenes}=[${sky},${occluders},${world}],${context}=${renderer}.getContext(),${current}=()=>!${disposed}&&!${context}.isContextLost();
+    const ${started}=performance.now(),${context}=${renderer}.getContext(),${current}=()=>!${disposed}&&!${context}.isContextLost();
     globalThis.__SURFD_QOL__?.prepareMap?.();
-    ${collect}
-    const __qolNodes=[];for(const scene of ${scenes})scene.traverse(node=>__qolNodes.push(node));
-    const __qolSaved=new Array(__qolNodes.length*2);
-    (${prepareMapRenderer.toString()})({renderer:${renderer},scenes:${scenes},camera:${camera},textures:${collection[1]},alive:${current},
-      render:()=>{const __qolFrame=${frame}??${finish[5]};if(__qolFrame&&${current}())${finish[7]}.render(__qolFrame)},
-      warm:__qolProgressiveMap=>{
-        for(let index=0;index<__qolNodes.length;index++){
-          const node=__qolNodes[index];__qolSaved[index*2]=node.visible;__qolSaved[index*2+1]=node.frustumCulled;
-          node.visible=!(node.isMesh||node.isLine||node.isPoints||node.isSprite)||__qolProgressiveMap.has(node);
-          node.frustumCulled=false;
-        }
-        for(const node of __qolProgressiveMap)for(let parent=node.parent;parent;parent=parent.parent)parent.visible=true;
-        try{
-          for(const ${instances[1]} of ${instances[2]})for(const {object:${object},matrices:${instances[4]},offsets:${instances[5]},attribute:${instances[6]}} of ${instances[1]}.objects)if(__qolProgressiveMap.has(${object})){${instances[7]};}
-          ${instances[8]}();
-        }finally{
-          for(let index=0;index<__qolNodes.length;index++){const node=__qolNodes[index];node.visible=__qolSaved[index*2];node.frustumCulled=__qolSaved[index*2+1];}
-          for(const ${reset[1]} of ${reset[2]})if(${reset[1]}.objects.some(row=>__qolProgressiveMap.has(row.object)))${reset[1]}.count=-1;
-          ${reset[3]}.makeScale(0,0,0);
-        }
-      }
-    });
+    // Native rendering prepares only the PVS/frustum-selected first view.
+    const __qolProgressiveMap=${frame}??${finish[5]};if(__qolProgressiveMap&&${current}())${finish[7]}.render(__qolProgressiveMap);
     ${finish[1]}=performance.now()-${started};
   },setTriggersVisible:`;
   source = source.slice(0, match.index) + text + source.slice(match.index + all.length);
+  // Resource maps still own shared native textures and their disposal; only
+  // the constructor's eager upload of every decoded texture is unnecessary.
+  source = source.replace(eager[0][0], '');
   const decoder = decode[0], nativeName = '__qolNativeMapImage';
   const original = decoder[0].slice(0, decoder[0].lastIndexOf('async function '));
   const wrapper = `function ${decoder[1]}(${decoder[2]},${decoder[3]},${decoder[4]}){return (${decodeMapImage.toString()})(${decoder[2]},${decoder[3]},${decoder[4]},${nativeName})}`;

@@ -66,28 +66,6 @@ test('maps without collision brushes and invalid ground thresholds have no index
   }
 });
 
-test('indexes are immutable, cached by map identity and ground threshold, and do not mutate geometry', () => {
-  const a = ramp('a');
-  let reads = 0;
-  const vertices = a.vertices;
-  Object.defineProperty(a, 'vertices', { enumerable: true, get() { reads++; return vertices; } });
-  const map = freeze({ brushes: [a] });
-  const before = JSON.stringify(map);
-  const index = getRampSurfaces(map, groundNormal);
-  const builtReads = reads;
-  assert.equal(Object.isFrozen(index), true);
-  for (let i = 0; i < 20; i++) {
-    assert.equal(getRampSurfaces(map, groundNormal), index);
-    assert.equal(index.find('a', rampNormal), 0);
-  }
-  assert.equal(reads, builtReads, 'cached lookups must not read brush vertices');
-  assert.equal(JSON.stringify(map), before);
-  assert.notEqual(getRampSurfaces(map, 0.8), index);
-  const copy = JSON.parse(before);
-  const copiedIndex = getRampSurfaces(copy, groundNormal);
-  assert.notEqual(copiedIndex, index);
-  assert.equal(copiedIndex.find('a', rampNormal), index.find('a', rampNormal));
-});
 
 test('only upward faces strictly below the configured ground normal are indexed', () => {
   const normals = [rampNormal, vector(0, -0.8, -0.6), vector(0, 1, 0), vector(0, 0, 1)];

@@ -227,7 +227,8 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   let status = null, frame = 0, open = null, lastActivity = now(), dragging = false, hovering = false, overBar = false;
   let pendingSeek = null, seekFrame = 0, marks = [], bindsKey = null, bindsAge = 0, binds = savelocBinds(null);
   let progress = -1, playState = '', speedShown = null, totalShown = '', reserve = 0, sections = [], drawn = null, ariaAge = 0;
-  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { reserve = 0; drawn = null; }) : null;
+  let spacingDirty = true;
+  const sizes = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { reserve = 0; spacingDirty = true; }) : null;
   sizes?.observe(bar);
 
   const wake = () => { lastActivity = now(); };
@@ -381,18 +382,27 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     attr(rail, 'aria-valuenow', String(Math.round(index)));
     attr(rail, 'aria-valuetext', railTime((index - status.start) * status.dt));
   }
-  // Marks are rebuilt only when something on the timeline changed; ramps keep their array until then.
-  function marksChanged() {
+  // The controller retains annotation arrays. Equal replacement arrays also
+  // keep the existing geometry, hover marks and focused loc buttons intact.
+  function marksChanged(kind) {
     const next = status, last = drawn;
-    if (last && last.length === next.length && last.start === next.start && last.lastSpot === next.lastSpot && last.title === next.title &&
-      last.ramps === next.ramps && last.rampCount === next.ramps?.length && sameList(last.markers, next.markers) && sameList(last.spots, next.spots)) return false;
-    drawn = {length: next.length, start: next.start, lastSpot: next.lastSpot, title: next.title, ramps: next.ramps, rampCount: next.ramps?.length, markers: next.markers, spots: next.spots};
+    const sameRamps = last && (last.ramps === next.ramps || (last.ramps?.length === next.ramps?.length &&
+      (next.ramps ?? []).every((ramp, index) => {
+        const previous = last.ramps[index];
+        return ramp.tick === previous.tick && ramp.label === previous.label && Object.is(ramp.board, previous.board) && ramp.tone === previous.tone;
+      })));
+    const same = last && last.length === next.length && last.start === next.start && last.dt === next.dt &&
+      last.kind === kind && last.lastSpot === next.lastSpot && sameRamps &&
+      sameList(last.markers, next.markers) && sameList(last.spots, next.spots);
+    if (same) return false;
+    drawn = {length: next.length, start: next.start, dt: next.dt, kind, lastSpot: next.lastSpot,
+      ramps: next.ramps, markers: next.markers, spots: next.spots};
     return true;
   }
   function paintMarks() {
-    if (!marksChanged()) return;
     let kind = 'CP';
     try { kind = getKind(status) ?? 'CP'; } catch { /* checkpoints */ }
+    if (!marksChanged(kind)) return;
     marks = timelineMarks(status, kind);
     const pct = at => `${(at * 100).toFixed(3)}%`;
     const fixed = marks.filter(mark => mark.type !== 'loc');
@@ -407,13 +417,10 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     progress = -1;
     marksLayer.innerHTML = fixed.filter(mark => mark.type === 'ramp').map(mark => `<i class="${mark.tone}" style="left:${pct(mark.at)}"></i>`).join('') +
       labelled.map(mark => `<span style="left:${pct(mark.at)}">${escape(mark.type === 'start' ? 'start' : mark.label)}</span>`).join('');
-    // Labels closer than ~44 px would overlap, so all are dropped.
-    const width = rail.clientWidth || 800;
-    toggleClass(marksLayer, 'dense', labelled.some((mark, index) => index && (mark.at - labelled[index - 1].at) * width < 44));
+    spacingDirty = true;
     pins.innerHTML = marks.filter(mark => mark.type === 'loc').map(mark =>
       `<button type="button" class="${mark.selected ? 'sel' : ''}" data-spot="${mark.tick}" style="left:${pct(mark.at)}" aria-label="${mark.label}, ${railTime((mark.tick - status.start) * status.dt)}. Right-click removes it."></button>`).join('');
     attr(rail, 'aria-valuemax', String(status.length));
-    rail.title = status.title ?? '';
   }
   function paint() {
     const reach = Math.min(1, (status.indexed ?? status.length) / Math.max(1, status.length));
@@ -429,6 +436,19 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
       if (status.ghosts && (focused === saveButton || focused === openers.keys || popovers.keys.contains(focused))) (q('[data-cn="view"]') ?? play).focus({preventScroll: true});
     }
     paintMarks();
+    if (spacingDirty) {
+      // A resize changes label spacing, not annotation geometry.
+      const width = rail.clientWidth || 800;
+      let previous = null, dense = false;
+      for (const mark of marks) {
+        if (mark.type !== 'start' && mark.type !== 'cp') continue;
+        if (previous !== null && (mark.at - previous) * width < 44) dense = true;
+        previous = mark.at;
+      }
+      toggleClass(marksLayer, 'dense', dense);
+      spacingDirty = false;
+    }
+    if (rail.title !== (status.title ?? '')) rail.title = status.title ?? '';
     paintPosition(position());
     const state = status.ended ? 'again' : status.playing ? 'pause' : 'play';
     if (state !== playState) {

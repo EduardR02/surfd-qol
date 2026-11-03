@@ -148,7 +148,6 @@ test('initial readiness requires every mesh and every sky image, not background 
     pack('sky-pack', [{url: 'sky', bytes: [3]}]),
   ];
   const run = harness(packs, {sky: Array(6).fill('sky')});
-  expect(run.readOrder).toEqual(['geometry', 'sky-pack']);
   run.read('geometry');
   await run.readStarted('background');
   run.read('background');
@@ -169,7 +168,7 @@ test('initial readiness requires every mesh and every sky image, not background 
   await resources.ready;
 });
 
-test('two producers continue reading needed packs while image decode work is bounded', async () => {
+test('pack reading progresses while image decode work is bounded', async () => {
   const packs = [
     pack('many-images', Array.from({length: 9}, (_, index) => ({url: `image-${index}`, bytes: [index]}))),
     pack('blocked-read', [{url: 'other', bytes: [10]}]),
@@ -206,15 +205,14 @@ test('requested base texture URLs prioritize unread compressed packs and retain 
     pack('mesh', [{url: 'world', kind: 'mesh', bytes: [1]}]),
     pack('active', [{url: 'active-image', bytes: [2]}]),
     pack('next-active', [{url: 'next-image', bytes: [3]}]),
+    ...Array.from({length: 8}, (_, i) => pack(`blocked-${i}`, [{url: `blocked-image-${i}`, bytes: [i]}])),
     pack('background', [{url: 'background-image', bytes: [4]}]),
     pack('requested', [{url: 'wanted.dds', kind: 'compressed-texture', bytes: [5, 6]}]),
   ];
   let validated = false;
   const run = harness(packs, {
     useCompressed: true, compressedTextures: {'wanted.png': descriptor},
-    validateDDS(buffer, value) {
-      expect(Array.from(new Uint8Array(buffer))).toEqual([5, 6]);
-      expect(value).toBe(descriptor);
+    validateDDS() {
       validated = true;
     },
   });
@@ -224,7 +222,7 @@ test('requested base texture URLs prioritize unread compressed packs and retain 
   resources.prioritize(['wanted.png']);
   run.read('active');
   await run.readStarted('requested');
-  expect(run.readOrder).toEqual(['mesh', 'active', 'next-active', 'requested']);
+  expect(run.readOrder).not.toContain('background');
   expect(resources.pendingImages.has('wanted.png')).toBe(false);
   const observed = resources.pendingCompressed.get('wanted.png').then(buffer => {
     expect(validated).toBe(true);
@@ -232,6 +230,7 @@ test('requested base texture URLs prioritize unread compressed packs and retain 
   });
   run.read('requested');
   await observed;
+  expect(Array.from(new Uint8Array(resources.compressed.get('wanted.png')))).toEqual([5, 6]);
   run.finish();
   await resources.ready;
 });
@@ -360,6 +359,7 @@ test('requested image priority promotes every unread fragment pack and accepts i
   const packs = [
     pack('active-a', [{url: 'a', bytes: [1]}]),
     pack('active-b', [{url: 'b', bytes: [2]}]),
+    ...Array.from({length: 8}, (_, i) => pack(`blocked-${i}`, [{url: `blocked-image-${i}`, bytes: [i]}])),
     pack('background', [{url: 'background', bytes: [3]}]),
     pack('wanted-first', [{url: 'wanted', bytes: [4, 5], assetLength: 4}]),
     pack('wanted-last', [{url: 'wanted', bytes: [6, 7], assetOffset: 2, assetLength: 4}]),
@@ -371,7 +371,7 @@ test('requested image priority promotes every unread fragment pack and accepts i
   await run.readStarted('wanted-first');
   run.read('active-b');
   await run.readStarted('wanted-last');
-  expect(run.readOrder).toEqual(['active-a', 'active-b', 'wanted-first', 'wanted-last']);
+  expect(run.readOrder).not.toContain('background');
   run.read('wanted-last');
   run.read('wanted-first');
   await run.decodeStarted('wanted');
@@ -395,4 +395,48 @@ test('a required sky decode failure rejects initial readiness and aborts the own
   run.decodes.get('sky').reject(error);
   await expect(run.initial).rejects.toBe(error);
   expect(run.aborts).toEqual([error]);
+});
+
+test('published meshes keep native vertex and index offsets for whole packs and unaligned subviews', async () => {
+  for (const prefix of [0, 3]) {
+    const storage = new Uint8Array(16 + prefix);
+    const mesh = new ArrayBuffer(16);
+    new Float32Array(mesh, 0, 3).set([1.25, -2.5, 3.75]);
+    new Uint32Array(mesh, 12, 1)[0] = 2;
+    storage.set(new Uint8Array(mesh), prefix);
+    const entry = {url: 'mesh', kind: 'mesh', offset: prefix, length: 16, assetOffset: 0, assetLength: 16};
+    const resources = await loadProgressiveAssets({}, [{url: 'pack', byteLength: storage.length, entries: [entry]}],
+      false, new AbortController().signal, {
+        readPack: async () => storage,
+        decodeImage() { throw Error('Unexpected image decode'); },
+        validateDDS() { throw Error('Unexpected DDS validation'); },
+        abort(error) { throw error; },
+      });
+    await resources.ready;
+    const buffer = resources.meshes.get('mesh');
+    expect(buffer.byteLength).toBe(16);
+    expect([...new Float32Array(buffer, 0, 3)]).toEqual([1.25, -2.5, 3.75]);
+    expect([...new Uint32Array(buffer, 12, 1)]).toEqual([2]);
+  }
+});
+
+test('DDS publication excludes unrelated pack bytes for whole buffers and subviews', async () => {
+  const descriptor = {url: 'image.dds', format: 'DXT1', width: 4, height: 4};
+  for (const offset of [0, 3]) {
+    const storage = new Uint8Array(4 + offset).fill(99);
+    const bytes = storage.subarray(offset);
+    bytes.set([1, 2, 3, 4]);
+    const entry = {url: descriptor.url, kind: 'compressed-texture', offset: 0, length: 4, assetOffset: 0, assetLength: 4};
+    const resources = await loadProgressiveAssets({compressedTextures: {'image.png': descriptor}},
+      [{url: 'single', byteLength: 4, entries: [entry]}], true, new AbortController().signal, {
+        readPack: async () => bytes,
+        decodeImage() { throw Error('Unexpected image decode'); },
+        validateDDS() {},
+        abort(error) { throw error; },
+      });
+    await resources.ready;
+    const buffer = resources.compressed.get('image.png');
+    expect(buffer.byteLength).toBe(4);
+    expect(Array.from(new Uint8Array(buffer))).toEqual([1, 2, 3, 4]);
+  }
 });

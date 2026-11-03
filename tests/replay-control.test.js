@@ -615,28 +615,28 @@ describe('replay control', () => {
     expect(resets).toBeGreaterThan(0);
     control.destroy();
   });
-  test('stepping forward across a keyframe catches the analysis up to it instead of resetting', async () => {
+  test('stepping across a keyframe does not simulate discarded analysis ticks', async () => {
     const {world, replay, run} = game(1400);
-    let ticks = 0, resets = 0;
-    const coaching = {save: () => ({ticks}), restore: state => { ticks = state.ticks; }, reset: () => { ticks = 0; resets++; }};
+    const resets = [];
     const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
-      archive: {get: async () => replay}, coaching, settings: {showBoard: true}});
-    await control.watch(run);
-    resets = 0;
-    const prototype = world.adapter.Session.prototype, step = prototype.step;
-    prototype.step = function (...args) { const result = step.apply(this, args); ticks++; control.tick(this); return result; };
+      archive: {get: async () => replay}, coaching: {reset: tick => resets.push(tick)}});
     try {
+      await control.watch(run);
       world.frame(DT * 1020);
       control.pause();
-      // The game restores keyframe 1024 rather than step onto it; paused play never kept it.
+      const before = world.steps;
       for (let i = 0; i < 6; i++) control.step(1);
-      expect([control.status().index, ticks, resets]).toEqual([1026, 1026, 0]);
-      // The frame is kept now: playing on and rewinding past it lands on real analysis.
+      expect(control.status().index).toBe(1026);
+      // Three ticks before native restore, then two after: tick 1024 is restored.
+      expect(world.steps - before).toBe(5);
+      expect(resets).toEqual([0, 1024]);
       control.play();
       world.frame(DT * 274);
+      const rewind = world.steps;
       control.seek(1100);
-      expect([ticks, resets]).toEqual([1100, 0]);
-    } finally { prototype.step = step; control.destroy(); }
+      expect(world.steps - rewind).toBe(76);
+      expect(resets.at(-1)).toBe(1024);
+    } finally { control.destroy(); }
   });
   test('at the end the game holds the last frame: ended, not playing', async () => {
     const { world, run, control } = game();
@@ -1051,10 +1051,12 @@ describe('native replay boundaries', () => {
       control.seek(200);
       expect(metrics.saveState().elapsed).toBeCloseTo(200 * DT, 8);
       expect(metrics.saveState().unknownRamp).toBe(false);
-      control.seek(384); // A nearby worker keyframe: the analysis steps up to it.
-      expect(metrics.saveState().elapsed).toBeCloseTo(384 * DT, 8);
+      const before = world.steps;
+      control.seek(384); // Unobserved worker keyframe: never simulate it just to fill the HUD cache.
+      expect(world.steps).toBe(before);
+      expect(metrics.saveState()).toMatchObject({elapsed: 0, unknownAir: true, unknownRamp: true});
       control.seek(200);
-      control.seek(640); // Too far to step: the HUD never played here.
+      control.seek(640); // Another keyframe the HUD never played through.
       expect(metrics.saveState()).toMatchObject({elapsed: 0, unknownAir: true, unknownRamp: true});
       world.frame(DT * 128); // A partial continuation must not cache tick 768.
       control.seek(128);
@@ -1316,3 +1318,39 @@ describe('shared replay practice saves', () => {
     }
   });
 });
+
+  test('failed and unrelated native restores do not reset watched analysis', async () => {
+    const {world, replay, run} = game();
+    const prototype = world.adapter.Session.prototype, original = prototype.restorePractice;
+    prototype.restorePractice = function (snapshot) {
+      return snapshot.failed ? false : original.apply(this, arguments);
+    };
+    const resets = [];
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
+      archive: {get: async () => replay}, coaching: {reset: tick => resets.push(tick)}});
+    try {
+      await control.watch(run);
+      expect(world.session.restorePractice({failed: true})).toBe(false);
+      const unrelated = new world.adapter.Session();
+      expect(unrelated.restorePractice({state: {tick: 128}})).toBe(true);
+      expect(resets).toEqual([0]);
+      control.seek(256);
+      expect(resets).toEqual([0, 256]);
+      expect(world.steps).toBe(0);
+    } finally { control.destroy(); prototype.restorePractice = original; }
+  });
+
+  test('native timeline markers follow in-place index updates and stay inside the native end', async () => {
+    const {world, replay, control} = game();
+    try {
+      await world.watchNative(async () => replay);
+      const markers = world.player.index.markers;
+      markers.push({kind: 'start', index: 20}, {kind: 'checkpoint', index: 80});
+      expect(control.status()).toMatchObject({start: 20, markers: [80]});
+      markers[1].index = 100;
+      expect(control.status().markers).toEqual([100]);
+      world.player.index.end = 90;
+      expect(control.status().markers).toEqual([]);
+      expect(control.status().markers).toEqual([]);
+    } finally { control.destroy(); }
+  });

@@ -98,6 +98,7 @@ h3{font-size:20px;line-height:1.25;letter-spacing:-.015em}
 .loading-benchmark{grid-column:1/-1;padding:28px 32px;background:var(--raised);border:1px solid var(--line);border-radius:6px}
 .loading-benchmark figcaption{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 24px;margin:0}
 .loading-benchmark figcaption strong{color:var(--text);font-size:18px}
+.benchmark-method{margin-top:12px;color:var(--muted);font-size:14px}
 .benchmark-legend{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:20px;color:var(--muted);font-size:14px}
 .benchmark-legend span{display:inline-flex;align-items:center;gap:8px}
 .benchmark-legend i{width:12px;height:12px;border-radius:2px}
@@ -347,10 +348,11 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
   <section class="performance wrap" id="performance" aria-labelledby="performance-title">
     <h2 id="performance-title">Loading improvements.</h2>
     <div class="prose">
-      <p>Get into maps sooner, at full texture quality. Textures outside your starting view can finish loading while you surf.</p>
+      <p>Load maps faster, without lowering texture quality.</p>
     </div>
     <figure class="loading-benchmark">
-      <figcaption><strong>Time until playable (seconds)</strong><span>Median of 3 preloaded-asset entries per map and variant</span></figcaption>
+      <figcaption><strong>Time until you can play</strong><span>Seconds · lower is better</span></figcaption>
+      <p class="benchmark-method">Once a map has been downloaded, this is how long it takes to get back in and start moving.</p>
       <div class="benchmark-legend">
         <span><i class="benchmark-native" aria-hidden="true"></i>Native game</span>
         <span><i class="benchmark-qol" aria-hidden="true"></i>Surfd QoL</span>
@@ -365,11 +367,50 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
         <dl>
           <div class="benchmark-row">
             <dt>Native</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:10.58"></span></span><span class="benchmark-value">10.58 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:10.88"></span></span><span class="benchmark-value">10.88 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
           <div class="benchmark-row">
             <dt>QoL</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:2.82"></span></span><span class="benchmark-value">2.82 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:2.12"></span></span><span class="benchmark-value">2.12 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+        </dl>
+      </section>
+      <section class="benchmark-map" aria-labelledby="benchmark-fiellu">
+        <h3 id="benchmark-fiellu">Fiellu</h3>
+        <dl>
+          <div class="benchmark-row">
+            <dt>Native</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:3.25"></span></span><span class="benchmark-value">3.25 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+          <div class="benchmark-row">
+            <dt>QoL</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.33"></span></span><span class="benchmark-value">1.33 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+        </dl>
+      </section>
+      <section class="benchmark-map" aria-labelledby="benchmark-radiant">
+        <h3 id="benchmark-radiant">Radiant</h3>
+        <dl>
+          <div class="benchmark-row">
+            <dt>Native</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:2.21"></span></span><span class="benchmark-value">2.21 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+          <div class="benchmark-row">
+            <dt>QoL</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.17"></span></span><span class="benchmark-value">1.17 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+        </dl>
+      </section>
+      <section class="benchmark-map" aria-labelledby="benchmark-utopia">
+        <h3 id="benchmark-utopia">Utopia</h3>
+        <dl>
+          <div class="benchmark-row">
+            <dt>Native</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:0.74"></span></span><span class="benchmark-value">0.74 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+          </div>
+          <div class="benchmark-row">
+            <dt>QoL</dt>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:0.30"></span></span><span class="benchmark-value">0.30 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
         </dl>
       </section>
@@ -378,14 +419,15 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px}
         <dl>
           <div class="benchmark-row">
             <dt>Native</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:3.18"></span></span><span class="benchmark-value">3.18 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-native" style="--seconds:2.87"></span></span><span class="benchmark-value">2.87 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
           <div class="benchmark-row">
             <dt>QoL</dt>
-            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.71"></span></span><span class="benchmark-value">1.71 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
+            <dd><span class="benchmark-track" aria-hidden="true"><span class="benchmark-bar benchmark-qol" style="--seconds:1.35"></span></span><span class="benchmark-value">1.35 <span aria-hidden="true">s</span><span class="sr-only">seconds</span></span></dd>
           </div>
         </dl>
       </section>
+      <p class="benchmark-method">Native game: one run per map. Surfd QoL: median of three runs. Results vary by computer.</p>
     </figure>
   </section>
 

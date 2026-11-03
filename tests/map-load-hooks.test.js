@@ -1,144 +1,133 @@
 import {expect, test} from 'bun:test';
-import {decodeMapImage, prepareMapRenderer} from '../extension/map-load-hooks.js';
+import {decodeMapImage, decodeMapMesh, nativeMapLoadHooks} from '../extension/map-load-hooks.js';
 
-function fixture() {
-  let clock = 0, alive = true;
-  const queue = [], objects = Array.from({length: 25}, () => ({isMesh: true}));
-  const textures = new Set(Array.from({length: 5}, () => ({})));
-  const uploaded = new Set(), warmed = new Set();
-  const viewport = {x: 3, y: 7, z: 900, w: 600};
-  let scissor = {...viewport}, testScissor = false, frames = 0;
-  const state = {
-    get frames() { return frames; }, get queued() { return queue.length; },
-    get scissor() { return scissor; }, get tested() { return testScissor; },
-    uploaded, warmed, objects, textures,
-    dispose() { alive = false; },
-    next(deadline = null) { queue.shift()?.(deadline); },
-    finish() { let remaining = 100; while (queue.length && remaining--) state.next(); expect(queue).toEqual([]); },
+// Deliberately unrelated private names, but the complete native loading,
+// constructor, preparation and disposal signatures. Execute the generated
+// renderer rather than asserting details of its injected source.
+const nativeFixture = `
+function nativeImage(bytes,url,signal){const type=url.endsWith(".png")?"image/png":"image/jpeg";return Promise.resolve({})}async function loadAssets(slug,options={}){if(rejected?.status==="rejected")throw meshes.clear(),dds.clear(),images.clear(),buffers.clear(),failure.reason??rejected.reason}
+function factory(canvas,data,map){const gpu=new Renderer({canvas:canvas,antialias:!0,alpha:!1,powerPreference:"high-performance"});
+const sky=data.scenes[0],occluders=data.scenes[1],world=data.scenes[2],camera={},textureMap=data.textures,cubeMap=data.cubes,groups=data.groups,zero=data.zero;
+if(data.compressedTextures&&!data.resources.compressed?.size){for(const entry of textureMap.values())gpu.initTexture(entry);for(const entry of cubeMap.values())gpu.initTexture(entry);sky.background instanceof Texture&&gpu.initTexture(sky.background)}
+let previous=null,prepareMs=0,disposed=false;const draw=()=>gpu.drawAll();
+const view={prepare:async frame=>{const started=performance.now(),scenes=[sky,occluders,world],context=gpu.getContext(),current=()=>!disposed&&!context.isContextLost(),yieldFrame=()=>Promise.resolve();try{
+for(const node of scenes)gpu.compile(node,camera);
+const textures=new Set([...textureMap.values(),...cubeMap.values()]);sky.background instanceof Texture&&textures.add(sky.background);for(const node of scenes)node.traverse(object=>{if(object.material)textures.add(object.material.map)});let time=performance.now();
+for(const texture of textures)gpu.initTexture(texture);
+for(const node of groups)for(const{object:mesh,matrices:matrices,offsets:offsets,attribute:attribute}of node.objects)mesh.count=offsets.length,mesh.instanceMatrix.array.set(matrices),attribute.array.set(offsets);try{draw()}finally{for(const group of groups)group.count=-1;zero.makeScale(0,0,0)}
+}finally{prepareMs=performance.now()-started;const initial=frame??previous;initial&&!disposed&&view.render(initial)}},setTriggersVisible:()=>{},render(frame){previous=frame;gpu.drawVisible(frame)},getStats:()=>({prepareMs}),dispose(){disposed=true;gpu.dispose()}};return view}
+`;
+
+function nativeRenderer({unknown = false, drawError = null} = {}) {
+  const calls = {compile: 0, upload: 0, all: 0, visible: [], disposed: 0, closed: 0, traverse: 0};
+  class Texture {}
+  let lost = false;
+  class Renderer {
+    compile() { calls.compile++; }
+    initTexture() { calls.upload++; }
+    getContext() { return {isContextLost: () => lost}; }
+    drawAll() { calls.all++; }
+    drawVisible(frame) { if (drawError) throw drawError; calls.visible.push(frame); }
+    dispose() { calls.disposed++; }
+  }
+  const data = {
+    scenes: Array.from({length: 3}, () => ({visible: false, frustumCulled: true,
+      traverse(visit) { calls.traverse++; visit(this); }})),
+    textures: new Map([['wall', new Texture()]]), cubes: new Map(), groups: [],
+    zero: {makeScale() {}}, compressedTextures: {},
+    resources: {compressed: new Map(), images: new Map([['image', {close() { calls.closed++; }}]])},
   };
-  const config = {
-    renderer: {
-      compile() {},
-      initTexture(texture) { uploaded.add(texture); clock += 3; },
-      getScissor(target) { return target.copy(scissor); },
-      getScissorTest() { return testScissor; },
-      setScissor(x, y, z, w) { scissor = {x, y, z, w}; },
-      setScissorTest(value) { testScissor = value; },
-    },
-    scenes: [{traverse(visit) { objects.forEach(visit); }}], camera: {}, textures,
-    alive: () => alive, schedule: callback => queue.push(callback), now: () => clock,
-    render() { frames++; },
-    warm(selected) {
-      // Preparation may submit geometry but must not change any visible pixels.
-      expect(testScissor).toBe(true);
-      expect(scissor).toEqual({x: 0, y: 0, z: 0, w: 0});
-      for (const object of selected) warmed.add(object);
-      clock += 3;
-    },
-  };
-  return {state, config};
+  const input = unknown ? nativeFixture.replace('powerPreference:"high-performance"', 'powerPreference:"default"') : nativeFixture;
+  const factory = new Function('Renderer', 'Texture', nativeMapLoadHooks(input) + ';return factory')(Renderer, Texture);
+  return {view: factory({}, data, null), data, calls, loseContext() { lost = true; }};
 }
 
-test('first frame is available before background work and every remaining resource finishes', () => {
-  const {state, config} = fixture();
-  prepareMapRenderer(config);
-  expect(state.frames).toBe(1);
-  expect(state.uploaded.size).toBe(0);
-  expect(state.warmed.size).toBe(0);
-  state.next();
-  expect(state.uploaded.size).toBe(1);
-  expect(state.warmed.size).toBe(0);
-  state.finish();
-  expect(state.uploaded).toEqual(state.textures);
-  expect(state.warmed).toEqual(new Set(state.objects));
-  expect(state.scissor).toEqual({x: 3, y: 7, z: 900, w: 600});
-  expect(state.tested).toBe(false);
-  expect(state.frames).toBe(1);
+test('native hook avoids constructor-wide uploads and all-map preparation, preserving scene visibility and cleanup', async () => {
+  const {view, data, calls} = nativeRenderer();
+  expect(calls.upload).toBe(0);
+  const frame = {eyePosition: {x: 1, y: 2, z: 3}};
+  await view.prepare(frame);
+  expect(calls.visible).toEqual([frame]);
+  expect(calls.compile).toBe(0);
+  expect(calls.all).toBe(0);
+  expect(calls.traverse).toBe(0);
+  for (const scene of data.scenes) {
+    expect(scene.visible).toBe(false);
+    expect(scene.frustumCulled).toBe(true);
+  }
+  view.dispose();
+  expect(calls.disposed).toBe(1);
+  expect(calls.closed).toBe(1);
+  await view.prepare(frame);
+  expect(calls.visible).toEqual([frame]);
 });
 
-test('background geometry waits for parallel shaders while textures continue uploading', () => {
-  const {state, config} = fixture();
-  let ready = false;
-  const material = {}, program = {isReady: () => ready};
-  config.renderer.extensions = {has: () => true};
-  config.renderer.properties = {get: () => ({programs: new Map([['map', program]])})};
-  config.renderer.compile = () => new Set([material]);
-  const warm = config.warm;
-  config.warm = selected => {
-    if (!ready) throw Error('Background draw would wait synchronously for its shader');
-    warm(selected);
-  };
-  prepareMapRenderer(config);
-  while (state.uploaded.size < state.textures.size) state.next();
-  state.next();
-  expect(state.frames).toBe(1);
-  expect(state.warmed.size).toBe(0);
-  expect(state.queued).toBe(1);
-  ready = true;
-  state.finish();
-  expect(state.warmed).toEqual(new Set(state.objects));
+test('native hook retains previous-frame fallback and context-loss cancellation', async () => {
+  const run = nativeRenderer(), frame = {eyePosition: {x: 5, y: 6, z: 7}};
+  run.view.render(frame);
+  await run.view.prepare();
+  expect(run.calls.visible).toEqual([frame, frame]);
+  run.loseContext();
+  await run.view.prepare(frame);
+  expect(run.calls.visible).toEqual([frame, frame]);
 });
 
-test('disposing while parallel shaders are pending cancels background geometry', () => {
-  const {state, config} = fixture();
-  config.textures = [];
-  config.renderer.extensions = {has: () => true};
-  config.renderer.properties = {get: () => ({programs: new Map([['map', {isReady: () => false}]])})};
-  config.renderer.compile = () => new Set([{}]);
-  prepareMapRenderer(config);
-  state.next();
-  state.dispose();
-  state.finish();
-  expect(state.warmed.size).toBe(0);
+test('unknown native renderer layouts retain their complete native preparation', async () => {
+  const {view, calls} = nativeRenderer({unknown: true});
+  expect(calls.upload).toBe(1);
+  await view.prepare({});
+  expect(calls.compile).toBe(3);
+  expect(calls.traverse).toBe(3);
+  expect(calls.all).toBe(1);
+  expect(calls.visible).toHaveLength(1);
 });
 
-test('an exhausted idle deadline defers work, but timeout callbacks still make progress', () => {
-  const {state, config} = fixture();
-  prepareMapRenderer(config);
-  state.next({didTimeout: false, timeRemaining: () => 0});
-  expect(state.uploaded.size).toBe(0);
-  expect(state.queued).toBe(1);
-  state.next({didTimeout: true, timeRemaining: () => 0});
-  expect(state.uploaded.size).toBe(1);
-  state.finish();
+test('native hook preserves first-frame failures instead of declaring a broken map ready', async () => {
+  const failure = new Error('GPU failure');
+  const {view} = nativeRenderer({drawError: failure});
+  await expect(view.prepare({})).rejects.toBe(failure);
 });
 
-test('disposing a map prevents queued uploads and geometry work', () => {
-  const {state, config} = fixture();
-  prepareMapRenderer(config);
-  state.next();
-  state.dispose();
-  state.finish();
-  expect(state.uploaded.size).toBe(1);
-  expect(state.warmed.size).toBe(0);
-  const alreadyDisposed = fixture();
-  alreadyDisposed.state.dispose();
-  prepareMapRenderer(alreadyDisposed.config);
-  expect(alreadyDisposed.state.frames).toBe(0);
-  expect(alreadyDisposed.state.queued).toBe(0);
+test('packed mesh decoding preserves immutable source bytes, normals, attributes and exact native bounds', () => {
+  const source = new Float32Array([
+    -3, 5, 2, .25, .5, -.75, 1, 2, 3, 4, 5, 6,
+    7, -1, 4, -.5, .75, .25, 7, 8, 9, 10, 11, 12,
+    2, 9, -6, 1, 0, -1, 13, 14, 15, 16, 17, 18,
+  ]);
+  const indices = new Uint32Array([2, 0, 1]);
+  const buffer = new ArrayBuffer(source.byteLength + indices.byteLength);
+  new Float32Array(buffer, 0, source.length).set(source);
+  new Uint32Array(buffer, source.byteLength).set(indices);
+  const original = new Uint8Array(buffer).slice();
+  const decoded = decodeMapMesh(buffer, 3);
+  expect(decoded.vertices).toEqual(new Float32Array([
+    -3, 2, -5, .25, -.75, -.5, 1, 2, 3, 4, 5, 6,
+    7, 4, 1, -.5, .25, -.75, 7, 8, 9, 10, 11, 12,
+    2, -6, -9, 1, -1, -0, 13, 14, 15, 16, 17, 18,
+  ]));
+  expect([decoded.minX, decoded.minY, decoded.minZ]).toEqual([-3, -6, -9]);
+  expect([decoded.maxX, decoded.maxY, decoded.maxZ]).toEqual([7, 4, 1]);
+  expect([decoded.centerX, decoded.centerY, decoded.centerZ]).toEqual([2, -1, -4]);
+  expect(decoded.radius).toBe(Math.sqrt(75));
+  expect(new Uint8Array(buffer)).toEqual(original);
+  decoded.vertices.fill(0);
+  expect(new Uint8Array(buffer)).toEqual(original);
+  expect(decodeMapMesh(buffer, 3).vertices).not.toEqual(decoded.vertices);
 });
 
-test('geometry warm-up restores an existing scissor even when rendering fails', () => {
-  const {state, config} = fixture();
-  config.textures = [];
-  config.renderer.setScissorTest(true);
-  config.warm = () => { throw Error('GPU failure'); };
-  prepareMapRenderer(config);
-  expect(() => state.next()).toThrow('GPU failure');
-  expect(state.scissor).toEqual({x: 3, y: 7, z: 900, w: 600});
-  expect(state.tested).toBe(true);
-  expect(state.queued).toBe(0);
-});
-
-test('standalone injected preparation keeps its scheduling and cancellation behavior', () => {
-  const standalone = Function(`return (${prepareMapRenderer.toString()})`)();
-  const {state, config} = fixture();
-  standalone(config);
-  state.next();
-  state.dispose();
-  state.finish();
-  expect(state.uploaded.size).toBe(1);
-  expect(state.warmed.size).toBe(0);
+test('packed mesh bounds preserve empty geometry and signed-zero behavior', () => {
+  const empty = decodeMapMesh(new ArrayBuffer(0), 0);
+  expect([empty.minX, empty.minY, empty.minZ]).toEqual([Infinity, Infinity, Infinity]);
+  expect([empty.maxX, empty.maxY, empty.maxZ]).toEqual([-Infinity, -Infinity, -Infinity]);
+  expect([empty.centerX, empty.centerY, empty.centerZ, empty.radius]).toEqual([0, 0, 0, 0]);
+  const source = new Float32Array(12);
+  source[0] = -0;
+  const decoded = decodeMapMesh(source.buffer, 1);
+  expect(Object.is(decoded.minX, -0)).toBe(true);
+  expect(Object.is(decoded.maxX, -0)).toBe(true);
+  expect(Object.is(decoded.vertices[2], -0)).toBe(true);
+  expect(decoded.radius).toBe(0);
+  expect(() => decodeMapMesh(source.buffer, 2)).toThrow(RangeError);
 });
 
 async function withDecoder(decoder, run, imageDecoder = undefined) {

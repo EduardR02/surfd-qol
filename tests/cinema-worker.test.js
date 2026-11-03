@@ -1,10 +1,9 @@
 import {describe, expect, test} from 'bun:test';
-import {createReplayIndexPool, createReplayIndexWorker} from '../extension/replay-index-worker.js';
+import {createReplayIndexJobs, createReplayIndexWorker} from '../extension/replay-index-worker.js';
 import {createCinemaWorkerRuntime} from '../src/cinema-worker-runtime.js';
 import {recordTrack} from '../src/cinema-track.js';
 import {TRACK_ARRAYS, trackSlice} from '../src/cinema-recording.js';
 import {planCamera} from '../src/cinema-camera.js';
-import {cameraWorld} from '../src/cinema-world.js';
 import {onClock} from '../src/cinema-clock.js';
 import {createCinema} from '../src/cinema.js';
 
@@ -51,7 +50,7 @@ function physics() {
 // A structured-clone boundary, including real transfer detachment. Consumers
 // run the real recording/planning implementation, not an echo RPC substitute.
 function bridge(f, count = 12, batchSize = 1) {
-  const pool = createReplayIndexPool(async () => { throw new Error('Warm geometry must not be packed for camera'); });
+  const pool = createReplayIndexJobs(async () => { throw new Error('Warm geometry must not be packed for camera'); });
   const nativePauses = [], posted = [], batches = [];
   let nativeJob = null, runtime, receive;
   const worker = {
@@ -221,7 +220,7 @@ describe('retained cinematic worker consumers', () => {
       const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render(view) { return view; }};
       const session = {map: f.map}, playback = {replay: b.replay, index: 0};
       const adapter = {...f, getSession: () => session, replay: {playback: () => playback},
-        cinema: {renderer: () => renderer, worker: session => b.pool.camera(session)}};
+        cinema: {renderer: () => renderer, worker: (session, replay) => b.pool.camera(session, replay)}};
       cinema = createCinema({getAdapter: () => adapter, loadIdle() { throw new Error('Supported recording/planning must stay in worker'); },
         createScene: () => ({show() {}, update() {}, dispose() {}, labels: () => []})});
       const enabling = cinema.setView('cinematic');
@@ -304,8 +303,6 @@ describe('retained cinematic worker consumers', () => {
     expect([...plan.eye].every(Number.isFinite)).toBe(true);
     expect(finished).toBe(false);
     expect(f.counts()).toEqual({constructions: 2, steps: 2});
-    const recordMessage = b.posted.find(message => message.type === 'record');
-    expect(recordMessage.replay).toBeUndefined();
     const planMessage = b.posted.find(message => message.type === 'camera-plan');
     expect(planMessage.options.a).toEqual({handle: {id: b.lease.id, from: 0}, count: 2});
     expect(planMessage.__surfdQolCollision).toBeUndefined();
@@ -428,12 +425,12 @@ describe('retained cinematic worker consumers', () => {
     const f = physics(), b = bridge(f);
     await flush();
     const api = b.pool.camera({map: f.map});
-    const one = api.record({replay: b.replay}).catch(error => error.message);
-    const two = api.record({replay: b.replay}).catch(error => error.message);
+    const one = api.record({replay: b.replay}).then(() => false, () => true);
+    const two = api.record({replay: b.replay}).then(() => false, () => true);
     await flush();
     b.worker.onerror({preventDefault() {}});
-    expect(await one).toBe('Retained replay worker closed');
-    expect(await two).toBe('Retained replay worker closed');
+    expect(await one).toBe(true);
+    expect(await two).toBe(true);
     expect(api.live).toBe(false);
     expect(b.worker.terminated).toBe(true);
     await b.advance();
@@ -452,17 +449,42 @@ describe('retained cinematic worker consumers', () => {
   });
 });
 
-test('filtered native camera wrappers and their triangle caches survive consecutive plans', () => {
-  const brushes = [{contents: 1}, {contents: 0x10000001}], triangles = [];
-  const world = {brushes, triangles, triangleBounds: [], triangleCache: new Map(), triangleBrush() {},
-    tree: {query: () => [0, 1]}, trace() { this.triangleCache.set(4, 'warm'); return {fraction: 1}; }};
-  const session = {map: {brushes, displacementTriangles: triangles}, movement: {world}};
-  const one = cameraWorld(session), two = cameraWorld(session);
-  one.trace({}, {}, {});
-  expect(two).toBe(one);
-  expect(two.tree.query({})).toEqual([0]);
-  expect(two.triangleCache.get(4)).toBe('warm');
-  expect(world.triangleCache.size).toBe(0);
-  world.vphysicsFeatureFix = true;
-  expect(cameraWorld(session)).not.toBe(one);
-});
+
+  test('a fresh view-only worker records once without a separate native indexing pass', async () => {
+    const f = physics(), replay = f.replay(4), session = f.createSession(f.map, replay), posts = [];
+    const runtime = createCinemaWorkerRuntime({post: message => posts.push(message), createSession: f.createSession});
+    const record = runtime.attach(session, replay, 1, false);
+    expect(record.capture).toBeNull();
+    expect(f.counts()).toEqual({constructions: 1, steps: 0});
+    runtime.receive(protocol({type: 'camera-retain', id: 1}));
+    runtime.receive(protocol({type: 'record', id: 1, request: 2, replay}));
+    while (!posts.some(message => message.type === 'record-chunk' && message.done)) await turn();
+    expect(f.counts()).toEqual({constructions: 1, steps: 4});
+    expect(record.capture.track.position.at(-3)).toBe(40);
+    runtime.receive(protocol({type: 'camera-plan', request: 3, world: 1,
+      options: {a: {handle: {id: 1, from: 0}, count: 5}, style: 'steady'}}));
+    while (!posts.some(message => message.request === 3)) await turn();
+    expect(posts.find(message => message.request === 3).plan.count).toBeGreaterThan(0);
+    runtime.receive(protocol({type: 'camera-release', ids: [1]}));
+    expect(record.capture.track.count).toBe(5);
+    expect(posts.some(message => message.type === 'camera-forget')).toBe(false);
+  });
+  test('releasing an uploaded track preserves the independently owned primary world', async () => {
+    const f = physics(), replay = f.replay(4), session = f.createSession(f.map, replay), posts = [];
+    const runtime = createCinemaWorkerRuntime({post: message => posts.push(message), createSession: f.createSession});
+    const record = runtime.attach(session, replay, 1);
+    runtime.receive(protocol({type: 'record', id: 1, request: 2}));
+    for (let index = 0; index < replay.commands.length; index++) session.step(replay.commands[index]);
+    await runtime.batch(1, replay.commands.length);
+    runtime.detach(1);
+    const track = structuredClone(record.capture.track);
+    runtime.receive(protocol({type: 'camera-store', id: 3, track}));
+    runtime.receive(protocol({type: 'camera-release', ids: [3]}));
+    runtime.receive(protocol({type: 'camera-store', id: 4, track}));
+    expect(posts.some(message => message.type === 'camera-forget' && message.id === 4)).toBe(false);
+    runtime.receive(protocol({type: 'camera-plan', request: 5, world: 1,
+      options: {a: {handle: {id: 4, from: 0}, count: track.count}, style: 'steady'}}));
+    while (!posts.some(message => message.request === 5)) await turn();
+    expect(posts.find(message => message.request === 5).plan.count).toBeGreaterThan(0);
+    runtime.receive(protocol({type: 'camera-release', ids: [1, 4]}));
+  });

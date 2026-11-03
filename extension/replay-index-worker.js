@@ -1,14 +1,15 @@
-// Worker-shaped leases let the native player keep its validation, watchdog and
-// fallback. Only the map's worker/world outlives stopWorker(); indexes do not.
-export function createReplayIndexPool(prepare) {
-  let slot = null, rendererScope = null, generation = 0;
+// Worker-shaped leases preserve native validation and fallback. One completed
+// camera-capable world stays with its renderer until replacement or disposal.
+export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
+  let slot = null, rendererScope = null, generation = 0, workerFactory = createWorkerDefault;
   const protocol = 1;
   function evict(owner = slot) {
-    if (!owner) return;
+    if (!owner || owner.closed) return;
+    owner.closed = true;
     if (slot === owner) slot = null;
     for (const request of owner.requests.values()) {
       request.cleanup();
-      request.reject(new Error('Retained replay worker closed'));
+      request.reject(new Error('Replay job closed'));
     }
     owner.requests.clear();
     owner.readyResolve(false);
@@ -16,6 +17,9 @@ export function createReplayIndexPool(prepare) {
     owner.worker.onmessage = owner.worker.onerror = owner.worker.onmessageerror = null;
     owner.worker.terminate();
     const lease = owner.lease;
+    owner.lease = null;
+    owner.replay = null;
+    if (lease) lease.map = lease.session = lease.message = null;
     if (lease && !lease.closed) {
       lease.onclose?.();
       lease.closed = true;
@@ -30,7 +34,7 @@ export function createReplayIndexPool(prepare) {
     return slot === owner && owner.lease === lease && !lease.closed;
   }
   async function post(owner, lease) {
-    if (!owner.ready || !lease.message || lease.posting) return;
+    if (!lease.message || lease.posting) return;
     lease.posting = true;
     const isCurrent = () => current(owner, lease);
     try {
@@ -39,6 +43,7 @@ export function createReplayIndexPool(prepare) {
         try { packet = await prepare(lease.map, lease.session, lease.message, isCurrent); }
         catch { /* Native geometry loading remains the cold-path fallback. */ }
       }
+      if (!owner.ready) await owner.readiness;
       if (!isCurrent()) return;
       const message = {...lease.message, __surfdQolIndex: protocol, type: 'run', job: lease.id};
       const transfer = [];
@@ -100,9 +105,13 @@ export function createReplayIndexPool(prepare) {
     const api = {
       async record({replay, signal, onProgress, tick = 0}) {
         let id = owner.replays.get(replay);
-        if (id === undefined) { id = ++generation; owner.replays.set(replay, id); }
+        if (id === undefined || !owner.knownTracks.has(id)) {
+          id = ++generation;
+          owner.replays.set(replay, id);
+          owner.knownTracks.add(id);
+        }
         handles.add(id);
-        const track = await rpc('record', {id, tick, ...(owner.knownTracks.has(id) ? {} : {replay})}, {signal, onProgress});
+        const track = await rpc('record', {id, tick, replay}, {signal, onProgress});
         if (track) {
           track._cinemaWorker = api;
           track._cinemaHandle = {id, from: 0};
@@ -113,7 +122,7 @@ export function createReplayIndexPool(prepare) {
         handles.add(id);
         if (!live()) return;
         try {
-          if (!owner.knownTracks.has(id) && track) {
+          if (track && (track._cinemaWorker !== api || !owner.knownTracks.has(id))) {
             owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-store', id, track: encode(track)});
             owner.knownTracks.add(id);
           } else owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-retain', id});
@@ -128,13 +137,19 @@ export function createReplayIndexPool(prepare) {
           map: other.map && other.map.byteLength !== other.map.buffer.byteLength ? other.map.slice() : other.map}))};
         return rpc('camera-plan', {options: data, world: world ?? options.a._cinemaHandle?.id ?? handles.values().next().value}, {signal});
       },
-      release() {
+      release(id = null) {
+        if (id !== null) {
+          handles.delete(id);
+          if (live()) try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-release', ids: [id]}); } catch {}
+          return;
+        }
         for (const [id, request] of owner.requests) {
           request.cleanup(); request.resolve(null); owner.requests.delete(id);
           try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-cancel', request: id}); } catch {}
         }
         if (live()) try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-release', ids: [...handles]}); } catch {}
         handles.clear();
+        owner.viewOwned = false;
       },
       get live() { return live() && owner.camera !== false; },
     };
@@ -162,7 +177,6 @@ export function createReplayIndexPool(prepare) {
         request.track[key].set(values, data.from * size);
       }
       if (!regional) request.received = data.end;
-      owner.knownTracks.add(data.id);
       for (const key of ['start', 'startTick', 'finish', 'splits', 'time']) request.track[key] = data[key];
       if (!request.nearPositions && Number.isFinite(request.tick) &&
           (regional || data.end > Math.min(data.total - 1, request.tick + Math.ceil(6 / data.dt)))) {
@@ -189,13 +203,27 @@ export function createReplayIndexPool(prepare) {
     request.cleanup();
     owner.requests.delete(data.request);
   }
+  function forgetPrimary(owner, id) {
+    owner.knownTracks.delete(id);
+  }
   return {
-    acquire(map, replay, session, createWorker) {
-      if (slot && (slot.scope !== rendererScope || slot.mapId !== replay.mapId || slot.version !== replay.mapVersion)) evict();
-      slot?.lease?.terminate();
-      if (!slot) {
-        const owner = {worker: createWorker(), scope: rendererScope, mapId: replay.mapId, version: replay.mapVersion,
-          ready: false, world: false, lease: null, requests: new Map(), replays: new WeakMap(), knownTracks: new Set()};
+    acquire(map, replay, session, createWorker = workerFactory) {
+      if (!slot || slot.lease || slot.scope !== rendererScope || slot.mapId !== replay.mapId ||
+          slot.version !== replay.mapVersion || !slot.world) evict();
+      workerFactory ??= createWorker;
+      let owner = slot;
+      if (owner) {
+        owner.replay = replay;
+        owner.job = ++generation;
+        owner.viewOnly = false;
+        if (!owner.knownTracks.has(owner.replays.get(replay))) owner.replays.set(replay, owner.job);
+        owner.knownTracks.add(owner.job);
+      } else {
+        owner = {worker: createWorker(), scope: rendererScope, mapId: replay.mapId, version: replay.mapVersion,
+          replay, job: ++generation, viewOwned: false, replays: new WeakMap(), knownTracks: new Set(),
+          ready: false, world: false, lease: null, requests: new Map()};
+        owner.replays.set(replay, owner.job);
+        owner.knownTracks.add(owner.job);
         owner.readiness = new Promise(resolve => { owner.readyResolve = resolve; });
         owner.api = camera(owner);
         owner.worldReadiness = new Promise(resolve => { owner.worldResolve = resolve; });
@@ -204,7 +232,7 @@ export function createReplayIndexPool(prepare) {
           if (slot !== owner) return;
           const data = event.data;
           // An unpatched native worker rejects hello. Never run it as though it
-          // supported retained worlds, generation routing or cancellation.
+          // supported job ownership, generation routing or cancellation.
           if (data?.__surfdQolIndex !== protocol) { fail(owner); return; }
           if (data.type === 'ready') {
             owner.ready = true;
@@ -213,7 +241,7 @@ export function createReplayIndexPool(prepare) {
             if (owner.lease) void post(owner, owner.lease);
             return;
           }
-          if (data.type === 'camera-forget') { owner.knownTracks.delete(data.id); return; }
+          if (data.type === 'camera-forget') { forgetPrimary(owner, data.id); return; }
           if (['record-chunk', 'record-window', 'camera-plan', 'camera-alignment', 'camera-error'].includes(data.type)) {
             try { cameraMessage(owner, data); } catch (error) { fail(owner, error); }
             return;
@@ -223,8 +251,11 @@ export function createReplayIndexPool(prepare) {
           if (data.type === 'world') {
             if (data.mapId !== owner.mapId || data.mapVersion !== owner.version) { fail(owner); return; }
             owner.world = true;
+            if (owner.viewOwned) owner.api.retain(owner.job);
             owner.worldResolve(true);
+            if (owner.viewOnly) { lease.complete = true; lease.terminate(); }
           } else if (data.type === 'batch' && data.ok === true) {
+            if (data.batch?.done) lease.complete = true;
             lease.onmessage?.({data});
           } else {
             fail(owner);
@@ -233,9 +264,8 @@ export function createReplayIndexPool(prepare) {
         owner.worker.onerror = event => { event.preventDefault?.(); fail(owner, event); };
         owner.worker.onmessageerror = () => fail(owner);
       }
-      const owner = slot;
       const lease = {
-        id: ++generation, map, session, closed: false, posting: false, dispatched: false, message: null,
+        id: owner.job, map, session, closed: false, posting: false, dispatched: false, message: null,
         onmessage: null, onerror: null, onclose: null,
         postMessage(message) {
           if (!current(owner, lease)) return;
@@ -247,24 +277,32 @@ export function createReplayIndexPool(prepare) {
           lease.closed = true;
           if (!currentOwner()) return;
           owner.lease = null;
-          if (failed || lease.dispatched && !owner.world) { evict(owner); return; }
+          if (failed || !lease.complete && !owner.viewOwned && !owner.requests.size ||
+              owner.camera === false || !owner.world) { evict(owner); return; }
+          lease.map = lease.session = lease.message = null;
           try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'cancel', job: lease.id}); }
           catch { evict(owner); }
         },
       };
       function currentOwner() { return slot === owner && owner.lease === lease; }
       owner.lease = lease;
-      owner.replays.set(replay, lease.id);
-      owner.knownTracks.add(lease.id);
       if (!owner.ready) {
         try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'hello'}); }
         catch { evict(owner); throw new Error('Replay worker initialization failed'); }
       }
       return lease;
     },
-    camera(session) {
-      return slot && slot.scope === rendererScope && slot.mapId === session?.map?.id &&
-        slot.version === session.map.version && slot.camera !== false ? slot.api : null;
+    camera(session, replay = null, entry = session?.map) {
+      if (!slot && session?.map && replay && workerFactory) {
+        const lease = this.acquire(session.map, replay, session);
+        slot.viewOnly = slot.viewOwned = true;
+        lease.postMessage({entry, currentVersion: session.map.version, replay, __surfdQolViewOnly: true});
+      }
+      if (!slot || slot.scope !== rendererScope || slot.mapId !== session?.map?.id ||
+          slot.version !== session.map.version || slot.camera === false) return null;
+      slot.viewOwned = true;
+      if (slot.world) slot.api.retain(slot.job);
+      return slot.api;
     },
     ownRenderer(renderer) {
       const scope = {};

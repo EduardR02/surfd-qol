@@ -195,6 +195,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       let cached = recordings.get(current.replay);
       if (cached?.map.deref() !== session.map || cached?.world.deref() !== cacheWorld) cached = null;
       if (cached?.track._cinemaWorker?.live) cached.track._cinemaWorker.retain(cached.track._cinemaHandle.id, cached.track);
+      // Capture ownership before a first progress callback can arrive, but a
+      // completed CPU recording/plan does not need a replacement worker.
+      current.worker = cached?.track._cinemaWorker?.live ? cached.track._cinemaWorker
+        : cached ? null : adapter.cinema?.worker?.(session, current.replay) ?? null;
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
@@ -227,7 +231,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const retimed = current.track && current.track.startTick !== track.startTick;
     if (retimed || range || !current.track || regional && (count >= current.track.count || tick < current.track._recordedFrom) || !regional && count >= current.track.count * 2) {
       current.track = {...track, count, _recordedFrom: range?.from ?? 0, finish: Math.min(track.finish, count - 1), splits: track.splits.slice()};
-      if (current.renderer) rebuild(current);
+      // The initial scene already covers the requested planning window.
+      // Growing its future prefix while its shaders compile only recreates
+      // ghosts, paths and compile waits; publish the latest geometry afterwards.
+      if (current.renderer && (!current.warming || retimed || range)) rebuild(current);
       for (const run of current.runs) run.maps = {time: alignByTime(current.track, run.track)};
       if (retimed && current.runs.length) current.runs = current.runs.slice();
       current.plans = {};
@@ -371,7 +378,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   const planKey = (sync, focus, style) => `${sync}|${focus ?? ''}|${style}`;
   async function cameraPlan(current, options, owned, nearby = false) {
     const retained = current.track?._cinemaWorker;
-    const worker = retained?.live ? retained : getAdapter().cinema?.worker?.(getAdapter().getSession());
+    const worker = current.worker = retained?.live ? retained : getAdapter().cinema?.worker?.(getAdapter().getSession(), current.replay);
     if (worker?.live && !current.workerFailed) {
       try { return await worker.plan({...options, nearby}, current.planAbort?.signal, retained === worker ? current.track._cinemaHandle.id : undefined); }
       catch (error) {
@@ -448,7 +455,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       if (current.loading.length !== before) notify();
       return;
     }
-    current.runs.find(run => run.id === id)?.controller?.abort();
+    const removed = current.runs.find(run => run.id === id);
+    removed?.controller?.abort();
+    if (removed?.track._cinemaHandle) removed.track._cinemaWorker?.release(removed.track._cinemaHandle.id);
     current.runs = current.runs.filter(run => run.id !== id);
     current.plans = {};
     // First person with no runs left is everything off; a camera stays.
@@ -881,7 +890,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.resolvePreview(false);
     current.lifetime.abort();
     current.planAbort?.abort();
-    current.track?._cinemaWorker?.release();
+    (current.worker ?? current.track?._cinemaWorker)?.release();
     state = null;
     for (const pending of current.loading) pending.cancel();
     current.unlisten?.();

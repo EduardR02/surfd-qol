@@ -440,7 +440,7 @@ describe('cinematic replay lifecycle', () => {
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
     let disposed = 0, scenes = 0, colors = [], positions = [], made = [];
     const control = {renderer, playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
-    const adapter = {cinema: {renderer: () => control.renderer}, getSession: () => control.session, replay: {playback: () => control.playback}};
+    const adapter = {cinema: {renderer: () => control.renderer, worker: options.worker}, getSession: () => control.session, replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, onChange: options.onChange, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
       createScene: (_, runs) => {
@@ -629,6 +629,51 @@ describe('cinematic replay lifecycle', () => {
     await cinema.setEnabled(true);
     expect(counts().recorded).toBe(1);
     cinema.close();
+  });
+  test('closing and reopening reuses completed CPU recording and releases the old scene', async () => {
+    let workerRequests = 0;
+    const {cinema, counts} = rig({worker: () => { workerRequests++; return null; }});
+    await cinema.setView('steady');
+    const first = cinema.tracks[0], firstRequests = workerRequests;
+    cinema.close();
+    await cinema.setView('steady');
+    expect(counts().recorded).toBe(1);
+    expect(cinema.tracks[0]).toBe(first);
+    expect(counts().disposed).toBe(1);
+    expect(workerRequests).toBe(firstRequests);
+    cinema.close();
+  });
+  test('closing releases worker ownership before the first recording is published', async () => {
+    const entered = deferred(), finished = deferred(), releases = [];
+    const worker = {live: false, release: id => releases.push(id)};
+    const {cinema} = rig({worker: () => worker, record: async () => {
+      entered.resolve();
+      await finished.promise;
+      return straight({count: 60});
+    }});
+    const enabling = cinema.setEnabled(true);
+    await entered.promise;
+    cinema.close();
+    expect(releases).toEqual([undefined]);
+    finished.resolve();
+    expect(await enabling).toBe(false);
+  });
+
+  test('removing an added track relinquishes its worker handle without closing the view', async () => {
+    const releases = [], worker = {live: false, release: id => releases.push(id)};
+    let index = 0;
+    const {cinema} = rig({worker: () => worker, record: () => {
+      const track = straight({count: 60, y: index * 30});
+      track._cinemaWorker = worker;
+      track._cinemaHandle = {id: ++index, from: 0};
+      return track;
+    }});
+    await cinema.add(run('other'));
+    await cinema.remove('other');
+    expect(releases).toEqual([2]);
+    expect(cinema.active).toBe(true);
+    cinema.close();
+    expect(releases).toEqual([2, undefined]);
   });
   test('a completed track shows its nearby camera while the whole plan waits, including after reopening', async () => {
     const gate = deferred(), entered = deferred(), track = straight({count: 2000});
@@ -967,7 +1012,7 @@ describe('cinematic replay lifecycle', () => {
     expect(counts().positions[1]).toBe(alignByTime(watched, added)[900]);
     cinema.close();
   });
-  test('returning to POV cancels a partial camera and never caches its unfinished track', async () => {
+  test('returning to POV cancels a partial camera and discards its unfinished track', async () => {
     const {cinema, renderer, native, finished, activated, counts} = progressing();
     const enabling = cinema.setEnabled(true);
     await activated.promise;
@@ -1050,6 +1095,38 @@ describe('cinematic replay lifecycle', () => {
     expect(cinema.status().runs).toMatchObject([{id: 'next'}]);
     downloaded.resolve({commands: [{run: 'slow'}]});
     cinema.close();
+  });
+  test('future recording growth retains the first scene while its shaders compile', async () => {
+    const shader = deferred(), recorded = deferred(), published = deferred();
+    const track = straight({count: 4000});
+    let preparations = 0, time = 0;
+    const {cinema, renderer, counts} = rig({
+      now: () => time,
+      prepareScene: () => { preparations++; return shader.promise; },
+      record: async ({onProgress}) => {
+        onProgress(track, 512);
+        onProgress(track, 1024);
+        onProgress(track, 2048);
+        published.resolve();
+        await recorded.promise;
+        return track;
+      },
+    });
+    const enabling = cinema.setView('cinematic');
+    await published.promise;
+    expect(preparations).toBe(1);
+    expect(counts().made).toHaveLength(1);
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+    shader.resolve();
+    expect(await enabling).toBe(true);
+    renderer.render(pov); time = 2000; renderer.render(pov);
+    expectNearbyCamera(renderer.drawn, {...trackPoint(track, 30), z: 40});
+    expect(preparations).toBe(1);
+    expect(counts().made).toHaveLength(1);
+    cinema.close();
+    recorded.resolve();
   });
   test('shader preparation overlaps planning without exposing unpositioned ghosts or paths', async () => {
     const planning = deferred(), planned = deferred(), ready = deferred();
@@ -1505,7 +1582,7 @@ describe('cinematic replay lifecycle', () => {
     await cinema.setView('pov');
     expect(cinema.status()).toBeNull();
   });
-  test('a camera style plans its own shots and is kept with the others', async () => {
+  test('each camera style plans its own shots', async () => {
     const {cinema, renderer} = rig();
     await cinema.setEnabled(true);
     expect(cinema.status().style).toBe('cinematic');

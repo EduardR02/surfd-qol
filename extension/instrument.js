@@ -1,13 +1,13 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
-import {packCollisionWorld, unpackCollisionWorld} from './collision-world.js';
+import {packCollisionWorld, unpackCollisionWorld, triangleCollisionBrush} from './collision-world.js';
 import {nativeCollisionTreeHooks} from './collision-tree.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
-import {createReplayIndexPool, createReplayIndexWorker} from './replay-index-worker.js';
+import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v36:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v37:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -33,9 +33,56 @@ function collisionBoundsHook(source) {
   const comparisons = ['x', 'y', 'z'].map(key => `${a}.min.${key}<=${b}.max.${key}&&${a}.max.${key}>=${b}.min.${key}`).join('&&');
   return source.slice(0, matches[0].index) + `${axes}=["x","y","z"],${overlap}=(${a},${b})=>${comparisons}` + source.slice(matches[0].index + match.length);
 }
+// Native displacement triangles have three vertices. Compute their AABBs
+// directly instead of allocating six vertex arrays and two axis arrays each.
+// Other vertex counts and sparse triples retain the original native path.
+function nativeTriangleBoundsHooks(source) {
+  const pattern = /this\.triangleBounds=(?<triangles>[\w$]+)\.map\((?<triangle>[\w$]+)=>\((?<bounds>\{min:(?<vector>[\w$]+)\(\.\.\.(?<axes>[\w$]+)\.map\((?<minAxis>[\w$]+)=>Math\.min\(\.\.\.\k<triangle>\.vertices\.map\((?<minVertex>[\w$]+)=>\k<minVertex>\[\k<minAxis>\]\)\)\)\),max:\k<vector>\(\.\.\.\k<axes>\.map\((?<maxAxis>[\w$]+)=>Math\.max\(\.\.\.\k<triangle>\.vertices\.map\((?<maxVertex>[\w$]+)=>\k<maxVertex>\[\k<maxAxis>\]\)\)\)\)\})\)\)/g;
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) return source;
+  const match = matches[0], {triangles, triangle, bounds, vector, axes} = match.groups;
+  if (!new RegExp(`(?:^|[^\\w$])${literal(axes)}=\\["x","y","z"\\]`).test(source)) return source;
+  const components = operation => ['x', 'y', 'z'].map(axis => `Math.${operation}(__qolA.${axis},__qolB.${axis},__qolC.${axis})`).join(',');
+  const replacement = `this.triangleBounds=${triangles}.map(${triangle}=>{const __qolVertices=${triangle}.vertices;if(__qolVertices.length!==3||!(0 in __qolVertices)||!(1 in __qolVertices)||!(2 in __qolVertices))return ${bounds};const __qolA=__qolVertices[0],__qolB=__qolVertices[1],__qolC=__qolVertices[2];return{min:${vector}(${components('min')}),max:${vector}(${components('max')})}})`;
+  return source.slice(0, match.index) + replacement + source.slice(match.index + match[0].length);
+}
+
+// Candidate rejection and corner-fix classification run on every sweep. Keep
+// their native XYZ order without callback chains or per-plane filter arrays.
+function nativeCollisionSweepHooks(source) {
+  const broadphase = /(?<axes>[\w$]+)\.some\((?<axis>[\w$]+)=>Math\.max\((?<start>[\w$]+)\[\k<axis>\],(?<end>[\w$]+)\[\k<axis>\]\)\+(?<hull>[\w$]+)\.max\[\k<axis>\]<(?<brush>[\w$]+)\.min\[\k<axis>\]-(?<epsilon>[\w$]+)\|\|Math\.min\(\k<start>\[\k<axis>\],\k<end>\[\k<axis>\]\)\+\k<hull>\.min\[\k<axis>\]>\k<brush>\.max\[\k<axis>\]\+\k<epsilon>\)/g;
+  const matches = [...source.matchAll(broadphase)];
+  if (matches.length !== 1) return source;
+  const match = matches[0], {axes, start, end, hull, brush, epsilon} = match.groups;
+  if (!new RegExp(`(?:^|[^\\w$])${literal(axes)}=\\["x","y","z"\\]`).test(source)) return source;
+  const corner = new RegExp(`${literal(brush)}\\.planes\\.every\\((${identifier})=>${literal(axes)}\\.filter\\((${identifier})=>\\1\\.normal\\[\\2\\]!==0\\)\\.length===1&&${literal(axes)}\\.some\\(\\2=>Math\\.abs\\(\\1\\.normal\\[\\2\\]\\)===1\\)\\)`, 'g');
+  const corners = [...source.matchAll(corner)];
+  if (corners.length !== 1) return source;
+  const checks = ['x', 'y', 'z'].map(axis =>
+    `Math.max(${start}.${axis},${end}.${axis})+${hull}.max.${axis}<${brush}.min.${axis}-${epsilon}||Math.min(${start}.${axis},${end}.${axis})+${hull}.min.${axis}>${brush}.max.${axis}+${epsilon}`);
+  const plane = corners[0][1];
+  const changes = [
+    {at: match.index, length: match[0].length, text: `(${checks.join('||')})`},
+    {at: corners[0].index, length: corners[0][0].length,
+      text: `${brush}.planes.every(${plane}=>{const __qolNormal=${plane}.normal;return(__qolNormal.x!==0)+(__qolNormal.y!==0)+(__qolNormal.z!==0)===1&&(Math.abs(__qolNormal.x)===1||Math.abs(__qolNormal.y)===1||Math.abs(__qolNormal.z)===1)})`},
+  ].sort((a, b) => b.at - a.at);
+  for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
+  return source;
+}
+
+function nativeTriangleBrushHooks(source) {
+  const pattern = new RegExp(`triangleCache=new Map;triangleBrush\\((${identifier})\\)\\{const (${identifier})=this\\.triangleCache\\.get\\(\\1\\);if\\(\\2\\)return \\2;([\\s\\S]{1,2000}?)return this\\.triangleCache\\.set\\(\\1,(${identifier})\\),\\4\\}`, 'g');
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) return source;
+  const match = matches[0];
+  return source.slice(0, match.index) +
+    `triangleCache=new Map;triangleBrush(${match[1]}){let brush=this.triangleCache.get(${match[1]});if(!brush){brush=(${triangleCollisionBrush.toString()})(this.triangles[${match[1]}],this.triangleBounds[${match[1]}]);this.triangleCache.set(${match[1]},brush)}return brush}` +
+    source.slice(match.index + match[0].length);
+}
+
 
 // Leave the native player's validation, watchdog, fallback and outputs intact.
-// Worker-shaped leases retain only one loaded map/world, never a finished index.
+// A fresh worker receives a packed collision snapshot owned only by that job.
 function preparedIndexHooks(source, state) {
   if (source.includes('__surfdQolIndexes')) return source;
   try {
@@ -59,20 +106,20 @@ function preparedIndexHooks(source, state) {
     for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
     return source + `
 function __surfdQolIndexes(){
-  return __surfdQolIndexes.pool??=(${createReplayIndexPool.toString()})(async(map,session,message,isCurrent)=>{
+  return __surfdQolIndexes.jobs??=(${createReplayIndexJobs.toString()})(async(map,session,message,isCurrent)=>{
     const compatible=session?.map===map&&map.id===message.replay.mapId&&map.version===message.replay.mapVersion;
     return compatible?await (${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
-  });
+  },()=>${creation[2]});
 }
 `;
   } catch { return source; }
 }
 
 function preparedIndexWorkerHooks(source, workerRuntime) {
-  if (source.includes('__surfdQolWorlds')) return source;
+  if (source.includes('__surfdQolWorkerWorld')) return source;
   try {
     const world = unique(source, new RegExp(`class (${identifier})\\{constructor\\((${identifier}),(${identifier})=\\[\\],(${identifier})=!1,(${identifier})=!1\\)\\{this\\.brushes=\\2,this\\.triangles=\\3,this\\.vphysicsFeatureFix=\\4,this\\.bspCornerFix=\\5,this\\.triangleBounds=\\3\\.map\\(`, 'g'), 'native collision world');
-    const fields = 'brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(';
+    const fields = 'brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;';
     const fieldsAt = source.indexOf(fields, world.index);
     if (fieldsAt < 0 || fieldsAt - world.index > 1000) return source;
     const factory = unique(source, new RegExp(`new ${literal(world[1])}\\((${identifier})\\.brushes,\\1\\.displacementTriangles,(${identifier}),(${identifier})\\)`, 'g'), 'native world factory');
@@ -88,9 +135,10 @@ function preparedIndexWorkerHooks(source, workerRuntime) {
     const session = [...source.matchAll(new RegExp(`this\\.session=new (${identifier})\\((${identifier}),(${identifier})\\.config\\)`, 'g'))];
     const cinema = workerRuntime && session.length === 1 ? `
 ${workerRuntime}
+function __surfdQolCinemaSession(map,replay){const session=new ${session[0][1]}(map,replay.config,replay.format);session.loadReplay(replay);return session;}
 const __surfdQolCinema=globalThis.__surfdQolCreateCinemaWorker({
   post:(data,options)=>${receiver[1]}.postMessage(data,options),
-  createSession:(map,replay)=>{const session=new ${session[0][1]}(map,replay.config);session.loadReplay(replay);return session;}
+  createSession:__surfdQolCinemaSession
 });
 delete globalThis.__surfdQolCreateCinemaWorker;
 ` : 'const __surfdQolCinema=null;';
@@ -98,39 +146,42 @@ delete globalThis.__surfdQolCreateCinemaWorker;
     const prepare = `let ${map}=__surfdQolMap;
 if(!${map}||${map}.id!==${handler[5]}.mapId||${map}.version!==${handler[5]}.mapVersion){
   ${map}=null;let __surfdQolPrepared=null;
-  try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
-  if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
-    ${map}=__surfdQolPrepared.map;__surfdQolWorlds.set(${map}.brushes,__surfdQolPrepared);
-  }else{${load[0].slice(4)}}
+try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
+if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
+  ${map}=__surfdQolPrepared.map;
+  Object.defineProperty(${map},"__surfdQolCollision",{value:__surfdQolPrepared});
+}else{${load[0].slice(4)}}
   if(!__surfdQolJob.current())return;
   __surfdQolMap=${map};
 }
 if(!__surfdQolJob.current())return;
 `;
-    // Native world caching keeps flag variants separate; native Sessions and
-    // their movement/timer/replay state are still freshly constructed each run.
     const helper = `
 ${cinema}
-const __surfdQolWorlds=new WeakMap;
-const __surfdQolWorldVariants=new WeakMap;
 let __surfdQolMap=null;
 function __surfdQolWorkerWorld(map,feature,corner){
-  let variants=__surfdQolWorldVariants.get(map.brushes);
-  if(!variants)__surfdQolWorldVariants.set(map.brushes,variants=new Map);
-  const key=(feature?1:0)|(corner?2:0);
-  if(variants.has(key))return variants.get(key);
-  const prepared=__surfdQolWorlds.get(map.brushes);
-  const world=prepared?new ${world[1]}([],[],feature,corner):new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
+  const prepared=map.__surfdQolCollision;
+  const world=prepared?Object.create(${world[1]}.prototype):new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
   if(prepared){
     world.brushes=map.brushes;world.triangles=map.displacementTriangles;
+    world.vphysicsFeatureFix=feature;world.bspCornerFix=corner;
     world.triangleBounds=prepared.triangleBounds;world.tree=prepared.tree;
+    world.triangleCache=new Map;
   }
-  variants.set(key,world);return world;
+  return world;
 }
 `;
-    const chunks = `const ${loop[1]}=new ${loop[2]}(${map},${handler[5]});
+    const viewOnly = session.length === 1 && workerRuntime ? `
+if(${handler[2]}.__surfdQolViewOnly){
+  const session=__surfdQolCinemaSession(${map},${handler[5]});
+  __surfdQolCinema.attach(session,${handler[5]},${handler[2]}.job,!1);
+  __surfdQolJob.world(${map});return;
+}` : `if(${handler[2]}.__surfdQolViewOnly)throw Error("Worker cinema unavailable");`;
+    const chunks = `${viewOnly}
+const ${loop[1]}=new ${loop[2]}(${map},${handler[5]});
 __surfdQolCinema?.attach(${loop[1]}.session,${handler[5]},${handler[2]}.job);
 __surfdQolJob.world(${map});
+let __surfdQolFirstBatch=!0;
 try{for(;;){
   if(!__surfdQolJob.current())return;
   if(__surfdQolCinema)await __surfdQolCinema.before(${handler[2]}.job,()=>{
@@ -139,7 +190,10 @@ try{for(;;){
   });
   if(!__surfdQolJob.current())return;
   let __surfdQolSteps=0;const __surfdQolCameraActive=__surfdQolCinema?.active;
-  const ${loop[3]}=performance.now()+(__surfdQolCameraActive?8:${loop[4]}),${loop[5]}=${loop[1]}.run(()=>__surfdQolJob.current()&&(!__surfdQolCameraActive||__surfdQolSteps++<64)&&performance.now()<${loop[3]});
+  // Worker messages cannot interleave a synchronous native run. Cancellation
+  // stays checked at task/await boundaries, not redundantly on every tick.
+  const ${loop[3]}=performance.now()+(__surfdQolCameraActive||__surfdQolFirstBatch?8:${loop[4]}),${loop[5]}=__surfdQolCameraActive?${loop[1]}.run(()=>__surfdQolSteps++<64&&performance.now()<${loop[3]}):${loop[1]}.run(()=>performance.now()<${loop[3]});
+  __surfdQolFirstBatch=!1;
   const __surfdQolBatchReady=__surfdQolCinema?.batch(${handler[2]}.job,${loop[1]}.position,${loop[5]});
   __surfdQolJob.emit({ok:!0,batch:${loop[5]}},{transfer:[${loop[5]}.elapsed.buffer,${loop[5]}.phases.buffer]});
   if(__surfdQolBatchReady)await __surfdQolBatchReady;
@@ -148,6 +202,8 @@ try{for(;;){
 }}finally{__surfdQolCinema?.detach(${handler[2]}.job);}`;
     const changes = [
       {at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]})`},
+      ...(session.length === 1 ? [{at: session[0].index, length: session[0][0].length,
+        text: `${session[0][0].slice(0, -1)},${session[0][2]}.format)`}] : []),
       {at: load.index, length: load[0].length, text: prepare},
       {at: strict.index + strict[0].length, length: 0, text: helper},
       {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]},__surfdQolCinema?.pause,__surfdQolCinema);${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
@@ -168,7 +224,7 @@ function alreadyInstrumented(source) {
 
 export function instrumentPhysicsWorker(source, workerRuntime = '') {
   if (alreadyInstrumented(source)) return source;
-  const patched = preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)), workerRuntime);
+  const patched = nativeTriangleBrushHooks(nativeCollisionSweepHooks(nativeTriangleBoundsHooks(preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)), workerRuntime))));
   return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision preparation */`;
 }
 
@@ -468,7 +524,7 @@ function previewViewHook(source, input) {
 // game calls once per frame with a view. The patch adds its scene, camera and
 // record-ghost factory, so extra ghosts share the game's ghost look, and
 // passes the frame's interpolation to render() as qolAlpha.
-function cinemaHooks(source) {
+function cinemaHooks(source, client) {
   try {
     const factory = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=new ${identifier};\\3\\.name="record-ghost"`, 'g'), 'record ghost')[1];
     const scene = unique(source, new RegExp(`(${identifier})=${literal(factory)}\\((${identifier})\\)`, 'g'), 'record ghost scene')[2];
@@ -505,7 +561,7 @@ function cinemaHooks(source) {
     return {source, adapter: `
     cinema: {
       renderer: () => ${call} ?? null,
-      worker: session => typeof __surfdQolIndexes === "function" ? __surfdQolIndexes().camera(session) : null,
+      worker: (session,replay) => typeof __surfdQolIndexes === "function" ? __surfdQolIndexes().camera(session,replay,${client}.config?.maps?.find(entry=>entry.id===session?.map?.id)??session?.map) : null,
     },`};
   } catch (error) {
     console.warn('[Surfd QoL] Compare view unavailable:', error.message);
@@ -532,7 +588,10 @@ export function instrumentGame(source) {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
-  source = collisionBoundsHook(source);
+  source = nativeCollisionSweepHooks(nativeTriangleBoundsHooks(collisionBoundsHook(source)));
+  source = source.replace(new RegExp(`new ${literal(sessionClass)}\\((${identifier}),(${identifier})\\.config\\)`, 'g'),
+    (_, map, replay) => `new ${sessionClass}(${map},${replay}.config,${replay}.format)`);
+  source = nativeTriangleBrushHooks(source);
   source = nativeCollisionTreeHooks(source);
   source = preparedIndexHooks(source, state);
   source = nativeStageResetHooks(source);
@@ -542,7 +601,7 @@ export function instrumentGame(source) {
   source = rooms.source;
   const practice = practiceHooks(source, sessionClass, state);
   source = practice.source;
-  const cinema = cinemaHooks(source);
+  const cinema = cinemaHooks(source, client);
   source = cinema.source;
   return source + `${ADAPTER_MARKER} native community rooms and optional room transport */
 ${practice.setup}

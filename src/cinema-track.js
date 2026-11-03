@@ -39,7 +39,7 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
   if (typeof adapter?.Session !== 'function' || typeof adapter.Movement !== 'function' || !session?.map ||
     !Array.isArray(replay?.commands) || !replay.commands.length || replay.commands.length > MAX_COMMANDS ||
     replay.mapId !== session.map.id || replay.mapVersion !== session.map.version) return null;
-  const worker = adapter.cinema?.worker?.(session);
+  const worker = adapter.cinema?.worker?.(session, replay);
   if (worker) {
     try {
       const playback = adapter.replay?.playback?.();
