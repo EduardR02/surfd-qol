@@ -5,41 +5,66 @@ import {decodeMapImage, decodeMapMesh, nativeMapLoadHooks} from '../extension/ma
 // constructor, preparation and disposal signatures. Execute the generated
 // renderer rather than asserting details of its injected source.
 const nativeFixture = `
+function Labels(map){const group=new Group;group.name="Timer zone boundaries";const resources=[],high=new Texture;high.name="hi-res";resources.push(high);const originals=[];for(const name of map.labels){const texture=new Texture;texture.name=name;resources.push(texture);const material={map:texture,dispose(){}};resources.push(material);const sprite={isSprite:true,visible:false,children:[],material:material};group.children.push(sprite);originals.push({sprite:sprite,texture:texture,material:material})}return{group:group,update(){if(originals.length)originals[0].material.map=high},dispose(){for(const resource of resources)resource.dispose()}}}
+function Objects(gl,geometries,attributes,info){let frames=new WeakMap;function update(object){const frame=info.render.frame,original=object.geometry,geometry=geometries.get(object,original);if(frames.get(geometry)!==frame){geometries.update(geometry);frames.set(geometry,frame)}if(object.isInstancedMesh&&frames.get(object)!==frame){attributes.update(object.instanceMatrix,gl.ARRAY_BUFFER);frames.set(object,frame)}return geometry}function dispose(){frames=new WeakMap}return{update:update,dispose:dispose}}
+class Renderer extends Driver{constructor(options){super(options);const gl=this.getContext(),info={render:{frame:0}};let attributes,bindings,geometries,objects;attributes=new Attributes(gl),bindings=new Bindings(gl,attributes),geometries=new Geometries(gl,attributes,info,bindings),objects=new Objects(gl,geometries,attributes,info);this.renderBufferDirect=function(camera,scene,geometry,material,object,group){bindings.setup(object,material,geometry);};this.nativeUpdate=object=>{const geometry=objects.update(object),material=object.material;return geometry}}}
 function nativeImage(bytes,url,signal){const type=url.endsWith(".png")?"image/png":"image/jpeg";return Promise.resolve({})}async function loadAssets(slug,options={}){if(rejected?.status==="rejected")throw meshes.clear(),dds.clear(),images.clear(),buffers.clear(),failure.reason??rejected.reason}
 function factory(canvas,data,map){const gpu=new Renderer({canvas:canvas,antialias:!0,alpha:!1,powerPreference:"high-performance"});
 const sky=data.scenes[0],occluders=data.scenes[1],world=data.scenes[2],camera={},textureMap=data.textures,cubeMap=data.cubes,groups=data.groups,zero=data.zero;
+const zones=map?Labels(map):null;if(zones){world.children.push(zones.group);zones.group.parent=world;for(const child of zones.group.children)child.parent=zones.group}const quality=value=>{for(const texture of textureMap.values())texture.version++;return value};
 if(data.compressedTextures&&!data.resources.compressed?.size){for(const entry of textureMap.values())gpu.initTexture(entry);for(const entry of cubeMap.values())gpu.initTexture(entry);sky.background instanceof Texture&&gpu.initTexture(sky.background)}
 let previous=null,prepareMs=0,disposed=false;const draw=()=>gpu.drawAll();
-const view={prepare:async frame=>{const started=performance.now(),scenes=[sky,occluders,world],context=gpu.getContext(),current=()=>!disposed&&!context.isContextLost(),yieldFrame=()=>Promise.resolve();try{
+const view={setQuality:quality,setBrightness:()=>{},prepare:async frame=>{const started=performance.now(),scenes=[sky,occluders,world],context=gpu.getContext(),current=()=>!disposed&&!context.isContextLost(),yieldFrame=()=>Promise.resolve();try{
 for(const node of scenes)gpu.compile(node,camera);
 const textures=new Set([...textureMap.values(),...cubeMap.values()]);sky.background instanceof Texture&&textures.add(sky.background);for(const node of scenes)node.traverse(object=>{if(object.material)textures.add(object.material.map)});let time=performance.now();
 for(const texture of textures)gpu.initTexture(texture);
 for(const node of groups)for(const{object:mesh,matrices:matrices,offsets:offsets,attribute:attribute}of node.objects)mesh.count=offsets.length,mesh.instanceMatrix.array.set(matrices),attribute.array.set(offsets);try{draw()}finally{for(const group of groups)group.count=-1;zero.makeScale(0,0,0)}
-}finally{prepareMs=performance.now()-started;const initial=frame??previous;initial&&!disposed&&view.render(initial)}},setTriggersVisible:()=>{},render(frame){previous=frame;gpu.drawVisible(frame)},getStats:()=>({prepareMs}),dispose(){disposed=true;gpu.dispose()}};return view}
+}finally{prepareMs=performance.now()-started;const initial=frame??previous;initial&&!disposed&&view.render(initial)}},setTriggersVisible:()=>{},render(frame){zones?.update();previous=frame;gpu.drawVisible(frame)},getStats:()=>({prepareMs}),dispose(){disposed=true;zones?.dispose();gpu.dispose()}};return view}
 `;
 
-function nativeRenderer({unknown = false, drawError = null} = {}) {
-  const calls = {compile: 0, upload: 0, all: 0, visible: [], disposed: 0, closed: 0, traverse: 0};
-  class Texture {}
-  let lost = false;
+function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = false, drawError = null, map = null} = {}) {
+  const calls = {compile: 0, upload: 0, all: 0, visible: [], disposed: 0, closed: 0, traverse: 0,
+    geometry: [], indices: [], streams: [], textures: [], resets: 0};
+  class Texture { isTexture = true; version = 0; dispose() {} }
+  class Group { children = []; }
+  let lost = false, instance;
   class Renderer {
-    compile() { calls.compile++; }
-    initTexture() { calls.upload++; }
-    getContext() { return {isContextLost: () => lost}; }
+    constructor() { instance = this; this.domElement = new EventTarget(); this.extensions = {get: () => null}; }
+    compile() { calls.compile++; return new Set(); }
+    initTexture(texture) { calls.upload++; calls.textures.push(texture); this.onTextureUpload?.(texture); }
+    getContext() { return {ARRAY_BUFFER: 34962, ELEMENT_ARRAY_BUFFER: 34963, isContextLost: () => lost}; }
     drawAll() { calls.all++; }
     drawVisible(frame) { if (drawError) throw drawError; calls.visible.push(frame); }
     dispose() { calls.disposed++; }
   }
+  class Attributes {
+    update(attribute, target) {
+      if (target === 34963) calls.indices.push([attribute, target]);
+      else calls.streams.push({attribute, version: attribute.version, values: [...attribute.array]});
+    }
+  }
+  class Bindings { setup() {} reset() { calls.resets++; } }
+  class Geometries {
+    constructor(gl, attributes) { this.gl = gl; this.attributes = attributes; }
+    get(object, geometry) { calls.geometry.push(object); return geometry; }
+    update(geometry) {
+      for (const attribute of Object.values(geometry.attributes ?? {})) this.attributes.update(attribute, this.gl.ARRAY_BUFFER);
+    }
+  }
   const data = {
-    scenes: Array.from({length: 3}, () => ({visible: false, frustumCulled: true,
+    scenes: Array.from({length: 3}, () => ({visible: false, frustumCulled: true, children: [],
       traverse(visit) { calls.traverse++; visit(this); }})),
     textures: new Map([['wall', new Texture()]]), cubes: new Map(), groups: [],
     zero: {makeScale() {}}, compressedTextures: {},
     resources: {compressed: new Map(), images: new Map([['image', {close() { calls.closed++; }}]])},
   };
-  const input = unknown ? nativeFixture.replace('powerPreference:"high-performance"', 'powerPreference:"default"') : nativeFixture;
-  const factory = new Function('Renderer', 'Texture', nativeMapLoadHooks(input) + ';return factory')(Renderer, Texture);
-  return {view: factory({}, data, null), data, calls, loseContext() { lost = true; }};
+  let input = unknown ? nativeFixture.replace('powerPreference:"high-performance"', 'powerPreference:"default"') : nativeFixture;
+  if (unknownGpu) input = input.replace('new Objects(gl,geometries,attributes,info)', 'new Objects(gl,geometries,attributes,{})');
+  if (unknownZones) input = input.replace('texture:texture,material:material', 'source:texture,material:material');
+  const factory = new Function('Driver', 'Texture', 'Group', 'Attributes', 'Bindings', 'Geometries',
+    nativeMapLoadHooks(input) + ';return factory')(Renderer, Texture, Group, Attributes, Bindings, Geometries);
+  const view = factory({}, data, map);
+  return {view, renderer: instance, data, calls, loseContext() { lost = true; }};
 }
 
 test('native hook avoids constructor-wide uploads and all-map preparation, preserving scene visibility and cleanup', async () => {
@@ -70,6 +95,7 @@ test('native hook retains previous-frame fallback and context-loss cancellation'
   run.loseContext();
   await run.view.prepare(frame);
   expect(run.calls.visible).toEqual([frame, frame]);
+  await expect(run.view.__qolGpuReady).rejects.toMatchObject({name: 'AbortError'});
 });
 
 test('unknown native renderer layouts retain their complete native preparation', async () => {
@@ -86,6 +112,102 @@ test('native hook preserves first-frame failures instead of declaring a broken m
   const failure = new Error('GPU failure');
   const {view} = nativeRenderer({drawError: failure});
   await expect(view.prepare({})).rejects.toBe(failure);
+  await expect(view.__qolGpuReady).rejects.toBe(failure);
+  view.dispose();
+});
+
+test('unknown Three upload ownership retains complete native preparation', async () => {
+  const {view, calls} = nativeRenderer({unknownGpu: true});
+  await view.prepare({});
+  expect(calls.compile).toBe(3);
+  expect(calls.all).toBe(1);
+  expect(view.__qolGpuReady).toBeUndefined();
+  view.dispose();
+});
+
+test('native GPU upload uses owned geometry and index resources without drawing or changing instances', () => {
+  const {view, renderer, calls} = nativeRenderer();
+  const object = {geometry: {index: {}}, count: 2, visible: false, frustumCulled: true,
+    instanceMatrix: {array: Float32Array.from([1, 2, 3, 4])}};
+  renderer.__qolPrepareGeometry(object);
+  expect(calls.geometry).toEqual([object]);
+  expect(calls.indices).toEqual([[object.geometry.index, 34963]]);
+  expect(calls.resets).toBe(2);
+  expect(calls.all).toBe(0);
+  expect(calls.visible).toEqual([]);
+  expect(object.count).toBe(2);
+  expect(object.visible).toBe(false);
+  expect(object.frustumCulled).toBe(true);
+  expect([...object.instanceMatrix.array]).toEqual([1, 2, 3, 4]);
+  view.dispose();
+});
+
+test('a native uploader exception restores binding state without swallowing the failure', () => {
+  const {view, renderer, calls} = nativeRenderer();
+  const failure = new Error('Native geometry failed');
+  const object = {get geometry() { throw failure; }};
+  expect(() => renderer.__qolPrepareGeometry(object)).toThrow(failure);
+  expect(calls.resets).toBe(2);
+  expect(calls.all).toBe(0);
+  view.dispose();
+});
+
+test('idle uploads cannot suppress next-traversal PVS instance and light-offset updates', () => {
+  const {view, renderer, calls} = nativeRenderer();
+  const matrix = {array: Float32Array.from([1, 2, 3, 4]), version: 1};
+  const offsets = {array: Float32Array.from([5]), version: 1};
+  const object = {isInstancedMesh: true, geometry: {index: {}, attributes: {lightOffset: offsets}},
+    instanceMatrix: matrix};
+  renderer.__qolPrepareGeometry(object);
+  // Native PVS/LOD compaction runs before traversal, without advancing the
+  // renderer's frame counter until traversal has already uploaded its streams.
+  matrix.array[0] = 9;
+  offsets.array[0] = 10;
+  matrix.version++;
+  offsets.version++;
+  renderer.nativeUpdate(object);
+  expect(calls.streams.filter(stream => stream.attribute === matrix).map(stream => stream.values)).toEqual([
+    [1, 2, 3, 4], [9, 2, 3, 4]
+  ]);
+  expect(calls.streams.filter(stream => stream.attribute === offsets).map(stream => stream.values)).toEqual([[5], [10]]);
+  view.dispose();
+});
+
+test('GPU completion includes original and shared zone canvases after the native first-view map swap', async () => {
+  const {view, data, calls} = nativeRenderer({map: {labels: ['near-original', 'far-original']}});
+  await view.prepare({});
+  const labelGroup = data.scenes[2].children[0];
+  expect(labelGroup.children[0].material.map.name).toBe('hi-res');
+  const result = await view.__qolGpuReady;
+  expect(new Set(calls.textures.map(texture => texture.name))).toEqual(new Set([
+    undefined, 'hi-res', 'near-original', 'far-original'
+  ]));
+  expect(calls.all).toBe(0);
+  expect(labelGroup.children[0].material.map.name).toBe('hi-res');
+  expect(result.completion).toBe('submitted');
+  view.dispose();
+});
+
+test('unknown native zone-resource ownership keeps native complete preparation', async () => {
+  const {view, calls} = nativeRenderer({unknownZones: true});
+  await view.prepare({});
+  expect(view.__qolGpuReady).toBeUndefined();
+  expect(calls.all).toBe(1);
+  view.dispose();
+});
+
+test('native quality changes during an upload invalidate its pending GPU completion', async () => {
+  const {view, renderer, data, calls} = nativeRenderer();
+  const wall = data.textures.get('wall');
+  let changed = false;
+  renderer.onTextureUpload = texture => {
+    if (texture === wall && !changed) { changed = true; expect(view.setQuality('native')).toBe('native'); }
+  };
+  await view.prepare({});
+  await view.__qolGpuReady;
+  expect(calls.textures.filter(texture => texture === wall)).toHaveLength(2);
+  expect(wall.version).toBe(1);
+  view.dispose();
 });
 
 test('packed mesh decoding preserves immutable source bytes, normals, attributes and exact native bounds', () => {

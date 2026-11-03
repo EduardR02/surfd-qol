@@ -67,6 +67,13 @@ The harness does not measure replay simulation or GPU compilation. The cinematic
 - The camera can reuse the native collision BVH when the expected public arrays and query interface are present. Its filtered view preserves candidate order and collision flags and shares native triangle convexes, whose vertices, bounds and SAT planes do not depend on camera visibility or the probe hull. Incompatible implementations use the constructor path. Compare hit fractions, normals and solid-state results, not generated triangle-brush object identity.
 - Camera planning consumes available idle time between bounded trace batches and still checks cancellation. Segment travel windows are scanned linearly; shot-independent blurs are reused during safe-shot replanning. Matching retains Float32 costs and the existing DTW tie-breaking.
 
+## Map preparation checks
+
+- Measure input-ready map entry separately from `view.__qolAssetsReady` and `view.__qolGpuReady`, where `view` is the native map-renderer adapter. GPU readiness reports `uploadsComplete`, `shadersComplete` and `completion`; only supported shader-completion and fence APIs can produce `completion: 'gpu-complete'`. Background preparation must not delay entry.
+- Hold the existing player-atlas response, enter a map and watch a replay while GPU preparation remains pending. Replace the map before releasing the response: the obsolete promise must reject, and the new view must finish independently after release. Check optional atlas failure, renderer disposal and context loss without changing native fallback behavior.
+- After readiness, seek to distant replay positions and count map buffer uploads and shader links separately from dynamic buffer updates, changing canvas labels and newly created player/cinematic variants. Check PVS changes and sky instance matrices/light offsets: idle uploads must not suppress the next native frame's updates. The background queue must never render, clear a framebuffer or alter instance counts for a hidden all-map draw.
+- Exercise quality changes during preparation, unsupported parallel-compilation/sync APIs, detached scene roots and disposed resources. Compare actual native replay states, timer results, ordered collision candidates and trace results when changing preprocessing; passing unit tests alone is not a physics-parity check.
+
 ## Fonts
 
 `src/hud-fonts.js` embeds Instrument Sans (SIL OFL 1.1), subset to the characters the HUD and panel use. Regenerate with `python dev/subset-fonts.py <folder with InstrumentSans-*.ttf>` (needs fontTools).

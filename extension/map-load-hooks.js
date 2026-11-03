@@ -1,4 +1,5 @@
 import {createSkyResampler} from './sky-resample.js';
+import {createMapGpuPreparation, loadNativeAtlas} from './progressive-textures.js';
 
 // Keep ImageBitmap's upload/orientation behavior. WebCodecs can decode directly
 // from packed bytes, avoiding a Blob read for each image; both fallbacks remain.
@@ -108,6 +109,83 @@ function nativeSkyResampleHooks(source) {
   return source.slice(0, match.index) + replacement + source.slice(match.index + body.length);
 }
 
+// These aliases must come from the same Three renderer initialization. Upload
+// through its object/attribute owners, not raw GL buffers with no disposal or
+// version tracking. Unknown renderer internals retain native preparation.
+function nativeGpuUploadHook(source) {
+  const matches = [...source.matchAll(/(?<attributes>[\w$]+)=new [\w$]+\((?<gl>[\w$]+)\),(?<bindings>[\w$]+)=new [\w$]+\(\k<gl>,\k<attributes>\),(?<geometries>[\w$]+)=new [\w$]+\(\k<gl>,\k<attributes>,(?<info>[\w$]+),\k<bindings>\),(?<objects>[\w$]+)=new (?<objectType>[\w$]+)\(\k<gl>,\k<geometries>,\k<attributes>,\k<info>\)/g)];
+  const submissions = [...source.matchAll(/this\.renderBufferDirect=function\([\w$,]+\)\{/g)];
+  if (matches.length !== 1 || submissions.length !== 1) return null;
+  const g = matches[0].groups;
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const owners = [...source.matchAll(new RegExp(`function ${escape(g.objectType)}\\((?<gl>[\\w$]+),(?<geometries>[\\w$]+),(?<attributes>[\\w$]+),(?<info>[\\w$]+)\\)\\{let (?<cache>[\\w$]+)=new WeakMap;function (?<update>[\\w$]+)\\((?<object>[\\w$]+)\\)\\{const (?<frame>[\\w$]+)=\\k<info>\\.render\\.frame,(?<original>[\\w$]+)=\\k<object>\\.geometry,(?<geometry>[\\w$]+)=\\k<geometries>\\.get\\(\\k<object>,\\k<original>\\);[\\s\\S]{0,1600}?return \\k<geometry>\\}[\\s\\S]{0,600}?return\\{update:\\k<update>,dispose:(?<dispose>[\\w$]+)\\}\\}`, 'g'))];
+  if (owners.length !== 1) return null;
+  const owner = owners[0], o = owner.groups;
+  const ownerFooter = `return{update:${o.update},dispose:${o.dispose}}}`;
+  // Native object uploads cache the current render.frame. Idle work runs
+  // before the next traversal, whose PVS pass can rewrite instance streams.
+  // Never let preparation stamp that traversal's geometry/object cache entries.
+  const invalidate = `${o.cache}.delete(geometry);${o.cache}.delete(object);if(object.isSkinnedMesh)${o.cache}.delete(object.skeleton);`;
+  const prepare = `__qolPrepare:object=>{const geometry=object.geometry;${invalidate}try{return ${o.update}(object)}finally{${invalidate}}}`;
+  const ownerText = owner[0].replace(ownerFooter, `return{update:${o.update},dispose:${o.dispose},${prepare}}}`);
+  // Confirm that the selected object owner is also the native render-list
+  // uploader, and that binding-state setup owns the same geometry attributes.
+  if (!new RegExp(`const [\\w$]+=${escape(g.objects)}\\.update\\([\\w$]+\\),[\\w$]+=[\\w$]+\\.material`).test(source) ||
+      !new RegExp(`${escape(g.bindings)}\\.setup\\([\\w$,]+\\)`).test(source)) return null;
+  const text = `this.__qolPrepareGeometry=object=>{${g.bindings}.reset();try{const geometry=${g.objects}.__qolPrepare(object);if(geometry.index!==null)${g.attributes}.update(geometry.index,${g.gl}.ELEMENT_ARRAY_BUFFER)}finally{${g.bindings}.reset()}};`;
+  return {anchor: submissions[0][0], text, owner: owner[0], ownerText};
+}
+
+function nativeZoneTextureHook(source, factory, end) {
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const selections = [...source.slice(factory.index, end).matchAll(new RegExp(`const (?<owner>[\\w$]+)=${escape(factory[4])}\\?(?<factory>[\\w$]+)\\(${escape(factory[4])}\\):null`, 'g'))];
+  if (selections.length === 0) return source.includes('"Timer zone boundaries"') ? null : {parameter: 'undefined'};
+  if (selections.length !== 1) return null;
+  const selected = selections[0].groups;
+  const owners = [...source.matchAll(new RegExp(`function ${escape(selected.factory)}\\((?<map>[\\w$]+)\\)\\{const (?<group>[\\w$]+)=new [\\w$]+;\\k<group>\\.name="Timer zone boundaries";const (?<resources>[\\w$]+)=\\[\\],[\\s\\S]{0,6000}?dispose\\(\\)\\{for\\(const (?<entry>[\\w$]+) of \\k<resources>\\)\\k<entry>\\.dispose\\(\\)\\}\\}\\}`, 'g'))];
+  if (owners.length !== 1) return null;
+  const owner = owners[0], o = owner.groups;
+  const labels = [...owner[0].matchAll(/[\w$]+\.push\(\{sprite:[\w$]+,[\s\S]{0,500}?texture:(?<texture>[\w$]+),material:[\w$]+\}\)/g)];
+  const returned = `return{group:${o.group},update(`;
+  if (labels.length !== 1 || !owner[0].includes(`${o.resources}.push(${labels[0].groups.texture})`) ||
+      owner[0].split(returned).length !== 2) return null;
+  // Enumerate the native disposal owner's resources, including the original
+  // label maps swapped out by the first view and its shared hi-res canvas.
+  // No snapshot, extra texture ownership, or pre-entry scene traversal.
+  return {parameter: selected.owner, owner: owner[0],
+    text: owner[0].replace(returned, `return{*__qolZoneTextures(){yield* ${o.resources}},group:${o.group},update(`)};
+}
+
+function nativeAtlasHooks(source, factory, end, world) {
+  const loaders = [...source.matchAll(/function (?<name>[\w$]+)\((?<success>[\w$]+),(?<failure>[\w$]+)\)\{const (?<texture>[\w$]+)=new (?<loader>[\w$]+)\(\)\.load\((?<url>new URL\("\/assets\/agent-atlas-[^"]+",import\.meta\.url\)\.href),\k<success>,void 0,\k<failure>\);return \k<texture>\.colorSpace=(?<color>[\w$]+),\k<texture>\.magFilter=(?<mag>[\w$]+),\k<texture>\.minFilter=(?<min>[\w$]+),\k<texture>\.anisotropy=1,\k<texture>\}/g)];
+  if (loaders.length === 0) return source.includes('/assets/agent-atlas-') ? null : {parameter: '[]', changes: []};
+  if (loaders.length !== 1) return null;
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const loader = loaders[0], l = loader.groups;
+  const owners = [...source.matchAll(new RegExp(`function (?<name>[\\w$]+)\\((?<scene>[\\w$]+)\\)\\{(?<before>(?:(?!function )[\\s\\S]){0,1800}?)(?<texture>[\\w$]+)=${escape(l.name)}\\(\\(\\)=>\\{(?<success>[^{}]{0,300})\\},\\(\\)=>\\{(?<failure>[^{}]{0,100})\\}\\)(?<after>[\\s\\S]{0,10000}?)(?<footer>\\}\\}\\})(?=const |function )`, 'g'))];
+  const accepted = owners.filter(owner => {
+    const o = owner.groups;
+    return new RegExp(`${escape(o.texture)}\\.dispose\\(\\)`).test(o.success) &&
+      new RegExp(`${escape(o.texture)}\\.dispose\\(\\)`).test(o.after) &&
+      (o.after.includes('return{set(') || o.after.includes('return{update('));
+  });
+  if (accepted.length !== 2) return null;
+  const scope = source.slice(factory.index, end), parameters = [], changes = [];
+  for (const owner of accepted) {
+    const o = owner.groups;
+    const calls = [...scope.matchAll(new RegExp(`(?<owner>[\\w$]+)=${escape(o.name)}\\(${escape(world)}\\)`, 'g'))];
+    if (calls.length !== 1) return null;
+    parameters.push(`${calls[0].groups.owner}.__qolAtlasTexture`);
+    const returned = o.after.includes('return{set(') ? 'return{set(' : 'return{update(';
+    changes.push({before: owner[0], after: owner[0].replace(returned, `return{__qolAtlasTexture:${o.texture},${returned.slice('return{'.length)}`)});
+  }
+  const replacement = `function ${l.name}(${l.success},${l.failure}){const ${l.texture}=(${loadNativeAtlas.toString()})((success,failure)=>new ${l.loader}().load(${l.url},success,void 0,failure),${l.success},${l.failure});return ${l.texture}.colorSpace=${l.color},${l.texture}.magFilter=${l.mag},${l.texture}.minFilter=${l.min},${l.texture}.anisotropy=1,${l.texture}}`;
+  changes.push({before: loader[0], after: replacement});
+  return {parameter: `[${parameters.join(',')}]`, changes};
+}
+
+
+
 // Optional, atomic hook for the native BSP renderer. An unknown layout keeps
 // its original complete-before-play preparation.
 export function nativeMapLoadHooks(source) {
@@ -138,12 +216,23 @@ export function nativeMapLoadHooks(source) {
   if (eager.length !== 1 || eager[0].groups.renderer !== renderer ||
       eager[0].groups.data !== factory[0][3] || eager[0].groups.sky !== sky ||
       eager[0].groups.textures !== collection[2] || eager[0].groups.cubes !== collection[3]) return source;
-  const text = `prepare:async ${frame}=>{
+  const gpu = nativeGpuUploadHook(source);
+  if (!gpu) return source;
+  const zones = nativeZoneTextureHook(source, factory[0], source.indexOf(dispose));
+  if (!zones) return source;
+  const atlases = nativeAtlasHooks(source, factory[0], source.indexOf(dispose), world);
+  if (!atlases) return source;
+  const viewPattern = new RegExp(`(const |,)${finish[7].replace(/[$]/g, '\\$&')}=\\{`);
+  const viewDeclaration = source.slice(factory[0].index, source.indexOf(dispose)).match(viewPattern);
+  if (!viewDeclaration) return source;
+  const text = `__qolGpuReady:__qolGpuPreparation.ready,prepare:async ${frame}=>{
     const ${started}=performance.now(),${context}=${renderer}.getContext(),${current}=()=>!${disposed}&&!${context}.isContextLost();
     globalThis.__SURFD_QOL__?.prepareMap?.();
+    try{
     // Native rendering prepares only the PVS/frustum-selected first view.
     const __qolProgressiveMap=${frame}??${finish[5]};if(__qolProgressiveMap&&${current}())${finish[7]}.render(__qolProgressiveMap);
-    ${finish[1]}=performance.now()-${started};
+    if(${current}())__qolGpuPreparation.start();
+    }catch(error){__qolGpuPreparation.dispose(error);throw error}finally{${finish[1]}=performance.now()-${started}}
   },setTriggersVisible:`;
   source = source.slice(0, match.index) + text + source.slice(match.index + all.length);
   // Resource maps still own shared native textures and their disposal; only
@@ -154,7 +243,17 @@ export function nativeMapLoadHooks(source) {
   const wrapper = `function ${decoder[1]}(${decoder[2]},${decoder[3]},${decoder[4]}){return (${decodeMapImage.toString()})(${decoder[2]},${decoder[3]},${decoder[4]},${nativeName})}`;
   source = source.replace(original, () => wrapper + original.replace(`function ${decoder[1]}(`, `function ${nativeName}(`));
   const close = map => `for(const image of ${map}.values())if(typeof image.close==="function")image.close();`;
-  source = source.replace(dispose, () => `${renderer}.dispose();${close(`${factory[0][3]}.resources.images`)}}};return ${finish[7]}}`);
+  source = source.replace(dispose, () => `__qolGpuPreparation.dispose();${renderer}.dispose();${close(`${factory[0][3]}.resources.images`)}}};return ${finish[7]}}`);
+  const factoryIndex = source.indexOf(factory[0][0]);
+  const gpuDeclaration = `(${createMapGpuPreparation.toString()})(${renderer},[${sky},${occluders},${world}],${compile[1]},[${collection[2]},${collection[3]}],()=>${finish[7]}.__qolAssetsReady,${zones.parameter},${atlases.parameter})`;
+  const viewText = `${viewDeclaration[1]}__qolGpuPreparation=${gpuDeclaration},${finish[7]}={`;
+  const factoryTail = source.slice(factoryIndex).replace(viewDeclaration[0], () => viewText)
+    .replace(/setQuality:([\w$]+),setBrightness:/, (_, quality) => `setQuality:(...args)=>{try{return ${quality}(...args)}finally{__qolGpuPreparation.invalidateTextures()}},setBrightness:`);
+  source = source.slice(0, factoryIndex) + factoryTail;
+  source = source.replace(gpu.anchor, () => gpu.text + gpu.anchor);
+  source = source.replace(gpu.owner, () => gpu.ownerText);
+  if (zones.owner) source = source.replace(zones.owner, () => zones.text);
+  for (const change of atlases.changes) source = source.replace(change.before, () => change.after);
   const failure = imageMap[0];
   return source.replace(failure[0], () => `if(${failure[1]}?.status==="rejected"){${close(failure[4])}throw ${failure[2]}.clear(),${failure[3]}.clear(),${failure[4]}.clear(),${failure[5]}.clear(),${failure[6]}.reason??${failure[1]}.reason}`);
 }
