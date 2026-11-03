@@ -3,6 +3,8 @@ import { createReplayControl, MAX_SPOTS, SPEEDS } from '../src/replay-control.js
 import { keyName, bindLabel } from '../src/key-names.js';
 import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
+import {buildFeedback} from '../src/hud-model.js';
+import {FRAME_TICKS, MAX_FRAMES} from '../src/replay-frames.js';
 
 const DT = 0.015;
 
@@ -29,7 +31,11 @@ function game(length = 400) {
       this.revision++;
       this.replay = data; this.clock = {speed: 1, paused: false};
       this.index = {markers: [], end: data.commands.length, indexed: data.commands.length, complete: true,
-        get reachable() { return Math.max(0, Math.min(this.end, this.indexed)); }};
+        get reachable() { return Math.max(0, Math.min(this.end, this.indexed)); },
+        keyframeBefore(tick) {
+          const key = tick - tick % 128, base = data.initialState?.tick ?? 0;
+          return {index: key, session: world.snapshotAt?.(key) ?? {state: {x: key, tick: base + key}}};
+        }};
       world.index = 0; world.accumulator = 0;
     },
     atEnd() { return !this.replay || world.index >= this.index.end; },
@@ -39,7 +45,11 @@ function game(length = 400) {
     setSpeed(speed) { this.clock.speed = speed; },
     shiftSpeed(direction) { const at = SPEEDS.indexOf(this.clock.speed); this.clock.speed = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, at + direction))]; },
     seekBy(seconds) { this.requestSeek(world.index + Math.round(seconds / DT)); this.applyPending(); },
-    stepTick(ticks) { this.clock.paused = true; this.requestSeek(world.index + ticks); this.applyPending(); },
+    stepTick(ticks, defer = false) {
+      this.clock.paused = true;
+      this.requestSeek((this.pending ?? world.index) + ticks);
+      if (!defer) this.applyPending();
+    },
     stage(direction) { world.staged = direction; },
     requestSeek(tick) { if (this.replay && Number.isFinite(tick)) this.pending = tick; },
     applyPending() {
@@ -52,11 +62,10 @@ function game(length = 400) {
       const to = Math.max(0, Math.min(this.index.reachable, Math.round(target)));
       if (to === world.index) return;
       world.seeks++;
-      const key = to - to % 128;
-      if (to < world.index || key > world.index) {
-        const base = this.replay.initialState?.tick ?? 0;
-        world.session.restorePractice({state: {x: key, tick: base + key}});
-        world.index = key;
+      const keyframe = this.index.keyframeBefore(to);
+      if (to < world.index || keyframe?.index > world.index) {
+        if (!keyframe || keyframe.index > to || !world.session.restorePractice(keyframe.session)) return;
+        world.index = keyframe.index;
       }
       while (world.index < to) world.session.step(this.replay.commands[world.index++]);
     },
@@ -83,7 +92,9 @@ function game(length = 400) {
   };
   // One rendered frame: the player advances whole ticks at its speed and holds at the end.
   world.frame = seconds => {
-    if (!player.replay || player.clock.paused) return;
+    if (!player.replay) return;
+    if (player.pending !== null) player.applyPending();
+    if (player.clock.paused) return;
     world.accumulator += seconds * player.clock.speed;
     for (; world.accumulator + 1e-12 >= DT; world.accumulator -= DT) {
       if (player.atEnd()) { player.clock.paused = true; world.accumulator = 0; return; }
@@ -97,6 +108,57 @@ function game(length = 400) {
   const control = createReplayControl({ getAdapter: () => world.adapter, getSession: () => world.session, archive,
     onSpots: (id, spots) => { world.savedSpots = [id, spots]; } });
   return { world, replay, run, control };
+}
+
+// A native-style replay with real observer, metrics and rendered feedback.
+// Each marked command clips speed on a ramp; indexed snapshots contain the
+// corresponding native state, independently of the HUD's cached analysis.
+function coachingGame(length, losses, failures = {}) {
+  const {world, replay, run} = game(length);
+  replay.initialState = {x: 0, tick: 900, grounded: false,
+    position: {x: 0, y: 0, z: 0}, velocity: {x: 1000, y: 0, z: 0}};
+  for (const [tick, loss] of losses) replay.commands[tick - 1].loss = loss;
+  world.snapshotAt = tick => {
+    const state = structuredClone(replay.initialState);
+    state.x = tick;
+    state.tick += tick;
+    for (const [at, loss] of losses) if (at <= tick) state.velocity.x -= loss;
+    return {state};
+  };
+  class Movement {
+    config = {groundNormal: 0.7};
+    accelerate() {}
+    slide(state, result, loss) {
+      state.velocity.x -= loss;
+      result.contacts.push({normal: {x: 0, y: 0.8, z: 0.6}, brushId: 'ramp'});
+    }
+  }
+  world.adapter.Movement = Movement;
+  const prototype = world.adapter.Session.prototype, load = prototype.loadReplay, step = prototype.step;
+  prototype.loadReplay = function (...args) {
+    load.apply(this, args);
+    this.state = structuredClone(this.state);
+    this.config = {dt: DT, groundNormal: 0.7, gravity: 800};
+    this.movement = new Movement();
+  };
+  prototype.step = function (command) {
+    if (command.loss) this.movement.slide(this.state, {contacts: []}, command.loss);
+    return step.call(this, command);
+  };
+  prototype.restart = prototype.visitStation = function () {};
+  const settings = {showBoard: true, showAir: false, showSurf: false, boardLossAmazing: 15, boardLossGood: 25};
+  const metrics = createMetrics(settings);
+  const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session, settings,
+    archive: {get: async () => replay}, coaching: {
+      save() { if (failures.save) throw new Error('Cannot save analysis'); return metrics.saveState(); },
+      restore(state) { if (failures.restore) throw new Error('Cannot restore analysis'); metrics.restoreState(state); },
+      reset: tick => metrics.reset({replayGap: tick > 0}),
+    }});
+  const observer = observePhysics(world.adapter, metrics, {
+    onBeforeTick: session => control.observe(session), onTick: session => control.tick(session),
+  });
+  const board = () => buildFeedback(metrics.snapshot(), null, settings).board;
+  return {world, run, settings, control, observer, board};
 }
 
 function practiceBank(world, store) {
@@ -615,28 +677,120 @@ describe('replay control', () => {
     expect(resets).toBeGreaterThan(0);
     control.destroy();
   });
-  test('stepping across a keyframe does not simulate discarded analysis ticks', async () => {
-    const {world, replay, run} = game(1400);
-    const resets = [];
-    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session,
-      archive: {get: async () => replay}, coaching: {reset: tick => resets.push(tick)}});
+  test.each(['native', 'native deferred', 'extension'])('%s frame step preserves visible coaching across an unobserved keyframe', async method => {
+    const {world, run, control, observer, board} = coachingGame(1600, [[1000, 10], [1024, 20], [1140, 30]]);
     try {
       await control.watch(run);
-      world.frame(DT * 1020);
+      world.frame(DT * 1023);
+      expect(board()).toMatchObject({text: '−10.0', tone: 'good'});
       control.pause();
       const before = world.steps;
-      for (let i = 0; i < 6; i++) control.step(1);
-      expect(control.status().index).toBe(1026);
-      // Three ticks before native restore, then two after: tick 1024 is restored.
-      expect(world.steps - before).toBe(5);
-      expect(resets).toEqual([0, 1024]);
+      if (method === 'native') world.player.stepTick(1);
+      else if (method === 'native deferred') { world.player.stepTick(1, true); world.frame(0); }
+      else control.step(1);
+      expect(control.status()).toMatchObject({index: 1024, playing: false});
+      expect(world.session.state).toMatchObject({x: 1024, tick: 1924, velocity: {x: 970}});
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      expect(world.steps - before).toBe(1);
+
       control.play();
-      world.frame(DT * 274);
+      world.frame(DT * 146);
+      const later = board();
+      expect(later).toMatchObject({text: '−30.0', tone: 'loss'});
+      world.frame(DT * 80);
       const rewind = world.steps;
-      control.seek(1100);
-      expect(world.steps - rewind).toBe(76);
-      expect(resets.at(-1)).toBe(1024);
-    } finally { control.destroy(); }
+      control.seek(1170);
+      expect(board()).toEqual(later);
+      expect(world.steps - rewind).toBe(18);
+      control.seek(1024);
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      control.seek(1023);
+      expect(board()).toMatchObject({text: '−10.0', tone: 'good'});
+      const revisiting = world.steps;
+      control.step(1);
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      expect(world.steps - revisiting).toBe(0);
+
+      // A real skipped prefix still makes its feedback unknown, even when
+      // the next frame happens to cross another uncached keyframe.
+      control.seek(1407);
+      expect(board()).toMatchObject({text: '—', tone: 'muted'});
+      control.step(1);
+      expect(board()).toMatchObject({text: '—', tone: 'muted'});
+      control.seek(1000);
+      expect(board()).toMatchObject({text: '−10.0', tone: 'good'});
+      control.seek(1408);
+      expect(board()).toMatchObject({text: '—', tone: 'muted'});
+      expect(observer.healthy).toBe(true);
+    } finally { control.destroy(); observer.destroy(); }
+  });
+  test.each(['transport readonly', 'transport sealed', 'index readonly', 'index sealed'])(
+    '%s keeps native replay seeking when optional coaching hooks cannot be installed', async mode => {
+      const {world, run, control, observer, board} = coachingGame(1600, [[1000, 10], [1024, 20]]);
+      const lock = (target, key) => {
+        const method = target[key];
+        if (mode.endsWith('readonly')) Object.defineProperty(target, key, {value: method, writable: false});
+        else {
+          delete target[key];
+          Object.setPrototypeOf(target, {[key]: method});
+          Object.preventExtensions(target);
+        }
+      };
+      try {
+        if (mode.startsWith('transport')) lock(world.player, 'applyPending');
+        await control.watch(run);
+        if (mode.startsWith('index')) lock(world.player.index, 'keyframeBefore');
+        world.frame(DT * 1023);
+        expect(board()).toMatchObject({text: '−10.0', tone: 'good'});
+        control.pause();
+        control.step(1);
+        expect(control.status()).toMatchObject({index: 1024, playing: false});
+        expect(world.session.state).toMatchObject({x: 1024, tick: 1924, velocity: {x: 970}});
+        expect(board()).toMatchObject({text: '—', tone: 'muted'});
+        control.seek(1000);
+        expect(control.status().index).toBe(1000);
+        control.play();
+        world.frame(DT * 10);
+        expect(control.status().index).toBe(1010);
+        expect(observer.healthy).toBe(true);
+      } finally { control.destroy(); observer.destroy(); }
+    });
+  test('long replays retain recent HUD checkpoints after older ones are evicted', async () => {
+    const end = (MAX_FRAMES + 12) * FRAME_TICKS;
+    const {world, run, control, observer, board} = coachingGame(end + 1, [[100, 10], [end - 200, 20]]);
+    try {
+      await control.watch(run);
+      world.frame(DT * (end + 0.25));
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      control.seek(end - 50);
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      control.seek(FRAME_TICKS);
+      expect(board()).toMatchObject({text: '—', tone: 'muted'});
+      control.seek(end - 50);
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+    } finally { control.destroy(); observer.destroy(); }
+  });
+
+  test.each(['save', 'restore'])('failed analysis %s falls back to a gap and recovers after settings invalidate checkpoints', async failure => {
+    const failures = {};
+    const {world, run, settings, control, observer, board} = coachingGame(400, [[100, 10], [220, 20]], failures);
+    try {
+      await control.watch(run);
+      if (failure === 'save') failures.save = true;
+      world.frame(DT * 300);
+      expect(board()).toMatchObject({text: '−20.0', tone: 'warn'});
+      if (failure === 'restore') failures.restore = true;
+      control.seek(128);
+      expect(board()).toMatchObject({text: '—', tone: 'muted'});
+
+      failures[failure] = false;
+      settings.strafeLookbackSeconds = 0.4;
+      control.settingsChanged();
+      control.seek(0);
+      world.frame(DT * 300);
+      control.seek(128);
+      expect(board()).toMatchObject({text: '−10.0', tone: 'good'});
+    } finally { control.destroy(); observer.destroy(); }
   });
   test('at the end the game holds the last frame: ended, not playing', async () => {
     const { world, run, control } = game();

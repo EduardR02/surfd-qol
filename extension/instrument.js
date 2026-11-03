@@ -1,6 +1,6 @@
 import {nativeRoomHooks} from './native-room-hooks.js';
 import {nativeSavelocHooks} from './native-saveloc-hooks.js';
-import {packCollisionWorld, unpackCollisionWorld, triangleCollisionBrush} from './collision-world.js';
+import {packCollisionWorld, unpackCollisionWorld, scalarTriangleVertices, triangleCollisionBrush} from './collision-world.js';
 import {nativeCollisionTreeHooks} from './collision-tree.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
@@ -21,6 +21,70 @@ function unique(source, pattern, label) {
   if (matches.length !== 1) throw new Error(`Unsupported Surfd build: ${label} (${matches.length} matches)`);
   return matches[0];
 }
+// Exact native vector helpers, BVH, axes, and complete world class. In
+// particular, checking the entire class also rules out new constructor state,
+// field initializers and changed methods before a prepared world skips it.
+// A different bundle stays native until its complete contract is reviewed.
+const nativeWorldContracts = [
+  {name: 'k1', index: 'e', cached: 't', triangle: 'i', vertices: 's',
+    signature: "nt=(n=0,e=0,t=0)=>({x:n,y:e,z:t}),gn=n=>({...n}),vn=(n,e)=>nt(n.x+e.x,n.y+e.y,n.z+e.z),us=(n,e)=>nt(n.x-e.x,n.y-e.y,n.z-e.z),ti=(n,e)=>nt(n.x*e,n.y*e,n.z*e),un=(n,e)" +
+      "=>n.x*e.x+n.y*e.y+n.z*e.z,Xd=(n,e)=>nt(n.y*e.z-n.z*e.y,n.z*e.x-n.x*e.z,n.x*e.y-n.y*e.x),ir=n=>Math.hypot(n.x,n.y,n.z),Ri=n=>Math.hypot(n.x,n.y),rl=n=>{const e=ir(n);return e>1e-12?ti(n,1/e)" +
+      ":nt()},A1=(n,e,t)=>vn(n,ti(us(e,n),t)),Ar=(n,e,t)=>Math.max(e,Math.min(t,n)),Y0=n=>nt(Math.fround(n.x),Math.fround(n.y),Math.fround(n.z)),jd=[\"x\",\"y\",\"z\"],df=(n,e)=>jd.every(t=>n.min[t]" +
+      "<=e.max[t]&&n.max[t]>=e.min[t]);class K0{constructor(e,t=12){this.bounds=e;const i=s=>{const r={x:1/0,y:1/0,z:1/0},a={x:-1/0,y:-1/0,z:-1/0};for(const l of s)for(const d of jd)r[d]" +
+      "=Math.min(r[d],e[l].min[d]),a[d]=Math.max(a[d],e[l].max[d]);if(s.length<=t)return{min:r,max:a,items:s};const o=jd.reduce((l,d)=>a[d]-r[d]>a[l]-r[l]?d:l);s.sort((l,d)=>e[l].min[o]+e[l].max[o]" +
+      "-(e[d].min[o]+e[d].max[o])||l-d);const c=s.length>>1;return{min:r,max:a,left:i(s.slice(0,c)),right:i(s.slice(c))}};this.root=e.length?i(e.map((s,r)=>r)):null}bounds;root;query(e){const t=[]," +
+      "i=s=>{if(df(s,e))if(s.items)for(const r of s.items)df(this.bounds[r],e)&&t.push(r);else i(s.left),i(s.right)};return this.root&&i(this.root),t.sort((s,r)=>s-r)}}const Un=.03125,Xs=[\"x\",\"y\"," +
+      "\"z\"];class k1{constructor(e,t=[],i=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=i,this.bspCornerFix=s," +
+      "this.triangleBounds=t.map(r=>({min:nt(...Xs.map(a=>Math.min(...r.vertices.map(o=>o[a])))),max:nt(...Xs.map(a=>Math.max(...r.vertices.map(o=>o[a]))))})),this.tree=new K0([...e," +
+      "...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;" +
+      "const i=this.triangles[e],s=i.vertices,r=[nt(1,0,0),nt(0,1,0),nt(0,0,1)],o=[rl(Xd(us(s[1],s[0]),us(s[2],s[0]))),...r];for(let d=0;d<3;d++)for(const u of r)o.push(Xd(us(s[(d+1)%3],s[d]),u));" +
+      "const c=[];for(const d of o)if(!(ir(d)<1e-8))for(const u of[1,-1]){const h=ti(rl(d),u);c.some(f=>un(f.normal,h)>1-1e-9)||c.push({normal:h,distance:Math.max(...s.map(f=>un(h,f)))})}" +
+      "const l={id:`disp-${i.surfaceId}-${i.triangleId}`,vertices:s,faces:[[0,1,2]],planes:c,...this.triangleBounds[e],color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,l),l}" +
+      "trace(e,t,i){const s={fraction:1,end:{...t},normal:nt(),startSolid:!1,allSolid:!1,brush:null},r={min:nt(),max:nt()};for(const a of Xs)r.min[a]=Math.min(e[a],t[a])+i.min[a]-Un,r.max[a]" +
+      "=Math.max(e[a],t[a])+i.max[a]+Un;for(const a of this.tree.query(r)){const o=a<this.brushes.length?this.brushes[a]:this.triangleBrush(a-this.brushes.length);if(Xs.some(y=>Math.max(e[y],t[y])" +
+      "+i.max[y]<o.min[y]-Un||Math.min(e[y],t[y])+i.min[y]>o.max[y]+Un)||o.leafBounds&&!o.leafBounds.some(y=>Xs.every(S=>r.max[S]>=y.min[S]&&r.min[S]<=y.max[S])))continue;let c=-1,l=1,d=nt(),u=!1," +
+      "h=!1,f=!1,v,g=-1/0,m=1/0,p=-1,x=nt();const b=this.bspCornerFix&&!o.collisionModel&&o.planes.length===6&&o.planes.every(y=>Xs.filter(S=>y.normal[S]!==0)" +
+      ".length===1&&Xs.some(S=>Math.abs(y.normal[S])===1));for(const y of o.planes){const S=y.normal,E=S.x*(S.x<0?i.max.x:i.min.x)+S.y*(S.y<0?i.max.y:i.min.y)+S.z*(S.z<0?i.max.z:i.min.z)," +
+      "C=y.distance-E,_=un(e,S)-C,w=un(t,S)-C;if(o.collisionModel===\"vphysics\"||b)if(_>w){const T=_/(_-w);T>g&&(g=T,p=Math.max(0,(_-Un)/(_-w)),x=S)}else _<w&&(m=Math.min(m,_/(_-w)));if(_>0&&(u=!0)," +
+      "w>0&&(h=!0),_>0&&w>0&&(!o.collisionModel||w>=_-1e-5)){f=!0;break}if(!(_<=0&&w<=0))if(_>w){const T=Math.max(0,(_-Un)/(_-w));T>c&&(c=T,d=S,v=y.friction)}else l=Math.min(l,(_+Un)/(_-w))}" +
+      "if(!(f||m<1&&g>m)){if(this.vphysicsFeatureFix&&o.collisionModel===\"vphysics\"&&(c=p,d=x),!u){if(s.startSolid=!0,!h)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=o,s;continue}" +
+      "c<l&&c>-1&&c<s.fraction&&(s.fraction=Math.max(0,c),s.normal={...d},s.brush=o,v!==void 0?s.friction=v:delete s.friction)}}return s.end=A1(e,t,s.fraction),s}}"},
+  {name: 'ke', index: 'e', cached: 't', triangle: 'a', vertices: 's',
+    signature: "m=(o=0,e=0,t=0)=>({x:o,y:e,z:t}),x=o=>({...o}),w=(o,e)=>m(o.x+e.x,o.y+e.y,o.z+e.z),P=(o,e)=>m(o.x-e.x,o.y-e.y,o.z-e.z),E=(o,e)=>m(o.x*e,o.y*e,o.z*e),S=(o,e)=>o.x*e.x+o.y*e.y+o.z*e.z,W=(o,e)" +
+      "=>m(o.y*e.z-o.z*e.y,o.z*e.x-o.x*e.z,o.x*e.y-o.y*e.x),N=o=>Math.hypot(o.x,o.y,o.z),C=o=>Math.hypot(o.x,o.y),G=o=>{const e=N(o);return e>1e-12?E(o,1/e):m()},be=(o,e,t)=>w(o,E(P(e,o),t)),j=(o," +
+      "e,t)=>Math.max(e,Math.min(t,o)),ye=o=>m(Math.fround(o.x),Math.fround(o.y),Math.fround(o.z)),$=[\"x\",\"y\",\"z\"],Z=(o,e)=>$.every(t=>o.min[t]<=e.max[t]&&o.max[t]>=e.min[t]);" +
+      "class ve{constructor(e,t=12){this.bounds=e;const a=s=>{const i={x:1/0,y:1/0,z:1/0},c={x:-1/0,y:-1/0,z:-1/0};for(const u of s)for(const f of $)i[f]=Math.min(i[f],e[u].min[f]),c[f]" +
+      "=Math.max(c[f],e[u].max[f]);if(s.length<=t)return{min:i,max:c,items:s};const r=$.reduce((u,f)=>c[f]-i[f]>c[u]-i[u]?f:u);s.sort((u,f)=>e[u].min[r]+e[u].max[r]-(e[f].min[r]+e[f].max[r])||u-f);" +
+      "const n=s.length>>1;return{min:i,max:c,left:a(s.slice(0,n)),right:a(s.slice(n))}};this.root=e.length?a(e.map((s,i)=>i)):null}bounds;root;query(e){const t=[],a=s=>{if(Z(s,e))if(s.items)" +
+      "for(const i of s.items)Z(this.bounds[i],e)&&t.push(i);else a(s.left),a(s.right)};return this.root&&a(this.root),t.sort((s,i)=>s-i)}}const T=.03125,M=[\"x\",\"y\",\"z\"];class ke{constructor(e,t=[]" +
+      ",a=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=a,this.bspCornerFix=s,this.triangleBounds=t.map(i=>({min:m(...M.map(c=>Math.min(...i.vertices.map(r=>r[c]))))," +
+      "max:m(...M.map(c=>Math.max(...i.vertices.map(r=>r[c]))))})),this.tree=new ve([...e,...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;" +
+      "triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;const a=this.triangles[e],s=a.vertices,i=[m(1,0,0),m(0,1,0),m(0,0,1)],r=[G(W(P(s[1],s[0]),P(s[2],s[0]))" +
+      "),...i];for(let f=0;f<3;f++)for(const l of i)r.push(W(P(s[(f+1)%3],s[f]),l));const n=[];for(const f of r)if(!(N(f)<1e-8))for(const l of[1,-1]){const d=E(G(f),l);n.some(h=>S(h.normal,d)" +
+      ">1-1e-9)||n.push({normal:d,distance:Math.max(...s.map(h=>S(d,h)))})}const u={id:`disp-${a.surfaceId}-${a.triangleId}`,vertices:s,faces:[[0,1,2]],planes:n,...this.triangleBounds[e]," +
+      "color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,u),u}trace(e,t,a){const s={fraction:1,end:{...t},normal:m(),startSolid:!1,allSolid:!1,brush:null},i={min:m(),max:m()};" +
+      "for(const c of M)i.min[c]=Math.min(e[c],t[c])+a.min[c]-T,i.max[c]=Math.max(e[c],t[c])+a.max[c]+T;for(const c of this.tree.query(i)){const r=c<this.brushes.length?this.brushes[c]" +
+      ":this.triangleBrush(c-this.brushes.length);if(M.some(k=>Math.max(e[k],t[k])+a.max[k]<r.min[k]-T||Math.min(e[k],t[k])+a.min[k]>r.max[k]+T)" +
+      "||r.leafBounds&&!r.leafBounds.some(k=>M.every(_=>i.max[_]>=k.min[_]&&i.min[_]<=k.max[_])))continue;let n=-1,u=1,f=m(),l=!1,d=!1,h=!1,g,p=-1/0,b=1/0,y=-1,I=m();" +
+      "const F=this.bspCornerFix&&!r.collisionModel&&r.planes.length===6&&r.planes.every(k=>M.filter(_=>k.normal[_]!==0).length===1&&M.some(_=>Math.abs(k.normal[_])===1));for(const k of r.planes)" +
+      "{const _=k.normal,Re=_.x*(_.x<0?a.max.x:a.min.x)+_.y*(_.y<0?a.max.y:a.min.y)+_.z*(_.z<0?a.max.z:a.min.z),se=k.distance-Re,A=S(e,_)-se,H=S(t,_)-se;if(r.collisionModel===\"vphysics\"||F)if(A>H)" +
+      "{const B=A/(A-H);B>p&&(p=B,y=Math.max(0,(A-T)/(A-H)),I=_)}else A<H&&(b=Math.min(b,A/(A-H)));if(A>0&&(l=!0),H>0&&(d=!0),A>0&&H>0&&(!r.collisionModel||H>=A-1e-5)){h=!0;break}if(!(A<=0&&H<=0))" +
+      "if(A>H){const B=Math.max(0,(A-T)/(A-H));B>n&&(n=B,f=_,g=k.friction)}else u=Math.min(u,(A+T)/(A-H))}if(!(h||b<1&&p>b)){if(this.vphysicsFeatureFix&&r.collisionModel===\"vphysics\"&&(n=y,f=I),!l)" +
+      "{if(s.startSolid=!0,!d)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=r,s;continue}n<u&&n>-1&&n<s.fraction&&(s.fraction=Math.max(0,n),s.normal={...f},s.brush=r," +
+      "g!==void 0?s.friction=g:delete s.friction)}}return s.end=be(e,t,s.fraction),s}}"},
+];
+
+function knownNativeWorld(source) {
+  let found = null;
+  for (const contract of nativeWorldContracts) {
+    const at = source.indexOf(contract.signature);
+    if (at < 0) continue;
+    if (found || source.indexOf(contract.signature, at + 1) >= 0) return null;
+    found = contract;
+  }
+  return found;
+}
+
 
 // Keep the native BVH's inclusive comparisons and axis order, without an
 // Array.every callback and dynamic property lookup for every visited box.
@@ -36,28 +100,42 @@ function collisionBoundsHook(source) {
 // Native displacement triangles have three vertices. Compute their AABBs
 // directly instead of allocating six vertex arrays and two axis arrays each.
 // Other vertex counts and sparse triples retain the original native path.
-function nativeTriangleBoundsHooks(source) {
+function nativeTriangleBoundsHooks(source, verified = false) {
   const pattern = /this\.triangleBounds=(?<triangles>[\w$]+)\.map\((?<triangle>[\w$]+)=>\((?<bounds>\{min:(?<vector>[\w$]+)\(\.\.\.(?<axes>[\w$]+)\.map\((?<minAxis>[\w$]+)=>Math\.min\(\.\.\.\k<triangle>\.vertices\.map\((?<minVertex>[\w$]+)=>\k<minVertex>\[\k<minAxis>\]\)\)\)\),max:\k<vector>\(\.\.\.\k<axes>\.map\((?<maxAxis>[\w$]+)=>Math\.max\(\.\.\.\k<triangle>\.vertices\.map\((?<maxVertex>[\w$]+)=>\k<maxVertex>\[\k<maxAxis>\]\)\)\)\)\})\)\)/g;
   const matches = [...source.matchAll(pattern)];
   if (matches.length !== 1) return source;
   const match = matches[0], {triangles, triangle, bounds, vector, axes} = match.groups;
-  if (!new RegExp(`(?:^|[^\\w$])${literal(axes)}=\\["x","y","z"\\]`).test(source)) return source;
-  const components = operation => ['x', 'y', 'z'].map(axis => `Math.${operation}(__qolA.${axis},__qolB.${axis},__qolC.${axis})`).join(',');
-  const replacement = `this.triangleBounds=${triangles}.map(${triangle}=>{const __qolVertices=${triangle}.vertices;if(__qolVertices.length!==3||!(0 in __qolVertices)||!(1 in __qolVertices)||!(2 in __qolVertices))return ${bounds};const __qolA=__qolVertices[0],__qolB=__qolVertices[1],__qolC=__qolVertices[2];return{min:${vector}(${components('min')}),max:${vector}(${components('max')})}})`;
+  if (!verified) {
+    // The small standalone form has the declaration and constructor adjacent,
+    // so neither a global with the same name nor a shadowing parameter can
+    // supply a different binding. Other layouts require the complete contract.
+    const header = new RegExp(`const ${literal(axes)}=\\["x","y","z"\\];function ${literal(vector)}\\(x=0,y=0,z=0\\)\\{return\\{x,y,z\\}\\}\\s*class ${identifier}\\{constructor\\(${literal(triangles)}\\)\\{$`);
+    if (triangles === axes || triangle === axes || !header.test(source.slice(0, match.index))) return source;
+  }
+  const names = ['__qolA', '__qolB', '__qolC'], axesNames = ['x', 'y', 'z'];
+  const numeric = names.flatMap(vertex => axesNames.map(axis => `typeof ${vertex}.${axis}==="number"`)).join('&&');
+  const components = operation => axesNames.map(axis => `Math.${operation}(__qolA.${axis},__qolB.${axis},__qolC.${axis})`).join(',');
+  const replacement = `this.triangleBounds=(__qolSafe=>${triangles}.map(${triangle}=>{const __qolVertices=__qolSafe(${triangle});if(!__qolVertices)return ${bounds};const __qolA=__qolVertices[0],__qolB=__qolVertices[1],__qolC=__qolVertices[2];if(!(${numeric}))return ${bounds};return{min:${vector}(${components('min')}),max:${vector}(${components('max')})}}))((${scalarTriangleVertices.toString()}))`;
   return source.slice(0, match.index) + replacement + source.slice(match.index + match[0].length);
 }
 
 // Candidate rejection and corner-fix classification run on every sweep. Keep
 // their native XYZ order without callback chains or per-plane filter arrays.
-function nativeCollisionSweepHooks(source) {
+function nativeCollisionSweepHooks(source, verified = false) {
   const broadphase = /(?<axes>[\w$]+)\.some\((?<axis>[\w$]+)=>Math\.max\((?<start>[\w$]+)\[\k<axis>\],(?<end>[\w$]+)\[\k<axis>\]\)\+(?<hull>[\w$]+)\.max\[\k<axis>\]<(?<brush>[\w$]+)\.min\[\k<axis>\]-(?<epsilon>[\w$]+)\|\|Math\.min\(\k<start>\[\k<axis>\],\k<end>\[\k<axis>\]\)\+\k<hull>\.min\[\k<axis>\]>\k<brush>\.max\[\k<axis>\]\+\k<epsilon>\)/g;
   const matches = [...source.matchAll(broadphase)];
   if (matches.length !== 1) return source;
   const match = matches[0], {axes, start, end, hull, brush, epsilon} = match.groups;
-  if (!new RegExp(`(?:^|[^\\w$])${literal(axes)}=\\["x","y","z"\\]`).test(source)) return source;
   const corner = new RegExp(`${literal(brush)}\\.planes\\.every\\((${identifier})=>${literal(axes)}\\.filter\\((${identifier})=>\\1\\.normal\\[\\2\\]!==0\\)\\.length===1&&${literal(axes)}\\.some\\(\\2=>Math\\.abs\\(\\1\\.normal\\[\\2\\]\\)===1\\)\\)`, 'g');
   const corners = [...source.matchAll(corner)];
   if (corners.length !== 1) return source;
+  if (!verified) {
+    const header = new RegExp(`const ${literal(axes)}=\\["x","y","z"\\],${literal(epsilon)}=\\.03125;function ${identifier}\\(${literal(start)},${literal(end)},${literal(hull)},${literal(brush)}\\)\\{return\\{skip:$`);
+    if ([start, end, hull, brush, corners[0][1]].includes(axes) ||
+        !header.test(source.slice(0, match.index)) ||
+        source.slice(match.index + match[0].length, corners[0].index) !== ',corner:' ||
+        !source.startsWith('}}', corners[0].index + corners[0][0].length)) return source;
+  }
   const checks = ['x', 'y', 'z'].map(axis =>
     `Math.max(${start}.${axis},${end}.${axis})+${hull}.max.${axis}<${brush}.min.${axis}-${epsilon}||Math.min(${start}.${axis},${end}.${axis})+${hull}.min.${axis}>${brush}.max.${axis}+${epsilon}`);
   const plane = corners[0][1];
@@ -70,14 +148,39 @@ function nativeCollisionSweepHooks(source) {
   return source;
 }
 
-function nativeTriangleBrushHooks(source) {
-  const pattern = new RegExp(`triangleCache=new Map;triangleBrush\\((${identifier})\\)\\{const (${identifier})=this\\.triangleCache\\.get\\(\\1\\);if\\(\\2\\)return \\2;([\\s\\S]{1,2000}?)return this\\.triangleCache\\.set\\(\\1,(${identifier})\\),\\4\\}`, 'g');
-  const matches = [...source.matchAll(pattern)];
-  if (matches.length !== 1) return source;
-  const match = matches[0];
-  return source.slice(0, match.index) +
-    `triangleCache=new Map;triangleBrush(${match[1]}){let brush=this.triangleCache.get(${match[1]});if(!brush){brush=(${triangleCollisionBrush.toString()})(this.triangles[${match[1]}],this.triangleBounds[${match[1]}]);this.triangleCache.set(${match[1]},brush)}return brush}` +
-    source.slice(match.index + match[0].length);
+// Only called on the exact, complete native world contract above. Insert the
+// scalar path after the original cache and vertex lookup; every other input
+// continues through the original native algorithm and cache insertion.
+function nativeTriangleBrushHooks(source, contract) {
+  const {index, cached, triangle, vertices} = contract;
+  const prefix = `triangleBrush(${index}){const ${cached}=this.triangleCache.get(${index});if(${cached})return ${cached};const ${triangle}=this.triangles[${index}],${vertices}=${triangle}.vertices,`;
+  const at = source.indexOf(prefix);
+  if (at < 0) return source;
+  const names = ['__qolA', '__qolB', '__qolC'];
+  // The shared shape check also protects bounds and packet preparation from
+  // accessor reads, custom mapping and non-native array species.
+  const coordinates = names.flatMap(vertex => ['x', 'y', 'z'].map(axis => `Number.isFinite(${vertex}.${axis})`)).join('&&');
+  const replacement = `triangleBrush(${index}){const ${cached}=this.triangleCache.get(${index});if(${cached})return ${cached};const ${triangle}=this.triangles[${index}],${vertices}=${triangle}.vertices;
+const __qolSafe=(${scalarTriangleVertices.toString()})(${triangle});
+if(__qolSafe&&__qolSafe===${vertices}){
+const __qolA=${vertices}[0],__qolB=${vertices}[1],__qolC=${vertices}[2];
+if(${coordinates}){const __qolBrush=(${triangleCollisionBrush.toString()})(${triangle},this.triangleBounds[${index}]);return this.triangleCache.set(${index},__qolBrush),__qolBrush}}
+const `;
+  return source.slice(0, at) + replacement + source.slice(at + prefix.length);
+}
+
+function nativeCollisionWorldHooks(source, contract) {
+  if (contract) {
+    const at = source.indexOf(contract.signature);
+    if (at >= 0) {
+      let world = nativeTriangleBoundsHooks(contract.signature, true);
+      world = nativeCollisionSweepHooks(world, true);
+      world = nativeTriangleBrushHooks(world, contract);
+      source = source.slice(0, at) + world + source.slice(at + contract.signature.length);
+    }
+  }
+  source = nativeTriangleBoundsHooks(source);
+  return nativeCollisionSweepHooks(source);
 }
 
 
@@ -115,14 +218,18 @@ function __surfdQolIndexes(){
   } catch { return source; }
 }
 
-function preparedIndexWorkerHooks(source, workerRuntime) {
+function preparedIndexWorkerHooks(source, workerRuntime, contract) {
   if (source.includes('__surfdQolWorkerWorld')) return source;
   try {
-    const world = unique(source, new RegExp(`class (${identifier})\\{constructor\\((${identifier}),(${identifier})=\\[\\],(${identifier})=!1,(${identifier})=!1\\)\\{this\\.brushes=\\2,this\\.triangles=\\3,this\\.vphysicsFeatureFix=\\4,this\\.bspCornerFix=\\5,this\\.triangleBounds=\\3\\.map\\(`, 'g'), 'native collision world');
-    const fields = 'brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;';
-    const fieldsAt = source.indexOf(fields, world.index);
-    if (fieldsAt < 0 || fieldsAt - world.index > 1000) return source;
-    const factory = unique(source, new RegExp(`new ${literal(world[1])}\\((${identifier})\\.brushes,\\1\\.displacementTriangles,(${identifier}),(${identifier})\\)`, 'g'), 'native world factory');
+    // Without the whole reviewed world contract, keep native geometry loading
+    // and native construction. The independent worker protocol still works.
+    const factories = contract ? [...source.matchAll(new RegExp(`new ${literal(contract.name)}\\((${identifier})\\.brushes,\\1\\.displacementTriangles,(${identifier}),(${identifier})\\)`, 'g'))] : [];
+    // The factory must refer to that class, not a same-named local binding.
+    // Additional occurrences are ambiguous, so leave preparation native.
+    const names = contract ? [...source.matchAll(new RegExp(`(?<![\\w$])${literal(contract.name)}(?![\\w$])`, 'g'))] : [];
+    const classAt = contract ? source.indexOf(`class ${contract.name}{`, source.indexOf(contract.signature)) : -1;
+    const factory = factories.length === 1 && names.length === 2 && names[0].index === classAt + 6 &&
+      names[1].index === factories[0].index + 4 ? factories[0] : null;
     const handler = unique(source, new RegExp(`async function (${identifier})\\((${identifier})\\)\\{try\\{const\\{entry:(${identifier}),currentVersion:(${identifier}),replay:(${identifier})\\}=\\2;`, 'g'), 'index worker request');
     const entry = literal(handler[3]), current = literal(handler[4]), replay = literal(handler[5]);
     const load = unique(source, new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'), 'index geometry load');
@@ -145,12 +252,13 @@ delete globalThis.__surfdQolCreateCinemaWorker;
     const map = load[1];
     const prepare = `let ${map}=__surfdQolMap;
 if(!${map}||${map}.id!==${handler[5]}.mapId||${map}.version!==${handler[5]}.mapVersion){
-  ${map}=null;let __surfdQolPrepared=null;
+  ${map}=null;
+  ${factory ? `let __surfdQolPrepared=null;
 try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
 if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
   ${map}=__surfdQolPrepared.map;
   Object.defineProperty(${map},"__surfdQolCollision",{value:__surfdQolPrepared});
-}else{${load[0].slice(4)}}
+}else{${load[0].slice(4)}}` : load[0].slice(4)}
   if(!__surfdQolJob.current())return;
   __surfdQolMap=${map};
 }
@@ -159,9 +267,9 @@ if(!__surfdQolJob.current())return;
     const helper = `
 ${cinema}
 let __surfdQolMap=null;
-function __surfdQolWorkerWorld(map,feature,corner){
+${factory ? `function __surfdQolWorkerWorld(map,feature,corner,World){
   const prepared=map.__surfdQolCollision;
-  const world=prepared?Object.create(${world[1]}.prototype):new ${world[1]}(map.brushes,map.displacementTriangles,feature,corner);
+  const world=prepared?Object.create(World.prototype):new World(map.brushes,map.displacementTriangles,feature,corner);
   if(prepared){
     world.brushes=map.brushes;world.triangles=map.displacementTriangles;
     world.vphysicsFeatureFix=feature;world.bspCornerFix=corner;
@@ -169,7 +277,7 @@ function __surfdQolWorkerWorld(map,feature,corner){
     world.triangleCache=new Map;
   }
   return world;
-}
+}` : ''}
 `;
     const viewOnly = session.length === 1 && workerRuntime ? `
 if(${handler[2]}.__surfdQolViewOnly){
@@ -201,7 +309,7 @@ try{for(;;){
   await __surfdQolJob.pause();
 }}finally{__surfdQolCinema?.detach(${handler[2]}.job);}`;
     const changes = [
-      {at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]})`},
+      ...(factory ? [{at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]},${contract.name})`}] : []),
       ...(session.length === 1 ? [{at: session[0].index, length: session[0][0].length,
         text: `${session[0][0].slice(0, -1)},${session[0][2]}.format)`}] : []),
       {at: load.index, length: load[0].length, text: prepare},
@@ -224,7 +332,10 @@ function alreadyInstrumented(source) {
 
 export function instrumentPhysicsWorker(source, workerRuntime = '') {
   if (alreadyInstrumented(source)) return source;
-  const patched = nativeTriangleBrushHooks(nativeCollisionSweepHooks(nativeTriangleBoundsHooks(preparedIndexWorkerHooks(nativeCollisionTreeHooks(collisionBoundsHook(source)), workerRuntime))));
+  const contract = knownNativeWorld(source);
+  let patched = preparedIndexWorkerHooks(source, workerRuntime, contract);
+  patched = nativeCollisionWorldHooks(patched, contract);
+  patched = nativeCollisionTreeHooks(collisionBoundsHook(patched));
   return patched === source ? source : patched + `${ADAPTER_MARKER} native worker collision preparation */`;
 }
 
@@ -588,10 +699,10 @@ export function instrumentGame(source) {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
-  source = nativeCollisionSweepHooks(nativeTriangleBoundsHooks(collisionBoundsHook(source)));
+  source = nativeCollisionWorldHooks(source, knownNativeWorld(source));
+  source = collisionBoundsHook(source);
   source = source.replace(new RegExp(`new ${literal(sessionClass)}\\((${identifier}),(${identifier})\\.config\\)`, 'g'),
     (_, map, replay) => `new ${sessionClass}(${map},${replay}.config,${replay}.format)`);
-  source = nativeTriangleBrushHooks(source);
   source = nativeCollisionTreeHooks(source);
   source = preparedIndexHooks(source, state);
   source = nativeStageResetHooks(source);

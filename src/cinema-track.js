@@ -35,21 +35,24 @@ export function trackYaw(track, at) {
 // isn't for this map, is too long, or stops being wanted (isCurrent()).
 // onProgress borrows the first `count` recorded positions, never the suffix.
 // Only the shadow movement instance is observed; callbacks run between batches.
-export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null, signal = null}) {
+// A supplied worker, including null for CPU-only recording, belongs to the
+// caller. Standalone consumers acquire their own when it is unspecified.
+export async function recordTrack({adapter, session, replay, isCurrent = () => true, yieldTask = defer, onProgress = null, signal = null, worker = undefined}) {
   if (typeof adapter?.Session !== 'function' || typeof adapter.Movement !== 'function' || !session?.map ||
     !Array.isArray(replay?.commands) || !replay.commands.length || replay.commands.length > MAX_COMMANDS ||
     replay.mapId !== session.map.id || replay.mapVersion !== session.map.version) return null;
-  const worker = adapter.cinema?.worker?.(session, replay);
-  if (worker) {
-    try {
+  if (!isCurrent() || signal?.aborted) return null;
+  try {
+    const selected = worker === undefined ? adapter.cinema?.worker?.(session, replay) : worker;
+    if (selected) {
       const playback = adapter.replay?.playback?.();
-      const track = await worker.record({replay, onProgress, signal, tick: playback?.replay === replay ? playback.index ?? 0 : 0});
+      const track = await selected.record({replay, onProgress, signal, tick: playback?.replay === replay ? playback.index ?? 0 : 0});
       if (!isCurrent() || signal?.aborted) return null;
       if (track) return track;
-    } catch {
-      if (!isCurrent() || signal?.aborted) return null;
-      // Unsupported or failed workers keep the original native fallback.
     }
+  } catch {
+    if (!isCurrent() || signal?.aborted) return null;
+    // Unsupported or failed workers keep the original native fallback.
   }
   let deadline = await yieldTask();
   if (!isCurrent() || signal?.aborted) return null;
@@ -62,9 +65,9 @@ export async function recordTrack({adapter, session, replay, isCurrent = () => t
       if (!isCurrent() || signal?.aborted) return null;
       const end = Math.min(index + SLICE_COMMANDS, replay.commands.length);
       while (index < replay.commands.length && (index < end || idleLeft(deadline))) shadow.step(replay.commands[index++]);
-      if (capture.publishable && isCurrent()) onProgress?.(capture.track, capture.count);
+      if (capture.publishable && isCurrent() && !signal?.aborted) onProgress?.(capture.track, capture.count);
       if (index < replay.commands.length) deadline = await yieldTask();
     }
-    return isCurrent() ? capture.finish() : null;
+    return isCurrent() && !signal?.aborted ? capture.finish() : null;
   } finally { capture.dispose(); }
 }

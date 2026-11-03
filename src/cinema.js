@@ -197,8 +197,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       if (cached?.track._cinemaWorker?.live) cached.track._cinemaWorker.retain(cached.track._cinemaHandle.id, cached.track);
       // Capture ownership before a first progress callback can arrive, but a
       // completed CPU recording/plan does not need a replacement worker.
-      current.worker = cached?.track._cinemaWorker?.live ? cached.track._cinemaWorker
-        : cached ? null : adapter.cinema?.worker?.(session, current.replay) ?? null;
+      try {
+        current.worker = cached?.track._cinemaWorker?.live ? cached.track._cinemaWorker
+          : cached ? null : adapter.cinema?.worker?.(session, current.replay) ?? null;
+        if (!cached && !current.worker) current.workerFailed = true;
+      } catch {
+        current.worker = null;
+        current.workerFailed = true;
+      }
       const world = cameraWorld(session);
       current.trace = world ? (from, to) => {
         const hit = world.trace(from, to, PROBE);
@@ -207,7 +213,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
       } : null;
       if (current.trace && world.cameraMayHit) current.trace.mayHit = world.cameraMayHit;
-      const track = cached?.track ?? await record({adapter, session, replay: current.replay, isCurrent: () => owns(current), yieldTask: loadIdle,
+      const track = cached?.track ?? await record({adapter, session, replay: current.replay, worker: current.worker, isCurrent: () => owns(current), yieldTask: loadIdle,
         signal: current.lifetime.signal, onProgress: (track, count, range) => progress(current, track, count, range)});
       if (!owns(current)) return;
       if (!track) throw new Error('This replay can’t use cinematic viewing.');
@@ -327,7 +333,21 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       void joining.catch(error => { if (owned()) current.planError = error; });
     };
     void activation.then(publish).catch(() => {});
-    const recording = record({adapter, session, replay, isCurrent: owned, yieldTask: loadIdle,
+    // A worker that died during recording must not start another watchdog.
+    let worker = current.workerFailed ? null : current.worker;
+    if (worker && !worker.live) { current.workerFailed = true; worker = null; }
+    if (!current.workerFailed && !worker) {
+      try {
+        // The worker's primary collision world must use the watched replay's format.
+        worker = current.worker = adapter.cinema?.worker?.(session, current.replay) ?? null;
+        if (!worker) current.workerFailed = true;
+      } catch {
+        worker = null;
+        current.workerFailed = true;
+      }
+    }
+    if (!owned()) return false;
+    const recording = record({adapter, session, replay, worker, isCurrent: owned, yieldTask: loadIdle,
       signal: AbortSignal.any([current.lifetime.signal, pending.controller.signal]),
       onProgress: (track, count) => {
         latest = {track, count, done: count === track.count};
@@ -377,23 +397,38 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   const planKey = (sync, focus, style) => `${sync}|${focus ?? ''}|${style}`;
   async function cameraPlan(current, options, owned, nearby = false) {
-    const retained = current.track?._cinemaWorker;
-    const worker = current.worker = retained?.live ? retained : getAdapter().cinema?.worker?.(getAdapter().getSession(), current.replay);
-    if (worker?.live && !current.workerFailed) {
-      try { return await worker.plan({...options, nearby}, current.planAbort?.signal, retained === worker ? current.track._cinemaHandle.id : undefined); }
-      catch (error) {
-        if (!owned() || current.planAbort?.signal.aborted) return null;
+    const signal = current.planAbort?.signal;
+    if (!owned() || signal?.aborted) return null;
+    if (!current.workerFailed) {
+      try {
+        const retained = current.track?._cinemaWorker;
+        // Keep a dead owned worker here: falling through starts another one.
+        let worker = retained?.live ? retained : current.worker;
+        if (!worker) {
+          const adapter = getAdapter();
+          worker = adapter.cinema?.worker?.(adapter.getSession(), current.replay) ?? null;
+        }
+        current.worker = worker;
+        if (!owned() || signal?.aborted) return null;
+        if (worker?.live) {
+          const plan = await worker.plan({...options, nearby}, signal, retained === worker ? current.track._cinemaHandle.id : undefined);
+          if (!owned() || signal?.aborted) return null;
+          if (plan) return plan;
+        }
         current.workerFailed = true;
-        current.workerError = error;
+      } catch {
+        if (!owned() || signal?.aborted) return null;
+        current.workerFailed = true;
       }
     }
+    if (!owned() || signal?.aborted) return null;
     if (Number.isInteger(options.focusIndex)) {
       const clock = options.a, chosen = options.others[options.focusIndex];
       options = {...options, a: onClock(chosen.track, chosen.map, clock),
         others: [{track: clock, map: Float32Array.from({length: clock.count}, (_, tick) => tick)},
           ...options.others.filter((_, index) => index !== options.focusIndex)]};
     }
-    return planCamera({...options, trace: current.trace, yieldTask: loadIdle, isCurrent: owned});
+    return planCamera({...options, trace: current.trace, yieldTask: loadIdle, isCurrent: () => !signal?.aborted && owned()});
   }
   function placeFor(current, run) {
     if (run.maps.place) return Promise.resolve(run.maps.place);
@@ -484,9 +519,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const owned = () => owns(current) && current.cameraRequested === cameraRequested && current.runs === runs && current.planRequest === request;
     notify();
     try {
-      // Track geometry is ready; compile its shaders while planning the shot.
+      // Plan alongside compilation; deferred track growth is applied when it finishes.
       if (!current.renderer) start(current);
-      else if (current.sceneTrack !== current.track) rebuild(current);
+      else if (!current.warming && current.sceneTrack !== current.track) rebuild(current);
       const publish = async (plan, slice) => {
         while (owned() && current.warming) await current.warming;
         if (!owned()) return false;
@@ -604,8 +639,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.cancelWarm?.();
     const pending = current.scene.prepare?.();
     let cancel;
-    const cancelled = pending ? new Promise(resolve => { cancel = resolve; }) : null;
-    const warming = pending ? Promise.race([pending, cancelled]).finally(() => {
+    const cancelled = pending ? new Promise(resolve => { cancel = () => resolve(false); }) : null;
+    const warming = pending ? Promise.race([Promise.resolve(pending).then(() => true), cancelled]).then(ready => {
+      if (!ready || current.warming !== warming || !owns(current)) return;
+      current.warming = current.cancelWarm = null;
+      // Reuse the shaders just prepared, and catch up once to the latest
+      // recorded prefix before a preview or frame can expose its geometry.
+      if (current.sceneTrack !== current.track) rebuild(current);
+    }).finally(() => {
       if (current.warming === warming) current.warming = current.cancelWarm = null;
     }) : null;
     current.warming = warming;

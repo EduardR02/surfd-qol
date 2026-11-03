@@ -1,12 +1,40 @@
+// Native triangle bounds and SAT use Array.map repeatedly. Only ordinary dense
+// triples with data-property coordinates can share the scalar/snapshot paths.
+// Inspect getters before reading them, so unsupported shapes stay native.
+export function scalarTriangleVertices(triangle) {
+  if (!triangle || typeof triangle !== 'object') return null;
+  const getter = Object.prototype.__lookupGetter__;
+  if (getter.call(triangle, 'vertices')) return null;
+  const vertices = triangle.vertices;
+  if (!Array.isArray(vertices) || vertices.length !== 3 || Object.getPrototypeOf(vertices) !== Array.prototype ||
+      getter.call(vertices, 'map') || vertices.map !== Array.prototype.map ||
+      getter.call(vertices, 'constructor') || vertices.constructor !== Array ||
+      !(0 in vertices) || !(1 in vertices) || !(2 in vertices) ||
+      getter.call(vertices, 0) || getter.call(vertices, 1) || getter.call(vertices, 2)) return null;
+  for (let index = 0; index < 3; index++) {
+    const vertex = vertices[index];
+    if (!vertex || typeof vertex !== 'object' ||
+        getter.call(vertex, 'x') || getter.call(vertex, 'y') || getter.call(vertex, 'z')) return null;
+  }
+  return vertices;
+}
+
 // Scalar SAT expansion avoids the native temporary vector/edge/map graph.
 // The owning native collision world memoizes the resulting triangle brush.
+// Expects three dense vertices with finite numeric XYZ; other inputs use native.
 export function triangleCollisionBrush(triangle, bounds) {
-  const vertices = triangle.vertices, a = vertices[0], b = vertices[1], c = vertices[2], planes = [];
+  const vertices = triangle.vertices;
+  if (!Array.isArray(vertices) || vertices.length !== 3) throw new RangeError('Expected exactly three triangle vertices');
+  const a = vertices[0], b = vertices[1], c = vertices[2], planes = [];
   function axis(x, y, z) {
     const length = Math.hypot(x, y, z);
     if (length < 1e-8) return;
-    const inverse = 1 / length;
-    x *= inverse; y *= inverse; z *= inverse;
+    // Finite vertices can overflow during cross products: native multiplies an
+    // infinite length by zero, but normalizes a NaN length to positive zeros.
+    if (length > 1e-12) {
+      const inverse = 1 / length;
+      x *= inverse; y *= inverse; z *= inverse;
+    } else x = y = z = 0;
     // Every accepted axis contributes an opposite pair. Compare one unsigned
     // axis against one normal from each pair, preserving native plane order.
     for (let i = 0; i < planes.length; i += 2) {
@@ -23,8 +51,11 @@ export function triangleCollisionBrush(triangle, bounds) {
   const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
   const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
   let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-  const length = Math.hypot(nx, ny, nz), inverse = length > 1e-12 ? 1 / length : 0;
-  if (inverse) { nx *= inverse; ny *= inverse; nz *= inverse; } else nx = ny = nz = 0;
+  const length = Math.hypot(nx, ny, nz);
+  if (length > 1e-12) {
+    const inverse = 1 / length;
+    nx *= inverse; ny *= inverse; nz *= inverse;
+  } else nx = ny = nz = 0;
   axis(nx, ny, nz);
   axis(1, 0, 0); axis(0, 1, 0); axis(0, 0, 1);
   for (let i = 0; i < 3; i++) {
@@ -38,15 +69,36 @@ export function triangleCollisionBrush(triangle, bounds) {
     planes, ...bounds, color: '#d4dadd', friction: 1, kind: 'snow'};
 }
 
-// Packet v2 transfers collision data only. Render/import brush fields and the
+// Packet v3 transfers collision data only. Render/import brush fields and the
 // unused map importMetadata are deliberately omitted from the worker copy.
 // Bounds use [min.x,min.y,min.z,max.x,max.y,max.z]; vertices use triangle-major XYZ.
 // nodeData uses [left,right,leafStart,leafCount], with -1 child/range sentinels.
 // brushData rows contain plane/leaf offsets, four scalar codes, and leaf state.
+// brushContents stores optional contents as codes in the same scalar pools.
 export async function packCollisionWorld(map, world, {
   isCurrent = () => true,
   yieldTask = () => globalThis.scheduler?.yield?.() ?? new Promise(resolve => setTimeout(resolve, 0)),
 } = {}) {
+  // This packer is also serialized on its own into the game. Keep this local
+  // guard in sync with scalarTriangleVertices above; neither path may probe an
+  // accessor before deciding to retain native geometry loading.
+  function scalarTriangleVertices(triangle) {
+    if (!triangle || typeof triangle !== 'object') return null;
+    const getter = Object.prototype.__lookupGetter__;
+    if (getter.call(triangle, 'vertices')) return null;
+    const vertices = triangle.vertices;
+    if (!Array.isArray(vertices) || vertices.length !== 3 || Object.getPrototypeOf(vertices) !== Array.prototype ||
+        getter.call(vertices, 'map') || vertices.map !== Array.prototype.map ||
+        getter.call(vertices, 'constructor') || vertices.constructor !== Array ||
+        !(0 in vertices) || !(1 in vertices) || !(2 in vertices) ||
+        getter.call(vertices, 0) || getter.call(vertices, 1) || getter.call(vertices, 2)) return null;
+    for (let index = 0; index < 3; index++) {
+      const vertex = vertices[index];
+      if (!vertex || typeof vertex !== 'object' ||
+          getter.call(vertex, 'x') || getter.call(vertex, 'y') || getter.call(vertex, 'z')) return null;
+    }
+    return vertices;
+  }
   if (typeof isCurrent !== 'function' || typeof yieldTask !== 'function' || !isCurrent()) return null;
   const brushes = map?.brushes, triangles = world?.triangles, tree = world?.tree;
   if (!Array.isArray(brushes) || world?.brushes !== brushes || !Array.isArray(triangles) ||
@@ -128,6 +180,7 @@ export async function packCollisionWorld(map, world, {
     return code;
   }
   const brushCount = brushes.length, brushData = new Uint32Array((brushCount + 1) * 7);
+  const brushContents = new Uint32Array(brushCount);
   const bounds = new Float64Array(count * 6);
   const brushScalarKeys = ['id', 'friction', 'kind', 'collisionModel'];
   let planeCount = 0, leafCount = 0;
@@ -146,6 +199,14 @@ export async function packCollisionWorld(map, world, {
       if (code < 0) return null;
       brushData[offset + 2 + field] = code;
     }
+    // A dynamic or inherited contents value cannot be snapshotted faithfully.
+    const contents = Object.getOwnPropertyDescriptor(brush, 'contents');
+    if (contents) {
+      if (!Object.hasOwn(contents, 'value')) return null;
+      const code = scalarCode(contents.value);
+      if (code < 0) return null;
+      brushContents[i] = code;
+    } else if ('contents' in brush) return null;
     if (Object.hasOwn(brush, 'leafBounds')) {
       if (Array.isArray(brush.leafBounds)) {
         brushData[offset + 6] = 1;
@@ -236,11 +297,15 @@ export async function packCollisionWorld(map, world, {
     return values;
   }
   for (let i = 0; i < triangleCount; i++) {
+    if (Object.prototype.__lookupGetter__.call(triangles, i)) return null;
     const triangle = triangles[i];
-    if (!onlyKeys(triangle, triangleKeys) || !Array.isArray(triangle.vertices) || triangle.vertices.length !== 3) return null;
+    if (!onlyKeys(triangle, triangleKeys)) return null;
+    const points = scalarTriangleVertices(triangle);
+    if (!points || Object.prototype.__lookupGetter__.call(triangle, 'surfaceId') ||
+        Object.prototype.__lookupGetter__.call(triangle, 'triangleId')) return null;
     const item = brushCount + i, box = world.triangleBounds[i];
     if (tree.bounds[item] !== box || !writeBounds(bounds, item * 6, box)) return null;
-    const offset = i * 9, points = triangle.vertices;
+    const offset = i * 9;
     if (!writeVertex(vertices, offset, points[0]) || !writeVertex(vertices, offset + 3, points[1]) ||
         !writeVertex(vertices, offset + 6, points[2])) return null;
     const surfaceId = triangle.surfaceId, triangleId = triangle.triangleId;
@@ -284,14 +349,15 @@ export async function packCollisionWorld(map, world, {
   if (!isCurrent()) return null;
   const packetMap = {...map, brushes: null, displacementTriangles: null};
   delete packetMap.importMetadata;
-  return {version: 2, map: packetMap, brushData, planeValues, planeFriction, leafBounds,
+  return {version: 3, map: packetMap, brushData, brushContents, planeValues, planeFriction, leafBounds,
     scalarNumbers, scalarOffsets, scalarChars, vertices, surfaceIds, triangleIds,
     bounds, nodeBounds, nodeData, indices, maxDepth};
 }
 
 export function unpackCollisionWorld(packet) {
-  if (!packet || packet.version !== 2 || !packet.map || packet.map.brushes !== null ||
+  if (!packet || packet.version !== 3 || !packet.map || packet.map.brushes !== null ||
       packet.map.displacementTriangles !== null || !(packet.brushData instanceof Uint32Array) ||
+      !(packet.brushContents instanceof Uint32Array) ||
       !(packet.planeValues instanceof Float64Array) || !(packet.planeFriction instanceof Uint32Array) ||
       !(packet.leafBounds instanceof Float64Array) || !(packet.scalarNumbers instanceof Float64Array) ||
       !(packet.scalarOffsets instanceof Uint32Array) || !(packet.scalarChars instanceof Uint16Array) ||
@@ -300,10 +366,10 @@ export function unpackCollisionWorld(packet) {
       !(packet.indices instanceof Uint32Array) ||
       !(packet.surfaceIds instanceof Float64Array || Array.isArray(packet.surfaceIds)) ||
       !(packet.triangleIds instanceof Float64Array || Array.isArray(packet.triangleIds))) return null;
-  const {brushData, planeValues, planeFriction, leafBounds, scalarNumbers, scalarOffsets, scalarChars,
+  const {brushData, brushContents, planeValues, planeFriction, leafBounds, scalarNumbers, scalarOffsets, scalarChars,
     vertices, bounds, nodeBounds, nodeData, indices, surfaceIds, triangleIds, maxDepth} = packet;
-  const views = [brushData, planeValues, planeFriction, leafBounds, scalarNumbers, scalarOffsets, scalarChars,
-    vertices, bounds, nodeBounds, nodeData, indices];
+  const views = [brushData, brushContents, planeValues, planeFriction, leafBounds, scalarNumbers, scalarOffsets,
+    scalarChars, vertices, bounds, nodeBounds, nodeData, indices];
   if (ArrayBuffer.isView(surfaceIds)) views.push(surfaceIds);
   if (ArrayBuffer.isView(triangleIds)) views.push(triangleIds);
   try {
@@ -315,8 +381,8 @@ export function unpackCollisionWorld(packet) {
   const brushCount = brushData.length / 7 - 1, planeCount = planeValues.length / 4;
   const leafCount = leafBounds.length / 6, stringCount = scalarOffsets.length - 1;
   const triangleCount = vertices.length / 9, count = bounds.length / 6, nodeCount = nodeBounds.length / 6;
-  if (!Number.isInteger(brushCount) || brushCount < 0 || !Number.isInteger(planeCount) ||
-      !Number.isInteger(leafCount) || stringCount < 0 || planeFriction.length !== planeCount ||
+  if (!Number.isInteger(brushCount) || brushCount < 0 || brushContents.length !== brushCount ||
+      !Number.isInteger(planeCount) || !Number.isInteger(leafCount) || stringCount < 0 || planeFriction.length !== planeCount ||
       !Number.isInteger(triangleCount) || !Number.isInteger(count) || !Number.isInteger(nodeCount) ||
       count > 0x3fffffff || count !== brushCount + triangleCount || indices.length !== count ||
       surfaceIds.length !== triangleCount || triangleIds.length !== triangleCount ||
@@ -348,6 +414,7 @@ export function unpackCollisionWorld(packet) {
         brushData[offset + 1] > brushData[next + 1] || brushData[next + 1] > leafCount ||
         state > 3 || (state !== 1 && brushData[offset + 1] !== brushData[next + 1])) return null;
     for (let j = 2; j <= 5; j++) if (!validScalar(brushData[offset + j])) return null;
+    if (!validScalar(brushContents[i])) return null;
   }
   const last = brushCount * 7;
   if (brushData[last] !== planeCount || brushData[last + 1] !== leafCount ||
@@ -476,6 +543,7 @@ export function unpackCollisionWorld(packet) {
       const code = brushData[offset + 2 + field];
       if (code) brush[brushScalarKeys[field]] = scalarValue(code);
     }
+    if (brushContents[index]) brush.contents = scalarValue(brushContents[index]);
     const state = brushData[offset + 6], leafStart = brushData[offset + 1], leafEnd = brushData[offset + 8];
     if (state === 1) {
       const leaves = new Array(leafEnd - leafStart);

@@ -345,10 +345,8 @@ export function createCinemaWorkerRuntime({post, createSession}) {
         return true;
       }
       if (message.type === 'camera-release') {
-        for (const [request, value] of requests) if (message.ids.includes(value.record?.id)) {
-          value.record.subscribers.delete(request);
-          requests.delete(request);
-        }
+        // Releasing retention is not cancellation: other subscribers may still
+        // be recording this replay. They leave through camera-cancel/completion.
         for (const id of message.ids) {
           const record = records.get(id);
           if (record) { record.retained = false; stopUnused(record); }

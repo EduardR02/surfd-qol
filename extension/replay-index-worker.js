@@ -6,6 +6,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
   function evict(owner = slot) {
     if (!owner || owner.closed) return;
     owner.closed = true;
+    clearTimeout(owner.startupTimeout);
     if (slot === owner) slot = null;
     for (const request of owner.requests.values()) {
       request.cleanup();
@@ -66,7 +67,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
   }
   function camera(owner) {
     const handles = new Set();
-    const live = () => slot === owner && owner.scope === rendererScope;
+    const live = () => !owner.closed && slot === owner && owner.scope === rendererScope;
     function rpc(type, data, {signal, onProgress} = {}) {
       if (!live() || signal?.aborted) return Promise.resolve(null);
       return new Promise((resolve, reject) => {
@@ -135,7 +136,8 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
       plan(options, signal, world) {
         const data = {...options, a: encode(options.a), others: options.others?.map(other => ({track: encode(other.track),
           map: other.map && other.map.byteLength !== other.map.buffer.byteLength ? other.map.slice() : other.map}))};
-        return rpc('camera-plan', {options: data, world: world ?? options.a._cinemaHandle?.id ?? handles.values().next().value}, {signal});
+        // Added recordings may be retained before the bootstrap world is ready.
+        return rpc('camera-plan', {options: data, world: world ?? options.a._cinemaHandle?.id ?? owner.job}, {signal});
       },
       release(id = null) {
         if (id !== null) {
@@ -150,6 +152,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
         if (live()) try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-release', ids: [...handles]}); } catch {}
         handles.clear();
         owner.viewOwned = false;
+        if (owner.viewOnly && !owner.world) evict(owner);
       },
       get live() { return live() && owner.camera !== false; },
     };
@@ -238,6 +241,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
             owner.ready = true;
             owner.camera = data.camera === true;
             owner.readyResolve(owner.camera);
+            if (owner.viewOnly && !owner.camera) { evict(owner); return; }
             if (owner.lease) void post(owner, owner.lease);
             return;
           }
@@ -251,6 +255,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
           if (data.type === 'world') {
             if (data.mapId !== owner.mapId || data.mapVersion !== owner.version) { fail(owner); return; }
             owner.world = true;
+            clearTimeout(owner.startupTimeout);
             if (owner.viewOwned) owner.api.retain(owner.job);
             owner.worldResolve(true);
             if (owner.viewOnly) { lease.complete = true; lease.terminate(); }
@@ -294,8 +299,22 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
     },
     camera(session, replay = null, entry = session?.map) {
       if (!slot && session?.map && replay && workerFactory) {
-        const lease = this.acquire(session.map, replay, session);
-        slot.viewOnly = slot.viewOwned = true;
+        let lease;
+        try { lease = this.acquire(session.map, replay, session); }
+        catch { return null; }
+        const owner = slot;
+        owner.viewOnly = owner.viewOwned = true;
+        // Native indexing has its own 120-second watchdog. A standalone view
+        // needs the same bounded startup, including packing and world loading.
+        owner.startupTimeout = setTimeout(() => {
+          if (slot !== owner || owner.world) return;
+          for (const request of owner.requests.values()) {
+            request.cleanup();
+            request.resolve(null);
+          }
+          owner.requests.clear();
+          evict(owner);
+        }, 120000);
         lease.postMessage({entry, currentVersion: session.map.version, replay, __surfdQolViewOnly: true});
       }
       if (!slot || slot.scope !== rendererScope || slot.mapId !== session?.map?.id ||

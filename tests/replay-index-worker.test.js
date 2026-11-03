@@ -1,7 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 import {createReplayIndexJobs, createReplayIndexWorker} from '../extension/replay-index-worker.js';
 import {instrumentGame, instrumentPhysicsWorker} from '../extension/instrument.js';
-import {packCollisionWorld} from '../extension/collision-world.js';
+import {packCollisionWorld, unpackCollisionWorld} from '../extension/collision-world.js';
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return {promise, resolve}; };
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
@@ -128,6 +128,34 @@ for (const [kind, makeJobs, makeWorker] of [
     expect(second.id).not.toBe(first.id);
     renderer.dispose(); expect(worker.terminated).toBe(1);
   });
+  test('handleless camera plans select the primary world even when an added recording starts first', async () => {
+    const f = fixture(), watched = replayFor(f.map), added = replayFor(f.map), lease = f.acquire(watched), worker = f.workers[0];
+    const camera = f.jobs.camera(f.session), abort = new AbortController();
+    const recording = camera.record({replay: added, signal: abort.signal});
+    const pending = [recording];
+    try {
+      lease.postMessage({replay: watched});
+      worker.ready(true); await flush(); worker.world(lease, watched); await flush();
+      const record = worker.posts.find(({message}) => message.type === 'record').message;
+      expect(record.id).not.toBe(lease.id);
+      const track = {_cinemaWorker: camera, _cinemaHandle: {id: record.id, from: 0}, count: 2};
+      pending.push(camera.plan({a: {count: 2}}, abort.signal));
+      pending.push(camera.plan({a: track}, abort.signal));
+      pending.push(camera.plan({a: track}, abort.signal, lease.id));
+      await flush();
+      const plans = worker.posts.filter(({message}) => message.type === 'camera-plan').map(({message}) => message);
+      expect(plans.map(message => message.world)).toEqual([lease.id, record.id, lease.id]);
+      camera.release(record.id);
+      pending.push(camera.plan({a: {count: 2}}, abort.signal));
+      await flush();
+      expect(worker.posts.filter(({message}) => message.type === 'camera-plan').at(-1).message.world).toBe(lease.id);
+    } finally {
+      abort.abort();
+      await Promise.all(pending);
+      camera.release();
+      lease.terminate(true);
+    }
+  });
   test('worker recording eviction invalidates replay identity without losing the retained world', async () => {
     const f = fixture(), replay = replayFor(f.map), lease = f.acquire(replay), worker = f.workers[0];
     const camera = f.jobs.camera(f.session);
@@ -154,6 +182,51 @@ for (const [kind, makeJobs, makeWorker] of [
     worker.receive(protocol({type: 'world', job: run.job, mapId: map.id, mapVersion: map.version}));
     camera.release(); expect(worker.terminated).toBe(0);
     renderer.dispose(); expect(worker.terminated).toBe(1);
+  });
+  test('view-only worker construction or handshake-post failure leaves cinema able to use native fallback', () => {
+    for (const mode of ['construct', 'post']) {
+      const map = {id: 'map', version: 'v1'}, session = {map};
+      const worker = new WorkerStub();
+      const jobs = makeJobs(async () => null, () => {
+        if (mode === 'construct') throw new Error('Worker blocked');
+        worker.postMessage = () => { throw new Error('Post blocked'); };
+        return worker;
+      });
+      expect(jobs.camera(session, replayFor(map))).toBeNull();
+      if (mode === 'post') expect(worker.terminated).toBe(1);
+    }
+  });
+  test('silent view-only startup expires at either handshake stage and settles recordings', async () => {
+    for (const ready of [false, true]) {
+      const timers = new Map();
+      const timedJobs = Function('setTimeout', 'clearTimeout', `return (${makeJobs.toString()})`)(
+        callback => { const id = Symbol(); timers.set(id, callback); return id; }, id => timers.delete(id));
+      const map = {id: 'map', version: 'v1'}, session = {map}, replay = replayFor(map), worker = new WorkerStub();
+      const jobs = timedJobs(async () => null, () => worker), camera = jobs.camera(session, replay);
+      const recording = camera.record({replay});
+      if (ready) worker.ready(true);
+      await flush();
+      expect(timers.size).toBe(1);
+      [...timers.values()][0]();
+      expect(await recording).toBeNull();
+      expect(camera.live).toBe(false);
+      expect(worker.terminated).toBe(1);
+      expect(timers.size).toBe(0);
+    }
+  });
+  test('closing view-only cinema cancels unfinished packing and ignores its eventual packet', async () => {
+    const prepared = deferred(), map = {id: 'map', version: 'v1'}, session = {map}, replay = replayFor(map), worker = new WorkerStub();
+    let current;
+    const jobs = makeJobs((map, session, message, isCurrent) => { current = isCurrent; return prepared.promise; }, () => worker);
+    const camera = jobs.camera(session, replay), recording = camera.record({replay});
+    worker.ready(true);
+    camera.release();
+    expect(current()).toBe(false);
+    expect(await recording).toBeNull();
+    prepared.resolve({vertices: new Float64Array(3)});
+    await flush();
+    expect(worker.runs()).toEqual([]);
+    expect(worker.terminated).toBe(1);
   });
   test('native index cancellation preserves explicit camera ownership and pending recordings', async () => {
     for (const subscribed of [false, true]) {
@@ -220,17 +293,41 @@ for (const [kind, makeJobs, makeWorker] of [
   });
 });
 
+// The supported native worker's actual vector, BVH, axis and world contracts.
+const nativeCollisionFixture = "m=(o=0,e=0,t=0)=>({x:o,y:e,z:t}),x=o=>({...o}),w=(o,e)=>m(o.x+e.x,o.y+e.y,o.z+e.z),P=(o,e)=>m(o.x-e.x,o.y-e.y,o.z-e.z),E=(o,e)=>m(o.x*e,o.y*e,o.z*e),S=(o,e)=>o.x*e.x+o.y*e.y+o.z*e.z,W=(o,e)" +
+  "=>m(o.y*e.z-o.z*e.y,o.z*e.x-o.x*e.z,o.x*e.y-o.y*e.x),N=o=>Math.hypot(o.x,o.y,o.z),C=o=>Math.hypot(o.x,o.y),G=o=>{const e=N(o);return e>1e-12?E(o,1/e):m()},be=(o,e,t)=>w(o,E(P(e,o),t)),j=(o," +
+  "e,t)=>Math.max(e,Math.min(t,o)),ye=o=>m(Math.fround(o.x),Math.fround(o.y),Math.fround(o.z)),$=[\"x\",\"y\",\"z\"],Z=(o,e)=>$.every(t=>o.min[t]<=e.max[t]&&o.max[t]>=e.min[t]);" +
+  "class ve{constructor(e,t=12){this.bounds=e;const a=s=>{const i={x:1/0,y:1/0,z:1/0},c={x:-1/0,y:-1/0,z:-1/0};for(const u of s)for(const f of $)i[f]=Math.min(i[f],e[u].min[f]),c[f]" +
+  "=Math.max(c[f],e[u].max[f]);if(s.length<=t)return{min:i,max:c,items:s};const r=$.reduce((u,f)=>c[f]-i[f]>c[u]-i[u]?f:u);s.sort((u,f)=>e[u].min[r]+e[u].max[r]-(e[f].min[r]+e[f].max[r])||u-f);" +
+  "const n=s.length>>1;return{min:i,max:c,left:a(s.slice(0,n)),right:a(s.slice(n))}};this.root=e.length?a(e.map((s,i)=>i)):null}bounds;root;query(e){const t=[],a=s=>{if(Z(s,e))if(s.items)" +
+  "for(const i of s.items)Z(this.bounds[i],e)&&t.push(i);else a(s.left),a(s.right)};return this.root&&a(this.root),t.sort((s,i)=>s-i)}}const T=.03125,M=[\"x\",\"y\",\"z\"];class ke{constructor(e,t=[]" +
+  ",a=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=a,this.bspCornerFix=s,this.triangleBounds=t.map(i=>({min:m(...M.map(c=>Math.min(...i.vertices.map(r=>r[c]))))," +
+  "max:m(...M.map(c=>Math.max(...i.vertices.map(r=>r[c]))))})),this.tree=new ve([...e,...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;" +
+  "triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;const a=this.triangles[e],s=a.vertices,i=[m(1,0,0),m(0,1,0),m(0,0,1)],r=[G(W(P(s[1],s[0]),P(s[2],s[0]))" +
+  "),...i];for(let f=0;f<3;f++)for(const l of i)r.push(W(P(s[(f+1)%3],s[f]),l));const n=[];for(const f of r)if(!(N(f)<1e-8))for(const l of[1,-1]){const d=E(G(f),l);n.some(h=>S(h.normal,d)" +
+  ">1-1e-9)||n.push({normal:d,distance:Math.max(...s.map(h=>S(d,h)))})}const u={id:`disp-${a.surfaceId}-${a.triangleId}`,vertices:s,faces:[[0,1,2]],planes:n,...this.triangleBounds[e]," +
+  "color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,u),u}trace(e,t,a){const s={fraction:1,end:{...t},normal:m(),startSolid:!1,allSolid:!1,brush:null},i={min:m(),max:m()};" +
+  "for(const c of M)i.min[c]=Math.min(e[c],t[c])+a.min[c]-T,i.max[c]=Math.max(e[c],t[c])+a.max[c]+T;for(const c of this.tree.query(i)){const r=c<this.brushes.length?this.brushes[c]" +
+  ":this.triangleBrush(c-this.brushes.length);if(M.some(k=>Math.max(e[k],t[k])+a.max[k]<r.min[k]-T||Math.min(e[k],t[k])+a.min[k]>r.max[k]+T)" +
+  "||r.leafBounds&&!r.leafBounds.some(k=>M.every(_=>i.max[_]>=k.min[_]&&i.min[_]<=k.max[_])))continue;let n=-1,u=1,f=m(),l=!1,d=!1,h=!1,g,p=-1/0,b=1/0,y=-1,I=m();" +
+  "const F=this.bspCornerFix&&!r.collisionModel&&r.planes.length===6&&r.planes.every(k=>M.filter(_=>k.normal[_]!==0).length===1&&M.some(_=>Math.abs(k.normal[_])===1));for(const k of r.planes)" +
+  "{const _=k.normal,Re=_.x*(_.x<0?a.max.x:a.min.x)+_.y*(_.y<0?a.max.y:a.min.y)+_.z*(_.z<0?a.max.z:a.min.z),se=k.distance-Re,A=S(e,_)-se,H=S(t,_)-se;if(r.collisionModel===\"vphysics\"||F)if(A>H)" +
+  "{const B=A/(A-H);B>p&&(p=B,y=Math.max(0,(A-T)/(A-H)),I=_)}else A<H&&(b=Math.min(b,A/(A-H)));if(A>0&&(l=!0),H>0&&(d=!0),A>0&&H>0&&(!r.collisionModel||H>=A-1e-5)){h=!0;break}if(!(A<=0&&H<=0))" +
+  "if(A>H){const B=Math.max(0,(A-T)/(A-H));B>n&&(n=B,f=_,g=k.friction)}else u=Math.min(u,(A+T)/(A-H))}if(!(h||b<1&&p>b)){if(this.vphysicsFeatureFix&&r.collisionModel===\"vphysics\"&&(n=y,f=I),!l)" +
+  "{if(s.startSolid=!0,!d)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=r,s;continue}n<u&&n>-1&&n<s.fraction&&(s.fraction=Math.max(0,n),s.normal={...f},s.brush=r," +
+  "g!==void 0?s.friction=g:delete s.friction)}}return s.end=be(e,t,s.fraction),s}}";
+
 const nativeWorker = `(()=>{
 "use strict";
-let loads=0,builds=0;const simulations=[],worlds=new WeakMap,geometry={id:"map",version:"v1",brushes:[],displacementTriangles:[]};
-class World{constructor(b,t=[],f=!1,c=!1){this.brushes=b,this.triangles=t,this.vphysicsFeatureFix=f,this.bspCornerFix=c,this.triangleBounds=t.map(x=>x.bounds),this.tree={root:null};builds++}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(){}}
-function worldFor(o,e){const t=e>=7,a=e>=8,s=\`\${t}/\${a}\`;let i=worlds.get(o.brushes);i||(i=new Map,worlds.set(o.brushes,i));let c=i.get(s);return c||(c=new World(o.brushes,o.displacementTriangles,t,a),i.set(s,c)),c}
+let loads=0;const simulations=[],worlds=new WeakMap,geometry={id:"map",version:"v1",brushes:[],displacementTriangles:[]};
+const ${nativeCollisionFixture}
+function worldFor(o,e){const t=e>=7,a=e>=8,s=\`\${t}/\${a}\`;let i=worlds.get(o.brushes);i||(i=new Map,worlds.set(o.brushes,i));let c=i.get(s);return c||(c=new ke(o.brushes,o.displacementTriangles,t,a),i.set(s,c)),c}
 async function loadCurrent(entry){loads++;return geometry}
 async function loadArchive(entry,version){loads++;return {...geometry,version,brushes:[]}}
 class Index{constructor(map,replay){this.map=map,this.replay=replay;this.world=worldFor(map,replay.format);if(replay.failInit)throw Error("initialization failed");this.position=0;simulations.push(this)}run(alive){if(alive())this.position++;return {from:this.position,elapsed:new Float64Array([this.position]),phases:new Uint8Array([0]),markers:[],keyframes:[],finish:null,done:this.position>=this.replay.commands.length}}}
 const q=self,Me=120;q.onmessage=o=>{process(o.data)};
 async function process(o){try{const{entry:e,currentVersion:t,replay:a}=o;if(!a||a.mapId!==e.id)throw Error("wrong map");let s=null;a.mapVersion===t&&(s=await loadCurrent(e),s.version!==a.mapVersion&&(s=null)),s??=await loadArchive(e,a.mapVersion);const i=new Index(s,a);for(;;){const c=performance.now()+Me,r=i.run(()=>performance.now()<c);if(q.postMessage({ok:!0,batch:r},{transfer:[r.elapsed.buffer,r.phases.buffer]}),r.done)return}}catch(e){q.postMessage({ok:!1,error:e instanceof Error?e.message:String(e)})}}
-self.probe={simulations,loads:()=>loads,builds:()=>builds};
+self.probe={simulations,loads:()=>loads,builds:()=>new Set(simulations.filter(sim=>sim.world.tree instanceof ve).map(sim=>sim.world)).size};
 })();`;
 function workerFixture(native = nativeWorker, clock = performance, runtime = '') {
   const posts = [], scheduled = [], self = {postMessage: data => posts.push(data)};
@@ -277,9 +374,7 @@ test('prepared worlds memoize exact scalar triangle SAT brushes on native world 
   const map = {id: 'map', version: 'v1', brushes: [], displacementTriangles: [triangle]};
   const packet = await packCollisionWorld(map, {brushes: map.brushes, triangles: map.displacementTriangles,
     triangleBounds: [bounds], tree: {bounds: [bounds], root: {...bounds, items: [0]}}});
-  const source = nativeWorker.replace('triangleBrush(){}',
-    'triangleBrush(i){const cached=this.triangleCache.get(i);if(cached)return cached;const brush={native:!0};return this.triangleCache.set(i,brush),brush}');
-  const f = workerFixture(source), replay = {...replayFor(map), format: 8, commands: [{}]};
+  const f = workerFixture(), replay = {...replayFor(map), format: 8, commands: [{}]};
   f.send({type: 'run', job: 1, entry: {id: map.id}, currentVersion: map.version, replay, __surfdQolCollision: packet});
   await flush();
   const world = f.probe.simulations[0].world, first = world.triangleBrush(0), second = world.triangleBrush(0);
@@ -287,6 +382,43 @@ test('prepared worlds memoize exact scalar triangle SAT brushes on native world 
   expect(first.id).toBe('disp-3-4'); expect(first.planes.length).toBeGreaterThan(0);
   expect(f.probe.builds()).toBe(0);
 });
+test('unknown constructor state and private initializers use native loading and construction', async () => {
+  const map = {id: 'map', version: 'v1', brushes: [], displacementTriangles: []};
+  const packet = await packCollisionWorld(map, {brushes: map.brushes, triangles: map.displacementTriangles,
+    triangleBounds: [], tree: {bounds: [], root: null}});
+  const replay = {...replayFor(map), format: 8, commands: [{}]};
+  const variants = [
+    [nativeWorker.replace('this.bspCornerFix=s,this.triangleBounds=', 'this.bspCornerFix=s,this.mask=37,this.triangleBounds='), world => world.mask],
+    [nativeWorker.replace('triangleCache=new Map;triangleBrush', 'mask=38;triangleCache=new Map;triangleBrush'), world => world.mask],
+    [nativeWorker.replace('triangleCache=new Map;triangleBrush', '#mask=39;readMask(){return this.#mask}triangleCache=new Map;triangleBrush'), world => world.readMask()],
+  ];
+  for (const [index, [source, readMask]] of variants.entries()) {
+    const f = workerFixture(source);
+    f.send({type: 'run', job: 1, entry: {id: map.id}, currentVersion: map.version, replay, __surfdQolCollision: packet});
+    await flush();
+    expect(f.probe.loads()).toBe(1);
+    expect(f.probe.builds()).toBe(1);
+    expect(readMask(f.probe.simulations[0].world)).toBe(37 + index);
+    expect(f.posts.some(post => post.type === 'batch' && post.batch.done)).toBe(true);
+  }
+});
+
+test('an altered cached triangle method remains native even with a valid packet', async () => {
+  const map = {id: 'map', version: 'v1', brushes: [], displacementTriangles: []};
+  const packet = await packCollisionWorld(map, {brushes: map.brushes, triangles: map.displacementTriangles,
+    triangleBounds: [], tree: {bounds: [], root: null}});
+  const source = nativeWorker.replace('const a=this.triangles[e],s=a.vertices,i=[m(1,0,0)',
+    'const native={native:!0};return this.triangleCache.set(e,native),native;const a=this.triangles[e],s=a.vertices,i=[m(1,0,0)');
+  const f = workerFixture(source), replay = {...replayFor(map), format: 8, commands: [{}]};
+  f.send({type: 'run', job: 1, entry: {id: map.id}, currentVersion: map.version, replay, __surfdQolCollision: packet});
+  await flush();
+  const world = f.probe.simulations[0].world, brush = world.triangleBrush(0);
+  expect(brush).toEqual({native: true});
+  expect(world.triangleBrush(0)).toBe(brush);
+  expect(f.probe.loads()).toBe(1);
+  expect(f.probe.builds()).toBe(1);
+});
+
 test('view-only native jobs initialize camera physics without simulating an unused index', async () => {
   const source = nativeWorker.replace('class Index{',
     'class Session{constructor(map,config,format){this.map=map;this.world=worldFor(map,format)}loadReplay(replay){this.replay=replay}}class Index{')
@@ -338,16 +470,65 @@ stopWorker(){clearTimeout(this.workerTimeout),this.workerTimeout=void 0,this.wor
 function valid(batch){return batch&&typeof batch.done==="boolean"}
 const player=new Player();install(map);
 `;
-function playerFixture() {
+function playerFixture(collision = '') {
   const warn = console.warn; let source;
-  try { console.warn = () => {}; source = instrumentGame(nativePlayer); } finally { console.warn = warn; }
+  try { console.warn = () => {}; source = instrumentGame(nativePlayer + collision); } finally { console.warn = warn; }
   const workers = [], timers = new Map();
   class NativeWorker extends WorkerStub { constructor() { super(); workers.push(this); } }
   const runtime = new Function('globalThis', 'Worker', 'setTimeout', 'clearTimeout', source.replaceAll('import.meta.url', '"https://surfd.net/game.js"') +
-    ';return {player,install,dispose:()=>renderer.dispose(),map,fallbacks:()=>fallbacks};')({}, NativeWorker,
+    `;return {player,install,dispose:()=>renderer.dispose(),session:()=>nativeSession,map,fallbacks:()=>fallbacks${collision ? ',World:ke' : ''}};`)({}, NativeWorker,
     callback => { const id = Symbol(); timers.set(id, callback); return id; }, id => timers.delete(id));
   return {...runtime, workers, timers};
 }
+test('instrumented native player and worker preserve packed and unsupported triangle physics', async () => {
+  for (const variant of ['ordinary', 'map', 'species', 'coordinates']) {
+    const f = playerFixture(`;const ${nativeCollisionFixture}`), vertices = [
+      {x: 0, y: 0, z: 0}, {x: 1, y: 0, z: 0}, {x: 0, y: 1, z: 0},
+    ];
+    if (variant === 'map') vertices.map = callback => Array.prototype.map.call(vertices, callback).map(value => value + 17);
+    if (variant === 'species') vertices.constructor = {[Symbol.species]: class extends Array {
+      *[Symbol.iterator]() { for (let i = 0; i < this.length; i++) yield this[i] + 29; }
+    }};
+    if (variant === 'coordinates') Object.defineProperty(vertices[0], 'x', {enumerable: true, get: () => 0});
+    const triangle = {surfaceId: 3, triangleId: 4, vertices};
+    f.map.brushes = []; f.map.displacementTriangles = [triangle];
+    const mainWorld = f.session().movement.world = new f.World(f.map.brushes, f.map.displacementTriangles);
+    const shift = variant === 'map' ? 17 : variant === 'species' ? 29 : 0;
+    const query = {min: {x: shift, y: shift, z: shift}, max: {x: shift + 1, y: shift + 1, z: shift}};
+    expect(mainWorld.triangleBounds[0]).toEqual(query);
+    expect(mainWorld.tree.query(query)).toEqual([0]);
+
+    const replay = {...replayFor(f.map), format: 8, commands: [{}]};
+    f.player.begin(replay);
+    const worker = f.workers[0];
+    worker.ready(); await flush();
+    const run = worker.runs()[0];
+    expect(run).toBeDefined();
+    if (variant !== 'ordinary') expect(run.message.__surfdQolCollision).toBeUndefined();
+    else {
+      const packet = run.message.__surfdQolCollision, snapshot = unpackCollisionWorld(packet);
+      expect(snapshot.map.displacementTriangles[0]).toEqual(triangle);
+      expect(snapshot.tree.query(query)).toEqual([0]);
+      expect(run.transfer.length).toBeGreaterThan(0);
+    }
+
+    // Deliver the player's real job to the instrumented native worker. Its
+    // geometry represents a fresh native load when packing is unsupported.
+    const index = workerFixture(nativeWorker.replace('self.probe={simulations,', 'self.probe={geometry,simulations,'));
+    index.probe.geometry.displacementTriangles = [triangle];
+    index.send(run.message); await flush();
+    expect(index.probe.loads()).toBe(variant === 'ordinary' ? 0 : 1);
+    expect(index.probe.builds()).toBe(variant === 'ordinary' ? 0 : 1);
+    const workerWorld = index.probe.simulations[0].world;
+    expect(workerWorld.triangleBounds[0]).toEqual(mainWorld.triangleBounds[0]);
+    expect(workerWorld.tree.query(query)).toEqual([0]);
+    expect(workerWorld.triangleBrush(0)).toEqual(mainWorld.triangleBrush(0));
+    for (const message of index.posts) worker.receive(message);
+    expect(f.player.index.complete).toBe(true);
+    expect(f.fallbacks()).toBe(0);
+  }
+});
+
 test('native player retains validation/watchdogs while completed jobs release resources', async () => {
   const f = playerFixture(), replay = {...replayFor(f.map), commands: [{}]};
   f.player.begin(replay); const first = f.player.worker, worker = f.workers[0];

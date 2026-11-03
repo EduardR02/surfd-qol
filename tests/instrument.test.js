@@ -66,6 +66,30 @@ const recordGhost={frame:(state,alpha)=>({state,alpha})};
 function drawFrame(state,alpha,spectating=false,inReplay=false){renderer.render({state:state,eyePosition:{x:0,y:0,z:0},fov:90,ghost:spectating||inReplay?null:recordGhost.frame(state,alpha)})}
 `;
 
+// The reviewed native game vector, BVH, axis and collision-world contracts.
+const nativeCollisionFixture = "nt=(n=0,e=0,t=0)=>({x:n,y:e,z:t}),gn=n=>({...n}),vn=(n,e)=>nt(n.x+e.x,n.y+e.y,n.z+e.z),us=(n,e)=>nt(n.x-e.x,n.y-e.y,n.z-e.z),ti=(n,e)=>nt(n.x*e,n.y*e,n.z*e),un=(n,e)" +
+  "=>n.x*e.x+n.y*e.y+n.z*e.z,Xd=(n,e)=>nt(n.y*e.z-n.z*e.y,n.z*e.x-n.x*e.z,n.x*e.y-n.y*e.x),ir=n=>Math.hypot(n.x,n.y,n.z),Ri=n=>Math.hypot(n.x,n.y),rl=n=>{const e=ir(n);return e>1e-12?ti(n,1/e)" +
+  ":nt()},A1=(n,e,t)=>vn(n,ti(us(e,n),t)),Ar=(n,e,t)=>Math.max(e,Math.min(t,n)),Y0=n=>nt(Math.fround(n.x),Math.fround(n.y),Math.fround(n.z)),jd=[\"x\",\"y\",\"z\"],df=(n,e)=>jd.every(t=>n.min[t]" +
+  "<=e.max[t]&&n.max[t]>=e.min[t]);class K0{constructor(e,t=12){this.bounds=e;const i=s=>{const r={x:1/0,y:1/0,z:1/0},a={x:-1/0,y:-1/0,z:-1/0};for(const l of s)for(const d of jd)r[d]" +
+  "=Math.min(r[d],e[l].min[d]),a[d]=Math.max(a[d],e[l].max[d]);if(s.length<=t)return{min:r,max:a,items:s};const o=jd.reduce((l,d)=>a[d]-r[d]>a[l]-r[l]?d:l);s.sort((l,d)=>e[l].min[o]+e[l].max[o]" +
+  "-(e[d].min[o]+e[d].max[o])||l-d);const c=s.length>>1;return{min:r,max:a,left:i(s.slice(0,c)),right:i(s.slice(c))}};this.root=e.length?i(e.map((s,r)=>r)):null}bounds;root;query(e){const t=[]," +
+  "i=s=>{if(df(s,e))if(s.items)for(const r of s.items)df(this.bounds[r],e)&&t.push(r);else i(s.left),i(s.right)};return this.root&&i(this.root),t.sort((s,r)=>s-r)}}const Un=.03125,Xs=[\"x\",\"y\"," +
+  "\"z\"];class k1{constructor(e,t=[],i=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=i,this.bspCornerFix=s," +
+  "this.triangleBounds=t.map(r=>({min:nt(...Xs.map(a=>Math.min(...r.vertices.map(o=>o[a])))),max:nt(...Xs.map(a=>Math.max(...r.vertices.map(o=>o[a]))))})),this.tree=new K0([...e," +
+  "...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;" +
+  "const i=this.triangles[e],s=i.vertices,r=[nt(1,0,0),nt(0,1,0),nt(0,0,1)],o=[rl(Xd(us(s[1],s[0]),us(s[2],s[0]))),...r];for(let d=0;d<3;d++)for(const u of r)o.push(Xd(us(s[(d+1)%3],s[d]),u));" +
+  "const c=[];for(const d of o)if(!(ir(d)<1e-8))for(const u of[1,-1]){const h=ti(rl(d),u);c.some(f=>un(f.normal,h)>1-1e-9)||c.push({normal:h,distance:Math.max(...s.map(f=>un(h,f)))})}" +
+  "const l={id:`disp-${i.surfaceId}-${i.triangleId}`,vertices:s,faces:[[0,1,2]],planes:c,...this.triangleBounds[e],color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,l),l}" +
+  "trace(e,t,i){const s={fraction:1,end:{...t},normal:nt(),startSolid:!1,allSolid:!1,brush:null},r={min:nt(),max:nt()};for(const a of Xs)r.min[a]=Math.min(e[a],t[a])+i.min[a]-Un,r.max[a]" +
+  "=Math.max(e[a],t[a])+i.max[a]+Un;for(const a of this.tree.query(r)){const o=a<this.brushes.length?this.brushes[a]:this.triangleBrush(a-this.brushes.length);if(Xs.some(y=>Math.max(e[y],t[y])" +
+  "+i.max[y]<o.min[y]-Un||Math.min(e[y],t[y])+i.min[y]>o.max[y]+Un)||o.leafBounds&&!o.leafBounds.some(y=>Xs.every(S=>r.max[S]>=y.min[S]&&r.min[S]<=y.max[S])))continue;let c=-1,l=1,d=nt(),u=!1," +
+  "h=!1,f=!1,v,g=-1/0,m=1/0,p=-1,x=nt();const b=this.bspCornerFix&&!o.collisionModel&&o.planes.length===6&&o.planes.every(y=>Xs.filter(S=>y.normal[S]!==0)" +
+  ".length===1&&Xs.some(S=>Math.abs(y.normal[S])===1));for(const y of o.planes){const S=y.normal,E=S.x*(S.x<0?i.max.x:i.min.x)+S.y*(S.y<0?i.max.y:i.min.y)+S.z*(S.z<0?i.max.z:i.min.z)," +
+  "C=y.distance-E,_=un(e,S)-C,w=un(t,S)-C;if(o.collisionModel===\"vphysics\"||b)if(_>w){const T=_/(_-w);T>g&&(g=T,p=Math.max(0,(_-Un)/(_-w)),x=S)}else _<w&&(m=Math.min(m,_/(_-w)));if(_>0&&(u=!0)," +
+  "w>0&&(h=!0),_>0&&w>0&&(!o.collisionModel||w>=_-1e-5)){f=!0;break}if(!(_<=0&&w<=0))if(_>w){const T=Math.max(0,(_-Un)/(_-w));T>c&&(c=T,d=S,v=y.friction)}else l=Math.min(l,(_+Un)/(_-w))}" +
+  "if(!(f||m<1&&g>m)){if(this.vphysicsFeatureFix&&o.collisionModel===\"vphysics\"&&(c=p,d=x),!u){if(s.startSolid=!0,!h)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=o,s;continue}" +
+  "c<l&&c>-1&&c<s.fraction&&(s.fraction=Math.max(0,c),s.normal={...d},s.brush=o,v!==void 0?s.friction=v:delete s.friction)}}return s.end=A1(e,t,s.fraction),s}}";
+
 // Replay-only fixtures deliberately omit private rooms. Keep unexpected
 // compatibility warnings visible without logging this known optional omission.
 function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms unavailable:']) {
@@ -231,6 +255,199 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} sweep scalar com
       expect(f.source).not.toContain('__qolNormal');
       expect(f.source).toContain('$axes.some($axis=>Math.max(');
     }
+  });
+});
+
+for (const kind of ['game', 'worker']) describe(`native ${kind} collision world contracts`, () => {
+  function worldFixture(collision = nativeCollisionFixture) {
+    const helper = `;const ${collision}`;
+    const Native = new Function(helper + ';return k1;')();
+    const source = kind === 'game' ? instrumentReplayFixture(nativeSource + helper) : instrumentPhysicsWorker(helper);
+    const Patched = new Function('globalThis', source + ';return k1;')({});
+    return {source, Native, Patched};
+  }
+  const point = (x, y, z) => ({x, y, z});
+  const triangle = vertices => ({surfaceId: 3, triangleId: 4, vertices});
+
+  test('installs the reviewed native bounds, sweep and SAT contracts without changing brushes', () => {
+    const {source, Native, Patched} = worldFixture();
+    expect(source).toContain('__qolVertices');
+    expect(source).toContain('__qolNormal');
+    expect(source).toContain('__qolBrush');
+    for (const vertices of [
+      [point(0, 0, 0), point(16, 0, 0), point(0, 16, 0)],
+      [point(-0, 0, -0), point(0, -0, 0), point(-0, -0, 0)],
+      [point(0, 0, 0), point(1e160, 0, 0), point(0, 1e149, 0)],
+    ]) {
+      const native = new Native([], [triangle(vertices)]), patched = new Patched([], [triangle(vertices)]);
+      const brush = patched.triangleBrush(0);
+      expect(brush).toEqual(native.triangleBrush(0));
+      expect(patched.triangleBrush(0)).toBe(brush);
+      expect(patched.triangleCache.get(0)).toBe(brush);
+    }
+  });
+
+  test('uses native SAT for four vertices, sparse triples and nonfinite coordinates', () => {
+    const {Native, Patched} = worldFixture();
+    const four = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0), point(0, 0, 100)];
+    const nonfinite = [point(0, 0, 0), point(Infinity, 0, 0), point(0, 1, 0)];
+    for (const vertices of [four, nonfinite]) {
+      const native = new Native([], [triangle(vertices)]), patched = new Patched([], [triangle(vertices)]);
+      const expected = native.triangleBrush(0), actual = patched.triangleBrush(0);
+      expect(actual).toEqual(expected);
+      expect(patched.triangleBrush(0)).toBe(actual);
+      if (vertices === four) expect(actual.planes.find(plane => plane.normal.z === 1).distance).toBe(100);
+    }
+    let reads = 0;
+    const first = point(0, 0, 0);
+    Object.defineProperty(first, 'x', {get() { reads++; return 0; }});
+    const vertices = [first, , point(0, 1, 0)];
+    const native = new Native([], [triangle(vertices)]), patched = new Patched([], [triangle(vertices)]);
+    reads = 0;
+    expect(() => native.triangleBrush(0)).toThrow();
+    const nativeReads = reads;
+    reads = 0;
+    expect(() => patched.triangleBrush(0)).toThrow();
+    expect(reads).toBe(nativeReads);
+  });
+
+  test('preserves native bounds, queries and SAT for custom maps, species and accessors', () => {
+    const {Native, Patched} = worldFixture();
+    function run(World, variant) {
+      let reads = 0;
+      const vertices = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)];
+      let item = triangle(vertices);
+      if (variant === 'coordinates') Object.defineProperty(vertices[0], 'x', {
+        enumerable: true, get() { reads++; return 0; },
+      });
+      if (variant === 'inherited coordinates') {
+        const prototype = Object.defineProperty({}, 'x', {get() { reads++; return 0; }});
+        vertices[0] = Object.assign(Object.create(prototype), {y: 0, z: 0});
+      }
+      if (variant === 'index') Object.defineProperty(vertices, 1, {
+        configurable: true, enumerable: true, get() { reads++; return point(1, 0, 0); },
+      });
+      if (variant === 'vertices') Object.defineProperty(item, 'vertices', {
+        enumerable: true, get() { reads++; return vertices; },
+      });
+      if (variant === 'inherited vertices') {
+        const prototype = Object.defineProperty({}, 'vertices', {get() { reads++; return vertices; }});
+        item = Object.assign(Object.create(prototype), {surfaceId: 3, triangleId: 4});
+      }
+      if (variant === 'map') vertices.map = function (callback) {
+        reads++;
+        return Array.prototype.map.call(this, callback).map(value => value + 17);
+      };
+      if (variant === 'subclass') Object.setPrototypeOf(vertices, (class extends Array {
+        map(callback) { reads++; return Array.from(this, callback).map(value => value + 37); }
+      }).prototype);
+      if (variant === 'map getter') Object.defineProperty(vertices, 'map', {
+        get() { reads++; return Array.prototype.map; },
+      });
+      if (variant === 'constructor') vertices.constructor = {[Symbol.species]: class extends Array {
+        *[Symbol.iterator]() { for (let i = 0; i < this.length; i++) yield this[i] + 29; }
+      }};
+      if (variant === 'constructor getter') Object.defineProperty(vertices, 'constructor', {
+        get() { reads++; return Array; },
+      });
+      const world = new World([], [item]);
+      const bounds = world.triangleBounds[0];
+      const shift = variant === 'map' ? 17 : variant === 'constructor' ? 29 : variant === 'subclass' ? 37 : 0;
+      const query = {min: point(shift, shift, shift), max: point(shift + 1, shift + 1, shift)};
+      const candidates = world.tree.query(query), buildReads = reads;
+      reads = 0;
+      const {vertices: ignored, ...brush} = world.triangleBrush(0);
+      return {bounds, candidates, buildReads, reads, brush};
+    }
+    for (const variant of ['coordinates', 'inherited coordinates', 'index', 'vertices', 'inherited vertices',
+      'map', 'subclass', 'map getter', 'constructor', 'constructor getter']) {
+      const native = run(Native, variant);
+      expect(native.candidates).toEqual([0]);
+      expect(run(Patched, variant)).toEqual(native);
+    }
+  });
+
+  test('leaves an altered cached triangle algorithm and its native result intact', () => {
+    const changed = nativeCollisionFixture.replace('friction:1,kind:"snow"', 'friction:2,kind:"snow"');
+    const {source, Native, Patched} = worldFixture(changed);
+    expect(source).not.toContain('__qolBrush');
+    expect(source).toContain('friction:2,kind:"snow"');
+    const vertices = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)];
+    const expected = new Native([], [triangle(vertices)]).triangleBrush(0);
+    const actual = new Patched([], [triangle(vertices)]).triangleBrush(0);
+    expect(actual).toEqual(expected);
+    expect(actual.friction).toBe(2);
+  });
+
+  test('leaves a changed native SAT vector helper and its result intact', () => {
+    const changed = nativeCollisionFixture.replace('un=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z',
+      'un=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z+10');
+    const {source, Native, Patched} = worldFixture(changed);
+    expect(source).not.toContain('__qolBrush');
+    const vertices = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)];
+    expect(new Patched([], [triangle(vertices)]).triangleBrush(0))
+      .toEqual(new Native([], [triangle(vertices)]).triangleBrush(0));
+  });
+});
+
+for (const kind of ['game', 'worker']) describe(`native ${kind} scoped collision axes`, () => {
+  const instrument = helper => kind === 'game' ? instrumentReplayFixture(nativeSource + helper) : instrumentPhysicsWorker(helper);
+  const point = (x, y, z) => ({x, y, z});
+  const bounds = `class $World{constructor($triangles){this.triangleBounds=$triangles.map($triangle=>({min:$vector(...$axes.map($axis=>Math.min(...$triangle.vertices.map($vertex=>$vertex[$axis])))),max:$vector(...$axes.map($axis=>Math.max(...$triangle.vertices.map($vertex=>$vertex[$axis]))))}))}}`;
+  const vector = 'function $vector(x=0,y=0,z=0){return{x,y,z}}';
+  const sweep = 'function $sweep($start,$end,$hull,$brush){return{skip:$axes.some($axis=>Math.max($start[$axis],$end[$axis])+$hull.max[$axis]<$brush.min[$axis]-$epsilon||Math.min($start[$axis],$end[$axis])+$hull.min[$axis]>$brush.max[$axis]+$epsilon),corner:$brush.planes.every($plane=>$axes.filter($axis=>$plane.normal[$axis]!==0).length===1&&$axes.some($axis=>Math.abs($plane.normal[$axis])===1))}}';
+
+  test('bounds use the actual adjacent binding rather than an outer namesake', () => {
+    for (const [outer, inner, optimized] of [
+      ['["x","y","z"]', '["z","y","x"]', false],
+      ['["z","y","x"]', '["x","y","z"]', true],
+    ]) {
+      const helper = `;const $axes=${outer};function $scope(){const $axes=${inner};${vector}${bounds};return $World}`;
+      const source = instrument(helper);
+      const Native = new Function(helper + ';return $scope();')();
+      const Patched = new Function('globalThis', source + ';return $scope();')({});
+      const triangles = [{vertices: [point(1, 2, 9)]}];
+      expect(new Patched(triangles).triangleBounds).toEqual(new Native(triangles).triangleBounds);
+      expect(source.includes('__qolVertices')).toBe(optimized);
+    }
+  });
+
+  test('bounds do not mistake an outer axes declaration for a shadowing parameter', () => {
+    const helper = `;const $axes=["x","y","z"];function $scope($axes){${vector}${bounds};return $World}`;
+    const source = instrument(helper);
+    const Native = new Function(helper + ';return $scope(["z","y","x"]);')();
+    const Patched = new Function('globalThis', source + ';return $scope(["z","y","x"]);')({});
+    const triangles = [{vertices: [point(1, 2, 9)]}];
+    expect(source).not.toContain('__qolVertices');
+    expect(new Patched(triangles).triangleBounds).toEqual(new Native(triangles).triangleBounds);
+    expect(new Patched(triangles).triangleBounds[0].min).toEqual(point(9, 2, 1));
+  });
+
+  test('sweep uses the bound axis order even when outer and local bindings differ', () => {
+    function observe(fn) {
+      const reads = [], start = {};
+      for (const axis of ['x', 'y', 'z']) Object.defineProperty(start, axis, {get() { reads.push(axis); return 0; }});
+      const zero = point(0, 0, 0), hull = {min: zero, max: zero};
+      const brush = {min: point(-1, -1, -1), max: point(1, 1, 1), planes: []};
+      return {result: fn(start, zero, hull, brush), reads};
+    }
+    for (const [outer, local, optimized] of [
+      ['["x","y","z"]', '["z","y","x"]', false],
+      ['["z","y","x"]', '["x","y","z"]', true],
+    ]) {
+      const helper = `;const $axes=${outer};function $scope(){const $axes=${local},$epsilon=.03125;${sweep};return $sweep}`;
+      const source = instrument(helper);
+      const native = new Function(helper + ';return $scope();')();
+      const patched = new Function('globalThis', source + ';return $scope();')({});
+      expect(source.includes('__qolNormal')).toBe(optimized);
+      expect(observe(patched)).toEqual(observe(native));
+    }
+    const helper = `;const $axes=["x","y","z"];function $scope($axes){const $epsilon=.03125;${sweep};return $sweep}`;
+    const source = instrument(helper);
+    const native = new Function(helper + ';return $scope(["z","y","x"]);')();
+    const patched = new Function('globalThis', source + ';return $scope(["z","y","x"]);')({});
+    expect(source).not.toContain('__qolNormal');
+    expect(observe(patched)).toEqual(observe(native));
   });
 });
 

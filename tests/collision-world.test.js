@@ -1,5 +1,6 @@
 import {expect, spyOn, test} from 'bun:test';
 import {packCollisionWorld, unpackCollisionWorld, triangleCollisionBrush} from '../extension/collision-world.js';
+import {cameraWorld} from '../src/cinema-world.js';
 
 const axes = ['x', 'y', 'z'];
 const point = (x, y, z) => ({x, y, z});
@@ -306,16 +307,68 @@ test('native displacement import fields are accepted without entering worker col
   expect(Object.hasOwn(result, 'contents')).toBe(false);
   expect(Object.hasOwn(result, 'tags')).toBe(false);
 });
-test('triangle packet writes each coordinate once while preserving strict vector shape validation', async () => {
-  let reads = 0;
-  const vertex = {get x() { reads++; return -0; }, y: 1, z: 2};
+test('triangle packets preserve coordinates and enforce strict vector shape validation', async () => {
+  const vertex = point(-0, 1, 2);
   const {map, world} = fixture([], [triangle([vertex, point(3, 4, 5), point(6, 7, 8)])]);
-  reads = 0;
   const packet = await packCollisionWorld(map, world);
-  expect(packet).not.toBeNull(); expect(reads).toBe(1);
+  expect(packet).not.toBeNull();
   expect(Object.is(packet.vertices[0], -0)).toBe(true);
   world.triangles[0].vertices[1] = Object.assign(Object.create({x: 3}), {y: 4, z: 5});
   expect(await packCollisionWorld(map, world)).toBeNull();
+});
+
+test('triangle packets reject custom mapping, species and accessors without reading them', async () => {
+  for (const pack of [packCollisionWorld, Function(`return (${packCollisionWorld.toString()})`)()])
+  for (const variant of ['map', 'subclass', 'map getter', 'constructor', 'constructor getter', 'vertices',
+    'inherited vertices', 'index', 'outer index', 'coordinates', 'inherited coordinates', 'surface id', 'triangle id']) {
+    let reads = 0;
+    const vertices = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)];
+    let item = triangle(vertices);
+    if (variant === 'map') vertices.map = function (callback) {
+      reads++;
+      return Array.prototype.map.call(this, callback).map(value => value + 17);
+    };
+    if (variant === 'subclass') Object.setPrototypeOf(vertices, (class extends Array {
+      map(callback) { reads++; return Array.from(this, callback).map(value => value + 37); }
+    }).prototype);
+    if (variant === 'map getter') Object.defineProperty(vertices, 'map', {
+      get() { reads++; return Array.prototype.map; },
+    });
+    if (variant === 'constructor') vertices.constructor = {[Symbol.species]: class extends Array {}};
+    if (variant === 'constructor getter') Object.defineProperty(vertices, 'constructor', {
+      get() { reads++; return Array; },
+    });
+    if (variant === 'vertices') Object.defineProperty(item, 'vertices', {
+      enumerable: true, get() { reads++; return vertices; },
+    });
+    if (variant === 'inherited vertices') {
+      const prototype = Object.defineProperty({}, 'vertices', {get() { reads++; return vertices; }});
+      item = Object.assign(Object.create(prototype), {surfaceId: 'surface', triangleId: 'triangle'});
+    }
+    if (variant === 'index') Object.defineProperty(vertices, 1, {
+      configurable: true, enumerable: true, get() { reads++; return point(1, 0, 0); },
+    });
+    if (variant === 'coordinates') Object.defineProperty(vertices[0], 'x', {
+      enumerable: true, get() { reads++; return 0; },
+    });
+    if (variant === 'inherited coordinates') {
+      const prototype = Object.defineProperty({}, 'x', {get() { reads++; return 0; }});
+      vertices[0] = Object.assign(Object.create(prototype), {y: 0, z: 0});
+    }
+    if (variant === 'surface id') Object.defineProperty(item, 'surfaceId', {
+      enumerable: true, get() { reads++; return 'surface'; },
+    });
+    if (variant === 'triangle id') Object.defineProperty(item, 'triangleId', {
+      enumerable: true, get() { reads++; return 'triangle'; },
+    });
+    const {map, world} = fixture([], [item]);
+    if (variant === 'outer index') Object.defineProperty(world.triangles, 0, {
+      enumerable: true, configurable: true, get() { reads++; return item; },
+    });
+    reads = 0;
+    expect(await pack(map, world)).toBeNull();
+    expect(reads).toBe(0);
+  }
 });
 
 test('numeric ID columns transfer without narrowing signed zero, large or nonfinite numbers', async () => {
@@ -647,4 +700,163 @@ test('fresh displacement SAT planes match native order, exact numbers and contac
       }
     }
   }
+});
+
+test('displacement SAT preserves native nonfinite intermediates and signed zero for finite vertices', () => {
+  const examples = [
+    [point(0, 0, 0), point(1e160, 0, 0), point(0, 1e149, 0)],
+    [point(0, 0, 0), point(1e160, 0, 0), point(0, -1e149, 0)],
+    [point(-1e308, -0, 0), point(1e308, 0, 0), point(0, 1, 0)],
+    [point(-1e308, -1e308, 0), point(1e308, 1e308, -0), point(0, 0, 1)],
+    [point(0, 0, 0), point(1e-160, 0, 0), point(0, 1e-160, 0)],
+    [point(0, 0, 0), point(1e-8, 0, 0), point(0, 1e-4, 0)],
+    [point(0, 0, 0), point(1e-8 + 1e-23, 0, 0), point(0, 1e-4, 0)],
+  ];
+  const values = [-Number.MAX_VALUE, -1e160, -1e149, -1e-8, -Number.MIN_VALUE, -0, 0,
+    Number.MIN_VALUE, 1e-8, 1e149, 1e160, Number.MAX_VALUE];
+  let seed = 0x32a4e6f8;
+  const coordinate = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return values[seed % values.length];
+  };
+  for (let i = 0; i < 128; i++) {
+    examples.push(Array.from({length: 3}, () => point(coordinate(), coordinate(), coordinate())));
+  }
+  const implementations = [triangleCollisionBrush, Function(`return (${triangleCollisionBrush.toString()})`)()];
+  for (const vertices of examples) {
+    const item = triangle(vertices), bounds = {
+      min: point(...axes.map(axis => Math.min(...vertices.map(vertex => vertex[axis])))),
+      max: point(...axes.map(axis => Math.max(...vertices.map(vertex => vertex[axis])))),
+    };
+    const expected = nativeTriangleBrush(item, bounds);
+    for (const compile of implementations) {
+      const actual = compile(item, bounds);
+      expect(actual.planes.length).toBe(expected.planes.length);
+      for (let i = 0; i < expected.planes.length; i++) {
+        expect(Object.is(actual.planes[i].distance, expected.planes[i].distance)).toBe(true);
+        for (const axis of axes) expect(Object.is(actual.planes[i].normal[axis], expected.planes[i].normal[axis])).toBe(true);
+      }
+      expect(actual).toEqual(expected);
+    }
+  }
+  const item = triangle(examples[0]), expected = nativeTriangleBrush(item, box(0, 0, 0, 1e160, 1e149, 0));
+  expect(expected.planes.filter(({normal}) => axes.every(axis => normal[axis] === 0))).toHaveLength(2);
+  expect(expected.planes).toHaveLength(8);
+  const actual = triangleCollisionBrush(item, box(0, 0, 0, 1e160, 1e149, 0));
+  const isCornerBox = brush => brush.planes.length === 6 && brush.planes.every(plane =>
+    axes.filter(axis => plane.normal[axis] !== 0).length === 1 && axes.some(axis => Math.abs(plane.normal[axis]) === 1));
+  expect(isCornerBox(expected)).toBe(false);
+  expect(isCornerBox(actual)).toBe(false);
+});
+
+test('the scalar SAT helper explicitly rejects nontriangles instead of ignoring extra vertices', async () => {
+  const item = triangle([point(0, 0, 0), point(1, 0, 0), point(0, 1, 0), point(0, 0, 100)]);
+  const bounds = box(0, 0, 0, 1, 1, 100), native = nativeTriangleBrush(item, bounds);
+  expect(native.planes.find(({normal}) => normal.z === 1).distance).toBe(100);
+  for (const compile of [triangleCollisionBrush, Function(`return (${triangleCollisionBrush.toString()})`)()]) {
+    expect(() => compile(item, bounds)).toThrow(RangeError);
+    expect(() => compile(triangle(item.vertices.slice(0, 2)), bounds)).toThrow(RangeError);
+    const sparse = triangle([point(0, 0, 0), , point(0, 1, 0)]);
+    expect(() => nativeTriangleBrush(sparse, bounds)).toThrow(TypeError);
+    expect(() => compile(sparse, bounds)).toThrow(TypeError);
+  }
+  const {map, world} = fixture([], [item]);
+  expect(await packCollisionWorld(map, world)).toBeNull();
+});
+
+test('packed camera worlds preserve native brush visibility and trace results', async () => {
+  class NativeWorld {
+    constructor(brushes, triangles, feature = false, corner = false) {
+      this.brushes = brushes; this.triangles = triangles;
+      this.vphysicsFeatureFix = feature; this.bspCornerFix = corner;
+      this.tree = nativeTree(brushes); this.triangleBounds = []; this.triangleCache = new Map();
+    }
+    triangleBrush() { throw new Error('No triangles in this fixture'); }
+    trace(start, end, hull) {
+      return nativeTrace(this.tree, this.brushes, start, end, hull, this.vphysicsFeatureFix, this.bspCornerFix);
+    }
+  }
+  const cases = [
+    [{}, true], [{contents: undefined}, true], [{contents: null}, true],
+    [{contents: 0}, false], [{contents: -0}, false], [{contents: 1}, true],
+    [{contents: 9}, false], [{contents: 0x10000001}, false],
+    [{contents: 2}, false], [{contents: 0x40000001}, true],
+    [{contents: '9'}, false], [{contents: true}, true], [{contents: NaN}, false],
+    [{contents: 0x100000001}, true], [{contents: Infinity}, false],
+  ];
+  const brushes = cases.map(([flags], i) => {
+    const brush = {...box(0, i * 10, 0, 2, i * 10 + 4, 4), id: `brush-${i}`, ...flags};
+    brush.planes = boxPlanes(brush);
+    return brush;
+  });
+  const original = structuredClone(brushes);
+  const map = {id: 'camera', version: '1', brushes, displacementTriangles: []};
+  const world = new NativeWorld(brushes, map.displacementTriangles, true, true);
+  const packet = await packCollisionWorld(map, world);
+  expect(packet).not.toBeNull();
+  const transfer = [...new Set(Object.values(packet).filter(ArrayBuffer.isView).map(view => view.buffer))];
+  const snapshot = unpackCollisionWorld(structuredClone(packet, {transfer}));
+  expect(snapshot).not.toBeNull();
+  expect(brushes).toEqual(original);
+  expect(map.brushes).toBe(brushes);
+  expect(world.brushes).toBe(brushes);
+  const packedWorld = Object.assign(Object.create(NativeWorld.prototype), {
+    brushes: snapshot.map.brushes, triangles: snapshot.map.displacementTriangles,
+    tree: snapshot.tree, triangleBounds: snapshot.triangleBounds, triangleCache: new Map(),
+    vphysicsFeatureFix: world.vphysicsFeatureFix, bspCornerFix: world.bspCornerFix,
+  });
+  const nativeCamera = cameraWorld({map, movement: {world}});
+  const packedCamera = cameraWorld({map: snapshot.map, movement: {world: packedWorld}});
+  const hull = box(-0.5, -0.5, -0.5, 0.5, 0.5, 0.5);
+  for (let i = 0; i < cases.length; i++) {
+    const source = brushes[i], restored = snapshot.map.brushes[i];
+    expect(Object.hasOwn(restored, 'contents')).toBe(Object.hasOwn(source, 'contents'));
+    expect(Object.is(restored.contents, source.contents)).toBe(true);
+    const start = point(-5, i * 10 + 2, 2), end = point(5, i * 10 + 2, 2);
+    const expected = nativeCamera.trace(start, end, hull), actual = packedCamera.trace(start, end, hull);
+    expect(expected.brush?.id ?? null).toBe(cases[i][1] ? source.id : null);
+    expect(actual).toEqual(expected);
+    expect(packedCamera.tree.query(box(-5, i * 10 + 2, 2, 5, i * 10 + 2, 2)))
+      .toEqual(nativeCamera.tree.query(box(-5, i * 10 + 2, 2, 5, i * 10 + 2, 2)));
+  }
+});
+
+test('contents packet validation rejects unsupported values and malformed typed columns', async () => {
+  const {map, world} = fixture([{...box(0, 0, 0, 1, 1, 1), contents: 1}]);
+  const packet = await packCollisionWorld(map, world);
+  expect(packet.brushContents).toBeInstanceOf(Uint32Array);
+  for (const change of [
+    value => { value.version = 2; },
+    value => { delete value.brushContents; },
+    value => { value.brushContents = new Uint16Array(value.brushContents); },
+    value => { value.brushContents = new Uint32Array(0); },
+    value => { value.brushContents[0] = 0x3fffffff; },
+    value => { value.brushContents[0] = 0x80000000; },
+    value => { structuredClone(value.brushContents, {transfer: [value.brushContents.buffer]}); },
+  ]) {
+    const changed = structuredClone(packet);
+    change(changed);
+    expect(unpackCollisionWorld(changed)).toBeNull();
+  }
+  for (const value of [{valueOf: () => 1}, Symbol('solid')]) {
+    world.brushes[0].contents = value;
+    expect(await packCollisionWorld(map, world)).toBeNull();
+    expect(world.brushes[0].contents).toBe(value);
+  }
+  for (const value of [-42n, 0n, 12345678901234567890n]) {
+    world.brushes[0].contents = value;
+    const restored = unpackCollisionWorld(await packCollisionWorld(map, world));
+    expect(restored.map.brushes[0].contents).toBe(value);
+  }
+  const prototype = Object.defineProperty({}, 'contents', {value: 0});
+  const inherited = Object.assign(Object.create(prototype), box(0, 0, 0, 1, 1, 1));
+  const example = fixture([inherited]);
+  expect(await packCollisionWorld(example.map, example.world)).toBeNull();
+  expect(inherited.contents).toBe(0);
+  let reads = 0;
+  Object.defineProperty(world.brushes[0], 'contents', {
+    configurable: true, enumerable: true, get() { return ++reads & 1; },
+  });
+  expect(await packCollisionWorld(map, world)).toBeNull();
+  expect(reads).toBe(0);
 });

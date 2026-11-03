@@ -3,6 +3,8 @@ import {createTrack, recordTrack, trackPoint, trackYaw} from '../src/cinema-trac
 import {alignByPlace, alignByTime, gapAt} from '../src/cinema-sync.js';
 import {adjust, blur, planCamera, shotAt, viewAngles} from '../src/cinema-camera.js';
 import {createCinema} from '../src/cinema.js';
+import {createCinemaScene} from '../src/cinema-scene.js';
+import {createReplayIndexJobs} from '../extension/replay-index-worker.js';
 import {gapText} from '../src/cinema-ui.js';
 import {boardSource, ghostSources} from '../src/ghost-sources.js';
 
@@ -436,22 +438,23 @@ describe('cinematic replay lifecycle', () => {
     globalThis.innerWidth = 1280; globalThis.innerHeight = 720;
     globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
     const native = function (view) { this.drawn = view; };
-    const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render: native};
+    const renderer = options.renderer ?? {qolScene: {}, qolCamera: {position: {set() {}}}};
+    renderer.render = native;
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
     let disposed = 0, scenes = 0, colors = [], positions = [], made = [];
     const control = {renderer, playback: {replay: played}, session: {map: {id: 'm', version: 1}}};
     const adapter = {cinema: {renderer: () => control.renderer, worker: options.worker}, getSession: () => control.session, replay: {playback: () => control.playback}};
     const cinema = createCinema({getAdapter: () => adapter, onChange: options.onChange, loadIdle: options.loadIdle ?? (async () => null), now: options.now,
       record: async args => { recorded++; return options.record ? options.record(args) : straight({count: 60, lead: 5, y: (recorded - 1) * 30}); },
-      createScene: (_, runs) => {
+      createScene: options.createScene ?? ((_, runs) => {
         scenes = runs.length; colors = runs.map(run => run.colorIndex);
         const scene = {shown: runs.map(() => true), disposed: false, update(at) { positions = at.slice(); }, labels: () => [],
           show(index, value) { scene.shown[index] = value; }, dispose() { disposed++; scene.disposed = true; }};
         if (options.prepareScene) scene.prepare = () => options.prepareScene(scene);
         made.push(scene);
         return scene;
-      }});
-    return {cinema, renderer, native, listeners, control, canvas, counts: () => ({disposed, scenes, recorded, colors, positions, made})};
+      })});
+    return {cinema, renderer, native, listeners, control, adapter, canvas, counts: () => ({disposed, scenes, recorded, colors, positions, made})};
   }
   const run = id => ({id, label: id, load: async () => ({commands: [{run: id}]})});
   const deferred = () => {
@@ -459,6 +462,89 @@ describe('cinematic replay lifecycle', () => {
     const promise = new Promise(done => { resolve = done; });
     return {promise, resolve};
   };
+  // Use the real cinema scene with the small part of the game's Three API it
+  // consumes, so a frame exposes the ghost and the actual ribbon geometry.
+  function sceneRenderer(compile) {
+    class Vector {
+      constructor() { this.set(0, 0, 0); }
+      set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+      project() { return this.set(0, 0, 0); }
+    }
+    class Color {
+      constructor(value) { this.set(value); }
+      set(value) { this.value = value; }
+    }
+    class Attribute {
+      constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; }
+    }
+    class Geometry {
+      constructor() { this.attributes = {}; }
+      setAttribute(name, attribute) { this.attributes[name] = attribute; }
+      getAttribute(name) { return this.attributes[name]; }
+      setIndex(indices) { this.indices = indices; }
+      dispose() {}
+    }
+    class Material {
+      constructor(options) { Object.assign(this, options); }
+      dispose() {}
+    }
+    class Mesh {
+      constructor(geometry, material) { Object.assign(this, {geometry, material, position: new Vector(), visible: true}); }
+    }
+    class Group {
+      constructor() { this.children = []; this.visible = true; }
+      add(object) { this.children.push(object); }
+      remove(object) { const index = this.children.indexOf(object); if (index >= 0) this.children.splice(index, 1); }
+      traverse(visit) { visit(this); for (const child of this.children) visit(child); }
+    }
+    const scene = new Group(), ghosts = [];
+    const renderer = {
+      qolScene: scene, qolCompile: compile,
+      qolCamera: {position: new Vector(), projectionMatrix: {}, near: 0.5, updateMatrixWorld() {}},
+      qolGhost() {
+        const geometry = new Geometry();
+        geometry.setAttribute('position', new Attribute(new Float32Array(3), 3));
+        const uniforms = Object.fromEntries(['deepColor', 'paleColor', 'rimColor'].map(name => [name, {value: new Color('#000000')}]));
+        const body = new Mesh(geometry, new Material({uniforms})), group = new Group();
+        group.name = 'record-ghost';
+        group.add(body);
+        group.add({material: {uniforms: {outlineColor: {value: new Color('#000000')}}}});
+        scene.add(group);
+        const ghost = {group, frame: null,
+          update(frame) { this.frame = {...frame}; },
+          dispose() { scene.remove(group); }};
+        ghosts.push(ghost);
+        return ghost;
+      },
+    };
+    return {renderer, ghosts, paths: () => scene.children.filter(object => object.name === 'surfd-qol-compare-line')};
+  }
+  function nativeCinema(worker, loadIdle) {
+    class Movement { slide() {} }
+    class Session {
+      constructor(map, config) {
+        this.map = map; this.config = config; this.movement = new Movement();
+        this.timer = {state: {phase: 'running', elapsed: 0, splits: [], startTick: 0}};
+      }
+      loadReplay(replay) { this.state = structuredClone(replay.initialState); }
+      step(command) {
+        this.state.tick++;
+        this.state.position.x += command.dx;
+        this.timer.state.elapsed = this.state.tick * this.config.dt;
+        return [];
+      }
+    }
+    const scene = sceneRenderer();
+    let time = 0;
+    const fixture = rig({worker, loadIdle, renderer: scene.renderer, createScene: createCinemaScene, record: recordTrack, now: () => time});
+    Object.assign(fixture.adapter, {Session, Movement});
+    Object.assign(fixture.control.playback.replay, {
+      config: {dt: 0.015}, commands: Array.from({length: 1200}, () => ({dx: 15})),
+      initialState: {tick: 0, grounded: true, position: {x: 0, y: 0, z: 0}, velocity: {x: 1000, y: 0, z: 0}, yaw: 0},
+    });
+    fixture.control.playback.index = 0;
+    return {...fixture, scene, setTime(value) { time = value; }};
+  }
   // The native convex-brush trace contract, restricted to axis-aligned boxes:
   // aggregate startSolid, continue on escape, stop on allSolid, keep later hits.
   function cameraBoxes(brushes) {
@@ -674,6 +760,355 @@ describe('cinematic replay lifecycle', () => {
     expect(cinema.active).toBe(true);
     cinema.close();
     expect(releases).toEqual([2, undefined]);
+  });
+  for (const failure of ['null plan', 'unsupported worker', 'startup throws', 'rejected plan']) {
+    test(`worker planning fallback records and shows a seek after ${failure}`, async () => {
+      let attempts = 0, recordings = 0, plans = 0;
+      const worker = {
+        live: true, async record() { recordings++; return null; },
+        async plan({a}) {
+          plans++;
+          expect(a._cinemaWorker).toBeUndefined();
+          expect(a.position[3]).toBe(15);
+          if (failure === 'rejected plan') throw new Error('Worker plan failed');
+          return null;
+        }, release() {},
+      };
+      const getWorker = () => {
+        attempts++;
+        if (failure === 'unsupported worker') return null;
+        if (failure === 'startup throws') throw new Error('Worker unavailable');
+        return worker;
+      };
+      const {cinema, renderer, control, scene, setTime} = nativeCinema(getWorker);
+      expect(await cinema.setView('cinematic')).toBe(true);
+      const near = {state: {tick: 30}, eyePosition: {x: 450, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+      renderer.render(near); setTime(2000); renderer.render(near);
+      expect(scene.ghosts.find(item => item.group.visible).frame.x).toBe(450);
+      expectNearbyCamera(renderer.drawn, {x: 450, y: 0, z: 40});
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(cinema.tracks[0].count).toBe(1201);
+      control.playback.index = 900;
+      expect(await cinema.setView('steady')).toBe(true);
+      const later = {state: {tick: 900}, eyePosition: {x: 13500, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+      renderer.render(later); setTime(4000); renderer.render(later);
+      expect(scene.ghosts.find(item => item.group.visible).frame.x).toBe(13500);
+      const path = scene.paths().find(mesh => mesh.visible);
+      expect(path.material.uniforms.head.value).toBe(900);
+      expect(path.geometry.getAttribute('tick').array.at(-1)).toBe(1200);
+      expectNearbyCamera(renderer.drawn, {x: 13500, y: 0, z: 40});
+      if (failure === 'null plan' || failure === 'startup throws') {
+        const played = control.playback.replay;
+        const other = {...played, initialState: {...played.initialState, position: {x: 0, y: 300, z: 0}}};
+        expect(await cinema.add({id: 'other', label: 'other', load: async () => other})).toBe(true);
+        renderer.render(later); setTime(6000); renderer.render(later);
+        const ghosts = scene.ghosts.filter(item => item.group.visible);
+        expect(ghosts.map(item => [item.frame.x, item.frame.y])).toEqual([[13500, 0], [13500, 300]]);
+        for (const y of [0, 300]) expectInCameraFrame(renderer.drawn, {x: 13500, y, z: 40});
+      }
+      expect(attempts).toBe(1);
+      expect(recordings).toBe(failure === 'null plan' || failure === 'rejected plan' ? 1 : 0);
+      expect(plans).toBe(failure === 'null plan' || failure === 'rejected plan' ? 1 : 0);
+      cinema.close();
+    });
+  }
+  test('worker planning fallback handles a factory throwing during cached-track planning', async () => {
+    let attempts = 0, available = false;
+    const {cinema, renderer, control, scene, setTime} = nativeCinema(() => {
+      attempts++;
+      if (available) throw new Error('Worker unavailable');
+      return null;
+    });
+    expect(await cinema.setView('cinematic')).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const track = cinema.tracks[0];
+    expect(track.count).toBe(1201);
+    cinema.close();
+    available = true;
+    control.playback.index = 900;
+    expect(await cinema.setView('steady')).toBe(true);
+    expect(cinema.tracks[0]).toBe(track);
+    const frame = {state: {tick: 900}, eyePosition: {x: 13500, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame); setTime(2000); renderer.render(frame);
+    expect(scene.ghosts.find(item => item.group.visible).frame.x).toBe(13500);
+    expectNearbyCamera(renderer.drawn, {x: 13500, y: 0, z: 40});
+    expect(attempts).toBe(2);
+    cinema.close();
+  });
+  test('worker planning fallback handles a factory throwing during an added recording', async () => {
+    let attempts = 0, available = false;
+    const {cinema, renderer, control, scene, setTime} = nativeCinema(() => {
+      attempts++;
+      if (available) throw new Error('Worker unavailable');
+      return null;
+    });
+    expect(await cinema.setView('steady')).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cinema.tracks[0].count).toBe(1201);
+    cinema.close();
+    available = true;
+    expect(await cinema.setView('steady')).toBe(true);
+    expect(attempts).toBe(1);
+    const played = control.playback.replay;
+    const other = {...played, initialState: {...played.initialState, position: {x: 0, y: 300, z: 0}}};
+    expect(await cinema.add({id: 'other', label: 'other', load: async () => other})).toBe(true);
+    const frame = {state: {tick: 30}, eyePosition: {x: 450, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame); setTime(2000); renderer.render(frame);
+    expect(scene.ghosts.filter(item => item.group.visible).map(item => [item.frame.x, item.frame.y])).toEqual([[450, 0], [450, 300]]);
+    for (const y of [0, 300]) expectInCameraFrame(renderer.drawn, {x: 450, y, z: 40});
+    expect(attempts).toBe(2);
+    cinema.close();
+  });
+  for (const ready of [false, true]) test(`worker planning fallback does not restart a silent worker after ${ready ? 'world' : 'handshake'} timeout`, async () => {
+    const timers = new Map(), workers = [];
+    const timedJobs = Function('setTimeout', 'clearTimeout', `return (${createReplayIndexJobs.toString()})`)(
+      callback => {
+        const id = {};
+        timers.set(id, callback);
+        // A buggy retry must also expire so the test can observe both starts.
+        if (workers.length > 1) queueMicrotask(() => {
+          const expire = timers.get(id);
+          if (expire) { timers.delete(id); expire(); }
+        });
+        return id;
+      }, id => timers.delete(id));
+    const jobs = timedJobs(async () => null, () => {
+      const worker = {posts: [], terminated: 0,
+        postMessage(message) {
+          this.posts.push(message.type);
+          if (ready && message.type === 'hello')
+            queueMicrotask(() => this.onmessage?.({data: {__surfdQolIndex: 1, type: 'ready', camera: true}}));
+        },
+        terminate() { this.terminated++; }};
+      workers.push(worker);
+      return worker;
+    });
+    const {cinema, renderer, scene, setTime} = nativeCinema((session, replay) => jobs.camera(session, replay));
+    const enabling = cinema.setView('cinematic');
+    expect(workers[0].posts).toContain('hello');
+    if (ready) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(workers[0].posts).toContain('run');
+    }
+    expect(timers.size).toBe(1);
+    const [id, expire] = timers.entries().next().value;
+    timers.delete(id);
+    expire();
+    expect(await enabling).toBe(true);
+    const frame = {state: {tick: 30}, eyePosition: {x: 450, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame); setTime(2000); renderer.render(frame);
+    expect(scene.ghosts.find(item => item.group.visible).frame.x).toBe(450);
+    expectNearbyCamera(renderer.drawn, {x: 450, y: 0, z: 40});
+    expect(workers).toHaveLength(1);
+    expect(workers[0].posts[0]).toBe('hello');
+    expect(workers[0].terminated).toBe(1);
+    expect(timers.size).toBe(0);
+    cinema.close();
+  });
+  test('worker planning fallback does not restart a failed worker for an added recording', async () => {
+    const entered = deferred(), resume = deferred();
+    let attempts = 0;
+    const worker = {live: true, async record() { this.live = false; return null; }, release() {}};
+    const {cinema, control} = nativeCinema(() => {
+      if (++attempts === 1) return worker;
+      throw new Error('A failed worker must not be restarted');
+    }, () => { entered.resolve(); return resume.promise; });
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    const played = control.playback.replay;
+    const other = {...played, initialState: {...played.initialState, position: {x: 0, y: 300, z: 0}}};
+    const adding = cinema.add({id: 'other', label: 'other', load: async () => other});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(attempts).toBe(1);
+    resume.resolve(null);
+    expect(await enabling).toBe(true);
+    expect(await adding).toBe(true);
+    expect(cinema.tracks.map(track => track.position[1])).toEqual([0, 300]);
+    cinema.close();
+  });
+  test('worker planning fallback keeps an added run as the camera focus', async () => {
+    const watched = straight({count: 300}), added = straight({count: 300, y: 1500}), scene = sceneRenderer();
+    let plans = 0, focusPlans = 0, time = 0;
+    const worker = {live: true, async plan(options) {
+      plans++;
+      if (Number.isInteger(options.focusIndex)) { focusPlans++; return null; }
+      return planCamera(options);
+    }, release() {}};
+    watched._cinemaWorker = worker;
+    watched._cinemaHandle = {id: 1, from: 0};
+    const fixture = rig({worker: () => worker, renderer: scene.renderer, createScene: createCinemaScene, now: () => time,
+      record: ({replay}) => replay === fixture.control.playback.replay ? watched : added});
+    const {cinema, renderer} = fixture;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(await cinema.add(run('other'))).toBe(true);
+    await cinema.setFocus('other');
+    expect(cinema.status().focus).toBe('other');
+    const frame = {state: {tick: 30}, eyePosition: {x: watched.position[90], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame); time = 2000; renderer.render(frame);
+    const body = trackPoint(added, 30); body.z += 40;
+    expectNearbyCamera(renderer.drawn, body);
+    const ghosts = scene.ghosts.filter(item => item.group.visible);
+    expect(ghosts.map(item => item.frame.y)).toEqual([0, 1500]);
+    expect(focusPlans).toBe(1);
+    const before = plans;
+    expect(await cinema.setView('steady')).toBe(true);
+    expect(plans).toBe(before);
+    cinema.close();
+  });
+  for (const completion of ['null', 'rejection']) test(`worker planning fallback ignores a superseded plan's ${completion}`, async () => {
+    const entered = deferred(), scene = sceneRenderer(), track = straight({count: 300});
+    let finish, plans = 0, time = 0;
+    const pending = new Promise((resolve, reject) => {
+      finish = () => completion === 'null' ? resolve(null) : reject(new Error('Cancelled'));
+    });
+    const worker = {live: true, plan(options) {
+      if (++plans === 1) { entered.resolve(); return pending; }
+      return planCamera(options);
+    }, release() {}};
+    track._cinemaWorker = worker;
+    track._cinemaHandle = {id: 1, from: 0};
+    const {cinema, renderer} = rig({worker: () => worker, renderer: scene.renderer, createScene: createCinemaScene,
+      record: () => track, now: () => time});
+    const obsolete = cinema.setView('cinematic');
+    await entered.promise;
+    const current = cinema.setView('steady');
+    finish();
+    expect(await current).toBe(true);
+    expect(await obsolete).toBe(false);
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(plans).toBe(3);
+    const frame = {state: {tick: 30}, eyePosition: {x: track.position[90], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame); time = 2000; renderer.render(frame);
+    const body = trackPoint(track, 30); body.z += 40;
+    expectNearbyCamera(renderer.drawn, body);
+    expect(scene.ghosts.find(item => item.group.visible).frame.x).toBe(body.x);
+    cinema.close();
+  });
+  test('worker planning fallback uses an explicit recording worker or CPU without reacquiring', async () => {
+    let acquisitions = 0, recordings = 0;
+    const worker = {async record() { recordings++; return null; }};
+    const {adapter, control} = nativeCinema(() => { acquisitions++; return worker; });
+    const options = {adapter, session: control.session, replay: control.playback.replay, yieldTask: async () => null};
+    const cpu = await recordTrack({...options, worker: null});
+    expect(cpu.position[1200 * 3]).toBe(18000);
+    expect(acquisitions).toBe(0);
+    expect(recordings).toBe(0);
+    const supplied = await recordTrack({...options, worker});
+    expect(supplied.position[1200 * 3]).toBe(18000);
+    expect(acquisitions).toBe(0);
+    expect(recordings).toBe(1);
+    const standalone = await recordTrack(options);
+    expect(standalone.position[1200 * 3]).toBe(18000);
+    expect(acquisitions).toBe(1);
+    expect(recordings).toBe(2);
+    const explicitUndefined = await recordTrack({...options, worker: undefined});
+    expect(explicitUndefined.position[1200 * 3]).toBe(18000);
+    expect(acquisitions).toBe(2);
+    expect(recordings).toBe(3);
+    const result = straight({count: 60}), suppliedWorker = {async record() { return result; }};
+    expect(await recordTrack({...options, worker: suppliedWorker})).toBe(result);
+    expect(acquisitions).toBe(2);
+  });
+  test('worker planning fallback respects recording abort before acquisition and on the last batch', async () => {
+    let acquisitions = 0, yields = 0, progress = 0;
+    const {adapter, control} = nativeCinema(() => { acquisitions++; return null; });
+    const options = {adapter, session: control.session, replay: control.playback.replay, yieldTask: async () => { yields++; return null; }};
+    const stopped = new AbortController();
+    stopped.abort();
+    expect(await recordTrack({...options, signal: stopped.signal})).toBeNull();
+    expect(acquisitions).toBe(0);
+    expect(yields).toBe(0);
+    const completed = new AbortController();
+    const replay = {...options.replay, commands: options.replay.commands.slice(0, 5)};
+    expect(await recordTrack({...options, replay, worker: null, signal: completed.signal,
+      onProgress: () => { progress++; completed.abort(); }})).toBeNull();
+    expect(progress).toBe(1);
+  });
+  for (const completion of ['null', 'rejection']) test(`worker planning fallback does not record after an aborted worker ${completion}`, async () => {
+    const entered = deferred(), controller = new AbortController();
+    let finish, yields = 0;
+    const pending = new Promise((resolve, reject) => {
+      finish = () => completion === 'null' ? resolve(null) : reject(new Error('Cancelled'));
+    });
+    const worker = {record() { entered.resolve(); return pending; }};
+    const {adapter, control} = nativeCinema(() => { throw new Error('Unexpected acquisition'); });
+    const recording = recordTrack({adapter, session: control.session, replay: control.playback.replay, worker,
+      signal: controller.signal, yieldTask: async () => { yields++; return null; }});
+    await entered.promise;
+    controller.abort();
+    finish();
+    expect(await recording).toBeNull();
+    expect(yields).toBe(0);
+  });
+  test('worker planning fallback never activates after its pending plan is cancelled', async () => {
+    const entered = deferred(), pending = deferred(), resume = deferred();
+    let planning = false;
+    const worker = {live: true, async record() { return null; },
+      plan() { planning = true; entered.resolve(); return pending.promise; }, release() {}};
+    const {cinema, renderer, native, scene} = nativeCinema(() => worker, () => planning ? resume.promise : Promise.resolve(null));
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    expect(await cinema.setView('pov')).toBe(true);
+    expect(await enabling).toBe(false);
+    pending.resolve(null);
+    resume.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const frame = {state: {tick: 30}, eyePosition: {x: 450, y: 0, z: 64}};
+    renderer.render(frame);
+    expect(renderer.drawn).toBe(frame);
+    expect(renderer.render).toBe(native);
+    expect(cinema.camera).toBe(false);
+    expect(cinema.status()).toBeNull();
+    expect(scene.renderer.qolScene.children).toEqual([]);
+  });
+  test('worker planning fallback never activates after CPU planning is cancelled', async () => {
+    const entered = deferred(), resume = deferred();
+    let planning = false, plans = 0;
+    const worker = {live: true, async record() { return null; },
+      async plan() { plans++; planning = true; return null; }, release() {}};
+    const {cinema, renderer, native, scene} = nativeCinema(() => worker, () => {
+      if (!planning) return Promise.resolve(null);
+      entered.resolve();
+      return resume.promise;
+    });
+    const enabling = cinema.setView('cinematic');
+    await entered.promise;
+    expect(plans).toBe(1);
+    expect(await cinema.setView('pov')).toBe(true);
+    expect(await enabling).toBe(false);
+    resume.resolve(null);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const frame = {state: {tick: 30}, eyePosition: {x: 450, y: 0, z: 64}};
+    renderer.render(frame);
+    expect(renderer.drawn).toBe(frame);
+    expect(renderer.render).toBe(native);
+    expect(cinema.camera).toBe(false);
+    expect(cinema.status()).toBeNull();
+    expect(scene.renderer.qolScene.children).toEqual([]);
+  });
+  test('worker planning fallback releases a fresh added-run worker when the view closes', async () => {
+    const entered = deferred(), pending = deferred();
+    let available = false, attempts = 0, releases = 0;
+    const worker = {live: true, record() { entered.resolve(); return pending.promise; }, release() { releases++; }};
+    const {cinema, control} = nativeCinema(() => { attempts++; return available ? worker : null; });
+    expect(await cinema.setView('steady')).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cinema.tracks[0].count).toBe(1201);
+    cinema.close();
+    available = true;
+    expect(await cinema.setView('steady')).toBe(true);
+    expect(attempts).toBe(1);
+    const played = control.playback.replay;
+    const other = {...played, initialState: {...played.initialState, position: {x: 0, y: 300, z: 0}}};
+    const adding = cinema.add({id: 'other', label: 'other', load: async () => other});
+    await entered.promise;
+    cinema.close();
+    expect(releases).toBe(1);
+    expect(await adding).toBe(false);
+    pending.resolve(null);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cinema.status()).toBeNull();
   });
   test('a completed track shows its nearby camera while the whole plan waits, including after reopening', async () => {
     const gate = deferred(), entered = deferred(), track = straight({count: 2000});
@@ -1124,8 +1559,228 @@ describe('cinematic replay lifecycle', () => {
     renderer.render(pov); time = 2000; renderer.render(pov);
     expectNearbyCamera(renderer.drawn, {...trackPoint(track, 30), z: 40});
     expect(preparations).toBe(1);
-    expect(counts().made).toHaveLength(1);
+    expect(counts().made).toHaveLength(2);
     cinema.close();
+    recorded.resolve();
+  });
+  test('deferred cinema growth shows the recorded ghost and path beyond the initial compiled prefix', async () => {
+    const shader = deferred(), recorded = deferred(), published = deferred(), replanned = deferred();
+    const track = straight({count: 4000}), scene = sceneRenderer(() => { compilations++; return shader.promise; });
+    let compilations = 0, progress, time = 0;
+    const fixture = rig({
+      renderer: scene.renderer, createScene: createCinemaScene, now: () => time,
+      onChange: () => { if (fixture.control.playback.index === 600 && fixture.cinema.camera) replanned.resolve(); },
+      record: async ({onProgress}) => {
+        progress = onProgress;
+        progress(track, 512);
+        progress(track, 1024);
+        progress(track, 2048);
+        published.resolve();
+        await recorded.promise;
+        return track;
+      },
+    });
+    const {cinema, renderer, control} = fixture;
+    control.playback.replay.commands = new Array(track.count - 1).fill({});
+    const enabling = cinema.setView('cinematic');
+    await published.promise;
+    expect(compilations).toBe(1);
+    expect(scene.ghosts).toHaveLength(1);
+    const waiting = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(waiting);
+    expect(renderer.drawn).toBe(waiting);
+    shader.resolve();
+    expect(await enabling).toBe(true);
+
+    control.playback.index = 600;
+    progress(track, 2176);
+    await replanned.promise;
+    const frame = {state: {tick: 600}, eyePosition: {x: track.position[1800], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame);
+    time = 2000;
+    renderer.render(frame);
+    const body = trackPoint(track, 600), ghost = scene.ghosts.find(item => item.group.visible);
+    const path = scene.paths().find(mesh => mesh.visible);
+    expect({ghost: {x: ghost.frame.x, y: ghost.frame.y, z: ghost.frame.z}, head: path.material.uniforms.head.value,
+      end: path.geometry.getAttribute('tick').array.at(-1), endX: path.geometry.getAttribute('position').array.at(-6)})
+      .toEqual({ghost: body, head: 600, end: 2047, endX: track.position[2047 * 3]});
+    expectNearbyCamera(renderer.drawn, {...body, z: body.z + 40});
+    expect(compilations).toBe(1);
+    expect(scene.ghosts).toHaveLength(2);
+    cinema.close();
+    recorded.resolve();
+  });
+  test('deferred cinema growth stays coalesced while a comparison replans on a replacement renderer', async () => {
+    const shader = deferred(), recorded = deferred(), replanned = deferred();
+    const watched = straight({count: 4000}), added = straight({count: 4000, y: 180});
+    const first = sceneRenderer(() => Promise.resolve()), replacement = sceneRenderer(() => { compilations++; return shader.promise; });
+    let compilations = 0, progress, time = 0;
+    const fixture = rig({
+      renderer: first.renderer, createScene: createCinemaScene, now: () => time,
+      onChange: () => {
+        const status = fixture.cinema.status();
+        if (fixture.control.playback.index === 600 && status?.pending === null && fixture.cinema.camera) replanned.resolve();
+      },
+      record: async ({replay, onProgress}) => {
+        if (replay === fixture.control.playback.replay) {
+          progress = onProgress;
+          progress(watched, 512);
+          await recorded.promise;
+          return watched;
+        }
+        onProgress(added, 2048);
+        await recorded.promise;
+        return added;
+      },
+    });
+    const {cinema, control, native} = fixture, frames = [];
+    globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+    control.playback.replay.commands = new Array(watched.count - 1).fill({});
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(await cinema.add(run('other'))).toBe(true);
+
+    replacement.renderer.render = native;
+    control.renderer = replacement.renderer;
+    frames.shift()();
+    expect(compilations).toBe(1);
+    expect(replacement.ghosts).toHaveLength(2);
+    control.playback.index = 600;
+    progress(watched, 1024);
+    progress(watched, 2048);
+    expect(compilations).toBe(1);
+    expect(replacement.ghosts).toHaveLength(2);
+    shader.resolve();
+    await replanned.promise;
+
+    const frame = {state: {tick: 600}, eyePosition: {x: watched.position[1800], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    replacement.renderer.render(frame);
+    time = 2000;
+    replacement.renderer.render(frame);
+    const ghosts = replacement.ghosts.filter(item => item.group.visible);
+    expect(ghosts.map(ghost => ghost.frame.x)).toEqual([trackPoint(watched, 600).x, trackPoint(added, 600).x]);
+    const paths = replacement.paths().filter(mesh => mesh.visible);
+    expect(paths).toHaveLength(6);
+    expect(paths.map(path => path.material.uniforms.head.value)).toEqual([600, 600, 600, 600, 600, 600]);
+    expect(paths.map(path => path.geometry.getAttribute('tick').array.at(-1))).toEqual([2047, 2047, 2047, 2047, 2047, 2047]);
+    for (const track of [watched, added]) {
+      const body = trackPoint(track, 600); body.z += 40;
+      expectInCameraFrame(replacement.renderer.drawn, body);
+    }
+    expect(compilations).toBe(1);
+    expect(replacement.ghosts).toHaveLength(4);
+    cinema.close();
+    recorded.resolve();
+  });
+  test('deferred cinema growth gives retiming and regional seeks an immediate fresh scene', async () => {
+    const shaders = [deferred(), deferred(), deferred()], recorded = deferred(), published = deferred();
+    const track = straight({count: 4000}), scene = sceneRenderer(() => shaders[compilations++].promise);
+    let compilations = 0, progress, time = 0;
+    const {cinema, renderer, control} = rig({
+      renderer: scene.renderer, createScene: createCinemaScene, now: () => time,
+      record: async ({onProgress}) => {
+        progress = onProgress;
+        progress(track, 512);
+        progress(track, 1024);
+        published.resolve();
+        await recorded.promise;
+        return track;
+      },
+    });
+    control.playback.replay.commands = new Array(track.count - 1).fill({});
+    const enabling = cinema.setView('cinematic');
+    await published.promise;
+    expect(compilations).toBe(1);
+    expect(scene.ghosts).toHaveLength(1);
+    track.startTick = 10;
+    progress(track, 1152);
+    expect(compilations).toBe(2);
+    control.playback.index = 600;
+    progress(track, 1600, {from: 500, end: 1600});
+    expect(compilations).toBe(3);
+
+    // The current region becomes usable without either obsolete compiler.
+    shaders[2].resolve();
+    expect(await enabling).toBe(true);
+    const frame = {state: {tick: 600}, eyePosition: {x: track.position[1800], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(frame);
+    time = 2000;
+    renderer.render(frame);
+    const body = trackPoint(track, 600), ghost = scene.ghosts.find(item => item.group.visible);
+    const path = scene.paths().find(mesh => mesh.visible);
+    expect({ghost: {x: ghost.frame.x, y: ghost.frame.y, z: ghost.frame.z}, head: path.material.uniforms.head.value,
+      startX: path.geometry.getAttribute('position').array[0], end: path.geometry.getAttribute('tick').array.at(-1)})
+      .toEqual({ghost: body, head: 100, startX: track.position[500 * 3], end: 1099});
+    expectNearbyCamera(renderer.drawn, {...body, z: body.z + 40});
+
+    shaders[0].resolve();
+    shaders[1].resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    renderer.render(frame);
+    expect(scene.ghosts.find(item => item.group.visible)).toBe(ghost);
+    expect(ghost.frame.x).toBe(body.x);
+    expect(scene.ghosts).toHaveLength(3);
+    cinema.close();
+    recorded.resolve();
+  });
+  test('cancelled deferred cinema growth cannot restore a scene after shader readiness', async () => {
+    const shader = deferred(), recorded = deferred(), published = deferred();
+    const track = straight({count: 4000}), scene = sceneRenderer(() => shader.promise);
+    let progress;
+    const {cinema, renderer, native} = rig({
+      renderer: scene.renderer, createScene: createCinemaScene,
+      record: async ({onProgress}) => {
+        progress = onProgress;
+        progress(track, 512);
+        progress(track, 1024);
+        progress(track, 2048);
+        published.resolve();
+        await recorded.promise;
+        return track;
+      },
+    });
+    const enabling = cinema.setView('cinematic');
+    await published.promise;
+    expect(scene.ghosts).toHaveLength(1);
+    cinema.close();
+    expect(await enabling).toBe(false);
+    progress(track, 3072);
+    shader.resolve();
+    recorded.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    expect(scene.ghosts).toHaveLength(1);
+    expect(scene.renderer.qolScene.children).toEqual([]);
+  });
+  test('cancelling the camera during deferred cinema growth keeps a pending comparison in POV', async () => {
+    const shader = deferred(), recorded = deferred(), published = deferred(), download = deferred();
+    const track = straight({count: 4000}), scene = sceneRenderer(() => shader.promise);
+    const {cinema, renderer} = rig({
+      renderer: scene.renderer, createScene: createCinemaScene,
+      record: async ({onProgress}) => {
+        onProgress(track, 512);
+        onProgress(track, 1024);
+        onProgress(track, 2048);
+        published.resolve();
+        await recorded.promise;
+        return track;
+      },
+    });
+    const adding = cinema.add({id: 'slow', label: 'slow', load: () => download.promise});
+    await published.promise;
+    expect(await cinema.setView('pov')).toBe(true);
+    shader.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const frame = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(frame);
+    expect(renderer.drawn).toBe(frame);
+    expect(cinema.camera).toBe(false);
+    expect(cinema.status()).toMatchObject({view: 'pov', loading: [{id: 'slow'}]});
+    expect(scene.ghosts.every(item => !item.group.visible)).toBe(true);
+    expect(scene.paths().every(mesh => !mesh.visible)).toBe(true);
+    cinema.close();
+    expect(await adding).toBe(false);
+    download.resolve(null);
     recorded.resolve();
   });
   test('shader preparation overlaps planning without exposing unpositioned ghosts or paths', async () => {

@@ -7,7 +7,7 @@
 // (leaderboard, record route, server) are taken over the same way.
 import {formatTime} from './hud-model.js';
 import {bindLabel, savelocBinds} from './key-names.js';
-import {createCoachingFrames} from './replay-frames.js';
+import {createCoachingFrames, FRAME_TICKS} from './replay-frames.js';
 import {feedbackApplies, routeBoards} from './replay-store.js';
 import {mapKey} from './run-history.js';
 
@@ -29,7 +29,7 @@ const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'sh
 // teach: {due(), done()} says when to explain that replay locs become practice savelocs.
 // rampNumber(mapKey, rampKey) numbers ramp boards the way the Runs view does.
 // coaching: {save(), restore(state), reset(commandIndex)} is the HUD's analysis.
-// Missing native keyframes reset with a replay gap; only coherent playback is cached.
+// Discontinuous seeks to missing native keyframes reset with a replay gap; only coherent playback is cached.
 // boardsFor({replay, session, analysis, isCurrent}) acquires the analysis of a
 // replay you didn't record (a store handle: {result, promise, release}), whose
 // ramp boards then mark the timeline; analysis {key, entry} names a PB/WR.
@@ -37,7 +37,7 @@ const ANALYSIS_SETTINGS = ['hud', 'zen', 'showBoard', 'showAir', 'showSurf', 'sh
 // touches and locs are this run's alone, so they and saving step aside.
 export function createReplayControl({getAdapter, getSession, archive, getMapName = () => null, getRun = null, onSpots = null,
   grade = null, teach = null, rampNumber = null, coaching = null, boardsFor = null, settings = {}, clock = () => performance.now(), ghosts = () => false}) {
-  let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null;
+  let watching = null, notice = null, requestVersion = 0, starting = null, destroyed = false, visible = false, wrapped = null, seekHook = null;
   let detached = null, watches = 0;
   const analysisSettings = ANALYSIS_SETTINGS.map(key => settings[key]);
   // Replay moments waiting to become practice savelocs: they are filed into
@@ -45,6 +45,8 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   let pending = [];
   const hooks = () => getAdapter?.()?.replay ?? null;
   const player = () => { try { return hooks()?.transport?.() ?? null; } catch { return null; } };
+  const collecting = () => settings.hud !== false && settings.zen !== true &&
+    (settings.showBoard !== false || settings.showAir !== false || settings.showSurf !== false || settings.showStart !== false);
   const practice = () => getAdapter?.()?.practice ?? null;
   // Messages go to the game's own notice line, like its saveloc messages.
   const say = text => {
@@ -93,13 +95,65 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
           try { coaching.reset?.(tick); } catch { /* analysis restarts on its own */ }
           watched.coherent = tick === 0;
         }
+        watched.observedTick = watched.coherent ? tick : null;
       }
       return restored;
     };
     prototype.restorePractice = wrapper;
     wrapped = {prototype, original, wrapper};
   }
+  // The player normally restores even an immediately following indexed
+  // keyframe. If analysis has reached the preceding tick but has not seen
+  // that frame, let the native seek loop execute its one command instead.
+  // This also updates native sync and runs the normal physics observer.
+  function uninstallSeek() {
+    if (!seekHook) return;
+    const {transport, original, wrapper, own} = seekHook;
+    if (transport.applyPending === wrapper) {
+      if (own) transport.applyPending = original;
+      else delete transport.applyPending;
+    }
+    seekHook = null;
+  }
+  function installSeek(watched) {
+    const transport = watched.transport;
+    if (!coaching || typeof transport?.applyPending !== 'function') return;
+    const original = transport.applyPending, own = Object.hasOwn(transport, 'applyPending');
+    const wrapper = function () {
+      const index = transport.index, target = transport.pending;
+      if (this !== transport || watching !== watched || playing(watched) !== transport ||
+        !watched.coherent || !collecting() || typeof index?.keyframeBefore !== 'function')
+        return original.apply(this, arguments);
+      const from = transport.host.position();
+      if (target !== from + 1 || target % FRAME_TICKS || watched.frames.has(target) ||
+        watched.observedTick !== from || (watched.session.state?.tick ?? 0) - watched.base !== from)
+        return original.apply(this, arguments);
+      const lookup = index.keyframeBefore, ownLookup = Object.hasOwn(index, 'keyframeBefore');
+      const continuous = function (tick) {
+        const keyframe = lookup.apply(this, arguments);
+        return this === index && tick === target && keyframe?.index === tick ? null : keyframe;
+      };
+      // These optional hooks must not make an otherwise usable native player
+      // depend on writable or extensible transport/index objects.
+      let installed = false;
+      try { installed = Reflect.set(index, 'keyframeBefore', continuous) && index.keyframeBefore === continuous; }
+      catch { /* Unsupported native shape: keep its seek implementation. */ }
+      if (!installed) return original.apply(this, arguments);
+      try { return original.apply(this, arguments); }
+      finally {
+        if (index.keyframeBefore === continuous) {
+          if (ownLookup) index.keyframeBefore = lookup;
+          else delete index.keyframeBefore;
+        }
+      }
+    };
+    try {
+      if (!Reflect.set(transport, 'applyPending', wrapper) || transport.applyPending !== wrapper) return;
+    } catch { return; }
+    seekHook = {transport, original, wrapper, own};
+  }
   function watch(replay, session, details) {
+    uninstallSeek();
     detached = null;
     const transport = player();
     install();
@@ -111,7 +165,9 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       frames: createCoachingFrames(coaching ?? {save() {}, restore() {}}), ...details};
     const tick = (session.state?.tick ?? 0) - watched.base;
     watched.coherent = tick === 0;
+    watched.observedTick = watched.coherent ? tick : null;
     try { coaching?.reset?.(tick); } catch { /* analysis restarts on its own */ }
+    installSeek(watched);
     if (!watched.boards.length) grade?.release?.();
     if (practice()?.store && due()) {
       const keys = bindLabel(binds().save);
@@ -131,6 +187,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       // Do not attach an old player to a new live session.
       if (session !== watching.session && samePlayer(watching, t))
         detached = {replay, transport: t, revision: t?.revision};
+      uninstallSeek();
       leave(watching);
       watching = null;
       grade?.release?.();
@@ -387,6 +444,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       detached = null;
       pending = [];
       notice = null;
+      uninstallSeek();
       uninstall();
       grade?.destroy?.();
     },
@@ -395,10 +453,10 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     // After each tick of the watched replay: keep the HUD's analysis at keyframe ticks.
     tick(session) {
       const watched = watching;
-      if (!watched || session !== watched.session || !coaching || !watched.coherent ||
-        settings.hud === false || settings.zen === true) return;
-      if (settings.showBoard !== false || settings.showAir !== false || settings.showSurf !== false || settings.showStart !== false)
-        watched.frames.keep((session.state?.tick ?? 0) - watched.base);
+      if (!watched || session !== watched.session || !coaching || !watched.coherent || !collecting()) return;
+      const tick = (session.state?.tick ?? 0) - watched.base;
+      watched.observedTick = tick;
+      watched.frames.keep(tick);
     },
     // Called after settings are applied, never from the per-tick hot path: analysis
     // kept under other settings no longer matches what the HUD collects.
@@ -409,9 +467,11 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
         if (analysisSettings[i] !== value) { analysisSettings[i] = value; changed = true; }
       }
       if (changed && watching) {
+        const tick = position(watching);
         watching.frames.clear();
-        watching.coherent = position(watching) === 0;
-        try { coaching?.reset?.(position(watching)); } catch { /* analysis restarts on its own */ }
+        watching.coherent = tick === 0;
+        watching.observedTick = watching.coherent ? tick : null;
+        try { coaching?.reset?.(tick); } catch { /* analysis restarts on its own */ }
       }
     },
     get active() { return !!current(); },

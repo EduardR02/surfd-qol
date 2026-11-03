@@ -4,6 +4,8 @@ import {createCinemaWorkerRuntime} from '../src/cinema-worker-runtime.js';
 import {recordTrack} from '../src/cinema-track.js';
 import {TRACK_ARRAYS, trackSlice} from '../src/cinema-recording.js';
 import {planCamera} from '../src/cinema-camera.js';
+import {alignByTime} from '../src/cinema-sync.js';
+import {PROBE} from '../src/cinema-world.js';
 import {onClock} from '../src/cinema-clock.js';
 import {createCinema} from '../src/cinema.js';
 
@@ -99,6 +101,29 @@ function numeric(track) {
 }
 
 describe('retained cinematic worker consumers', () => {
+  test('releasing a shared recording keeps its active subscribers completing with exact positions', async () => {
+    const f = physics(), b = bridge(f, 12);
+    await flush();
+    const camera = b.pool.camera({map: f.map});
+    const first = camera.record({replay: b.replay}), second = camera.record({replay: b.replay});
+    await flush();
+    camera.release(b.lease.id);
+    await flush();
+    for (let i = 0; i < b.replay.commands.length + 1; i++) await b.advance();
+    const result = await Promise.race([Promise.all([first, second]), turn().then(() => null)]);
+    camera.release(); b.lease.terminate();
+    expect(result).not.toBeNull();
+    expect(result.map(track => trackPointForLast(track))).toEqual([120, 120]);
+    function trackPointForLast(track) { return track.position[(track.count - 1) * 3]; }
+  });
+  test('failed worker acquisition records the exact native trajectory through the fallback', async () => {
+    const f = physics(), replay = f.replay(4);
+    replay.commands[1].x = 75;
+    const track = await recordTrack({adapter: {...f, cinema: {worker() { throw new Error('Worker blocked'); }}},
+      session: {map: f.map}, replay, yieldTask: async () => null});
+    expect([...track.position].filter((_, index) => index % 3 === 0)).toEqual([0, 10, 75, 85, 95]);
+    expect(track.dt).toBe(replay.config.dt);
+  });
   test('late-window keyframe resume precedes discarded-prefix reconstruction and includes the tick before the playhead', async () => {
     const f = physics(), replay = f.replay(12000), session = f.createSession(f.map, replay), posts = [];
     let record, firstRegionCount, stepsAtWindow;
@@ -237,6 +262,175 @@ describe('retained cinematic worker consumers', () => {
       for (const [key, descriptor] of saved) {
         if (descriptor) Object.defineProperty(globalThis, key, descriptor);
         else delete globalThis[key];
+      }
+    }
+  });
+  for (const watchedFormat of [6, 8]) test(`cached CPU cinema plans in the watched format ${watchedFormat} world after adding a different format`, async () => {
+    const keys = ['addEventListener', 'removeEventListener', 'document', 'innerWidth', 'innerHeight', 'requestAnimationFrame', 'cancelAnimationFrame'];
+    const saved = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    const f = physics(), watched = f.replay(64), added = f.replay(64), traces = [], posted = [], workers = [];
+    watched.format = watchedFormat;
+    added.format = watchedFormat === 6 ? 8 : 6;
+    watched.commands.forEach(command => { command.dy = 5; });
+    added.commands.forEach(command => { command.dy = 5; });
+    f.map.bspCornerFix = f.map.vphysicsFeatureFix = true;
+
+    // Native swept-box clipping: the newer corner fix rejects near misses
+    // whose epsilon-expanded entry and exit overlap only outside the box.
+    function sweep(from, to, hull, box, corner) {
+      let enter = -1, leave = 1, exactEnter = -Infinity, exactLeave = Infinity;
+      let startsOutside = false, endsOutside = false;
+      for (const axis of ['x', 'y', 'z']) for (const sign of [1, -1]) {
+        const plane = sign > 0 ? box.max[axis] : -box.min[axis];
+        const support = sign * (sign < 0 ? hull.max[axis] : hull.min[axis]);
+        const a = sign * from[axis] - (plane - support), b = sign * to[axis] - (plane - support);
+        if (corner && a > b) exactEnter = Math.max(exactEnter, a / (a - b));
+        else if (corner && a < b) exactLeave = Math.min(exactLeave, a / (a - b));
+        startsOutside ||= a > 0;
+        endsOutside ||= b > 0;
+        if (a > 0 && b > 0) return {fraction: 1, startSolid: false, allSolid: false};
+        if (a <= 0 && b <= 0) continue;
+        if (a > b) enter = Math.max(enter, Math.max(0, (a - 0.03125) / (a - b)));
+        else leave = Math.min(leave, (a + 0.03125) / (a - b));
+      }
+      if (corner && exactLeave < 1 && exactEnter > exactLeave) return {fraction: 1, startSolid: false, allSolid: false};
+      if (!startsOutside) return {fraction: endsOutside ? 1 : 0, startSolid: true, allSolid: !endsOutside};
+      return {fraction: enter < leave && enter > -1 ? Math.min(1, enter) : 1, startSolid: false, allSolid: false};
+    }
+    class World {
+      constructor(brushes, triangles = [], feature = false, corner = false) {
+        Object.assign(this, {brushes, triangles, vphysicsFeatureFix: feature, bspCornerFix: corner});
+      }
+      trace(from, to, hull) {
+        const hit = sweep(from, to, hull, this.brushes[0], this.bspCornerFix);
+        const other = sweep(from, to, hull, this.brushes[0], !this.bspCornerFix);
+        traces.push({corner: this.bspCornerFix, fraction: hit.fraction, other: other.fraction});
+        return hit;
+      }
+    }
+    class Session extends f.Session {
+      constructor(map, config, format) {
+        super(map, config);
+        this.movement.world = new World(map.brushes, map.displacementTriangles,
+          format >= 7 && map.vphysicsFeatureFix, format >= 7 && map.bspCornerFix);
+      }
+      step(command) {
+        const events = super.step(command);
+        this.state.position.y += command.dy;
+        return events;
+      }
+    }
+    const createSession = (map, replay) => {
+      const session = new Session(map, replay.config, replay.format);
+      session.loadReplay(replay);
+      return session;
+    };
+    const session = createSession(f.map, watched);
+    const adapter = {...f, Session, getSession: () => session, replay: {playback: () => ({replay: watched, index: 0})}};
+    const cpuTrack = replay => recordTrack({adapter, session, replay, worker: null, yieldTask: async () => null});
+    const a = await cpuTrack(watched), b = await cpuTrack(added);
+    let sample;
+    await planCamera({a, others: [{track: b, map: alignByTime(a, b)}], style: 'steady',
+      trace(from, to) { sample ??= {from: {...from}, to: {...to}}; return 1; }});
+    const dx = sample.to.x - sample.from.x, dy = sample.to.y - sample.from.y;
+    expect(Math.abs(dx)).toBeGreaterThan(1);
+    expect(Math.abs(dy)).toBeGreaterThan(1);
+    const enterAxis = Math.abs(dx) < Math.abs(dy) ? 'x' : 'y', exitAxis = enterAxis === 'x' ? 'y' : 'x';
+    const delta = {x: dx, y: dy};
+    const gap = 0.002 * (1 / Math.abs(delta[enterAxis]) - 1 / Math.abs(delta[exitAxis]));
+    expect(gap).toBeGreaterThan(0);
+    const span = 1000 + 4 * Math.max(Math.abs(dx), Math.abs(dy));
+    const box = {min: {z: Math.min(sample.from.z, sample.to.z) - span},
+      max: {z: Math.max(sample.from.z, sample.to.z) + span}};
+    for (const axis of ['x', 'y']) {
+      const entering = axis === enterAxis, boundary = sample.from[axis] + delta[axis] * (0.5 + (entering ? gap : -gap));
+      const lowSide = entering === (delta[axis] > 0);
+      box.min[axis] = lowSide ? boundary + 6 : boundary - 6 - span;
+      box.max[axis] = lowSide ? boundary + 6 + span : boundary - 6;
+    }
+    expect(sweep(sample.from, sample.to, PROBE, box, false).fraction).toBeLessThan(1);
+    expect(sweep(sample.from, sample.to, PROBE, box, true).fraction).toBe(1);
+    f.map.brushes = [box];
+    session.movement.world = new World(f.map.brushes, f.map.displacementTriangles, watchedFormat >= 7, watchedFormat >= 7);
+
+    let cinema, available = false, attempts = 0, time = 0;
+    const jobs = createReplayIndexJobs(async () => null, () => {
+      let receive;
+      const worker = {
+        terminated: false,
+        postMessage(message) {
+          const data = structuredClone(message);
+          posted.push(data);
+          queueMicrotask(() => { if (!this.terminated) receive(data); });
+        },
+        terminate() { this.terminated = true; },
+      };
+      const post = (message, options) => {
+        const data = structuredClone(message, {transfer: options?.transfer ?? []});
+        queueMicrotask(() => { if (!worker.terminated) worker.onmessage?.({data}); });
+      };
+      const runtime = createCinemaWorkerRuntime({post, createSession});
+      receive = createReplayIndexWorker(post, async (message, job) => {
+        runtime.attach(createSession(f.map, message.replay), message.replay, message.job, false);
+        job.world(f.map);
+      }, undefined, runtime);
+      workers.push(worker);
+      return worker;
+    });
+    const scope = {dispose() {}};
+    jobs.ownRenderer(scope);
+    try {
+      globalThis.addEventListener = globalThis.removeEventListener = () => {};
+      globalThis.document = {querySelector: () => ({})};
+      globalThis.innerWidth = 1280; globalThis.innerHeight = 720;
+      globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
+      const renderer = {qolScene: {}, qolCamera: {position: {set() {}}}, render(view) { this.drawn = view; }};
+      adapter.cinema = {renderer: () => renderer, worker: (session, replay) => {
+        attempts++;
+        return available ? jobs.camera(session, replay) : null;
+      }};
+      cinema = createCinema({getAdapter: () => adapter, loadIdle: async () => null, now: () => time,
+        createScene: () => ({show() {}, update() {}, dispose() {}, labels: () => []})});
+      expect(await cinema.setView('steady')).toBe(true);
+      const cached = cinema.tracks[0];
+      expect(cached.count).toBe(65);
+      expect(cached._cinemaWorker).toBeUndefined();
+      cinema.close();
+      available = true;
+      expect(await cinema.setView('steady')).toBe(true);
+      expect(cinema.tracks[0]).toBe(cached);
+      expect(attempts).toBe(1);
+      expect(workers).toHaveLength(0);
+      traces.length = 0;
+      expect(await cinema.add({id: 'other', label: 'other', load: async () => added})).toBe(true);
+      const differing = traces.filter(event => event.fraction !== event.other);
+      expect(differing.length).toBeGreaterThan(0);
+      expect(differing.every(event => event.corner === (watchedFormat >= 7))).toBe(true);
+      const startup = posted.find(message => message.type === 'run');
+      const recording = posted.find(message => message.type === 'record');
+      const planning = posted.filter(message => message.type === 'camera-plan');
+      expect(startup.replay).toEqual(watched);
+      expect(recording.replay).toEqual(added);
+      expect(planning.length).toBeGreaterThan(0);
+      expect(planning.every(message => message.world === startup.job)).toBe(true);
+      expect(planning[0].options.a.position).toBeInstanceOf(Float32Array);
+      const frame = {state: {tick: 130}, eyePosition: {x: 300, y: 150, z: 114}, yaw: 0, pitch: 0, fov: 90};
+      renderer.render(frame); time = 2000; renderer.render(frame);
+      expect(cinema.camera).toBe(true);
+      expect(renderer.drawn).not.toBe(frame);
+      expect(Number.isFinite(renderer.drawn.eyePosition.x)).toBe(true);
+      const before = traces.length;
+      await cinema.remove('other');
+      expect(posted.some(message => message.type === 'camera-release' && message.ids.includes(recording.id))).toBe(true);
+      expect(traces.length).toBeGreaterThan(before);
+      expect(traces.slice(before).some(event => event.fraction !== event.other)).toBe(true);
+      expect(traces.slice(before).every(event => event.corner === (watchedFormat >= 7))).toBe(true);
+      expect(posted.filter(message => message.type === 'camera-plan').at(-1).world).toBe(startup.job);
+    } finally {
+      cinema?.close();
+      scope.dispose();
+      for (const [key, descriptor] of saved) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
       }
     }
   });
