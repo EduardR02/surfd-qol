@@ -45,8 +45,6 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
   }
   const unread = [], decodeQueue = [];
-  // Collision JSON shares bandwidth with visual packs. More pack producers can
-  // delay collision readiness even when visual transfers finish sooner.
   let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0;
   let stopped = false, handedOff = false, workerPacks = 0, finishing = false, workerFinished = false;
 
@@ -331,31 +329,49 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     try { response?.body?.cancel(reason)?.catch(() => {}); } catch { /* Already transferred or closed. */ }
   }
 
+  // The worker fetches by URL when the page can name it; a refused response
+  // is fetched again through the native loader and streamed to the worker.
+  async function sendPack(pack, eof) {
+    const description = {byteLength: pack.byteLength, entries: pack.entries};
+    const url = hooks.packUrl?.(pack);
+    if (url) {
+      const request = worker.run('pack', {url, pack: description}, [], event => receiveWorkerEvent(event, eof));
+      request.catch(() => {});
+      const refused = await Promise.race([eof.promise.then(() => false, () => false),
+        request.then(() => false, error => error?.name === 'PackFetchError')]);
+      if (!refused) return {request};
+      if (stopped) return null;
+    }
+    const response = await hooks.fetchPack(pack);
+    if (stopped) {
+      discardResponse(response, signal.reason);
+      return null;
+    }
+    if (!response.ok) {
+      discardResponse(response);
+      throw new Error(`Visual pack: ${response.status}`);
+    }
+    if (!response.body) throw new Error('Empty visual pack response');
+    try {
+      return {request: worker.run('pack', {stream: response.body, pack: description}, [response.body],
+        event => receiveWorkerEvent(event, eof)), response};
+    } catch (error) {
+      discardResponse(response, error);
+      throw error;
+    }
+  }
+
   async function produceWorker() {
     try {
       while (!stopped && unread.length) {
         const {pack} = unread.shift();
-        const response = await hooks.fetchPack(pack);
-        if (stopped) {
-          discardResponse(response, signal.reason);
-          return;
-        }
-        if (!response.ok) {
-          discardResponse(response);
-          throw new Error(`Visual pack: ${response.status}`);
-        }
-        if (!response.body) throw new Error('Empty visual pack response');
         const eof = deferred();
         workerPacks++;
-        let request;
-        try {
-          request = worker.run('pack', {
-            stream: response.body, pack: {byteLength: pack.byteLength, entries: pack.entries},
-          }, [response.body], event => receiveWorkerEvent(event, eof));
-        } catch (error) {
-          discardResponse(response, error);
-          throw error;
-        }
+        let sent;
+        try { sent = await sendPack(pack, eof); }
+        catch (error) { workerPacks--; throw error; }
+        if (!sent) { workerPacks--; return; }
+        const {request, response} = sent;
         request.then(() => {
           workerPacks--;
           if (!eof.seen) {
@@ -387,8 +403,10 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
         vertexCount: asset.vertexCount, priority: asset.priority,
       }))});
       if (stopped) return;
-      produceWorker();
-      produceWorker();
+      // Worker-side fetches keep more packs in flight while the page is busy.
+      const lanes = hooks.packUrl ? 4 : 2;
+      producers = lanes;
+      for (let lane = 0; lane < lanes; lane++) produceWorker();
       checkReady();
     } catch (error) {
       fail(error);

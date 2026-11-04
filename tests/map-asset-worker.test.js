@@ -398,3 +398,25 @@ test('worker size bounds and incomplete fragments reject rather than hanging', a
   broker.dispose();
   missing.dispose();
 });
+
+test('a worker refusing a fetched pack hands it back to the page loader', async () => {
+  const mesh = meshBytes(), url = `/packed/${'4'.repeat(64)}.visual-assets.gz`;
+  const packs = [pack(url, [{url: 'mesh', kind: 'mesh', bytes: mesh.slice()}])];
+  const fetch = globalThis.fetch, pageReads = [];
+  globalThis.fetch = async () => new Response('<html>challenge</html>', {headers: {'content-type': 'text/html'}});
+  try {
+    const loader = Function('__qolCreateMapLoadJobs', '__qolMapWorkerSource',
+      `return (${loadProgressiveAssets.toString()})`)(() => localBroker(), 'worker source');
+    const resources = await loader({sky: [], compressedTextures: {}, world: [{url: 'mesh', vertexCount: 1}]}, packs, false,
+      new AbortController().signal, {
+        fetchPack: async value => { pageReads.push(value.url); return new Response(value === packs[0] ? packs[0].bytes : null); },
+        packUrl: value => `https://assets.example${value.url}`,
+        decodeImage: async (bytes, name) => image(name), validateDDS() {}, abort() {},
+      });
+    await resources.ready;
+    expect(pageReads).toEqual([url]);
+    expect(Array.from(new Uint8Array(resources.meshes.get('mesh')))).toEqual(Array.from(mesh));
+  } finally {
+    globalThis.fetch = fetch;
+  }
+});

@@ -70,8 +70,33 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
     emit(id, {kind: asset.kind, url: asset.url, value, prepared}, transfers);
   }
 
-  async function readPack(id, {stream, pack}) {
+  // The worker reads cached packs itself, so the page thread never paces them.
+  // Anything but a plain successful asset response is left to the page's
+  // native loader, which owns challenge and error handling.
+  async function fetchPack(url) {
+    let response;
+    try {
+      response = await fetch(url, {signal: controller.signal});
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      response = null;
+    }
+    const type = response?.headers.get('content-type')?.toLowerCase() ?? '';
+    if (response?.ok && response.body && !type.includes('text/html') &&
+        response.headers.get('x-vercel-mitigated')?.toLowerCase() !== 'challenge' &&
+        response.headers.get('cf-mitigated')?.toLowerCase() !== 'challenge') return response.body;
+    try { await response?.body?.cancel(); } catch { /* Already closed. */ }
+    const error = new Error('Visual pack needs the page loader');
+    error.name = 'PackFetchError';
+    throw error;
+  }
+
+  async function readPack(id, {stream, url, pack}) {
     if (!initialized) throw new Error('Visual worker is not initialized');
+    if (!stream) {
+      if (typeof url !== 'string' || !/^https:\/\/[^/]+\/packed\/[a-f0-9]{64}\.visual-assets\.gz$/.test(url)) throw new Error('Invalid visual pack URL');
+      stream = await fetchPack(url);
+    }
     const {byteLength, entries} = pack;
     if (!Number.isSafeInteger(byteLength) || byteLength <= 0 || byteLength > maxBytes || !Array.isArray(entries)) {
       throw new Error('Invalid visual pack size');
