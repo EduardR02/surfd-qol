@@ -523,15 +523,19 @@ const view={prepare:async frame=>{globalThis.__SURFD_QOL__?.prepareMap?.();const
 async function startMap(entry,resume=!1,bypass=!1){const controller=new AbortController;try{const[collision,visual]=await Promise.all([geometry(entry,controller.signal),relay(entry.slug,{signal:controller.signal})]);ready=!1;const frame=install(collision,visual,resume,bypass);await currentView.prepare?.(frame),ready=!0,success()}catch(error){if(controller.abort(error),error instanceof Error){failed(error);return}error instanceof Error&&(controls.unlock(),overlay.hidden=!1,failed(error))}finally{loading=!1,element("play").disabled=!ready,clock=performance.now(),input.reset()}if(ready)done()}async function next(){}
 `;
 
-function progressiveFixtureRunner(prepareSky, {unknownSky = false} = {}) {
+function progressiveFixtureRunner(prepareSky, {unknownSky = false, initTexture} = {}) {
   const urls = Array.from({length: 6}, (_, index) => `face-${index}`);
   const faces = urls.map(image), selected = pack('visual', urls.map((url, index) => ({url, bytes: [index]})));
   const data = {sky: urls, skyTransforms: ['rotate 90'], compressedTextures: {}};
   const manifest = {data, packs: [selected]}, calls = {fallback: 0, real: [], passes: []}, probe = deferred();
-  class CubeTexture { constructor(images) { this.image = images; } }
+  class CubeTexture {
+    constructor(images) { this.image = images; this.isTexture = this.isCubeTexture = true; this.version = 1; }
+  }
   class Renderer {
     constructor() {
+      if (initTexture) this.initTexture = initTexture;
       this.renderBufferDirect = (camera, scene, geometry, material, object, group) => {
+        this.initTexture?.(this.sky);
         calls.real.push({frame: this.frame, faces: this.sky.image});
       };
     }
@@ -540,7 +544,7 @@ function progressiveFixtureRunner(prepareSky, {unknownSky = false} = {}) {
       this.sky = sky;
       calls.passes.push(sky.image);
       probe.resolve();
-      this.renderBufferDirect(null, null, null, {}, null, null);
+      this.renderBufferDirect(null, null, null, {uniforms: {envMap: {value: sky}}}, null, null);
     }
     dispose() {}
   }
@@ -557,21 +561,30 @@ function progressiveFixtureRunner(prepareSky, {unknownSky = false} = {}) {
 }
 
 test('progressive sky delays the first real draw but not renderer construction or its visibility probe', async () => {
-  const gate = deferred(), converted = Array.from({length: 6}, (_, index) => ({canvas: index}));
+  const gate = deferred(), converted = Array.from({length: 6}, () => ({width: 512, height: 512}));
   const preparation = {ready: gate.promise, finish: async () => { await gate.promise; return converted; }, cancel() {}};
-  const fixture = progressiveFixtureRunner(() => preparation);
+  let allocatedSize;
+  const fixture = progressiveFixtureRunner(() => preparation, {initTexture(texture) {
+    const faces = texture.image;
+    if (faces.length !== 6) return;
+    const size = faces[0].width;
+    if (!faces.every(face => face.width === size && face.height === size)) throw new Error('Invalid cubemap faces');
+    if (allocatedSize !== undefined && allocatedSize !== size) throw new Error('Immutable cubemap cannot resize');
+    allocatedSize = size;
+  }});
+  for (const [index, face] of fixture.faces.entries()) Object.assign(face, {width: 512, height: index === 2 ? 512 : 256});
   const data = await fixture.run.relay('map');
   const view = fixture.run.factory({}, data, {});
   expect(fixture.calls.fallback).toBe(0);
   const frame = {id: 'first'}, preparing = view.prepare(frame);
   await fixture.probe;
-  expect(fixture.calls.passes[0]).toEqual(fixture.faces);
   expect(fixture.calls.real).toEqual([]);
   gate.resolve();
   await preparing;
   expect(fixture.calls.real).toEqual([{frame, faces: converted}]);
   expect(fixture.calls.real[0].faces).toBe(converted);
   expect(fixture.calls.fallback).toBe(0);
+  expect(allocatedSize).toBe(512);
   view.dispose();
 });
 

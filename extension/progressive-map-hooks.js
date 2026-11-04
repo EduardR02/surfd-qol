@@ -69,8 +69,9 @@ export function nativeProgressiveMapHooks(source) {
     const faces=[0,1,4,5,3,2];texture=new ${c.type}(faces.map(index=>${f.data}.resources.images.get(urls[index])??__qolWhite()));
     texture.colorSpace=${c.color};texture.needsUpdate=true;${c.cache}.set(key,texture);
     if(urls.some(url=>!${f.data}.resources.images.has(url)))__qolMapBindings.bind(texture,urls,()=>{texture.dispose();texture.image=faces.map(index=>${f.data}.resources.images.get(urls[index]));texture.needsUpdate=true});return texture}`;
+  // Source faces may be non-square; expose them only after sky preparation.
   const skyConstruction = sky[0].replace(s.call,
-    `${f.data}.resources.skyPreparation?${f.data}.sky.map(url=>${f.data}.resources.images.get(url)):${s.call}`);
+    `${f.data}.resources.skyPreparation?[]:${s.call}`);
   let renderer = scope.replace(branch[0], () => textureBranch).replace(cube[0], () => cubeFactory)
     .replace(sky[0], () => skyConstruction);
   renderer = renderer.replace(draw[0], () => `const __qolProgressiveMap=${v.frame}??${v.previous};
