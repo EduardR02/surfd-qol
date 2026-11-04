@@ -92,6 +92,7 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
   }
 
   async function readPack(id, {stream, url, pack}) {
+    const foreign = new Set(Array.isArray(pack?.foreign) ? pack.foreign : []);
     if (!initialized) throw new Error('Visual worker is not initialized');
     if (!stream) {
       if (typeof url !== 'string' || !/^https:\/\/[^/]+\/packed\/[a-f0-9]{64}\.visual-assets\.gz$/.test(url)) throw new Error('Invalid visual pack URL');
@@ -126,6 +127,14 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
           const entry = entries[index], asset = assets.get(entry.url);
           const withinEntry = position - entry.offset;
           const count = Math.min(value.byteLength - cursor, entry.length - withinEntry);
+          if (foreign.has(entry.url)) {
+            const fragment = value.slice(cursor, cursor + count).buffer;
+            emit(id, {kind: 'fragment', url: entry.url, offset: entry.assetOffset + withinEntry, value: fragment}, [fragment]);
+            cursor += count;
+            position += count;
+            if (position === entry.offset + entry.length) index++;
+            continue;
+          }
           if (asset.assembled || asset.received + count > asset.length) throw new Error('Invalid visual asset fragments');
           asset.bytes ??= new Uint8Array(asset.length);
           asset.bytes.set(value.subarray(cursor, cursor + count), entry.assetOffset + withinEntry);
@@ -149,6 +158,20 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
     }
   }
 
+  async function receiveFragment(id, {url, offset, value}) {
+    const asset = assets.get(url);
+    if (!initialized || !asset || !(value instanceof ArrayBuffer) || !Number.isSafeInteger(offset) || offset < 0 ||
+        asset.assembled || offset + value.byteLength > asset.length || asset.received + value.byteLength > asset.length) {
+      throw new Error('Invalid visual asset fragments');
+    }
+    asset.bytes ??= new Uint8Array(asset.length);
+    asset.bytes.set(new Uint8Array(value), offset);
+    asset.received += value.byteLength;
+    const decodes = [];
+    if (asset.received === asset.length) complete(asset, id, decodes);
+    await Promise.all(decodes);
+  }
+
   return {
     async run(id, type, payload) {
       if (type === 'init') {
@@ -163,6 +186,8 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
         initialized = true;
       } else if (type === 'pack') {
         await readPack(id, payload);
+      } else if (type === 'fragment') {
+        await receiveFragment(id, payload);
       } else if (type === 'prioritize') {
         for (const url of payload.urls) {
           const asset = assets.get(url);
@@ -176,7 +201,10 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
         fallbackImages.delete(payload.url);
         pending.resolve();
       } else if (type === 'finish') {
-        if (!initialized || [...assets.values()].some(asset => !asset.assembled || !asset.completed)) {
+        // With several workers, each checks only the assets it began; the page
+        // checks that every asset arrived somewhere.
+        if (!initialized || [...assets.values()].some(asset => (!payload?.partial || asset.received > 0) &&
+            (!asset.assembled || !asset.completed))) {
           throw new Error('Incomplete visual assets');
         }
         assets.clear();

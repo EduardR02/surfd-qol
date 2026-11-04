@@ -2,19 +2,27 @@
 export async function loadProgressiveAssets(data, packs, useCompressed, signal, hooks) {
   // Decide before fetching or transferring any native pack body. A blocked or
   // unsupported worker leaves the existing native loader completely untouched.
-  let worker = null;
+  // Inflating packs is single-threaded per worker; several workers read
+  // different packs at once on machines with cores to spare.
+  let workers = [];
   if (hooks.fetchPack && typeof __qolCreateMapLoadJobs === 'function' &&
       typeof __qolMapWorkerSource === 'string' && __qolMapWorkerSource) {
-    let candidate;
+    const cores = globalThis.navigator?.hardwareConcurrency;
+    const count = hooks.packUrl && Number.isInteger(cores) ? Math.max(1, Math.min(3, cores >> 2)) : 1;
+    const candidates = [];
     try {
-      candidate = __qolCreateMapLoadJobs(__qolMapWorkerSource, signal);
-      if (await candidate.ready) worker = candidate;
-      else candidate.dispose();
+      for (let index = 0; index < count; index++) candidates.push(__qolCreateMapLoadJobs(__qolMapWorkerSource, signal));
+      const ready = await Promise.all(candidates.map(candidate => candidate.ready.then(Boolean, () => false)));
+      if (signal.aborted) throw signal.reason;
+      workers = candidates.filter((candidate, index) => ready[index]);
+      for (const candidate of candidates) if (!workers.includes(candidate)) candidate.dispose();
     } catch (error) {
-      candidate?.dispose();
+      for (const candidate of candidates) candidate.dispose();
+      workers = [];
       if (signal.aborted) throw signal.reason ?? error;
     }
   }
+  const worker = workers[0] ?? null;
 
   const meshes = new Map(), preparedMeshes = worker ? new Map() : undefined, images = new Map(), compressed = new Map();
   const pendingImages = new Map(), pendingCompressed = new Map();
@@ -45,7 +53,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
   }
   const unread = [], decodeQueue = [];
-  let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0;
+  let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0, forwarding = 0;
   let stopped = false, handedOff = false, workerPacks = 0, finishing = false, workerFinished = false;
 
   function deferred() {
@@ -113,7 +121,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
       selected.push(asset.url);
     }
     sortWork();
-    if (worker && selected.length) worker.run('prioritize', {urls: selected}).catch(error => {
+    if (selected.length) for (const target of workers) target.run('prioritize', {urls: selected}).catch(error => {
       if (!workerFinished) fail(error);
     });
     decodeImages();
@@ -124,7 +132,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     stopped = true;
     const failure = signal.aborted ? signal.reason ?? error : error;
     resources.skyPreparation?.cancel(failure);
-    worker?.dispose();
+    for (const target of workers) target.dispose();
     signal.removeEventListener('abort', onAbort);
     unread.length = decodeQueue.length = 0;
     for (const asset of assets.values()) {
@@ -164,11 +172,11 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
       handedOff = true;
       initial.resolve(resources);
     }
-    if (worker && producers === 0 && workerPacks === 0 && !finishing) {
+    if (worker && producers === 0 && workerPacks === 0 && forwarding === 0 && !finishing) {
       finishing = true;
-      worker.run('finish', {}).then(() => {
+      Promise.all(workers.map(target => target.run('finish', {partial: workers.length > 1}))).then(() => {
         workerFinished = true;
-        worker.dispose();
+        for (const target of workers) target.dispose();
         if (remaining !== 0) fail(new Error('Incomplete visual assets'));
         else checkReady();
       }, fail);
@@ -217,7 +225,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
           // has cancelled network work. Such images never enter resource maps.
           if (stopped) image.close?.();
           else publish(asset, image);
-          if (!stopped && worker) worker.run('image-decoded', {url: asset.url}).catch(fail);
+          if (!stopped && worker) workers[asset.worker ?? 0].run('image-decoded', {url: asset.url}).catch(fail);
         } catch (error) {
           fail(error);
         } finally {
@@ -282,7 +290,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
   }
 
-  function receiveWorkerEvent(event, eof) {
+  function receiveWorkerEvent(event, eof, source) {
     if (stopped) {
       if (event.kind === 'image') event.value?.close?.();
       return;
@@ -291,6 +299,21 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
       if (event.kind === 'pack-eof') {
         eof.seen = true;
         eof.resolve();
+        return;
+      }
+      if (event.kind === 'fragment') {
+        // Part of an asset another worker is assembling.
+        const asset = assets.get(event.url);
+        if (!asset || asset.settled || asset.owner === undefined || asset.owner === source) {
+          throw new Error('Unexpected visual fragment');
+        }
+        const owner = asset.owner, relay = deferred();
+        forwarding++;
+        workers[owner].run('fragment', {url: event.url, offset: event.offset, value: event.value}, [event.value],
+          next => receiveWorkerEvent(next, relay, owner)).then(() => {
+          forwarding--;
+          checkReady();
+        }, fail);
         return;
       }
       if (event.kind === 'asset-error') {
@@ -305,6 +328,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
       }
       if (event.kind === 'image-bytes') {
         if (asset.kind !== 'image') throw new Error('Unexpected visual image');
+        asset.worker = source;
         asset.bytes = new Uint8Array(event.value);
         decodeQueue.push(asset);
         sortWork();
@@ -331,11 +355,21 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
 
   // The worker fetches by URL when the page can name it; a refused response
   // is fetched again through the native loader and streamed to the worker.
-  async function sendPack(pack, eof) {
-    const description = {byteLength: pack.byteLength, entries: pack.entries};
+  async function sendPack(pack, eof, index) {
+    // An asset split across packs is assembled by the first worker to read one
+    // of them; other workers pass their fragments on.
+    const foreign = [];
+    for (const entry of pack.entries) {
+      const asset = assets.get(entry.url);
+      if (asset.packs.length < 2) continue;
+      asset.owner ??= index;
+      if (asset.owner !== index) foreign.push(entry.url);
+    }
+    const target = workers[index];
+    const description = {byteLength: pack.byteLength, entries: pack.entries, foreign};
     const url = hooks.packUrl?.(pack);
     if (url) {
-      const request = worker.run('pack', {url, pack: description}, [], event => receiveWorkerEvent(event, eof));
+      const request = target.run('pack', {url, pack: description}, [], event => receiveWorkerEvent(event, eof, index));
       request.catch(() => {});
       const refused = await Promise.race([eof.promise.then(() => false, () => false),
         request.then(() => false, error => error?.name === 'PackFetchError')]);
@@ -353,22 +387,22 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
     if (!response.body) throw new Error('Empty visual pack response');
     try {
-      return {request: worker.run('pack', {stream: response.body, pack: description}, [response.body],
-        event => receiveWorkerEvent(event, eof)), response};
+      return {request: target.run('pack', {stream: response.body, pack: description}, [response.body],
+        event => receiveWorkerEvent(event, eof, index)), response};
     } catch (error) {
       discardResponse(response, error);
       throw error;
     }
   }
 
-  async function produceWorker() {
+  async function produceWorker(index) {
     try {
       while (!stopped && unread.length) {
         const {pack} = unread.shift();
         const eof = deferred();
         workerPacks++;
         let sent;
-        try { sent = await sendPack(pack, eof); }
+        try { sent = await sendPack(pack, eof, index); }
         catch (error) { workerPacks--; throw error; }
         if (!sent) { workerPacks--; return; }
         const {request, response} = sent;
@@ -398,15 +432,18 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
 
   async function startWorker() {
     try {
-      await worker.run('init', {assets: [...assets.values()].map(asset => ({
+      const description = [...assets.values()].map(asset => ({
         url: asset.url, kind: asset.kind, assetLength: asset.assetLength,
         vertexCount: asset.vertexCount, priority: asset.priority,
-      }))});
+      }));
+      await Promise.all(workers.map(target => target.run('init', {assets: description})));
       if (stopped) return;
       // Worker-side fetches keep more packs in flight while the page is busy.
-      const lanes = hooks.packUrl ? 4 : 2;
-      producers = lanes;
-      for (let lane = 0; lane < lanes; lane++) produceWorker();
+      const lanes = hooks.packUrl ? Math.max(2, Math.ceil(4 / workers.length)) : 2;
+      producers = lanes * workers.length;
+      for (let index = 0; index < workers.length; index++) {
+        for (let lane = 0; lane < lanes; lane++) produceWorker(index);
+      }
       checkReady();
     } catch (error) {
       fail(error);

@@ -399,6 +399,51 @@ test('worker size bounds and incomplete fragments reject rather than hanging', a
   missing.dispose();
 });
 
+test('several workers fetch packs themselves and pass split assets to the worker assembling them', async () => {
+  const mesh = meshBytes(), hash = index => String(index).repeat(64);
+  const packs = [
+    pack(`/packed/${hash(1)}.visual-assets.gz`, [{url: 'mesh', kind: 'mesh', bytes: mesh.slice(0, 20), assetLength: mesh.length}]),
+    pack(`/packed/${hash(2)}.visual-assets.gz`, [
+      {url: 'mesh', kind: 'mesh', bytes: mesh.slice(20, 40), assetOffset: 20, assetLength: mesh.length},
+      {url: 'other', kind: 'mesh', bytes: mesh.slice()},
+    ]),
+    pack(`/packed/${hash(3)}.visual-assets.gz`, [{url: 'mesh', kind: 'mesh', bytes: mesh.slice(40), assetOffset: 40, assetLength: mesh.length}]),
+  ];
+  const brokers = [localBroker(), localBroker(), localBroker()], fetched = [];
+  const navigator = globalThis.navigator, fetch = globalThis.fetch;
+  Object.defineProperty(globalThis, 'navigator', {value: {hardwareConcurrency: 12}, configurable: true});
+  globalThis.fetch = async url => {
+    fetched.push(url);
+    const value = packs.find(item => url.endsWith(item.url));
+    return new Response(value.bytes, {headers: {'content-type': 'application/gzip'}});
+  };
+  try {
+    let next = 0;
+    const loader = Function('__qolCreateMapLoadJobs', '__qolMapWorkerSource',
+      `return (${loadProgressiveAssets.toString()})`)(() => brokers[next++], 'worker source');
+    const meshes = [{url: 'mesh', vertexCount: 1}, {url: 'other', vertexCount: 1}];
+    const resources = await loader({sky: [], compressedTextures: {}, world: meshes}, packs, false, new AbortController().signal, {
+      fetchPack: () => { throw new Error('Unexpected page fetch'); },
+      packUrl: value => `https://assets.example${value.url}`,
+      decodeImage: async (bytes, url) => image(url), validateDDS() {}, abort() {},
+    });
+    await resources.ready;
+    expect(next).toBe(3);
+    expect(fetched.sort()).toEqual(packs.map(value => `https://assets.example${value.url}`).sort());
+    expect(Array.from(new Uint8Array(resources.meshes.get('mesh')))).toEqual(Array.from(mesh));
+    expect(Array.from(new Uint8Array(resources.meshes.get('other')))).toEqual(Array.from(mesh));
+    const forwarded = brokers.flatMap(broker => broker.requests.filter(request => request.type === 'fragment'));
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(brokers.every(broker => broker.disposed)).toBe(true);
+    for (const broker of brokers) {
+      expect(broker.requests.filter(request => request.type === 'finish').map(request => request.payload)).toEqual([{partial: true}]);
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'navigator', {value: navigator, configurable: true});
+    globalThis.fetch = fetch;
+  }
+});
+
 test('a worker refusing a fetched pack hands it back to the page loader', async () => {
   const mesh = meshBytes(), url = `/packed/${'4'.repeat(64)}.visual-assets.gz`;
   const packs = [pack(url, [{url: 'mesh', kind: 'mesh', bytes: mesh.slice()}])];
