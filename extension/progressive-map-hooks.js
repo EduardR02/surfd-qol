@@ -86,7 +86,7 @@ export function nativeProgressiveMapHooks(source) {
   renderer = renderer.replace(footer[0], () => `${footerText.slice(0, footerText.lastIndexOf('return '))}
     const __qolAssetsReady=__qolMapBindings.complete();${footer.groups.view}.__qolAssetsReady=__qolAssetsReady;${footer.groups.view}.__qolTextureBindings=__qolMapBindings;
     let __qolRendererDisposed=false;const __qolDispose=${footer.groups.view}.dispose;
-    ${footer.groups.view}.dispose=()=>{if(__qolRendererDisposed)return;__qolRendererDisposed=true;__qolMapBindings.dispose();return __qolDispose.call(${footer.groups.view})};
+    ${footer.groups.view}.dispose=()=>{if(__qolRendererDisposed)return;__qolRendererDisposed=true;__qolMapBindings.dispose();try{return __qolDispose.call(${footer.groups.view})}finally{${f.data}.resources.skyPreparation?.release?.()}};
     return ${footer.groups.view}}`);
 
   const loaderText = `async function ${l.name}(${l.slug},${l.options},${l.controller}){${l.prefix}

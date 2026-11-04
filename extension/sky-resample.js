@@ -88,9 +88,10 @@ export function createSkyResampler() {
 // is unchanged; otherwise every face uploads as a canvas.
 export function runSkyResampleWorker(createResampler) {
   const resample = createResampler();
-  self.onmessage = ({data: {images, matrices, size}}) => {
+  self.onmessage = async ({data: {images, matrices, size}}) => {
+    let buffers;
     try {
-      const buffers = images.map((image, index) => {
+      buffers = images.map((image, index) => {
         if (!image) return null;
         const canvas = new OffscreenCanvas(image.width, image.height);
         const context = canvas.getContext('2d', {willReadFrequently: true});
@@ -100,12 +101,36 @@ export function runSkyResampleWorker(createResampler) {
         resample(input, image.width, image.height, size, matrices[index], output);
         return output.buffer;
       });
-      self.postMessage({buffers}, buffers.filter(Boolean));
     } catch {
       self.postMessage({failed: true});
+      return;
     } finally {
       for (const image of images) image?.close();
     }
+    // A canvas upload of an opaque face carries exactly these bytes, but reads
+    // the canvas back first. Unpremultiplied bitmaps upload them directly.
+    // Translucent faces keep the canvas round trip and its rounding.
+    if (typeof createImageBitmap === 'function' && typeof ImageData === 'function' &&
+        buffers.every(buffer => {
+          if (!buffer) return false;
+          const pixels = new Uint8Array(buffer);
+          for (let offset = 3; offset < pixels.length; offset += 4) if (pixels[offset] !== 255) return false;
+          return true;
+        })) {
+      let bitmaps = [];
+      try {
+        for (const buffer of buffers) {
+          bitmaps.push(await createImageBitmap(new ImageData(new Uint8ClampedArray(buffer), size, size),
+            {premultiplyAlpha: 'none', colorSpaceConversion: 'none'}));
+        }
+        self.postMessage({bitmaps}, bitmaps);
+        return;
+      } catch {
+        for (const bitmap of bitmaps) bitmap.close();
+        bitmaps = null;
+      }
+    }
+    self.postMessage({buffers}, buffers.filter(Boolean));
   };
 }
 
@@ -113,7 +138,7 @@ export function runSkyResampleWorker(createResampler) {
 // failure, or worker error defers exactly one native conversion until finish().
 // In particular, the original images are never detached from their owner.
 export function createSkyPreparation(images, transforms, signal, parse, createResampler, workerMain, environment = globalThis) {
-  let worker = null, buffers = null, unchanged = null, finishPromise = null;
+  let worker = null, buffers = null, bitmaps = null, unchanged = null, finishPromise = null, published = null;
   let settled = false, cancelled = false, cancellationReason, resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   ready.catch(() => {});
@@ -131,10 +156,16 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
     resolveReady();
   }
 
+  function closeBitmaps() {
+    for (const bitmap of bitmaps ?? []) bitmap?.close?.();
+    bitmaps = null;
+  }
+
   function fallback(event) {
     event?.preventDefault?.();
     if (settled || cancelled) return;
     buffers = null;
+    closeBitmaps();
     settle();
   }
 
@@ -143,6 +174,7 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
     cancelled = true;
     cancellationReason = reason ?? new DOMException('Sky preparation aborted', 'AbortError');
     buffers = null;
+    closeBitmaps();
     unchanged = null;
     images = null;
     signal.removeEventListener('abort', abort);
@@ -163,6 +195,11 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
       if (cancelled) throw cancellationReason;
       try {
         if (unchanged) return images;
+        if (bitmaps) {
+          published = bitmaps;
+          bitmaps = null;
+          return published;
+        }
         if (buffers) {
           try {
             return images.map((image, index) => {
@@ -186,6 +223,7 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
         return nativeConversion();
       } finally {
         buffers = null;
+        closeBitmaps();
         unchanged = null;
         images = null;
         signal.removeEventListener('abort', abort);
@@ -223,6 +261,18 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
           environment.URL.revokeObjectURL(url);
         }
         worker.onmessage = ({data}) => {
+          const faces = data?.bitmaps;
+          if (Array.isArray(faces)) {
+            if (settled || cancelled || faces.length !== images.length ||
+                faces.some(face => !(face instanceof environment.ImageBitmap) || face.width !== size || face.height !== size)) {
+              for (const face of faces) face?.close?.();
+              fallback();
+              return;
+            }
+            bitmaps = faces;
+            settle();
+            return;
+          }
           if (settled || cancelled) return;
           const result = data?.buffers;
           if (!Array.isArray(result) || result.length !== images.length ||
@@ -245,5 +295,11 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
     }
   }
 
-  return {ready, finish, cancel};
+  // Bitmaps handed to the renderer are released with it.
+  function release() {
+    for (const bitmap of published ?? []) bitmap.close();
+    published = null;
+  }
+
+  return {ready, finish, cancel, release};
 }
