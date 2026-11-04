@@ -494,3 +494,36 @@ test('map preparation hooks reject changed config factories and ambiguous JSON r
     source + 'function outer(){async function gh(n){return customJson(n)}}',
   ]) expect(nativeMapPreparationHooks(changed, contract, 'Session')).toBe(changed);
 });
+
+test('the hooked geometry load uses a cached map before downloading and reports the source after a miss', async () => {
+  const signature = 'class K0{constructor(e,t=12){}}class k1{constructor(e,t=[],i=!1,s=!1){}}';
+  const contract = {name: 'k1', signature};
+  const config = 'T0=n=>({...oe.unrestrictedStart?E1:T1,...n?.physicsOverrides,autoBhop:oe.autoBhop,unrestrictedStart:oe.unrestrictedStart})';
+  const reader = 'async function gh(n){if(!n.body)return n.json();const e=n.body.getReader(),t=[];let i=0;for(;i<2;){const o=await e.read();if(o.done)break;t.push(o.value),i+=o.value.length}const s=t.flatMap(o=>Array.from(o.subarray(0,2))).slice(0,2),r=new ReadableStream({start(o){for(const c of t)o.enqueue(c)},async pull(o){try{const c=await e.read();c.done?o.close():o.enqueue(c.value)}catch(c){o.error(c)}},cancel(o){return e.cancel(o)}}),a=s[0]===31&&s[1]===139?r.pipeThrough(new DecompressionStream("gzip")):r;return new Response(a).json()}';
+  const load = 'async function load(e,s){const r=catalog.find(c=>c.id===e.id),p=r?`/packed/${r.geometrySha256}.json.gz`:`/maps/${e.slug}-collision.json`,q=await fetch1(p,s),m=await gh(q);if(m.id!==e.id||!m.brushes?.length||!m.zones?.some(z=>z.kind==="start")||!m.zones.some(z=>z.kind==="finish"))throw Error(`Invalid ${e.name} geometry`);return m}';
+  const source = `${signature};const ${config};function fresh(n){const e=new Session(n,T0(n),Zd),t=0;return e}${reader}${load}`;
+  const patched = nativeMapPreparationHooks(source, contract, 'Session');
+  const geometry = id => ({id, brushes: [{}], zones: [{kind: 'start'}, {kind: 'finish'}]});
+  const calls = [], fetched = [];
+  const qol = {createMapPreparationLoad: (signal, jobs, lookup) => ({
+    read: async key => { calls.push(['read', key, lookup]); return key === 'cached' ? geometry('surf_cached') : null; },
+    prepare: async (map, threshold, from) => { calls.push(['prepare', map.id, threshold, from]); },
+    dispose() { calls.push(['dispose']); },
+  })};
+  const loadMap = Function('globalThis', 'catalog', 'fetch1', 'oe', 'E1', 'T1', 'Zd', '__qolCreateMapLoadJobs', '__qolMapWorkerSource',
+    `${patched};return load`)({__SURFD_QOL__: qol},
+    [{id: 'surf_cached', geometrySha256: 'cached'}, {id: 'surf_fresh', geometrySha256: 'fresh'}],
+    async (path, signal) => { fetched.push(path); return {url: `https://assets.example${path}`, json: async () => geometry('surf_fresh')}; },
+    {unrestrictedStart: false, autoBhop: true}, {groundNormal: .5}, {groundNormal: .7}, 8, () => null, '');
+  expect((await loadMap({id: 'surf_cached', name: 'cached'}, undefined)).id).toBe('surf_cached');
+  expect(fetched).toEqual([]);
+  expect(calls).toEqual([['read', 'cached', true], ['prepare', 'surf_cached', .7, null]]);
+  calls.length = 0;
+  expect((await loadMap({id: 'surf_fresh', name: 'fresh'}, undefined)).id).toBe('surf_fresh');
+  expect(fetched).toEqual(['/packed/fresh.json.gz']);
+  expect(calls).toEqual([['read', 'fresh', true],
+    ['prepare', 'surf_fresh', .7, {key: 'fresh', url: 'https://assets.example/packed/fresh.json.gz'}]]);
+  calls.length = 0;
+  await expect(loadMap({id: 'surf_other', name: 'other', slug: 'other'}, undefined)).rejects.toThrow('Invalid other geometry');
+  expect(calls).toEqual([['read', undefined, true], ['dispose']]);
+});

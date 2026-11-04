@@ -11,7 +11,10 @@ await copyFile('src/private-rooms/chat-filter-notice.txt', 'dist/chat-filter-not
 const sources = ['metrics.js', 'observer.js', 'replay-store.js', 'start.js', 'surfaces.js'];
 const hash = createHash('sha256');
 for (const name of sources) hash.update(name).update(await readFile(`src/${name}`));
-const define = { __QOL_ANALYSIS__: JSON.stringify(hash.digest('hex').slice(0, 16)) };
+// Cached collision records are rebuilt whenever their encoding or derived data can change.
+const mapHash = createHash('sha256');
+for (const path of ['src/map-cache.js', 'src/map-ramp-preparation.js', 'src/surfaces.js', 'extension/map-bvh-preparation.js', 'extension/collision-tree.js']) mapHash.update(path).update(await readFile(path));
+const define = { __QOL_ANALYSIS__: JSON.stringify(hash.digest('hex').slice(0, 16)), __QOL_MAP_CACHE__: JSON.stringify(mapHash.digest('hex').slice(0, 16)) };
 for (const [entry, name] of [['src/main.js', 'page.js'], ['src/bridge.js', 'bridge.js'], ['src/cinema-worker.js', 'cinema-worker.js'], ['src/map-load-worker-entry.js', 'map-preparation-worker.js']]) {
   const result = await Bun.build({ entrypoints: [entry], outdir: 'dist', naming: name, target: 'browser', format: 'iife', minify: false, define });
   if (!result.success) throw new AggregateError(result.logs, `Failed to build ${name}`);

@@ -1,33 +1,57 @@
 import {packMapBounds, unpackMapBoundsTree, adoptPreparedMapWorld} from '../extension/map-bvh-preparation.js';
-import {packRampPreparation, installPreparedRampSurfaces, hasRampSurfaces, cancelRampPreparation} from './map-ramp-preparation.js';
+import {packRampPreparation, installPreparedRampSurfaces, installCachedRampSurfaces, hasRampSurfaces, cancelRampPreparation} from './map-ramp-preparation.js';
+import {openMapCache, readMapCache, cachedWorld} from './map-cache.js';
+
+// After entry, a worker rebuilds the cache record from the HTTP-cached file.
+const PERSIST_DELAY = 3000;
+
+function defaultCache() {
+  let database;
+  const db = () => database ??= openMapCache();
+  return {
+    read: async key => readMapCache(await db(), key),
+    schedule: (start, delay) => { const timer = setTimeout(start, delay); return () => clearTimeout(timer); },
+  };
+}
 
 // Pack only derived data while visuals load. Join workers which have already
 // started; unsupported or still-starting workers never add an entry-time wait.
-export function createMapPreparation() {
-  const worlds = new WeakMap(), ramps = new WeakMap(), active = new Set();
+// A cached load skips the download, parse and both workers.
+export function createMapPreparation(cache = defaultCache()) {
+  const worlds = new WeakMap(), ramps = new WeakMap(), active = new Set(), persisting = new Set();
+  const cancelPersist = new Set();
 
-  function createLoad(signal, createJobs) {
+  function createLoad(signal = new AbortController().signal, createJobs, lookup = false) {
     if (signal.aborted) return null;
     let treeJob, rampJob, treeRecord, rampRecord, prepared = false, disposed = false, finished = 0;
-    let treeAvailable = false, rampAvailable = false;
-    try {
-      treeJob = createJobs('map-bvh');
-      rampJob = createJobs('map-ramps');
-    } catch {
-      treeJob?.dispose();
-      rampJob?.dispose();
-      return null;
+    let treeAvailable = false, rampAvailable = false, jobsStarted = false, cached = null;
+
+    function startJobs() {
+      if (jobsStarted || disposed) return jobsStarted;
+      try {
+        treeJob = createJobs('map-bvh');
+        rampJob = createJobs('map-ramps');
+      } catch {
+        treeJob?.dispose();
+        rampJob?.dispose();
+        treeJob = rampJob = null;
+        return false;
+      }
+      jobsStarted = true;
+      treeJob.ready.then(value => { treeAvailable = !!value; }, () => {});
+      rampJob.ready.then(value => { rampAvailable = !!value; }, () => {});
+      return true;
     }
-    treeJob.ready.then(value => { treeAvailable = !!value; }, () => {});
-    rampJob.ready.then(value => { rampAvailable = !!value; }, () => {});
+    if (!lookup && !startJobs()) return null;
 
     function dispose() {
       if (disposed) return;
       disposed = true;
       if (treeRecord) treeRecord.consumed = true;
       if (rampRecord) { rampRecord.consumed = true; rampRecord.cancel(); }
-      treeJob.dispose();
-      rampJob.dispose();
+      treeJob?.dispose();
+      rampJob?.dispose();
+      cached = null;
       signal.removeEventListener('abort', dispose);
       active.delete(dispose);
     }
@@ -43,9 +67,62 @@ export function createMapPreparation() {
     active.add(dispose);
     signal.addEventListener('abort', dispose, {once: true});
 
-    function prepare(map, groundNormal) {
-      if (prepared || disposed || signal.aborted || !Array.isArray(map?.brushes)) { dispose(); return; }
+    // Resolves to the decoded map, or null when the native download must run.
+    async function read(key) {
+      if (disposed || signal.aborted) return null;
+      let record = null;
+      if (typeof key === 'string' && key) {
+        try { record = await cache.read(key); } catch { record = null; }
+      }
+      if (disposed || signal.aborted) return null;
+      if (record) {
+        cached = {...record, key};
+        return record.map;
+      }
+      startJobs();
+      return null;
+    }
+
+    function persist(map, groundNormal, source) {
+      const key = source?.key, url = source?.url;
+      if (typeof key !== 'string' || typeof url !== 'string' || persisting.has(key)) return;
+      persisting.add(key);
+      const entry = {job: null, stop: null};
+      const finish = () => {
+        entry.job?.dispose();
+        cancelPersist.delete(entry);
+        persisting.delete(key);
+      };
+      entry.stop = cache.schedule(() => {
+        try { entry.job = createJobs('map-cache'); } catch { finish(); return; }
+        entry.job.run('map-cache', {key, url, groundNormal, mapId: map.id}).catch(() => {}).finally(finish);
+      }, PERSIST_DELAY);
+      entry.cancel = () => { entry.stop(); finish(); };
+      cancelPersist.add(entry);
+    }
+
+    function prepareCached(map, groundNormal) {
+      const record = cached;
+      cached = null;
+      dispose();
+      const world = cachedWorld(record, map);
+      if (world) {
+        worlds.set(map.brushes, {brushes: map.brushes, triangles: map.displacementTriangles, signal,
+          consumed: false, consume() {}, triangleBounds: world.triangleBounds, root: world.root, itemCount: world.itemCount});
+      }
+      if (Object.is(record.header.groundNormal, groundNormal)) {
+        ramps.set(map, {groundNormal, signal, consumed: false, consume() {}, cancel() {}, cached: record.sections});
+      }
+    }
+
+    function prepare(map, groundNormal, source) {
+      if (cached && cached.map === map && !disposed && !signal.aborted && Array.isArray(map?.brushes)) {
+        prepareCached(map, groundNormal);
+        return;
+      }
+      if (prepared || disposed || signal.aborted || !Array.isArray(map?.brushes) || !startJobs()) { dispose(); return; }
       prepared = true;
+      persist(map, groundNormal, source);
       treeRecord = {brushes: map.brushes, triangles: map.displacementTriangles,
         signal, consumed: false, consume: () => treeJob.dispose()};
       rampRecord = {groundNormal, signal, consumed: false, result: null, consume: () => rampJob.dispose(),
@@ -81,7 +158,7 @@ export function createMapPreparation() {
       if (joined.length) return Promise.all(joined);
     }
 
-    return {prepare, dispose};
+    return {read, prepare, dispose};
   }
 
   function useWorld(world, brushes, triangles, feature, corner, Tree) {
@@ -106,14 +183,22 @@ export function createMapPreparation() {
     if (!record || record.consumed) return false;
     record.consumed = true;
     record.consume();
+    // The cached arrays view the whole record buffer; never keep it with the map.
+    const cached = record.cached;
+    record.cached = null;
     try {
-      return !record.signal.aborted && record.groundNormal === groundNormal && record.result != null &&
-        installPreparedRampSurfaces(map, groundNormal, record.result);
+      if (record.signal.aborted || record.groundNormal !== groundNormal) return false;
+      if (cached) {
+        const {rampOrdinals, rampComponents, rampNormals} = cached;
+        return installCachedRampSurfaces(map, groundNormal, rampOrdinals, rampComponents, rampNormals);
+      }
+      return record.result != null && installPreparedRampSurfaces(map, groundNormal, record.result);
     } finally { record.cancel(); }
   }
 
   function destroy() {
     for (const dispose of active) dispose();
+    for (const entry of [...cancelPersist]) entry.cancel();
   }
 
   return {createLoad, useWorld, useRamps, destroy};

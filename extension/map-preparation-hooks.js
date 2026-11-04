@@ -24,8 +24,13 @@ export function nativeMapPreparationHooks(source, contract, Session) {
   if ([...source.matchAll(readerDeclarations)].length !== 1) return source;
   const begin = `async function ${l.name}(${l.entry},${l.signal}){`;
   const body = load[0].slice(begin.length, -1);
-  const prepared = body.replace(`return ${l.map}`, `let __qolThreshold;try{__qolThreshold=${fresh[0][3]}(${l.map}).groundNormal}catch{}await __qolMapPreparation?.prepare(${l.map},__qolThreshold);return ${l.map}`);
-  const replacement = `${begin}const __qolMapPreparation=globalThis.__SURFD_QOL__?.createMapPreparationLoad?.(${l.signal},()=>__qolCreateMapLoadJobs(__qolMapWorkerSource,${l.signal},false));try{${prepared}}catch(error){__qolMapPreparation?.dispose();throw error}}`;
+  // A cached record replaces the download and parse; the native validation
+  // below still checks the decoded map.
+  const download = `${l.response}=await ${l.fetch}(${l.path},${l.signal}),${l.map}=await ${l.json}(${l.response});`;
+  if (body.split(download).length !== 2) return source;
+  const prepared = body.replace(download, `__qolCached=await __qolMapPreparation?.read(${l.record}?.geometrySha256),${l.response}=__qolCached?null:await ${l.fetch}(${l.path},${l.signal}),${l.map}=__qolCached??await ${l.json}(${l.response});`)
+    .replace(`return ${l.map}`, `let __qolThreshold;try{__qolThreshold=${fresh[0][3]}(${l.map}).groundNormal}catch{}await __qolMapPreparation?.prepare(${l.map},__qolThreshold,${l.response}&&${l.record}?{key:${l.record}.geometrySha256,url:${l.response}.url}:null);return ${l.map}`);
+  const replacement = `${begin}const __qolMapPreparation=globalThis.__SURFD_QOL__?.createMapPreparationLoad?.(${l.signal},()=>__qolCreateMapLoadJobs(__qolMapWorkerSource,${l.signal},false),true);try{${prepared}}catch(error){__qolMapPreparation?.dispose();throw error}}`;
   source = source.slice(0, load.index) + replacement + source.slice(load.index + load[0].length);
   return source.replace(header[0], `${header[0]}if(globalThis.__SURFD_QOL__?.usePreparedMapWorld?.(this,${h.brushes},${h.triangles},${h.feature},${h.corner},${Tree})){__qolFloorWorlds.set(${h.brushes},this);return}`);
 }

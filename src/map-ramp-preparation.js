@@ -206,6 +206,22 @@ export function buildPackedRampPreparation(packet) {
   return { requestId: packet.requestId, groundNormal: packet.groundNormal, brushOrdinals, components, normals };
 }
 
+// Cached results were built from this exact geometry; only their structure
+// is checked before entering the map-local index.
+export function installCachedRampSurfaces(map, groundNormal, ordinals, components, normals) {
+  if (!validMap(map, groundNormal) || hasRampSurfaces(map, groundNormal) || !(ordinals instanceof Uint32Array) ||
+    !(components instanceof Uint32Array) || !(normals instanceof Float64Array) ||
+    ordinals.length !== components.length || normals.length !== ordinals.length * 3 || ordinals.length > MAX_FACES) return false;
+  for (let i = 0; i < ordinals.length; i++) {
+    const brush = map.brushes[ordinals[i]], component = components[i], offset = i * 3;
+    if (!brush || (typeof brush.id !== 'string' && typeof brush.id !== 'number') ||
+      (i && ordinals[i] < ordinals[i - 1]) || component > i || components[component] !== component ||
+      !Number.isFinite(normals[offset]) || !Number.isFinite(normals[offset + 1]) ||
+      !(normals[offset + 2] > 0 && normals[offset + 2] < groundNormal)) return false;
+  }
+  return installRampSurfaceData(map, groundNormal, ordinals, components, normals);
+}
+
 export function installPreparedRampSurfaces(map, groundNormal, packet) {
   if (!validMap(map, groundNormal) || hasRampSurfaces(map, groundNormal) || !packet ||
     packet.groundNormal !== groundNormal || !(packet.brushOrdinals instanceof Uint32Array) ||

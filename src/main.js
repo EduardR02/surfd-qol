@@ -119,8 +119,8 @@ const api = {
   privateRooms,
   strafePreview,
   cinema,
-  createMapPreparationLoad(signal, createJobs) {
-    return destroyed || failed ? null : mapPreparation.createLoad(signal, createJobs);
+  createMapPreparationLoad(signal, createJobs, lookup) {
+    return destroyed || failed ? null : mapPreparation.createLoad(signal, createJobs, lookup);
   },
   usePreparedMapWorld(...args) {
     return destroyed || failed ? false : mapPreparation.useWorld(...args);
