@@ -7,9 +7,10 @@ import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 import {nativeMapWorkerHooks} from './map-worker-hooks.js';
 import {nativeMapFloorHooks} from './map-floor-hooks.js';
+import {nativeMapPreparationHooks} from './map-preparation-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v39:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v40:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -708,6 +709,7 @@ export function instrumentGame(source, mapWorkerSource = '') {
     (_, map, replay) => `new ${sessionClass}(${map},${replay}.config,${replay}.format)`);
   source = nativeCollisionTreeHooks(source);
   if (mapWorkerSource) source = nativeMapFloorHooks(source, worldContract);
+  if (mapWorkerSource) source = nativeMapPreparationHooks(source, worldContract, sessionClass);
   source = preparedIndexHooks(source, state);
   source = nativeStageResetHooks(source);
   source = nativeMapLoadHooks(source);

@@ -359,19 +359,26 @@ function connectedFaces(a, b) {
   return false;
 }
 
-function buildIndex(map, groundNormal) {
+// Shared by the synchronous index and the compact worker input filter.
+export function normalizedRampPlane(plane, groundNormal) {
+  if (!finiteVector(plane?.normal) || !Number.isFinite(plane.distance)) return null;
+  const length = Math.hypot(plane.normal.x, plane.normal.y, plane.normal.z);
+  if (!length) return null;
+  const normal = { x: plane.normal.x / length, y: plane.normal.y / length, z: plane.normal.z / length };
+  return normal.z > 0 && normal.z < groundNormal ? { normal, distance: plane.distance / length } : null;
+}
+
+// The temporary faces retain their original order and minimum-face component
+// labels, so the worker and synchronous path use precisely the same algorithm.
+export function buildRampSurfaceData(map, groundNormal) {
   const faces = [];
-  const byBrush = new Map();
   for (const brush of map.brushes) {
     if (!brush || (typeof brush.id !== 'string' && typeof brush.id !== 'number') ||
       !Array.isArray(brush.vertices) || !Array.isArray(brush.faces) || !Array.isArray(brush.planes)) continue;
     const planes = [];
     for (const plane of brush.planes) {
-      if (!finiteVector(plane?.normal) || !Number.isFinite(plane.distance)) continue;
-      const length = Math.hypot(plane.normal.x, plane.normal.y, plane.normal.z);
-      if (!length) continue;
-      const normal = { x: plane.normal.x / length, y: plane.normal.y / length, z: plane.normal.z / length };
-      if (normal.z > 0 && normal.z < groundNormal) planes.push({ normal, distance: plane.distance / length });
+      const normalized = normalizedRampPlane(plane, groundNormal);
+      if (normalized) planes.push(normalized);
     }
     if (!planes.length) continue;
     for (const indices of brush.faces) {
@@ -442,12 +449,17 @@ function buildIndex(map, groundNormal) {
     }
   }
   if (tree) connect(tree, tree);
-  // Retain only contact lookup data, not the temporary hulls and spatial tree.
-  for (const face of faces) {
-    let brushFaces = byBrush.get(face.brushId);
-    if (!brushFaces) byBrush.set(face.brushId, brushFaces = []);
-    brushFaces.push({ normal: face.normal, component: root(face.id) });
-  }
+  for (let i = 0; i < faces.length; i++) parents[i] = root(i);
+  return { faces, components: parents };
+}
+
+function addBrushFace(byBrush, brushId, normal, component) {
+  let brushFaces = byBrush.get(brushId);
+  if (!brushFaces) byBrush.set(brushId, brushFaces = []);
+  brushFaces.push({ normal, component });
+}
+
+function makeIndex(byBrush, groundNormal) {
   return Object.freeze({
     find(brushId, normal) {
       const candidates = byBrush.get(brushId);
@@ -472,9 +484,43 @@ function buildIndex(map, groundNormal) {
   });
 }
 
+function buildIndex(map, groundNormal) {
+  const byBrush = new Map();
+  const { faces, components } = buildRampSurfaceData(map, groundNormal);
+  for (let i = 0; i < faces.length; i++) {
+    const face = faces[i];
+    addBrushFace(byBrush, face.brushId, face.normal, components[i]);
+  }
+  return makeIndex(byBrush, groundNormal);
+}
+
+function validRampMap(map, groundNormal) {
+  return map && typeof map === 'object' && Array.isArray(map.brushes) && map.brushes.length &&
+    Number.isFinite(groundNormal) && groundNormal > 0 && groundNormal <= 1;
+}
+
+export function hasRampSurfaces(map, groundNormal) {
+  return !!(validRampMap(map, groundNormal) && cache.get(map)?.has(groundNormal));
+}
+
+// The caller validates that these worker results belong to this map and
+// threshold before entering the existing map-local cache.
+export function installRampSurfaceData(map, groundNormal, ordinals, components, normals) {
+  if (!validRampMap(map, groundNormal) || hasRampSurfaces(map, groundNormal)) return false;
+  const byBrush = new Map();
+  for (let i = 0; i < ordinals.length; i++) {
+    const offset = i * 3;
+    addBrushFace(byBrush, map.brushes[ordinals[i]].id,
+      { x: normals[offset], y: normals[offset + 1], z: normals[offset + 2] }, components[i]);
+  }
+  let thresholds = cache.get(map);
+  if (!thresholds) cache.set(map, thresholds = new Map());
+  thresholds.set(groundNormal, makeIndex(byBrush, groundNormal));
+  return true;
+}
+
 export function getRampSurfaces(map, groundNormal) {
-  if (!map || typeof map !== 'object' || !Array.isArray(map.brushes) || !map.brushes.length ||
-    !Number.isFinite(groundNormal) || groundNormal <= 0 || groundNormal > 1) return null;
+  if (!validRampMap(map, groundNormal)) return null;
   let thresholds = cache.get(map);
   if (!thresholds) cache.set(map, thresholds = new Map());
   let index = thresholds.get(groundNormal);

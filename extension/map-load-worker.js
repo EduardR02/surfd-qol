@@ -1,5 +1,5 @@
 // Self-contained: the native loader injects this factory with .toString().
-export function createMapLoadJobs(source, signal) {
+export function createMapLoadJobs(source, signal, streamProbe = true) {
   const requests = new Map();
   let worker = null, objectURL = null, timer = null, nextId = 0;
   let state = 'starting', phase = 'ready', failure;
@@ -83,6 +83,14 @@ export function createMapLoadJobs(source, signal) {
     }
     return error;
   }
+  function finishReady() {
+    state = 'ready';
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    revoke();
+    readySettled = true;
+    resolveReady(true);
+  }
+
 
   function receive(event) {
     const data = event?.data;
@@ -91,7 +99,8 @@ export function createMapLoadJobs(source, signal) {
       return;
     }
     if (state === 'starting') {
-      if (phase === 'ready' && data?.type === 'ready' && data.streams === true) {
+      if (phase === 'ready' && data?.type === 'ready' && (!streamProbe || data.streams === true)) {
+        if (!streamProbe) { finishReady(); return; }
         phase = 'probe';
         try {
           // Test the actual transfer path before detaching any native response.
@@ -102,11 +111,7 @@ export function createMapLoadJobs(source, signal) {
           worker.postMessage({type: 'probe', stream}, [stream]);
         } catch { unsupported(); }
       } else if (phase === 'probe' && data?.type === 'probe' && data.ok === true) {
-        state = 'ready';
-        if (timer !== null) { clearTimeout(timer); timer = null; }
-        revoke();
-        readySettled = true;
-        resolveReady(true);
+        finishReady();
       } else unsupported();
       return;
     }
@@ -162,7 +167,7 @@ export function createMapLoadJobs(source, signal) {
   }
   if (!source || typeof Worker !== 'function' || typeof Blob !== 'function' ||
       typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' ||
-      typeof URL.revokeObjectURL !== 'function' || typeof ReadableStream !== 'function') {
+      typeof URL.revokeObjectURL !== 'function' || streamProbe && typeof ReadableStream !== 'function') {
     unsupported();
     return jobs;
   }
@@ -179,9 +184,9 @@ export function createMapLoadJobs(source, signal) {
   return jobs;
 }
 
-// Bundled into the visual preparation worker. Pack bodies transfer only after
-// the disposable probe succeeds; collision acquisition remains native.
-export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decodeMesh, scope = globalThis}) {
+// Bundled into the map worker. Pack bodies require a disposable stream probe;
+// optional numeric analysis jobs transfer only their own compact buffers.
+export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decodeMesh, buildMapBoundsTree, buildPackedRampPreparation, scope = globalThis}) {
   async function inflate(stream) {
     const reader = stream.getReader(), prefix = [];
     let count = 0, first = -1, second = -1;
@@ -238,8 +243,10 @@ export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decode
   const processor = createVisualPackProcessor({inflate, decodeImage, decodeMesh, emit});
   async function dispatch({id, type, payload}) {
     try {
-      const result = await processor.run(id, type, payload);
-      scope.postMessage({id, result});
+      const task = type === 'map-bvh' ? buildMapBoundsTree : type === 'map-ramps' ? buildPackedRampPreparation : null;
+      const result = await (task ? task(payload) : processor.run(id, type, payload));
+      const transfers = task ? [...new Set(Object.values(result ?? {}).filter(ArrayBuffer.isView).map(value => value.buffer))] : [];
+      scope.postMessage({id, result}, transfers);
     } catch (error) {
       scope.postMessage({id, error: {
         name: typeof error?.name === 'string' ? error.name : 'Error',

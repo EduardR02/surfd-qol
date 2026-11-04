@@ -1,19 +1,25 @@
-// Temporary numeric storage belongs only to this build; leaves retain ordinary
-// ID arrays so native queries and collision-world packing keep their ownership.
-export function buildCollisionTree(bounds, leafSize = 12) {
-  if (!Array.isArray(bounds) || !Number.isSafeInteger(leafSize) || leafSize < 1 ||
-      bounds.length > 0x7fffffff) return undefined;
-  const count = bounds.length;
-  if (!count) return null;
+// Temporary numeric storage belongs only to this build. Ordinary output keeps
+// native ID-array leaves; compact output writes the transferable numeric tree.
+export function buildCollisionTree(bounds, leafSize = 12, compact = false) {
+  if (!(compact ? bounds instanceof Float64Array : Array.isArray(bounds)) ||
+      !Number.isSafeInteger(leafSize) || leafSize < 1) return undefined;
+  const count = compact ? bounds.length / 6 : bounds.length;
+  if (!Number.isInteger(count) || count > 0x7fffffff) return undefined;
+  if (!count) return compact ? {itemCount: 0, nodeBounds: new Float64Array(0),
+    nodeData: new Int32Array(0), indices: new Uint32Array(0)} : null;
 
   const values = new Float64Array(count * 9);
   const indices = new Uint32Array(count);
   for (let index = 0; index < count; index++) {
-    const box = bounds[index];
-    if (!box || !box.min || !box.max) return undefined;
+    const box = compact ? null : bounds[index], source = index * 6;
+    if (!compact && (!box || !box.min || !box.max)) return undefined;
     const offset = index * 9;
-    const minX = box.min.x, minY = box.min.y, minZ = box.min.z;
-    const maxX = box.max.x, maxY = box.max.y, maxZ = box.max.z;
+    const minX = compact ? bounds[source] : box.min.x;
+    const minY = compact ? bounds[source + 1] : box.min.y;
+    const minZ = compact ? bounds[source + 2] : box.min.z;
+    const maxX = compact ? bounds[source + 3] : box.max.x;
+    const maxY = compact ? bounds[source + 4] : box.max.y;
+    const maxZ = compact ? bounds[source + 5] : box.max.z;
     if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(minZ) ||
         !Number.isFinite(maxX) || !Number.isFinite(maxY) || !Number.isFinite(maxZ)) return undefined;
     const centerX = minX + maxX, centerY = minY + maxY, centerZ = minZ + maxZ;
@@ -29,6 +35,13 @@ export function buildCollisionTree(bounds, leafSize = 12) {
     values[offset + 8] = centerZ;
     indices[index] = index;
   }
+  // Compact output shares the exact partition/leaf-order implementation. It
+  // never constructs a temporary object tree merely to flatten it for transfer.
+  function nodes(size) { return size <= leafSize ? 1 : 1 + nodes(size >> 1) + nodes(size - (size >> 1)); }
+  const nodeCount = compact ? nodes(count) : 0;
+  const nodeBounds = compact ? new Float64Array(nodeCount * 6) : null;
+  const nodeData = compact ? new Int32Array(nodeCount * 4) : null;
+  let nextNode = 0;
 
   function compare(left, right, axis) {
     return values[left * 9 + 6 + axis] - values[right * 9 + 6 + axis] || left - right;
@@ -83,21 +96,32 @@ export function buildCollisionTree(bounds, leafSize = 12) {
       maxY = Math.max(maxY, values[offset + 4]);
       maxZ = Math.max(maxZ, values[offset + 5]);
     }
-    const min = {x: minX, y: minY, z: minZ}, max = {x: maxX, y: maxY, z: maxZ};
+    const node = compact ? nextNode++ : -1;
+    if (compact) {
+      const offset = node * 6;
+      nodeBounds[offset] = minX; nodeBounds[offset + 1] = minY; nodeBounds[offset + 2] = minZ;
+      nodeBounds[offset + 3] = maxX; nodeBounds[offset + 4] = maxY; nodeBounds[offset + 5] = maxZ;
+    }
     if (end - start <= leafSize) {
-      const items = new Array(end - start);
-      for (let index = start; index < end; index++) items[index - start] = indices[index];
       // Native leaves inherit the parent's full sort; a root leaf is unsorted.
-      if (parentAxis >= 0) for (let index = 1; index < items.length; index++) {
-        const item = items[index];
+      if (parentAxis >= 0) for (let index = start + 1; index < end; index++) {
+        const item = indices[index];
         let position = index;
-        while (position > 0 && compare(items[position - 1], item, parentAxis) > 0) {
-          items[position] = items[position - 1];
+        while (position > start && compare(indices[position - 1], item, parentAxis) > 0) {
+          indices[position] = indices[position - 1];
           position--;
         }
-        items[position] = item;
+        indices[position] = item;
       }
-      return {min, max, items};
+      if (compact) {
+        const offset = node * 4;
+        nodeData[offset] = -1; nodeData[offset + 1] = -1;
+        nodeData[offset + 2] = start; nodeData[offset + 3] = end - start;
+        return node;
+      }
+      const items = new Array(end - start);
+      for (let index = start; index < end; index++) items[index - start] = indices[index];
+      return {min: {x: minX, y: minY, z: minZ}, max: {x: maxX, y: maxY, z: maxZ}, items};
     }
     let axis = 0, extent = maxX - minX;
     if (maxY - minY > extent) {
@@ -107,10 +131,15 @@ export function buildCollisionTree(bounds, leafSize = 12) {
     if (maxZ - minZ > extent) axis = 2;
     const middle = start + ((end - start) >> 1);
     select(start, end, middle, axis);
-    return {min, max, left: build(start, middle, axis), right: build(middle, end, axis)};
+    const left = build(start, middle, axis), right = build(middle, end, axis);
+    if (!compact) return {min: {x: minX, y: minY, z: minZ}, max: {x: maxX, y: maxY, z: maxZ}, left, right};
+    const offset = node * 4;
+    nodeData[offset] = left; nodeData[offset + 1] = right; nodeData[offset + 2] = -1;
+    return node;
   }
 
-  return build(0, count, -1);
+  const root = build(0, count, -1);
+  return compact ? {itemCount: count, nodeBounds, nodeData, indices} : root;
 }
 
 // Optional and atomic: recognize the complete native constructor/query layout,

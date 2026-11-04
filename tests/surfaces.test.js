@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getRampSurfaces } from '../src/surfaces.js';
+import { packRampPreparation, buildPackedRampPreparation, installPreparedRampSurfaces } from '../src/map-ramp-preparation.js';
 
 const groundNormal = 0.7;
 const vector = (x = 0, y = 0, z = 0) => ({ x, y, z });
@@ -278,7 +279,17 @@ test('real Andromeda rotated BSP facets connect across their overlapping interio
     vector(732.6972216407434, -62.13135335136367, 5568.216977569296),
   ] }]);
   b.planes[0].distance = 3787.481689453125;
-  const index = getRampSurfaces(freeze({ brushes: [a, b] }), groundNormal);
+  const map = freeze({ brushes: [a, b] });
+  const packet = packRampPreparation(map, groundNormal);
+  assert.ok(packet);
+  const result = buildPackedRampPreparation(packet);
+  assert.ok(result);
+  const native = getRampSurfaces({ brushes: map.brushes }, groundNormal);
+  assert.equal(installPreparedRampSurfaces(map, groundNormal, result), true);
+  const index = getRampSurfaces(map, groundNormal);
+  for (const value of map.brushes) {
+    assert.equal(index.find(value.id, value.planes[0].normal), native.find(value.id, value.planes[0].normal));
+  }
   assert.equal(component(index, a), component(index, b));
 });
 

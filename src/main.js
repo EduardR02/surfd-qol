@@ -15,6 +15,7 @@ import { applySettings as applySettingsTo, colorKeys, defaults, storageKey, stor
 import { createPrivateRooms } from './private-rooms/index.js';
 import { createStrafePreview } from './strafe-preview.js';
 import { createCinema } from './cinema.js';
+import {createMapPreparation} from './map-preparation.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -93,6 +94,7 @@ const bindings = createBindings(() => api.adapter, settings, onSettings);
 const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
 const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
 const cinema = createCinema({getAdapter: () => api.adapter, onChange: () => hud?.cinemaChanged?.()});
+const mapPreparation = createMapPreparation();
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
@@ -117,11 +119,19 @@ const api = {
   privateRooms,
   strafePreview,
   cinema,
+  createMapPreparationLoad(signal, createJobs) {
+    return destroyed || failed ? null : mapPreparation.createLoad(signal, createJobs);
+  },
+  usePreparedMapWorld(...args) {
+    return destroyed || failed ? false : mapPreparation.useWorld(...args);
+  },
   prepareMap() {
     if (destroyed || failed) return;
     const session = api.adapter?.getSession();
-    try { getRampSurfaces(session?.map, session?.config?.groundNormal); }
-    catch (error) { fail(error); }
+    try {
+      mapPreparation.useRamps(session?.map, session?.config?.groundNormal);
+      getRampSurfaces(session?.map, session?.config?.groundNormal);
+    } catch (error) { fail(error); }
   },
   attach(adapter) {
     if (destroyed || api.adapter) return;
@@ -164,6 +174,7 @@ const api = {
   destroy() {
     if (destroyed) return;
     destroyed = true;
+    mapPreparation.destroy();
     clearInterval(bindingTimer);
     strafePreview.destroy();
     cinema.destroy();
