@@ -3,6 +3,7 @@ import {ADAPTER_MARKER, ROOM_CHUNKS, ROOM_MESSAGE_CHARS, instrumentGame, instrum
 import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/protocol.js';
 import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
+import {zoneFloorCandidates} from '../extension/map-floor-hooks.js';
 
 const nativePracticePanelSource = `
 function fixturePanel(n,e,document){const save=document.getElementById("save"),count={};
@@ -344,6 +345,13 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
       const zone = {kind, min: point(0, -4, -20), max: point(8, 4, top)};
       expect(floor(map, zone)).toBe(nativeFloor(map, zone));
     }
+    const previousWorld = new World(brushes, triangles);
+    const changed = {...map, displacementTriangles: [
+      triangle([point(0, -4, 50), point(8, -4, 50), point(0, 4, 50)])
+    ], spawn: {position: point(2, -2, 60)}};
+    const zone = {kind: 'start', min: point(0, -4, 40), max: point(8, 4, 100)};
+    expect(zoneFloorCandidates(previousWorld, changed, 2, -2, 40, 100)).toBeNull();
+    expect(floor(changed, zone)).toBe(nativeFloor(changed, zone));
   });
 
   if (kind === 'game') test('an unreviewed floor calculation retains its native result', () => {

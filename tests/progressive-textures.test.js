@@ -535,12 +535,17 @@ test('cancellation, disposal, context loss and texture failure stop first-view s
 async function withGpuQueue(run, {parallel = true, sync = true, count = 180, budget = Infinity, atlases = []} = {}) {
   const idleDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'requestIdleCallback');
   const cancelDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'cancelIdleCallback');
+  const timeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'setTimeout');
+  const clearTimeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'clearTimeout');
   const callbacks = new Map();
   let nextId = 0, lost = false, linked = false, reads = 0, reflections = 0, disposals = 0;
+  let textureBindings = null;
   let fences = 0, waits = 0, flushes = 0, fenceStatus = 37148;
   const deletedFences = [];
   globalThis.requestIdleCallback = callback => { callbacks.set(++nextId, callback); return nextId; };
   globalThis.cancelIdleCallback = id => callbacks.delete(id);
+  globalThis.setTimeout = callback => { callbacks.set(++nextId, callback); return nextId; };
+  globalThis.clearTimeout = id => callbacks.delete(id);
   const assets = deferred(), material = new EventTarget(), camera = {};
   const program = {
     program: {},
@@ -614,7 +619,7 @@ async function withGpuQueue(run, {parallel = true, sync = true, count = 180, bud
     dispose() { disposals++; return 'native dispose'; }
   };
   const originalDispose = renderer.dispose;
-  const preparation = createMapGpuPreparation(renderer, [scene], camera, [textures], () => assets.promise, null, atlases);
+  const preparation = createMapGpuPreparation(renderer, [scene], camera, [textures], () => assets.promise, null, atlases, () => textureBindings);
   function slice(time = budget) {
     const entry = callbacks.entries().next().value;
     assert.ok(entry, 'Expected scheduled GPU progress');
@@ -638,6 +643,7 @@ async function withGpuQueue(run, {parallel = true, sync = true, count = 180, bud
     await run({
       preparation, renderer, scene, children, light, hiddenLight, assets, callbacks, material, program, texture,
       uploaded, uploadedVersions, compiled, geometry, nativeLights, originalDispose, slice, drain, publish, deletedFences,
+      setBindings(bindings) { textureBindings = bindings; },
       link() { linked = true; }, get reads() { return reads; }, get reflections() { return reflections; },
       get disposals() { return disposals; }, get fences() { return fences; }, get waits() { return waits; },
       get flushes() { return flushes; },
@@ -652,6 +658,8 @@ async function withGpuQueue(run, {parallel = true, sync = true, count = 180, bud
     else delete globalThis.requestIdleCallback;
     if (cancelDescriptor) Object.defineProperty(globalThis, 'cancelIdleCallback', cancelDescriptor);
     else delete globalThis.cancelIdleCallback;
+    Object.defineProperty(globalThis, 'setTimeout', timeoutDescriptor);
+    Object.defineProperty(globalThis, 'clearTimeout', clearTimeoutDescriptor);
   }
 }
 
@@ -689,10 +697,12 @@ test('post-entry preparation is deferred and bounded without rendering or changi
 test('geometry and shaders advance while assets are pending, but final texture uploads wait for publication', async () => {
   await withGpuQueue(async run => {
     run.preparation.start();
+    run.link();
     run.drain();
     assert.equal(run.geometry.length, run.children.length);
     assert.equal(run.uploaded.length, 0);
     assert.equal(run.callbacks.size, 0, 'Waiting for assets must not spin an idle queue');
+    assert.ok(run.reflections > 0, 'Ready shader reflection must not wait for unrelated assets');
     await run.publish();
     run.link();
     assert.equal(run.callbacks.size, 1);
@@ -757,7 +767,7 @@ for (const event of [true, false]) {
       while (run.reads === 0) run.slice();
       const reads = run.reads;
       run.loseContext(event);
-      if (!event) run.slice();
+      if (!event) run.drain();
       await assert.rejects(run.preparation.ready, {name: 'AbortError'});
       assert.equal(run.callbacks.size, 0);
       assert.equal(run.reads, reads);
@@ -769,7 +779,7 @@ for (const event of [true, false]) {
 test('background asset failure rejects GPU completion with the original native failure', async () => {
   await withGpuQueue(async run => {
     run.preparation.start();
-    run.drain();
+    while (run.geometry.length < run.children.length) run.slice();
     const failure = new Error('Native DDS validation failed');
     run.assets.reject(failure);
     await assert.rejects(run.preparation.ready, error => error === failure);
@@ -839,14 +849,15 @@ test('disposed dynamic materials and destroyed programs are not resurrected duri
     const retired = {isTexture: true, loaded: true};
     run.material.map = retired;
     run.preparation.start();
-    run.drain(); // Collect/compile while decoding is still outstanding.
+    while (run.compiled.length < run.children.length) run.slice();
     run.material.dispatchEvent(new Event('dispose'));
     run.program.program = undefined; // Native WebGLProgram.destroy contract.
+    const reads = run.reads;
     await run.publish();
     run.drain();
     await run.preparation.ready;
     assert.equal(run.uploaded.includes(retired), false);
-    assert.equal(run.reads, 0);
+    assert.equal(run.reads, reads);
     assert.equal(run.reflections, 0);
   });
 });
@@ -986,7 +997,7 @@ test('an optional native atlas error preserves its fallback and settles a nonfat
   assert.equal(await atlas.__qolAtlasReady, false);
 });
 
-test('slow native atlases do not block entry or geometry and cannot certify null-image uploads', async () => {
+test('slow native atlases do not block geometry or unrelated real textures', async () => {
   let success;
   const atlas = loadNativeAtlas(yes => {
     success = yes;
@@ -1000,8 +1011,9 @@ test('slow native atlases do not block entry or geometry and cannot certify null
     run.drain();
     assert.equal(run.geometry.length, run.children.length);
     assert.equal(run.compiled.length, 0);
-    assert.equal(run.uploaded.length, 0);
     assert.equal(run.callbacks.size, 0, 'Native atlas wait must not idle-poll');
+    assert.equal(run.uploaded.includes(atlas), false);
+    assert.equal(run.uploaded.includes(run.texture), true);
     run.material.uniforms = {map: {value: null}};
     atlas.loaded = true;
     atlas.image = {};
@@ -1057,7 +1069,7 @@ test('disposing during an unsettled native atlas load rejects completion without
     await Promise.resolve();
     assert.equal(run.callbacks.size, 0);
     assert.equal(run.compiled.length, 0);
-    assert.equal(run.uploaded.length, 0);
+    assert.equal(run.uploaded.includes(atlas), false);
   }, {atlases: [atlas]});
 });
 
@@ -1105,4 +1117,72 @@ test('detached ancestors and independently disposed geometry cannot be resurrect
     assert.equal(run.compiled.includes(retiredGeometry), false);
     assert.equal(run.compiled.length, 2);
   }, {count: 4, atlases: [atlas]});
+});
+
+test('real textures warm individually while unrelated map assets and scene traversal are still pending', async () => {
+  await withGpuQueue(async run => {
+    const controller = new AbortController(), wall = deferred(), sky = deferred();
+    const resources = {
+      images: new Map(), compressed: new Map(), pendingCompressed: new Map(),
+      pendingImages: new Map([['wall', wall.promise], ['sky', sky.promise]]),
+      signal: controller.signal, ready: run.assets.promise, prioritize() {}, cancel() { controller.abort(); }
+    };
+    const bindings = createProgressiveTextureBindings(resources);
+    bindings.bind(run.texture, 'wall', () => { run.texture.loaded = true; });
+    bindings.bind(run.scene.background, 'sky', () => { run.scene.background.loaded = true; });
+    run.setBindings(bindings);
+    run.preparation.start();
+    run.slice(0);
+    assert.equal(run.uploaded.length, 0);
+    resources.images.set('wall', {});
+    wall.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    while (!run.uploaded.includes(run.texture)) run.slice(0);
+    assert.equal(run.uploaded.includes(run.scene.background), false);
+    assert.ok(run.geometry.length < run.children.length);
+    resources.images.set('sky', {});
+    sky.resolve();
+    await run.publish();
+    run.link();
+    run.drain();
+    await run.preparation.ready;
+    assert.equal(run.uploaded.filter(texture => texture === run.texture).length, 1);
+    assert.equal(run.uploaded.filter(texture => texture === run.scene.background).length, 1);
+    bindings.dispose();
+  });
+});
+
+test('geometry starts warming before a large scene walk finishes without compiling incomplete light lists', async () => {
+  await withGpuQueue(async run => {
+    run.preparation.start();
+    while (run.geometry.length === 0) run.slice(0);
+    assert.ok(run.geometry.length < run.children.length);
+    assert.equal(run.compiled.length, 0);
+    await run.publish();
+    run.link();
+    run.drain();
+    await run.preparation.ready;
+    assert.ok(run.nativeLights.every(light => light === run.light));
+    assert.equal(run.geometry.length, run.children.length);
+  });
+});
+
+test('large scalar uniform structures yield without missing a texture at the end', async () => {
+  await withGpuQueue(async run => {
+    let reads = 0;
+    const last = {isTexture: true, loaded: true};
+    const values = Array.from({length: 8192}, () => ({get scalar() { reads++; return 0; }}));
+    values.push(last);
+    run.material.uniforms = {values: {value: values}};
+    run.preparation.start();
+    await run.publish();
+    run.link();
+    while (reads === 0) run.slice(0);
+    assert.ok(reads < values.length - 1, 'A single idle operation scanned the entire uniform structure');
+    run.drain();
+    await run.preparation.ready;
+    assert.ok(reads >= values.length - 1);
+    assert.equal(run.uploaded.filter(texture => texture === last).length, 1);
+  }, {count: 1});
 });

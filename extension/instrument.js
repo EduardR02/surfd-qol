@@ -9,7 +9,7 @@ import {nativeMapWorkerHooks} from './map-worker-hooks.js';
 import {nativeMapFloorHooks} from './map-floor-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v38:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v39:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';

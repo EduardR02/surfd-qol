@@ -644,3 +644,171 @@ test('an unknown native sky layout retains the complete original loader and draw
   expect(fixture.calls.real[0].faces).toEqual(fixture.faces.map(face => ({native: face})));
   view.dispose();
 });
+
+function progressiveLifecycleFixture({background = false, collision = 'ready', prepare = false} = {}) {
+  const gpu = deferred(), read = deferred(), readStarted = deferred(), handoff = deferred();
+  const aborted = deferred(), collisionResult = deferred(), preparing = deferred(), prepareGate = deferred();
+  gpu.promise.catch(() => {});
+  const data = {sky: [], compressedTextures: {}};
+  let resources;
+  Object.defineProperty(data, 'resources', {
+    get() { return resources; },
+    set(value) { resources = value; handoff.resolve(value); },
+  });
+  const packs = background ? [pack('late', [{url: 'late.png', bytes: [1]}])] : [];
+  const manifest = {data, packs};
+  const deps = {gpu, read, readStarted, preparing, prepareGate: prepare ? prepareGate : null,
+    installs: 0, disposals: 0, unlocks: 0, resets: 0, successes: 0, failures: [], aborted,
+    prepareSky() { throw new Error('Unexpected sky'); }, nativeSky() { throw new Error('Unexpected sky'); }};
+  class CubeTexture { constructor(images) { this.image = images; } }
+  class Renderer {
+    renderBufferDirect() {}
+    draw() { this.renderBufferDirect(null, null, null, {}, null, null); }
+    dispose() { deps.disposals++; }
+  }
+  function geometry(entry, signal) {
+    deps.signal = signal;
+    signal.addEventListener('abort', () => aborted.resolve(signal.reason), {once: true});
+    if (collision === 'abort') return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), {once: true});
+    });
+    if (collision === 'deferred') return collisionResult.promise;
+    return Promise.resolve({id: 'collision'});
+  }
+  const source = progressiveFixture.replace('const view={prepare:async frame=>',
+    'const view={__qolGpuReady:deps.gpu.promise,prepare:async frame=>');
+  const run = new Function('deps', 'Renderer', 'CubeTexture', 'manifest', 'geometry', `
+    const index={map:"manifest"},SRGB="srgb",validateDDS=()=>{},validateManifest=()=>{},normalize=()=>{};
+    const fetchNative=async url=>url,fetchJson=async()=>manifest,supported=()=>false,selectPacks=value=>value.packs;
+    const readBytes=async()=>{deps.readStarted.resolve();return deps.read.promise},decodeImage=async(bytes,url)=>({url});
+    let ready=false,loading=true,currentView=null,clock=0;
+    const button={disabled:true},overlay={hidden:true},controls={unlock(){deps.unlocks++}},input={reset(){deps.resets++}};
+    const element=()=>button,success=()=>deps.successes++,failed=error=>deps.failures.push(error),done=()=>{};
+    function install(collision,visual){
+      const view=factory({},visual,collision);currentView=view;deps.installs++;
+      if(deps.prepareGate){const prepare=view.prepare;view.prepare=async frame=>{
+        deps.preparing.resolve();await deps.prepareGate.promise;return prepare(frame)}}
+      return {id:"first"};
+    }
+    ${nativeProgressiveMapHooks(source)}
+    return {startMap,button,overlay,get view(){return currentView},get ready(){return ready},
+      setView(view){currentView=view},setLoading(value){loading=value}};
+  `)(deps, Renderer, CubeTexture, manifest, geometry);
+  return {run, deps, gpu, read, readStarted: readStarted.promise, handoff: handoff.promise,
+    aborted: aborted.promise, collisionResult, preparing: preparing.promise, prepareGate};
+}
+
+test('a background asset failure aborts pending collision loading before installation', async () => {
+  const fixture = progressiveLifecycleFixture({background: true, collision: 'abort'});
+  const loading = fixture.run.startMap({slug: 'map'});
+  await Promise.all([fixture.handoff, fixture.readStarted]);
+  const failure = new Error('background pack failed');
+  fixture.read.reject(failure);
+  expect(await fixture.aborted).toBe(failure);
+  await loading;
+  expect(fixture.deps.installs).toBe(0);
+  expect(fixture.deps.failures).toEqual([failure]);
+  expect(fixture.run.ready).toBe(false);
+  expect(fixture.run.button.disabled).toBe(true);
+});
+
+test('an aborted collision result cannot install a failed visual handoff', async () => {
+  const fixture = progressiveLifecycleFixture({background: true, collision: 'deferred'});
+  const loading = fixture.run.startMap({slug: 'map'});
+  await Promise.all([fixture.handoff, fixture.readStarted]);
+  const failure = new Error('background pack failed');
+  fixture.read.reject(failure);
+  expect(await fixture.aborted).toBe(failure);
+  fixture.collisionResult.resolve({id: 'late-collision'});
+  await loading;
+  expect(fixture.deps.installs).toBe(0);
+  expect(fixture.deps.failures).toEqual([failure]);
+});
+
+test('a live GPU preparation failure reaches the installed map owner', async () => {
+  const fixture = progressiveLifecycleFixture();
+  await fixture.run.startMap({slug: 'map'});
+  expect(fixture.run.ready).toBe(true);
+  const failure = new Error('GPU buffer upload failed');
+  fixture.gpu.reject(failure);
+  expect(await fixture.aborted).toBe(failure);
+  expect(fixture.deps.failures).toEqual([failure]);
+  expect(fixture.deps.disposals).toBe(1);
+  expect(fixture.deps.unlocks).toBe(1);
+  expect(fixture.deps.resets).toBe(2);
+  expect(fixture.run.overlay.hidden).toBe(false);
+  expect(fixture.run.ready).toBe(false);
+  expect(fixture.run.button.disabled).toBe(true);
+});
+
+test('a GPU failure during first-view preparation aborts the owning load', async () => {
+  const fixture = progressiveLifecycleFixture({prepare: true});
+  const loading = fixture.run.startMap({slug: 'map'});
+  await fixture.preparing;
+  const failure = new Error('GPU preparation failed');
+  fixture.gpu.reject(failure);
+  expect(await fixture.aborted).toBe(failure);
+  fixture.prepareGate.resolve();
+  await loading;
+  expect(fixture.deps.successes).toBe(0);
+  expect(fixture.deps.failures).toEqual([failure]);
+  expect(fixture.deps.disposals).toBe(1);
+  expect(fixture.run.ready).toBe(false);
+});
+
+test('GPU failures from a replaced view cannot disturb its new owner', async () => {
+  const fixture = progressiveLifecycleFixture();
+  await fixture.run.startMap({slug: 'map'});
+  const old = fixture.run.view, replacement = {dispose() { throw new Error('Disposed replacement'); }};
+  fixture.run.setView(replacement);
+  fixture.gpu.reject(new Error('stale GPU failure'));
+  await Promise.resolve();
+  expect(fixture.run.view).toBe(replacement);
+  expect(fixture.run.ready).toBe(true);
+  expect(fixture.deps.failures).toEqual([]);
+  expect(fixture.deps.disposals).toBe(0);
+  expect(fixture.deps.signal.aborted).toBe(false);
+  old.dispose();
+});
+
+test('a GPU failure from the previous map does not interrupt a new load', async () => {
+  const fixture = progressiveLifecycleFixture();
+  await fixture.run.startMap({slug: 'map'});
+  fixture.run.setLoading(true);
+  const failure = new Error('previous map GPU failure');
+  fixture.gpu.reject(failure);
+  expect(await fixture.aborted).toBe(failure);
+  expect(fixture.deps.disposals).toBe(1);
+  expect(fixture.deps.failures).toEqual([]);
+  expect(fixture.deps.unlocks).toBe(0);
+  expect(fixture.run.overlay.hidden).toBe(true);
+  expect(fixture.run.ready).toBe(false);
+});
+
+for (const reason of [
+  new DOMException('GPU preparation disposed', 'AbortError'),
+  new DOMException('WebGL context lost during GPU preparation', 'AbortError'),
+]) {
+  test(`GPU cancellation does not fail a live map: ${reason.message}`, async () => {
+    const fixture = progressiveLifecycleFixture();
+    await fixture.run.startMap({slug: 'map'});
+    fixture.gpu.reject(reason);
+    await Promise.resolve();
+    expect(fixture.run.ready).toBe(true);
+    expect(fixture.deps.failures).toEqual([]);
+    expect(fixture.deps.disposals).toBe(0);
+    expect(fixture.deps.signal.aborted).toBe(false);
+    fixture.run.view.dispose();
+  });
+}
+
+test('a late GPU failure after disposal does not revive failure handling', async () => {
+  const fixture = progressiveLifecycleFixture();
+  await fixture.run.startMap({slug: 'map'});
+  fixture.run.view.dispose();
+  fixture.gpu.reject(new Error('late GPU callback'));
+  await Promise.resolve();
+  expect(fixture.deps.failures).toEqual([]);
+  expect(fixture.deps.disposals).toBe(1);
+  expect(fixture.deps.signal.aborted).toBe(false);
+});

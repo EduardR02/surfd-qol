@@ -264,7 +264,7 @@ export function nativeMapLoadHooks(source) {
   const close = map => `for(const image of ${map}.values())if(typeof image.close==="function")image.close();`;
   source = source.replace(dispose, () => `__qolGpuPreparation.dispose();${renderer}.dispose();${close(`${factory[0][3]}.resources.images`)}}};return ${finish[7]}}`);
   const factoryIndex = source.indexOf(factory[0][0]);
-  const gpuDeclaration = `(${createMapGpuPreparation.toString()})(${renderer},[${sky},${occluders},${world}],${compile[1]},[${collection[2]},${collection[3]}],()=>${finish[7]}.__qolAssetsReady,${zones.parameter},${atlases.parameter})`;
+  const gpuDeclaration = `(${createMapGpuPreparation.toString()})(${renderer},[${sky},${occluders},${world}],${compile[1]},[${collection[2]},${collection[3]}],()=>${finish[7]}.__qolAssetsReady,${zones.parameter},${atlases.parameter},()=>${finish[7]}.__qolTextureBindings)`;
   const viewText = `${viewDeclaration[1]}__qolGpuPreparation=${gpuDeclaration},${finish[7]}={`;
   const factoryTail = source.slice(factoryIndex).replace(viewDeclaration[0], () => viewText)
     .replace(/setQuality:([\w$]+),setBrightness:/, (_, quality) => `setQuality:(...args)=>{try{return ${quality}(...args)}finally{__qolGpuPreparation.invalidateTextures()}},setBrightness:`);

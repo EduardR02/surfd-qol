@@ -1,7 +1,9 @@
 // Narrow the native floor filter with the loaded broadphase. Its original
 // strict Z tests and default-flag trace still decide the floor height.
 export function zoneFloorCandidates(world, map, x, y, bottom, top) {
-  if (!world) return null;
+  if (!world || world.brushes !== map.brushes ||
+      world.triangles !== map.displacementTriangles &&
+      !(map.displacementTriangles === undefined && world.triangles.length === 0)) return null;
   const brushes = [], triangles = map.displacementTriangles ? [] : undefined;
   for (const index of world.tree.query({min: {x, y, z: bottom}, max: {x, y, z: top}})) {
     if (index < map.brushes.length) brushes.push(map.brushes[index]);

@@ -84,7 +84,7 @@ export function nativeProgressiveMapHooks(source) {
     ${rampPreparation}`);
   renderer = renderer.replace(preparation, () => `await __qolFirstViewReady;\n${preparation}`);
   renderer = renderer.replace(footer[0], () => `${footerText.slice(0, footerText.lastIndexOf('return '))}
-    const __qolAssetsReady=__qolMapBindings.complete();${footer.groups.view}.__qolAssetsReady=__qolAssetsReady;
+    const __qolAssetsReady=__qolMapBindings.complete();${footer.groups.view}.__qolAssetsReady=__qolAssetsReady;${footer.groups.view}.__qolTextureBindings=__qolMapBindings;
     let __qolRendererDisposed=false;const __qolDispose=${footer.groups.view}.dispose;
     ${footer.groups.view}.dispose=()=>{if(__qolRendererDisposed)return;__qolRendererDisposed=true;__qolMapBindings.dispose();return __qolDispose.call(${footer.groups.view})};
     return ${footer.groups.view}}`);
@@ -104,12 +104,18 @@ export function nativeProgressiveMapHooks(source) {
     function __qolMapFailure(${k.error}){${k.controller}.abort(${k.error});
       if(__qolView){${k.ready}=false;__qolView.dispose()}else if(__qolAssets){for(const image of __qolAssets.images.values())image.close?.();__qolAssets.cancel()}
       if(${errorBody};return false}
+    function __qolPostFailure(error){if(!__qolEntered||${k.view}!==__qolView||error?.name==="AbortError")return;__qolEntered=false;
+      if(${j.loading}){${k.controller}.abort(error);${k.ready}=false;__qolView.dispose();return}
+      ${unlock[1]}.unlock();${unlock[2]}.hidden=false;__qolMapFailure(error);${j.element}("play").disabled=!${k.ready};${j.clock}=performance.now();${j.input}.reset()}
     try{
-      const[${k.collision},${k.visual}]=await Promise.all([${k.geometry}(${k.entry},${k.controller}.signal),${k.visualLoad}(${k.entry}.slug,{signal:${k.controller}.signal}).then(data=>{if(${k.controller}.signal.aborted){data.resources.cancel();for(const image of data.resources.images.values())image.close?.();throw ${k.controller}.signal.reason}__qolAssets=data.resources;return data})]);
+      const[${k.collision},${k.visual}]=await Promise.all([${k.geometry}(${k.entry},${k.controller}.signal),${k.visualLoad}(${k.entry}.slug,{signal:${k.controller}.signal}).then(data=>{
+        if(${k.controller}.signal.aborted){data.resources.cancel();for(const image of data.resources.images.values())image.close?.();throw ${k.controller}.signal.reason}
+        __qolAssets=data.resources;__qolAssets.ready.catch(error=>{if(!__qolView&&!${k.controller}.signal.aborted)${k.controller}.abort(error)});return data})]);
+      if(${k.controller}.signal.aborted)throw ${k.controller}.signal.reason;
       ${k.ready}=false;const ${k.frame}=${k.install}(${k.collision},${k.visual},${k.resume},${k.bypass});__qolView=${k.view};
-      __qolView.__qolAssetsReady?.catch(error=>{__qolFailed=true;__qolFailure=error;if(!__qolEntered||${k.view}!==__qolView||error?.name==="AbortError")return;__qolEntered=false;
-        if(${j.loading}){${k.controller}.abort(error);${k.ready}=false;__qolView.dispose();return}
-        ${unlock[1]}.unlock();${unlock[2]}.hidden=false;__qolMapFailure(error);${j.element}("play").disabled=!${k.ready};${j.clock}=performance.now();${j.input}.reset()});
+      __qolView.__qolAssetsReady?.catch(error=>{__qolFailed=true;__qolFailure=error;__qolPostFailure(error)});
+      __qolView.__qolGpuReady?.catch(error=>{if(${k.view}!==__qolView||error?.name==="AbortError"||${k.controller}.signal.aborted||__qolAssets.signal.aborted)return;
+        __qolFailed=true;__qolFailure=error;if(!__qolEntered){${k.controller}.abort(error);return}__qolPostFailure(error)});
       await ${k.view}.prepare?.(${k.frame});if(__qolFailed)throw __qolFailure;if(__qolAssets.signal.aborted)throw __qolAssets.signal.reason;${k.ready}=true;__qolEntered=true;${k.success}
     }catch(${k.error}){if(__qolMapFailure(${k.error}))return}finally{${k.finalize}}${k.after}}
   `;

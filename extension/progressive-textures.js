@@ -18,7 +18,7 @@ export function loadNativeAtlas(load, onLoad, onError) {
 // This function is injected into the native module via toString(): keep every
 // helper inside it and leave texture construction/decoding to the native hooks.
 export function createProgressiveTextureBindings(resources, bspShader = nativeBspShaderSignature()) {
-  const bindings = new WeakMap(), completions = [], signatureCache = new WeakMap(), preparations = new Set();
+  const bindings = new WeakMap(), completions = [], signatureCache = new WeakMap(), preparations = new Set(), listeners = new Set();
   const signal = resources.signal;
   let disposed = false, cancelledResources = false, disposalReason, rejectDisposed, completion, pendingBindings = 0;
 
@@ -37,6 +37,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
     disposalReason = reason ?? new DOMException('Texture bindings disposed', 'AbortError');
     signal.removeEventListener('abort', aborted);
     for (const cancel of preparations) cancel(disposalReason);
+    listeners.clear();
     rejectDisposed(disposalReason);
   }
 
@@ -63,7 +64,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
   }
 
   function bind(texture, urls, apply) {
-    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null, pending: false};
+    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null, pending: false, ready: false};
     let registered = bindings.get(texture);
     if (!registered) bindings.set(texture, registered = []);
     registered.push(binding);
@@ -74,6 +75,8 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
         if (!published(url)) throw new Error(`Texture resource was not published: ${url}`);
       }
       apply();
+      binding.ready = true;
+      for (const notify of listeners) notify(texture);
     }
 
     try {
@@ -548,19 +551,30 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
     resources.cancel();
   }
 
-  return {bind, prepare, complete, dispose, get disposed() { return disposed; }};
+  function isReady(texture) {
+    return !disposed && (bindings.get(texture)?.every(binding => binding.ready) ?? true);
+  }
+
+  function subscribe(notify) {
+    if (!disposed) listeners.add(notify);
+    return () => listeners.delete(notify);
+  }
+
+  return {bind, prepare, complete, dispose, isReady, subscribe, get disposed() { return disposed; }};
 }
 
 // Injected alongside the native renderer. Resource creation remains native;
 // this queue only submits uploads/compiles, never a render or framebuffer clear.
-export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, assetsReady, zones, atlases = []) {
+export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, assetsReady, zones, atlases = [], getBindings = () => null) {
   const context = renderer.getContext(), canvas = renderer.domElement;
-  let resolveReady, rejectReady, started = false, stopped = false, scheduled = null;
+  let resolveReady, rejectReady, started = false, stopped = false, scheduled = null, programTimer = null;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   ready.catch(() => {});
   const idle = typeof requestIdleCallback === 'function' && typeof cancelIdleCallback === 'function';
   const originalDispose = renderer.dispose, ownsDispose = Object.hasOwn(renderer, 'dispose');
   let textureIterator, textureOwner, texturePassChanged = false, texturesFinished = false, assetsFinished = false, fence = null;
+  let textureBindings, unsubscribeTextures, publishedIndex = 0;
+  const pendingTextures = new Map(), publishedTextures = [], pendingAtlases = new Set(atlases);
   const seenTextures = new Map(), programs = new Set(), seenPrograms = new Set();
   const materials = new Set(), disposedMaterials = new WeakSet();
   const geometries = new Set(), disposedGeometries = new WeakSet();
@@ -568,6 +582,7 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
   let atlasesFinished = atlases.length === 0;
   const stack = [], objects = [];
   let sceneIndex = 0, geometryIndex = 0, objectIndex = 0, programIterator;
+  let workPhase = 0;
   // compile() accepts a traversal root separately from the scene whose fog,
   // environment and lights determine the native program cache key.
   let selectedObject;
@@ -577,6 +592,7 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
     typeof context.deleteSync === 'function' && typeof context.flush === 'function';
 
   function cleanup() {
+    if (programTimer !== null) { clearTimeout(programTimer); programTimer = null; }
     if (scheduled !== null) {
       if (idle) cancelIdleCallback(scheduled);
       else clearTimeout(scheduled);
@@ -598,6 +614,10 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
     programs.clear();
     seenPrograms.clear();
     textureIterator = textureOwner = programIterator = selectedObject = null;
+    unsubscribeTextures?.();
+    pendingTextures.clear();
+    publishedTextures.length = 0;
+    pendingAtlases.clear();
   }
 
   function dispose(reason = new DOMException('GPU preparation disposed', 'AbortError')) {
@@ -657,17 +677,21 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
     } else if (material && !materials.has(material)) {
       materials.add(material);
       material.addEventListener?.('dispose', onMaterialDispose);
+      if (texturesFinished) {
+        textureIterator = textures();
+        texturesFinished = false;
+      } else texturePassChanged = true;
     }
   }
 
-  function* uniformValues(value, seen) {
-    // Yield non-texture values too, so a large uniform structure cannot hide
-    // an unbounded scan inside a single iterator.next() operation.
-    yield value;
-    if (!value || typeof value !== 'object' || value.isTexture ||
-        ArrayBuffer.isView(value) || seen.has(value)) return;
+  function* uniformValues(value, seen, scan) {
+    if (!value || typeof value !== 'object' || ArrayBuffer.isView(value) || seen.has(value)) return;
     seen.add(value);
-    for (const key in value) if (Object.hasOwn(value, key)) yield* uniformValues(value[key], seen);
+    if (value.isTexture) { yield value; return; }
+    for (const key in value) if (Object.hasOwn(value, key)) {
+      if (++scan.count % 32 === 0) yield null;
+      yield* uniformValues(value[key], seen, scan);
+    }
   }
 
   function* textures() {
@@ -676,16 +700,23 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
     for (const scene of scenes) if (scene.background?.isTexture) yield scene.background;
     if (zones) yield* zones.__qolZoneTextures();
     yield* atlases;
-    const seen = new Set();
+    const seen = new Set(), scan = {count: 0};
     for (const material of materials) {
       if (wasDisposed(material)) continue;
       textureOwner = material;
       // Stage-label CanvasTextures and other scene-owned maps do not belong
       // to the BSP texture caches. Inspect each unique live material once.
-      for (const key in material) if (Object.hasOwn(material, key)) yield material[key];
+      // Cheap scalar properties need no separate idle operation. Retain a
+      // bounded yield for large structures, including arrays with no textures.
+      for (const key in material) if (Object.hasOwn(material, key)) {
+        if (++scan.count % 32 === 0) yield null;
+        const value = material[key];
+        if (value?.isTexture) yield value;
+      }
       const uniforms = material.uniforms;
       if (uniforms) for (const key in uniforms) if (Object.hasOwn(uniforms, key)) {
-        yield* uniformValues(uniforms[key]?.value, seen);
+        if (++scan.count % 32 === 0) yield null;
+        yield* uniformValues(uniforms[key]?.value, seen, scan);
       }
     }
     textureOwner = null;
@@ -696,8 +727,8 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
       if (sceneIndex === scenes.length) return false;
       const scene = scenes[sceneIndex++];
       const lights = [], view = Object.create(scene);
-      // A single scene walk records native visible lights instead of making
-      // compile() walk the entire map again for each individual mesh.
+      // Compile only once the scene's light collection is complete.
+      view.__qolLightsReady = false;
       view.traverseVisible = visit => { for (const light of lights) visit(light); };
       stack.push({object: scene, scene, view, lights, visible: true, child: -1});
     }
@@ -729,7 +760,10 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
           entry.visited.add(child);
           stack.push({object: child, scene, view, lights, visible: entry.visible, child: -1});
         }
-      } else stack.pop();
+      } else {
+        if (object === scene) view.__qolLightsReady = true;
+        stack.pop();
+      }
     }
     return true;
   }
@@ -745,7 +779,7 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
   }
 
   function prepareObject() {
-    if (!atlasesFinished || objectIndex === objects.length) return false;
+    if (!atlasesFinished || objectIndex === objects.length || !objects[objectIndex].view.__qolLightsReady) return false;
     const entry = objects[objectIndex++], {object, view} = entry;
     if (!live(entry)) return true;
     rememberMaterial(object.material);
@@ -762,20 +796,36 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
   }
 
   function uploadTexture() {
-    if (!assetsFinished || !atlasesFinished || texturesFinished) return false;
-    const entry = textureIterator.next();
-    if (entry.done) {
-      if (texturePassChanged) {
-        texturePassChanged = false;
-        textureIterator = textures();
-        return true;
+    if (!assetsFinished && !textureBindings) return false;
+    let texture, owner;
+    if (publishedIndex < publishedTextures.length) {
+      const entry = publishedTextures[publishedIndex++];
+      texture = entry.texture;
+      owner = entry.owner;
+      if (publishedIndex === publishedTextures.length) {
+        publishedTextures.length = publishedIndex = 0;
       }
-      texturesFinished = true;
-      return false;
+    } else {
+      if (texturesFinished) return false;
+      const entry = textureIterator.next();
+      if (entry.done) {
+        if (texturePassChanged) {
+          texturePassChanged = false;
+          textureIterator = textures();
+          return true;
+        }
+        texturesFinished = true;
+        return false;
+      }
+      texture = entry.value;
+      owner = textureOwner;
     }
-    const texture = entry.value;
     if (failedAtlases.has(texture)) return true;
-    if (textureOwner && wasDisposed(textureOwner)) return true;
+    if (owner && wasDisposed(owner)) return true;
+    if (texture?.isTexture && (pendingAtlases.has(texture) || !assetsFinished && !textureBindings.isReady(texture))) {
+      if (!pendingTextures.has(texture) || owner == null) pendingTextures.set(texture, owner);
+      return true;
+    }
     if (texture?.isTexture && (!seenTextures.has(texture) || seenTextures.get(texture) !== texture.version)) {
       const version = texture.version;
       renderer.initTexture(texture);
@@ -816,31 +866,54 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
     if (status === context.WAIT_FAILED) throw new Error('GPU preparation fence failed');
     return status === context.ALREADY_SIGNALED || status === context.CONDITION_SATISFIED;
   }
+  function scheduleProgramPoll() {
+    if (stopped || programTimer !== null) return;
+    programTimer = setTimeout(() => { programTimer = null; schedule(); }, 10);
+  }
+
 
   function step(deadline) {
     scheduled = null;
     if (stopped) return;
     if (context.isContextLost()) { contextLost(); return; }
     const began = performance.now();
+    let polledPrograms = false;
     try {
       // Both a time and an operation cap matter: even a cheap/mock driver
       // must yield, and an idle callback with no budget still makes progress.
       for (let count = 0; count < 64; count++) {
         if (context.isContextLost()) { contextLost(); return; }
-        if (!collect() && !prepareGeometry() && !prepareObject() && !uploadTexture()) {
-          if (!assetsFinished || !atlasesFinished) return; // Settlement schedules the next slice.
-          if (programs.size === 0) {
-            if (gpuComplete()) {
-              stopped = true;
-              cleanup();
-              resolveReady({uploadsComplete: syncSupported, shadersComplete: parallel,
-                completion: syncSupported && parallel ? 'gpu-complete' : 'submitted'});
-            } else schedule();
-            return;
+        // Do not put every texture behind the full geometry/shader backlog.
+        // Collection remains incremental; each compile sees complete scene lights.
+        let progressed = false;
+        for (let lane = 0; lane < 5; lane++) {
+          const phase = workPhase++ % 5;
+          switch (phase) {
+            case 0: progressed = collect(); break;
+            case 1: progressed = prepareGeometry(); break;
+            case 2: progressed = prepareObject(); break;
+            case 3: progressed = uploadTexture(); break;
+            case 4:
+              if (programs.size > 0 && !polledPrograms) {
+                progressed = pollProgram();
+                polledPrograms = !progressed;
+              }
+              break;
           }
-          if (!pollProgram()) break; // At most one query per program per slice.
+          if (progressed) break;
         }
-        if (performance.now() - began >= 4 || deadline?.timeRemaining() <= 0) break;
+        if (!progressed) {
+          if (programs.size) { scheduleProgramPoll(); return; }
+          if (!assetsFinished || !atlasesFinished) return;
+          if (gpuComplete()) {
+            stopped = true;
+            cleanup();
+            resolveReady({uploadsComplete: syncSupported, shadersComplete: parallel,
+              completion: syncSupported && parallel ? 'gpu-complete' : 'submitted'});
+          } else schedule();
+          return;
+        }
+        if (performance.now() - began >= 1 || deadline?.timeRemaining() <= 0) break;
       }
       schedule();
     } catch (error) {
@@ -851,19 +924,31 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
   function start() {
     if (started || stopped) return ready;
     started = true;
+    textureBindings = getBindings();
+    unsubscribeTextures = textureBindings?.subscribe(texture => {
+      if (stopped || !pendingTextures.has(texture)) return;
+      publishedTextures.push({texture, owner: pendingTextures.get(texture)});
+      pendingTextures.delete(texture);
+      schedule();
+    });
     textureIterator = textures();
     if (!atlasesFinished) Promise.all(atlases.map(texture => texture.__qolAtlasReady.then(loaded => {
       if (!stopped && !loaded) failedAtlases.add(texture);
+      pendingAtlases.delete(texture);
     }))).then(() => {
       if (stopped) return;
       atlasesFinished = true;
       schedule();
+      textureIterator = textures();
+      texturesFinished = false;
     }, dispose);
     // Register before scheduling so a background decode failure never turns
     // placeholder uploads into a successful GPU-completion result.
     Promise.resolve().then(assetsReady).then(() => {
       if (stopped) return;
       assetsFinished = true;
+      textureIterator = textures();
+      texturesFinished = false;
       schedule();
     }, dispose);
     schedule();
