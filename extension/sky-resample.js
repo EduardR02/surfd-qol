@@ -110,9 +110,9 @@ export function runSkyResampleWorker(createResampler) {
     // A canvas upload of an opaque face carries exactly these bytes, but reads
     // the canvas back first. Unpremultiplied bitmaps upload them directly.
     // Translucent faces keep the canvas round trip and its rounding.
-    if (typeof createImageBitmap === 'function' && typeof ImageData === 'function' &&
+    if (typeof createImageBitmap === 'function' && typeof ImageData === 'function' && buffers.some(Boolean) &&
         buffers.every(buffer => {
-          if (!buffer) return false;
+          if (!buffer) return true;
           const pixels = new Uint8Array(buffer);
           for (let offset = 3; offset < pixels.length; offset += 4) if (pixels[offset] !== 255) return false;
           return true;
@@ -120,13 +120,13 @@ export function runSkyResampleWorker(createResampler) {
       let bitmaps = [];
       try {
         for (const buffer of buffers) {
-          bitmaps.push(await createImageBitmap(new ImageData(new Uint8ClampedArray(buffer), size, size),
+          bitmaps.push(buffer && await createImageBitmap(new ImageData(new Uint8ClampedArray(buffer), size, size),
             {premultiplyAlpha: 'none', colorSpaceConversion: 'none'}));
         }
-        self.postMessage({bitmaps}, bitmaps);
+        self.postMessage({bitmaps}, bitmaps.filter(Boolean));
         return;
       } catch {
-        for (const bitmap of bitmaps) bitmap.close();
+        for (const bitmap of bitmaps) bitmap?.close();
         bitmaps = null;
       }
     }
@@ -138,15 +138,16 @@ export function runSkyResampleWorker(createResampler) {
 // failure, or worker error defers exactly one native conversion until finish().
 // In particular, the original images are never detached from their owner.
 export function createSkyPreparation(images, transforms, signal, parse, createResampler, workerMain, environment = globalThis) {
-  let worker = null, buffers = null, bitmaps = null, unchanged = null, finishPromise = null, published = null;
+  // Faces are split across workers when cores allow; each face comes back as
+  // a bitmap (opaque) or as pixels for a canvas.
+  let workers = [], buffers = null, bitmaps = null, unchanged = null, finishPromise = null, published = null;
   let settled = false, cancelled = false, cancellationReason, resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   ready.catch(() => {});
 
   function stopWorker() {
-    if (!worker) return;
-    worker.terminate();
-    worker = null;
+    for (const worker of workers) worker.terminate();
+    workers = [];
   }
 
   function settle() {
@@ -195,14 +196,15 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
       if (cancelled) throw cancellationReason;
       try {
         if (unchanged) return images;
-        if (bitmaps) {
+        if (bitmaps?.every(Boolean)) {
           published = bitmaps;
           bitmaps = null;
           return published;
         }
-        if (buffers) {
+        if (bitmaps || buffers) {
           try {
-            return images.map((image, index) => {
+            const faces = images.map((image, index) => {
+              if (bitmaps?.[index]) return bitmaps[index];
               const canvas = environment.document.createElement('canvas');
               canvas.width = canvas.height = size;
               const context = canvas.getContext('2d');
@@ -216,6 +218,9 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
               context.putImageData(data, 0, 0);
               return canvas;
             });
+            published = bitmaps?.filter(Boolean) ?? null;
+            bitmaps = null;
+            return faces;
           } catch {
             return nativeConversion();
           }
@@ -255,40 +260,48 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
       } else {
         const script = `(${workerMain.toString()})(${createResampler.toString()})`;
         const url = environment.URL.createObjectURL(new environment.Blob([script], {type: 'text/javascript'}));
+        const cores = environment.navigator?.hardwareConcurrency;
+        const count = Number.isInteger(cores) ? Math.max(1, Math.min(images.length, cores >> 2)) : 1;
+        let pending = count;
         try {
-          worker = new environment.Worker(url);
+          for (let index = 0; index < count; index++) workers.push(new environment.Worker(url));
         } finally {
           environment.URL.revokeObjectURL(url);
         }
-        worker.onmessage = ({data}) => {
-          const faces = data?.bitmaps;
-          if (Array.isArray(faces)) {
-            if (settled || cancelled || faces.length !== images.length ||
-                faces.some(face => !(face instanceof environment.ImageBitmap) || face.width !== size || face.height !== size)) {
-              for (const face of faces) face?.close?.();
+        const faces = images.map(() => null), pixels = images.map(() => null);
+        bitmaps = faces;
+        buffers = pixels;
+        workers.forEach((worker, slot) => {
+          const owned = images.map((_, index) => index % count === slot), length = images.length;
+          worker.onmessage = ({data}) => {
+            const bitmapResult = data?.bitmaps, bufferResult = data?.buffers, result = bitmapResult ?? bufferResult;
+            const close = () => { if (Array.isArray(bitmapResult)) for (const face of bitmapResult) face?.close?.(); };
+            if (settled || cancelled) { close(); return; }
+            let accepted = Array.isArray(result) && result.length === length;
+            for (let index = 0; accepted && index < length; index++) {
+              const value = result[index];
+              accepted = owned[index] !== (value == null) && (value == null || (bitmapResult
+                ? value instanceof environment.ImageBitmap && value.width === size && value.height === size
+                : value instanceof ArrayBuffer && value.byteLength === size * size * 4));
+            }
+            if (!accepted) {
+              close();
               fallback();
               return;
             }
-            bitmaps = faces;
-            settle();
-            return;
-          }
-          if (settled || cancelled) return;
-          const result = data?.buffers;
-          if (!Array.isArray(result) || result.length !== images.length ||
-              images.some((_, index) => !(result[index] instanceof ArrayBuffer) ||
-                result[index].byteLength !== size * size * 4)) {
-            fallback();
-            return;
-          }
-          buffers = result;
-          settle();
-        };
-        worker.onerror = fallback;
-        worker.onmessageerror = fallback;
-        // ImageBitmap is serializable. Omitting a transfer list makes worker
-        // copies without changing the images used by other native textures.
-        worker.postMessage({images, matrices, size});
+            owned.forEach((mine, index) => {
+              if (!mine) return;
+              if (bitmapResult) faces[index] = bitmapResult[index];
+              else pixels[index] = bufferResult[index];
+            });
+            if (--pending === 0) settle();
+          };
+          worker.onerror = fallback;
+          worker.onmessageerror = fallback;
+          // ImageBitmap is serializable. Omitting a transfer list makes worker
+          // copies without changing the images used by other native textures.
+          worker.postMessage({images: images.map((image, index) => owned[index] ? image : null), matrices, size});
+        });
       }
     } catch {
       fallback();
