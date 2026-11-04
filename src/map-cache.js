@@ -297,16 +297,34 @@ export async function readMapCache(db, key) {
 export async function decodeMapCacheRecord(record, key) {
   if (!record || record.key !== key || record.version !== MAP_CACHE_VERSION || !(record.buffer instanceof ArrayBuffer)) return null;
   const verified = digest(record.buffer).then(value => value === record.digest, () => false);
-  let unpacked, map;
+  const decoded = decodeVerifiedMapCache(record.buffer, key);
+  return decoded && await verified ? decoded : null;
+}
+
+// Worker job: read and verify the record off the page thread, which then
+// only decodes it.
+export async function readVerifiedMapCache({key}, indexedDB = globalThis.indexedDB) {
+  if (typeof key !== 'string') return null;
+  const db = await openMapCache(indexedDB);
+  if (!db) return null;
   try {
-    unpacked = unpackRecord(record.buffer);
-    const {header, sections} = unpacked;
+    const record = await done(db.transaction('records').objectStore('records').get(key));
+    if (!record || record.key !== key || record.version !== MAP_CACHE_VERSION || !(record.buffer instanceof ArrayBuffer) ||
+        await digest(record.buffer) !== record.digest) return null;
+    const transaction = db.transaction('index', 'readwrite');
+    transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now()});
+    await committed(transaction).catch(() => {});
+    return {bytes: new Uint8Array(record.buffer)};
+  } catch { return null; } finally { db.close(); }
+}
+
+export function decodeVerifiedMapCache(buffer, key) {
+  try {
+    const {header, sections} = unpackRecord(buffer);
     if (header.version !== MAP_CACHE_VERSION || header.key !== key) return null;
-    map = decodeMapValue({strings: header.strings, shapes: header.shapes, streams: sections});
+    const map = decodeMapValue({strings: header.strings, shapes: header.shapes, streams: sections});
+    return {map, header, sections};
   } catch { return null; }
-  if (!await verified) return null;
-  const {header, sections} = unpacked;
-  return {map, header, sections};
 }
 
 // Prepared world inputs for one decoded map: exact triangle bounds and the

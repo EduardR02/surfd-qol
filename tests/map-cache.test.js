@@ -116,10 +116,10 @@ test('a cached load adopts the stored tree and ramps without starting workers', 
   expect(scheduled).toEqual([]);
 });
 
-test('a miss starts the native workers and schedules one record rebuild after entry', async () => {
+test('a miss schedules one record rebuild, which a later load interrupts and restarts', async () => {
   const map = mapFixture(), created = [], scheduled = [], runs = [];
   const preparation = createMapPreparation({read: async () => null,
-    schedule: (start, delay) => { scheduled.push({start, delay}); return () => {}; }});
+    schedule: (start, delay) => { const item = {start, delay, cancelled: false}; scheduled.push(item); return () => { item.cancelled = true; }; }});
   const jobs = type => {
     created.push(type);
     return {ready: Promise.resolve(false), run: async (kind, payload) => { runs.push({kind, payload}); return {stored: true}; }, dispose() {}};
@@ -132,9 +132,10 @@ test('a miss starts the native workers and schedules one record rebuild after en
   const second = preparation.createLoad(new AbortController().signal, jobs, true);
   await second.read('a'.repeat(64));
   second.prepare(mapFixture(), .7, {key: 'a'.repeat(64), url: 'https://assets.example/packed/a.json.gz'});
-  expect(scheduled).toHaveLength(1);
-  expect(scheduled[0].delay).toBeGreaterThan(0);
-  scheduled[0].start();
+  expect(scheduled).toHaveLength(2);
+  expect(scheduled.map(item => item.cancelled)).toEqual([true, false]);
+  expect(scheduled[1].delay).toBeGreaterThan(0);
+  scheduled[1].start();
   await Promise.resolve();
   expect(runs).toEqual([{kind: 'map-cache', payload: {key: 'a'.repeat(64), url: 'https://assets.example/packed/a.json.gz', groundNormal: .7, mapId: map.id}}]);
 });
@@ -144,4 +145,28 @@ test('a load without a signal keeps native preparation available', async () => {
   const load = preparation.createLoad(undefined, () => ({ready: Promise.resolve(false), run: async () => null, dispose() {}}), true);
   expect(load).not.toBe(null);
   expect(await load.read(undefined)).toBe(null);
+});
+
+test('a new load stops a running record rebuild and restarts it after its own geometry', async () => {
+  const scheduled = [], jobs = [];
+  const preparation = createMapPreparation({read: async () => null,
+    schedule: start => { scheduled.push(start); return () => {}; }});
+  const createJobs = type => {
+    const job = {type, disposed: false, ready: Promise.resolve(false), run: () => new Promise(() => {}), dispose() { this.disposed = true; }};
+    jobs.push(job);
+    return job;
+  };
+  const first = preparation.createLoad(new AbortController().signal, createJobs, true);
+  await first.read('b'.repeat(64));
+  first.prepare(mapFixture(), .7, {key: 'b'.repeat(64), url: 'https://assets.example/b'});
+  scheduled[0]();
+  const rebuild = jobs.find(job => job.type === 'map-cache');
+  expect(rebuild.disposed).toBe(false);
+  const second = preparation.createLoad(new AbortController().signal, createJobs, true);
+  expect(rebuild.disposed).toBe(true);
+  expect(scheduled).toHaveLength(1);
+  await second.read('c'.repeat(64));
+  second.prepare(mapFixture(), .7, null);
+  expect(scheduled).toHaveLength(2);
+  preparation.destroy();
 });

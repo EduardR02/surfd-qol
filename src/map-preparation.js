@@ -1,6 +1,6 @@
 import {packMapBounds, unpackMapBoundsTree, adoptPreparedMapWorld} from '../extension/map-bvh-preparation.js';
 import {packRampPreparation, installPreparedRampSurfaces, installCachedRampSurfaces, hasRampSurfaces, cancelRampPreparation} from './map-ramp-preparation.js';
-import {openMapCache, readMapCache, cachedWorld} from './map-cache.js';
+import {openMapCache, readMapCache, decodeVerifiedMapCache, cachedWorld} from './map-cache.js';
 
 // After entry, a worker rebuilds the cache record from the HTTP-cached file.
 const PERSIST_DELAY = 3000;
@@ -9,7 +9,18 @@ function defaultCache() {
   let database;
   const db = () => database ??= openMapCache();
   return {
-    read: async key => readMapCache(await db(), key),
+    // A worker reads and verifies the record when one can start.
+    async read(key, createJobs) {
+      let job = null;
+      try {
+        job = createJobs?.('map-cache-read');
+        if (job && await job.ready) {
+          const result = await job.run('map-cache-read', {key});
+          return result?.bytes instanceof Uint8Array ? decodeVerifiedMapCache(result.bytes.buffer, key) : null;
+        }
+      } catch { return null; } finally { job?.dispose(); }
+      return readMapCache(await db(), key);
+    },
     schedule: (start, delay) => { const timer = setTimeout(start, delay); return () => clearTimeout(timer); },
   };
 }
@@ -18,11 +29,47 @@ function defaultCache() {
 // started; unsupported or still-starting workers never add an entry-time wait.
 // A cached load skips the download, parse and both workers.
 export function createMapPreparation(cache = defaultCache()) {
-  const worlds = new WeakMap(), ramps = new WeakMap(), active = new Set(), persisting = new Set();
-  const cancelPersist = new Set();
+  const worlds = new WeakMap(), ramps = new WeakMap(), active = new Set();
+  // Record rebuilds by key. A new load interrupts them so they never compete
+  // with it; they restart once that load has its geometry.
+  const persisting = new Map();
+
+  function startPersist(entry) {
+    entry.stop?.();
+    entry.stop = cache.schedule(() => {
+      entry.stop = null;
+      try { entry.job = entry.createJobs('map-cache'); } catch { finishPersist(entry); return; }
+      const job = entry.job;
+      job.run('map-cache', entry.payload).then(() => finishPersist(entry), () => {
+        if (entry.job === job) finishPersist(entry);
+      });
+    }, PERSIST_DELAY);
+  }
+
+  function finishPersist(entry) {
+    entry.stop?.();
+    entry.job?.dispose();
+    entry.job = entry.stop = null;
+    if (persisting.get(entry.payload.key) === entry) persisting.delete(entry.payload.key);
+  }
+
+  function interruptPersists() {
+    for (const entry of persisting.values()) {
+      entry.stop?.();
+      entry.stop = null;
+      const job = entry.job;
+      entry.job = null;
+      job?.dispose();
+    }
+  }
+
+  function resumePersists() {
+    for (const entry of persisting.values()) if (!entry.job && !entry.stop) startPersist(entry);
+  }
 
   function createLoad(signal = new AbortController().signal, createJobs, lookup = false) {
     if (signal.aborted) return null;
+    interruptPersists();
     let treeJob, rampJob, treeRecord, rampRecord, prepared = false, disposed = false, finished = 0;
     let treeAvailable = false, rampAvailable = false, jobsStarted = false, cached = null;
 
@@ -72,7 +119,7 @@ export function createMapPreparation(cache = defaultCache()) {
       if (disposed || signal.aborted) return null;
       let record = null;
       if (typeof key === 'string' && key) {
-        try { record = await cache.read(key); } catch { record = null; }
+        try { record = await cache.read(key, createJobs); } catch { record = null; }
       }
       if (disposed || signal.aborted) return null;
       if (record) {
@@ -85,26 +132,17 @@ export function createMapPreparation(cache = defaultCache()) {
 
     function persist(map, groundNormal, source) {
       const key = source?.key, url = source?.url;
-      if (typeof key !== 'string' || typeof url !== 'string' || persisting.has(key)) return;
-      persisting.add(key);
-      const entry = {job: null, stop: null};
-      const finish = () => {
-        entry.job?.dispose();
-        cancelPersist.delete(entry);
-        persisting.delete(key);
-      };
-      entry.stop = cache.schedule(() => {
-        try { entry.job = createJobs('map-cache'); } catch { finish(); return; }
-        entry.job.run('map-cache', {key, url, groundNormal, mapId: map.id}).catch(() => {}).finally(finish);
-      }, PERSIST_DELAY);
-      entry.cancel = () => { entry.stop(); finish(); };
-      cancelPersist.add(entry);
+      if (typeof key === 'string' && typeof url === 'string' && !persisting.has(key)) {
+        persisting.set(key, {payload: {key, url, groundNormal, mapId: map.id}, createJobs, job: null, stop: null});
+      }
+      resumePersists();
     }
 
     function prepareCached(map, groundNormal) {
       const record = cached;
       cached = null;
       dispose();
+      resumePersists();
       const world = cachedWorld(record, map);
       if (world) {
         worlds.set(map.brushes, {brushes: map.brushes, triangles: map.displacementTriangles, signal,
@@ -198,7 +236,7 @@ export function createMapPreparation(cache = defaultCache()) {
 
   function destroy() {
     for (const dispose of active) dispose();
-    for (const entry of [...cancelPersist]) entry.cancel();
+    for (const entry of [...persisting.values()]) finishPersist(entry);
   }
 
   return {createLoad, useWorld, useRamps, destroy};
