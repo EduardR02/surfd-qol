@@ -90,13 +90,15 @@ const nativeCollisionFixture = "nt=(n=0,e=0,t=0)=>({x:n,y:e,z:t}),gn=n=>({...n})
   "if(!(f||m<1&&g>m)){if(this.vphysicsFeatureFix&&o.collisionModel===\"vphysics\"&&(c=p,d=x),!u){if(s.startSolid=!0,!h)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=o,s;continue}" +
   "c<l&&c>-1&&c<s.fraction&&(s.fraction=Math.max(0,c),s.normal={...d},s.brush=o,v!==void 0?s.friction=v:delete s.friction)}}return s.end=A1(e,t,s.fraction),s}}";
 
+const nativeFloorFixture = 'function Vb(n,e){const t=e.kind==="start"?n.spawn.position:ju[n.id],i=t?.x??(e.min.x+e.max.x)/2,s=t?.y??(e.min.y+e.max.y)/2,r=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),a=e.min.z-128,o=n.brushes.filter(d=>d.min.x<=i&&d.max.x>=i&&d.min.y<=s&&d.max.y>=s&&d.min.z<r&&d.max.z>a),c=n.displacementTriangles?.filter(d=>Math.min(...d.vertices.map(u=>u.x))<=i&&Math.max(...d.vertices.map(u=>u.x))>=i&&Math.min(...d.vertices.map(u=>u.y))<=s&&Math.max(...d.vertices.map(u=>u.y))>=s&&Math.min(...d.vertices.map(u=>u.z))<r&&Math.max(...d.vertices.map(u=>u.z))>a),l=new k1(o,c).trace({x:i,y:s,z:r},{x:i,y:s,z:a},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return l.brush&&!l.startSolid&&l.normal.z>.5?e.kind==="start"?l.end.z:Math.max(e.min.z,l.end.z):e.min.z}';
+
 // Replay-only fixtures deliberately omit private rooms. Keep unexpected
 // compatibility warnings visible without logging this known optional omission.
-function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms unavailable:']) {
+function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms unavailable:'], mapWorkerSource = '') {
   const warn = console.warn;
   try {
     console.warn = (...args) => { if (!expected.includes(args[0])) warn(...args); };
-    return instrumentGame(source);
+    return instrumentGame(source, mapWorkerSource);
   } finally { console.warn = warn; }
 }
 
@@ -297,6 +299,70 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
   }
   const point = (x, y, z) => ({x, y, z});
   const triangle = vertices => ({surfaceId: 3, triangleId: 4, vertices});
+
+  if (kind === 'game') test('loaded-world floor selection preserves native bounds, sweeps and version flags', () => {
+    const native = `;const ${nativeCollisionFixture};const ju={};${nativeFloorFixture}`;
+    const source = instrumentReplayFixture(nativeSource + native, undefined, 'unused worker bundle');
+    const {World, floor} = new Function('globalThis',
+      source + ';return {World:k1,floor:Vb};')({});
+    const {Native, nativeFloor} = new Function(native + ';return {Native:k1,nativeFloor:Vb};')();
+    const brushes = Array.from({length: 16}, (_, i) => {
+      const min = point(i * 16, -8, -8), max = point(i * 16 + 8, 8, 0);
+      const planes = ['x', 'y', 'z'].flatMap(axis => [-1, 1].map(sign => ({
+        normal: {...point(0, 0, 0), [axis]: sign},
+        distance: sign * (sign < 0 ? min : max)[axis],
+      })));
+      return {id: i, min, max, planes, collisionModel: i === 0 ? 'vphysics' : undefined, friction: .8};
+    });
+    const triangles = [triangle([point(40, -4, 3), point(48, -4, 3), point(40, 4, 3)]),
+      triangle([point(-0, -4, 3), point(8, -4, 3), point(-0, 4, 3)])];
+    const hulls = [
+      {min: point(0, 0, 0), max: point(0, 0, 0)},
+      {min: point(-1, -1, 0), max: point(1, 1, 4)},
+    ];
+    for (const feature of [false, true]) for (const corner of [false, true]) {
+      const native = new Native(brushes, triangles, feature, corner);
+      const patched = new World(brushes, triangles, feature, corner);
+      expect(patched.tree.root).toEqual(native.tree.root);
+      expect(Object.is(patched.triangleBounds[1].min.x, -0)).toBe(true);
+      expect(patched.vphysicsFeatureFix).toBe(feature);
+      expect(patched.bspCornerFix).toBe(corner);
+      for (const bounds of [
+        {min: point(0, -8, -8), max: point(0, 8, 0)},
+        {min: point(-1, -9, -9), max: point(260, 9, 9)},
+        {min: point(40, -4, 3), max: point(48, 4, 3)},
+      ]) expect(patched.tree.query(bounds)).toEqual(native.tree.query(bounds));
+      for (const [start, end] of [
+        [point(4, 0, 10), point(4, 0, -20)],
+        [point(-10, 0, -4), point(260, 0, -4)],
+        [point(4, 0, -4), point(4, 0, 10)],
+        [point(42, 0, 10), point(42, 0, -10)],
+      ]) for (const hull of hulls) expect(patched.trace(start, end, hull)).toEqual(native.trace(start, end, hull));
+    }
+    const map = {id: 'floor-test', brushes, displacementTriangles: triangles, spawn: {position: point(2, -2, 10)}};
+    for (const kind of ['start', 'finish']) for (const top of [3, 4, 20]) {
+      const zone = {kind, min: point(0, -4, -20), max: point(8, 4, top)};
+      expect(floor(map, zone)).toBe(nativeFloor(map, zone));
+    }
+  });
+
+  if (kind === 'game') test('an unreviewed floor calculation retains its native result', () => {
+    const changed = nativeFloorFixture.replace('e.kind==="start"?l.end.z:', 'e.kind==="start"?l.end.z+5:');
+    const source = instrumentReplayFixture(nativeSource + `;const ${nativeCollisionFixture};const ju={};${changed}`,
+      undefined, 'unused worker bundle');
+    const floor = new Function('globalThis', source + ';return Vb;')({});
+    const min = point(0, 0, -8), max = point(8, 8, 0);
+    const planes = ['x', 'y', 'z'].flatMap(axis => [-1, 1].map(sign => ({
+      normal: {...point(0, 0, 0), [axis]: sign}, distance: sign * (sign < 0 ? min : max)[axis],
+    })));
+    const map = {id: 'unknown-floor', brushes: [{id: 'floor', min, max, planes}],
+      spawn: {position: point(2, 2, 10)}};
+    const nativeFloor = new Function(`const ${nativeCollisionFixture};const ju={};${nativeFloorFixture};return Vb;`)();
+    const zone = {kind: 'start', min: point(0, 0, -20), max: point(8, 8, 20)};
+    const original = nativeFloor(map, zone);
+    expect(original).toBeGreaterThan(zone.min.z);
+    expect(floor(map, zone)).toBe(original + 5);
+  });
 
   test('installs the reviewed native bounds, sweep and SAT contracts without changing brushes', () => {
     const {source, Native, Patched} = worldFixture();

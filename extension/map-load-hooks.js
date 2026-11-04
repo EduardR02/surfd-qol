@@ -72,7 +72,7 @@ function nativeMapMeshHooks(source) {
   const match = meshes[0], g = match.groups;
   const stream = match[0].indexOf(`const ${g.interleaved}=`);
   const boundStart = match[0].indexOf(`,${g.geometry}.computeBoundingSphere()`);
-  const result = `const ${g.buffer}=${g.owner}.resources.meshes.get(${g.mesh}.url),__qolMapMesh=__qolDecodeMapMesh(${g.buffer},${g.mesh}.vertexCount),${g.vertices}=__qolMapMesh.vertices;` +
+  const result = `const ${g.buffer}=${g.owner}.resources.meshes.get(${g.mesh}.url),__qolMapMesh=${g.owner}.resources.preparedMeshes?.get(${g.mesh}.url)??__qolDecodeMapMesh(${g.buffer},${g.mesh}.vertexCount),${g.vertices}=__qolMapMesh.vertices;` +
     match[0].slice(stream, boundStart) +
     `,${g.geometry}.boundingBox=new ${boxes[0][1]},${g.geometry}.boundingBox.min.set(__qolMapMesh.minX,__qolMapMesh.minY,__qolMapMesh.minZ),${g.geometry}.boundingBox.max.set(__qolMapMesh.maxX,__qolMapMesh.maxY,__qolMapMesh.maxZ),${g.geometry}.boundingSphere=new ${spheres[0][1]},${g.geometry}.boundingSphere.center.set(__qolMapMesh.centerX,__qolMapMesh.centerY,__qolMapMesh.centerZ),${g.geometry}.boundingSphere.radius=__qolMapMesh.radius`;
   return `const __qolDecodeMapMesh=(${decodeMapMesh.toString()});` + source.slice(0, match.index) + result + source.slice(match.index + match[0].length);

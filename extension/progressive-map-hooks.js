@@ -92,6 +92,7 @@ export function nativeProgressiveMapHooks(source) {
   const loaderText = `async function ${l.name}(${l.slug},${l.options},${l.controller}){${l.prefix}
     const ${l.using}=${l.options}.compressedTextures!==false&&Object.keys(${l.data}.compressedTextures??{}).length>0&&${l.supported}(),${l.packs}=${l.select}(${l.manifest},${l.using});
     ${l.data}.resources=await (${loadProgressiveAssets.toString()})(${l.data},${l.packs},${l.using},${l.signal},{
+      fetchPack:pack=>${l.fetch}(pack.url,${l.signal}),
       readPack:async pack=>${packRead[1]}(await ${l.fetch}(pack.url,${l.signal}),pack.byteLength),
       decodeImage:(bytes,url)=>${imageDecode[2]}(bytes,url,${l.signal}),validateDDS:${d.validate},prepareSky:__qolPrepareSky,abort:error=>${l.controller}.abort(error)});return ${l.data}}`;
   const r = relay.groups;

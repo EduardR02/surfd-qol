@@ -5,9 +5,11 @@ import {nativeCollisionTreeHooks} from './collision-tree.js';
 import {nativeStageResetHooks} from './stage-reset-hooks.js';
 import {nativeMapLoadHooks} from './map-load-hooks.js';
 import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
+import {nativeMapWorkerHooks} from './map-worker-hooks.js';
+import {nativeMapFloorHooks} from './map-floor-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v37:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v38:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -683,7 +685,7 @@ function cinemaHooks(source, client) {
 // The adapter reads native objects. Optional hooks integrate UI, transport and
 // rendering, and unroll an exactly recognised collision-box comparison without
 // changing movement rules. Unrecognised hooks leave that native code unchanged.
-export function instrumentGame(source) {
+export function instrumentGame(source, mapWorkerSource = '') {
   if (alreadyInstrumented(source)) return source;
   const state = unique(source, new RegExp(`state:(${identifier})\\?\\.state,run:\\1\\?\\.timer\\.state`, 'g'), 'session snapshot')[1];
   const viewed = unique(source, new RegExp(`spectator:\\{target:(${identifier}),view:(${identifier})\\}`, 'g'), 'spectator view');
@@ -699,11 +701,13 @@ export function instrumentGame(source) {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
-  source = nativeCollisionWorldHooks(source, knownNativeWorld(source));
+  const worldContract = knownNativeWorld(source);
+  source = nativeCollisionWorldHooks(source, worldContract);
   source = collisionBoundsHook(source);
   source = source.replace(new RegExp(`new ${literal(sessionClass)}\\((${identifier}),(${identifier})\\.config\\)`, 'g'),
     (_, map, replay) => `new ${sessionClass}(${map},${replay}.config,${replay}.format)`);
   source = nativeCollisionTreeHooks(source);
+  if (mapWorkerSource) source = nativeMapFloorHooks(source, worldContract);
   source = preparedIndexHooks(source, state);
   source = nativeStageResetHooks(source);
   source = nativeMapLoadHooks(source);
@@ -714,7 +718,7 @@ export function instrumentGame(source) {
   source = practice.source;
   const cinema = cinemaHooks(source, client);
   source = cinema.source;
-  return source + `${ADAPTER_MARKER} native community rooms and optional room transport */
+  return nativeMapWorkerHooks(source, mapWorkerSource) + `${ADAPTER_MARKER} native community rooms and optional room transport */
 ${practice.setup}
 ;(() => {
   const qol = globalThis.__SURFD_QOL__;

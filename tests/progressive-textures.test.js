@@ -52,6 +52,55 @@ test('the initial view waits for visible uniform textures but not offscreen reso
   assert.equal(run.textures.offscreen.image, offscreen);
 });
 
+test('worker-prepared first-view textures upload as each becomes ready, not after the slowest texture', async () => {
+  const run = fixture(), uploaded = deferred(), uploads = [];
+  run.resources.preparedMeshes = new Map();
+  run.renderer.initTexture = texture => {
+    assert.ok(texture.image, 'Only decoded images may be uploaded');
+    uploads.push(texture.image.url);
+    if (texture === run.textures.visible) uploaded.resolve();
+  };
+  let ready = false;
+  const initial = run.bindings.prepare(run.renderer, () => {
+    run.renderer.renderBufferDirect(null, null, null, {
+      uniforms: {maps: {value: [run.textures.visible, run.textures.visible, run.textures.offscreen]}}
+    });
+  }).then(() => { ready = true; });
+  run.publish('visible');
+  await uploaded.promise;
+  assert.equal(ready, false);
+  assert.deepEqual(uploads, ['visible']);
+  run.publish('offscreen');
+  await initial;
+  assert.deepEqual(uploads, ['visible', 'offscreen']);
+  run.finished.resolve();
+  await run.bindings.complete();
+});
+
+test('cancelling first-view preparation prevents late worker textures from uploading', async () => {
+  const run = fixture(), uploads = [];
+  run.resources.preparedMeshes = new Map();
+  run.renderer.initTexture = texture => uploads.push(texture);
+  const initial = run.bindings.prepare(run.renderer, run.draw);
+  run.resources.cancel();
+  await assert.rejects(initial, {name: 'AbortError'});
+  run.publish('visible');
+  run.publish('offscreen');
+  run.finished.resolve();
+  await assert.rejects(run.bindings.complete(), {name: 'AbortError'});
+  assert.deepEqual(uploads, []);
+});
+
+test('a first-view upload failure rejects preparation instead of hiding an incomplete GPU texture', async () => {
+  const run = fixture(), failure = new Error('Texture upload failed');
+  run.resources.preparedMeshes = new Map();
+  run.renderer.initTexture = () => { throw failure; };
+  const initial = run.bindings.prepare(run.renderer, run.draw);
+  run.publish('visible');
+  await assert.rejects(initial, error => error === failure);
+  run.bindings.dispose();
+});
+
 test('a native traversal failure restores renderer submission before rejecting', async () => {
   const run = fixture(), original = run.renderer.renderBufferDirect;
   const failure = new Error('Native traversal failed');

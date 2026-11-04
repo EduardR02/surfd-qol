@@ -126,7 +126,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
       return;
     }
 
-    const selected = new Set();
+    const selected = new Set(), selectedTextures = new Map();
     const nativeDefines = new Set(['SECOND_MAP', 'DETAIL_MAP', 'UNLIT', 'TRANSLUCENT', 'PROP_FADE',
       'LIGHTING_RESPONSE', 'COLORED_SHADOW_LIFT', 'VIEW_BRIGHTNESS', 'ENV_MASK', 'ENV_SHAPING',
       'REFLECTION_ONLY', 'NO_FOG', 'PROP_LIGHT', 'WORLD_LIGHT', 'VERTEX_ALPHA', 'ALPHA_TEST',
@@ -185,7 +185,10 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
 
     function collectTexture(value) {
       const registered = bindings.get(value);
-      if (registered) for (const binding of registered) selected.add(binding);
+      if (registered) {
+        for (const binding of registered) selected.add(binding);
+        selectedTextures.set(value, registered);
+      }
       return registered !== undefined;
     }
 
@@ -514,8 +517,19 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
     // after renderer disposal. Submit the same KHR-parallel work through its
     // native compile path, but own the cancellable readiness polling.
     const shaders = canCompile && submissions.length && needsShaders ? preparePrograms() : null;
+    const uploads = [];
+    if (resources.preparedMeshes && typeof renderer.initTexture === 'function') {
+      // Worker asset preparation continues independently while the page uploads
+      // finished first-view textures through Three's native ownership/cache.
+      for (const [texture, registered] of selectedTextures) {
+        uploads.push(handled(wait(Promise.all(registered.map(binding => binding.promise))).then(() => {
+          active();
+          if (!renderer.getContext?.().isContextLost?.()) renderer.initTexture(texture);
+        })));
+      }
+    }
     try {
-      await wait(Promise.all([Promise.all(pending), ...(shaders ? [shaders.promise] : [])]));
+      await wait(Promise.all([Promise.all(pending), ...uploads, ...(shaders ? [shaders.promise] : [])]));
     } catch (error) {
       shaders?.cancel(error);
       throw error;

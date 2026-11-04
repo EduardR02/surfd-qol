@@ -17,6 +17,14 @@ function loadCinemaRuntime() {
   }).catch(error => { cinemaRuntime = null; throw error; });
 }
 
+let mapRuntime;
+function loadMapRuntime() {
+  return mapRuntime ??= fetch(chrome.runtime.getURL('map-preparation-worker.js')).then(response => {
+    if (!response.ok) throw new Error('Map preparation worker asset unavailable');
+    return response.text();
+  }).catch(error => { mapRuntime = null; throw error; });
+}
+
 async function status(tabId, message, error = false) {
   try { await chrome.tabs.sendMessage(tabId, { type: 'surfd-qol-status', message, error }); } catch { /* navigation */ }
   await chrome.action.setBadgeText({ tabId, text: error ? '!' : 'ON' }).catch(() => {});
@@ -82,7 +90,12 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       try { runtime = await loadCinemaRuntime(); }
       catch (error) { console.warn('[Surfd QoL] Worker camera unavailable:', error.message); }
     }
-    const patched = isGame ? instrumentGame(text) : instrumentPhysicsWorker(text, runtime);
+    let mapSource = '';
+    if (isGame) {
+      try { mapSource = await loadMapRuntime(); }
+      catch (error) { console.warn('[Surfd QoL] Map worker unavailable; using page preparation:', error.message); }
+    }
+    const patched = isGame ? instrumentGame(text, mapSource) : instrumentPhysicsWorker(text, runtime);
     const bytes = new TextEncoder().encode(patched);
     // Modules are ASCII in current builds; conversion also handles future UTF-8 assets.
     let binary = '';

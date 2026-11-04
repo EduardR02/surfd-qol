@@ -1,16 +1,54 @@
 // Self-contained so native hooks can inject this function with .toString().
 export async function loadProgressiveAssets(data, packs, useCompressed, signal, hooks) {
-  const meshes = new Map(), images = new Map(), compressed = new Map();
+  // Decide before fetching or transferring any native pack body. A blocked or
+  // unsupported worker leaves the existing native loader completely untouched.
+  let worker = null;
+  if (hooks.fetchPack && typeof __qolCreateMapLoadJobs === 'function' &&
+      typeof __qolMapWorkerSource === 'string' && __qolMapWorkerSource) {
+    let candidate;
+    try {
+      candidate = __qolCreateMapLoadJobs(__qolMapWorkerSource, signal);
+      if (await candidate.ready) worker = candidate;
+      else candidate.dispose();
+    } catch (error) {
+      candidate?.dispose();
+      if (signal.aborted) throw signal.reason ?? error;
+    }
+  }
+
+  const meshes = new Map(), preparedMeshes = worker ? new Map() : undefined, images = new Map(), compressed = new Map();
   const pendingImages = new Map(), pendingCompressed = new Map();
-  const assets = new Map(), alternatives = new Map();
+  const assets = new Map(), alternatives = new Map(), meshCounts = new Map();
   // Native rendering falls back to fog unless all six sky faces are present.
   const sky = new Set(data.sky?.length === 6 && data.sky.every(Boolean) ? data.sky : []);
   let skyRemaining = sky.size;
+  // Lighting is a useful early hint, not a handoff requirement. A real
+  // first-view selection later receives strictly higher priority.
+  const lighting = new Set();
+  if (worker) {
+    for (const url of [...(data.lightmaps ?? []).map(value => value.url),
+      data.propLighting?.url, data.propLodLighting?.url]) {
+      if (url) lighting.add(useCompressed ? data.compressedTextures?.[url]?.url ?? url : url);
+    }
+    function recordMeshes(meshes) {
+      for (const mesh of meshes ?? []) {
+        if (!mesh?.url) continue;
+        if (!meshCounts.has(mesh.url)) meshCounts.set(mesh.url, mesh.vertexCount);
+        else if (meshCounts.get(mesh.url) !== mesh.vertexCount) meshCounts.set(mesh.url, null);
+      }
+    }
+    recordMeshes(data.world);
+    recordMeshes(data.skyOccluders);
+    for (const model of data.models ?? []) {
+      recordMeshes(model.meshes);
+      for (const lod of model.lods ?? []) recordMeshes(lod.meshes);
+    }
+  }
   const unread = [], decodeQueue = [];
   // Collision JSON shares bandwidth with visual packs. More pack producers can
   // delay collision readiness even when visual transfers finish sooner.
   let remaining = 0, criticalRemaining = 0, producers = 2, decoders = 0;
-  let stopped = false, handedOff = false;
+  let stopped = false, handedOff = false, workerPacks = 0, finishing = false, workerFinished = false;
 
   function deferred() {
     let resolve, reject;
@@ -36,7 +74,8 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
         const critical = entry.kind === 'mesh' || sky.has(entry.url);
         asset = {
           url: entry.url, kind: entry.kind, alternative,
-          priority: critical ? 2 : 0, critical, packs: [],
+          priority: critical ? 3 : lighting.has(entry.url) ? 1 : 0, critical, packs: [],
+          assetLength: entry.assetLength, vertexCount: meshCounts.get(entry.url),
           bytes: null, received: 0, assembled: false, settled: false,
           ...deferred(),
         };
@@ -55,7 +94,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
   }
 
   const resources = {
-    meshes, images, compressed, pendingImages, pendingCompressed,
+    meshes, preparedMeshes, images, compressed, pendingImages, pendingCompressed,
     ready: completion.promise, prioritize, cancel, signal, skyPreparation: null,
   };
 
@@ -67,13 +106,18 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
 
   function prioritize(urls) {
     if (stopped) return;
+    const selected = [];
     for (const url of urls) {
       const asset = assets.get(useCompressed ? data.compressedTextures?.[url]?.url ?? url : url);
       if (!asset || asset.settled) continue;
-      asset.priority = Math.max(asset.priority, 1);
+      asset.priority = Math.max(asset.priority, 2);
       for (const work of asset.packs) work.priority = Math.max(work.priority, asset.priority);
+      selected.push(asset.url);
     }
     sortWork();
+    if (worker && selected.length) worker.run('prioritize', {urls: selected}).catch(error => {
+      if (!workerFinished) fail(error);
+    });
     decodeImages();
   }
 
@@ -82,6 +126,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     stopped = true;
     const failure = signal.aborted ? signal.reason ?? error : error;
     resources.skyPreparation?.cancel(failure);
+    worker?.dispose();
     signal.removeEventListener('abort', onAbort);
     unread.length = decodeQueue.length = 0;
     for (const asset of assets.values()) {
@@ -97,6 +142,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     // maps during disposal. Keep them reachable; only late decodes are closed.
     if (!handedOff) {
       for (const image of images.values()) image.close?.();
+      preparedMeshes?.clear();
       meshes.clear();
       images.clear();
       compressed.clear();
@@ -120,7 +166,16 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
       handedOff = true;
       initial.resolve(resources);
     }
-    if (remaining === 0 && producers === 0) {
+    if (worker && producers === 0 && workerPacks === 0 && !finishing) {
+      finishing = true;
+      worker.run('finish', {}).then(() => {
+        workerFinished = true;
+        worker.dispose();
+        if (remaining !== 0) fail(new Error('Incomplete visual assets'));
+        else checkReady();
+      }, fail);
+    }
+    if (remaining === 0 && producers === 0 && (!worker || workerFinished)) {
       signal.removeEventListener('abort', onAbort);
       completion.resolve();
       // Settled promise maps and published resources remain consumer-owned;
@@ -129,9 +184,12 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
   }
 
-  function publish(asset, value) {
+  function publish(asset, value, prepared) {
     if (stopped) return;
-    if (asset.kind === 'mesh') meshes.set(asset.url, value);
+    if (asset.kind === 'mesh') {
+      meshes.set(asset.url, value);
+      if (prepared) preparedMeshes?.set(asset.url, prepared);
+    }
     else if (asset.kind === 'compressed-texture') compressed.set(asset.alternative.key, value);
     else images.set(asset.url, value);
     if (sky.has(asset.url) && --skyRemaining === 0 && hooks.prepareSky) {
@@ -161,6 +219,7 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
           // has cancelled network work. Such images never enter resource maps.
           if (stopped) image.close?.();
           else publish(asset, image);
+          if (!stopped && worker) worker.run('image-decoded', {url: asset.url}).catch(fail);
         } catch (error) {
           fail(error);
         } finally {
@@ -225,6 +284,117 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
   }
 
+  function receiveWorkerEvent(event, eof) {
+    if (stopped) {
+      if (event.kind === 'image') event.value?.close?.();
+      return;
+    }
+    try {
+      if (event.kind === 'pack-eof') {
+        eof.seen = true;
+        eof.resolve();
+        return;
+      }
+      if (event.kind === 'asset-error') {
+        const error = new Error(event.error.message);
+        error.name = event.error.name;
+        throw error;
+      }
+      const asset = assets.get(event.url);
+      if (!asset || asset.settled) {
+        if (event.kind === 'image') event.value?.close?.();
+        throw new Error('Unexpected visual worker asset');
+      }
+      if (event.kind === 'image-bytes') {
+        if (asset.kind !== 'image') throw new Error('Unexpected visual image');
+        asset.bytes = new Uint8Array(event.value);
+        decodeQueue.push(asset);
+        sortWork();
+        decodeImages();
+      } else if (event.kind === asset.kind) {
+        if (asset.kind === 'compressed-texture') {
+          if (!asset.alternative) throw new Error('Unexpected native texture');
+          hooks.validateDDS(event.value, asset.alternative.descriptor);
+        }
+        publish(asset, event.value, event.prepared);
+      } else {
+        if (event.kind === 'image') event.value?.close?.();
+        throw new Error('Unexpected visual worker event');
+      }
+    } catch (error) {
+      eof.reject(error);
+      fail(error);
+    }
+  }
+
+  function discardResponse(response, reason) {
+    try { response?.body?.cancel(reason)?.catch(() => {}); } catch { /* Already transferred or closed. */ }
+  }
+
+  async function produceWorker() {
+    try {
+      while (!stopped && unread.length) {
+        const {pack} = unread.shift();
+        const response = await hooks.fetchPack(pack);
+        if (stopped) {
+          discardResponse(response, signal.reason);
+          return;
+        }
+        if (!response.ok) {
+          discardResponse(response);
+          throw new Error(`Visual pack: ${response.status}`);
+        }
+        if (!response.body) throw new Error('Empty visual pack response');
+        const eof = deferred();
+        workerPacks++;
+        let request;
+        try {
+          request = worker.run('pack', {
+            stream: response.body, pack: {byteLength: pack.byteLength, entries: pack.entries},
+          }, [response.body], event => receiveWorkerEvent(event, eof));
+        } catch (error) {
+          discardResponse(response, error);
+          throw error;
+        }
+        request.then(() => {
+          workerPacks--;
+          if (!eof.seen) {
+            const error = new Error('Visual pack ended without EOF');
+            eof.reject(error);
+            fail(error);
+            return;
+          }
+          checkReady();
+        }, error => {
+          discardResponse(response, error);
+          workerPacks--;
+          eof.reject(error);
+          fail(error);
+        });
+        await eof.promise;
+      }
+      producers--;
+      checkReady();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  async function startWorker() {
+    try {
+      await worker.run('init', {assets: [...assets.values()].map(asset => ({
+        url: asset.url, kind: asset.kind, assetLength: asset.assetLength,
+        vertexCount: asset.vertexCount, priority: asset.priority,
+      }))});
+      if (stopped) return;
+      produceWorker();
+      produceWorker();
+      checkReady();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
   signal.addEventListener('abort', onAbort, {once: true});
   if (signal.aborted) onAbort();
   else {
@@ -236,9 +406,12 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
     if (!stopped) {
       sortWork();
-      produce();
-      produce();
-      checkReady();
+      if (worker) startWorker();
+      else {
+        produce();
+        produce();
+        checkReady();
+      }
     }
   }
   return initial.promise;
