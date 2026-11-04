@@ -30,7 +30,8 @@ export function createSkyResampler() {
       output.set(input);
       return output;
     }
-    if (width === 1 && height === 1) {
+    if (width === 1 && height === 1 && Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c) &&
+        Number.isFinite(d) && Number.isFinite(e) && Number.isFinite(f)) {
       const red = input[0], green = input[1], blue = input[2], alpha = input[3];
       for (let offset = 0; offset < output.length; offset += 4) {
         output[offset] = red;
@@ -83,8 +84,8 @@ export function createSkyResampler() {
 }
 
 // The worker receives structured clones, never transfers of the renderer's
-// ImageBitmaps. It returns raw pixels so changed faces still upload as canvases,
-// while unchanged faces retain native ImageBitmap upload/orientation behavior.
+// ImageBitmaps. Native conversion returns original images only when every face
+// is unchanged; otherwise every face uploads as a canvas.
 export function runSkyResampleWorker(createResampler) {
   const resample = createResampler();
   self.onmessage = ({data: {images, matrices, size}}) => {
@@ -132,6 +133,7 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
 
   function fallback(event) {
     event?.preventDefault?.();
+    if (settled || cancelled) return;
     buffers = null;
     settle();
   }
@@ -159,36 +161,35 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
     if (finishPromise) return finishPromise;
     finishPromise = ready.then(() => {
       if (cancelled) throw cancellationReason;
-      let faces;
-      if (unchanged) {
-        faces = images;
-      } else if (buffers) {
-        try {
-          faces = images.map((image, index) => {
-            if (!buffers[index]) return image;
-            const canvas = environment.document.createElement('canvas');
-            canvas.width = canvas.height = size;
-            const context = canvas.getContext('2d');
-            const pixels = new Uint8ClampedArray(buffers[index]);
-            let data;
-            if (typeof environment.ImageData === 'function') data = new environment.ImageData(pixels, size, size);
-            else {
-              data = context.createImageData(size, size);
-              data.data.set(pixels);
-            }
-            context.putImageData(data, 0, 0);
-            return canvas;
-          });
-        } catch {
-          faces = nativeConversion();
+      try {
+        if (unchanged) return images;
+        if (buffers) {
+          try {
+            return images.map((image, index) => {
+              const canvas = environment.document.createElement('canvas');
+              canvas.width = canvas.height = size;
+              const context = canvas.getContext('2d');
+              const pixels = new Uint8ClampedArray(buffers[index]);
+              let data;
+              if (typeof environment.ImageData === 'function') data = new environment.ImageData(pixels, size, size);
+              else {
+                data = context.createImageData(size, size);
+                data.data.set(pixels);
+              }
+              context.putImageData(data, 0, 0);
+              return canvas;
+            });
+          } catch {
+            return nativeConversion();
+          }
         }
-      } else {
-        faces = nativeConversion();
+        return nativeConversion();
+      } finally {
+        buffers = null;
+        unchanged = null;
+        images = null;
+        signal.removeEventListener('abort', abort);
       }
-      buffers = null;
-      unchanged = null;
-      images = null;
-      return faces;
     });
     finishPromise.catch(() => {});
     return finishPromise;
@@ -203,15 +204,15 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
       const identity = [1, 0, 0, 0, 1, 0];
       if (transforms === undefined) transforms = [];
       const matrices = images.map((image, index) => parse(transforms[index]));
-      const reused = images.map((image, index) => image.width === size && image.height === size &&
+      const unchangedFaces = images.every((image, index) => image.width === size && image.height === size &&
         matrices[index].every((value, axis) => Math.abs(value - identity[axis]) < 1e-12));
-      if (reused.every(Boolean)) {
+      if (unchangedFaces) {
         unchanged = true;
         settle();
       } else if (typeof environment.Worker !== 'function' || typeof environment.OffscreenCanvas !== 'function' ||
           typeof environment.ImageBitmap !== 'function' || typeof environment.Blob !== 'function' ||
           typeof environment.URL?.createObjectURL !== 'function' ||
-          images.some((image, index) => !reused[index] && !(image instanceof environment.ImageBitmap))) {
+          images.some(image => !(image instanceof environment.ImageBitmap))) {
         fallback();
       } else {
         const script = `(${workerMain.toString()})(${createResampler.toString()})`;
@@ -225,8 +226,8 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
           if (settled || cancelled) return;
           const result = data?.buffers;
           if (!Array.isArray(result) || result.length !== images.length ||
-              reused.some((identity, index) => identity ? result[index] !== null :
-                !(result[index] instanceof ArrayBuffer) || result[index].byteLength !== size * size * 4)) {
+              images.some((_, index) => !(result[index] instanceof ArrayBuffer) ||
+                result[index].byteLength !== size * size * 4)) {
             fallback();
             return;
           }
@@ -237,7 +238,7 @@ export function createSkyPreparation(images, transforms, signal, parse, createRe
         worker.onmessageerror = fallback;
         // ImageBitmap is serializable. Omitting a transfer list makes worker
         // copies without changing the images used by other native textures.
-        worker.postMessage({images: images.map((image, index) => reused[index] ? null : image), matrices, size});
+        worker.postMessage({images, matrices, size});
       }
     } catch {
       fallback();

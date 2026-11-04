@@ -208,6 +208,19 @@ test('new jobs supersede stale results independently for each threshold', () => 
   assert.equal(getRampSurfaces(map, 0.7).find('a', normal), getRampSurfaces(map, 0.7).find('b', normal));
 });
 
+test('an unsupported new preparation cancels the previous result only for that threshold', () => {
+  const map = { brushes: [ramp('a'), ramp('b', 10, 20)] };
+  const old = buildPackedRampPreparation(packRampPreparation(map, 0.7));
+  const other = buildPackedRampPreparation(packRampPreparation(map, 0.6));
+  map.brushes[0].faces[0][2] = 999;
+  assert.equal(packRampPreparation(map, 0.7), null);
+  map.brushes[0].faces[0][2] = 2;
+  assert.equal(installPreparedRampSurfaces(map, 0.7, old), false);
+  assert.equal(installPreparedRampSurfaces(map, 0.6, other), true);
+  assert.equal(hasRampSurfaces(map, 0.7), false);
+  assert.notEqual(getRampSurfaces(map, 0.7).find('a', normal), null);
+});
+
 test('cancellation revokes only the intended pending result and leaves native fallback intact', () => {
   const map = { brushes: [ramp('a'), ramp('b', 10, 20)] };
   const old = buildPackedRampPreparation(packRampPreparation(map, 0.7));

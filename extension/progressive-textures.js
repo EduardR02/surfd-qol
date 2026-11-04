@@ -540,13 +540,26 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
   }
 
   function prepare(renderer, draw) {
-    return handled(prepareVisible(renderer, draw));
+    const canvas = renderer.domElement;
+    // A texture wait may have no shader poll to notice a lost context.
+    // Cancel only while entering; later loss remains owned by the renderer.
+    function contextLost() {
+      dispose(new DOMException('WebGL context lost during texture preparation', 'AbortError'));
+    }
+    canvas?.addEventListener?.('webglcontextlost', contextLost);
+    const preparation = (async () => {
+      if (renderer.getContext?.()?.isContextLost?.()) contextLost();
+      await prepareVisible(renderer, draw);
+    })();
+    return handled(preparation.finally(() => {
+      canvas?.removeEventListener?.('webglcontextlost', contextLost);
+    }));
   }
 
-  function dispose() {
+  function dispose(reason = signal.reason) {
     if (cancelledResources) return;
     cancelledResources = true;
-    stop(signal.reason);
+    stop(reason);
     // Renderer disposal closes published images; cancellation closes late decodes.
     resources.cancel();
   }
@@ -830,7 +843,9 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
       const version = texture.version;
       renderer.initTexture(texture);
       seenTextures.set(texture, version);
-      texturePassChanged = true;
+      // Live canvas textures may change every frame. Uploading one must not
+      // itself restart the full pass indefinitely; explicit quality changes,
+      // published bindings and newly discovered materials schedule their own work.
     }
     return true;
   }

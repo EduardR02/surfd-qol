@@ -3,6 +3,9 @@
 export function buildCollisionTree(bounds, leafSize = 12, compact = false) {
   if (!(compact ? bounds instanceof Float64Array : Array.isArray(bounds)) ||
       !Number.isSafeInteger(leafSize) || leafSize < 1) return undefined;
+  if (!compact && (Object.getPrototypeOf(bounds) !== Array.prototype ||
+      Object.hasOwn(bounds, 'map') || Object.hasOwn(bounds, 'constructor') ||
+      Object.hasOwn(bounds, Symbol.iterator))) return undefined;
   const count = compact ? bounds.length / 6 : bounds.length;
   if (!Number.isInteger(count) || count > 0x7fffffff) return undefined;
   if (!count) return compact ? {itemCount: 0, nodeBounds: new Float64Array(0),
@@ -10,16 +13,29 @@ export function buildCollisionTree(bounds, leafSize = 12, compact = false) {
 
   const values = new Float64Array(count * 9);
   const indices = new Uint32Array(count);
+  // Native construction can read geometry repeatedly and in a different
+  // order. Never probe or cache accessors, custom array species or inherited
+  // coordinates; let the original constructor handle those layouts.
+  const ordinary = object => object && typeof object === 'object' && Object.getPrototypeOf(object) === Object.prototype;
+  const getter = Object.prototype.__lookupGetter__;
+  const data = (object, key) => Object.hasOwn(object, key) && !getter.call(object, key);
   for (let index = 0; index < count; index++) {
-    const box = compact ? null : bounds[index], source = index * 6;
-    if (!compact && (!box || !box.min || !box.max)) return undefined;
+    const source = index * 6;
+    let minX, minY, minZ, maxX, maxY, maxZ;
+    if (compact) {
+      minX = bounds[source]; minY = bounds[source + 1]; minZ = bounds[source + 2];
+      maxX = bounds[source + 3]; maxY = bounds[source + 4]; maxZ = bounds[source + 5];
+    } else {
+      if (!data(bounds, index)) return undefined;
+      const box = bounds[index];
+      if (!ordinary(box) || !data(box, 'min') || !data(box, 'max')) return undefined;
+      const min = box.min, max = box.max;
+      if (!ordinary(min) || !ordinary(max) || !data(min, 'x') || !data(min, 'y') || !data(min, 'z') ||
+          !data(max, 'x') || !data(max, 'y') || !data(max, 'z')) return undefined;
+      minX = min.x; minY = min.y; minZ = min.z;
+      maxX = max.x; maxY = max.y; maxZ = max.z;
+    }
     const offset = index * 9;
-    const minX = compact ? bounds[source] : box.min.x;
-    const minY = compact ? bounds[source + 1] : box.min.y;
-    const minZ = compact ? bounds[source + 2] : box.min.z;
-    const maxX = compact ? bounds[source + 3] : box.max.x;
-    const maxY = compact ? bounds[source + 4] : box.max.y;
-    const maxZ = compact ? bounds[source + 5] : box.max.z;
     if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(minZ) ||
         !Number.isFinite(maxX) || !Number.isFinite(maxY) || !Number.isFinite(maxZ)) return undefined;
     const centerX = minX + maxX, centerY = minY + maxY, centerZ = minZ + maxZ;
@@ -149,9 +165,16 @@ export function nativeCollisionTreeHooks(source) {
   const pattern = /class (?<name>[\w$]+)\{constructor\((?<bounds>[\w$]+),(?<threshold>[\w$]+)=12\)\{this\.bounds=\k<bounds>;const (?<build>[\w$]+)=(?<items>[\w$]+)=>\{const (?<min>[\w$]+)=\{x:1\/0,y:1\/0,z:1\/0\},(?<max>[\w$]+)=\{x:-1\/0,y:-1\/0,z:-1\/0\};for\(const (?<item>[\w$]+) of \k<items>\)for\(const (?<coordinate>[\w$]+) of (?<axes>[\w$]+)\)\k<min>\[\k<coordinate>\]=Math\.min\(\k<min>\[\k<coordinate>\],\k<bounds>\[\k<item>\]\.min\[\k<coordinate>\]\),\k<max>\[\k<coordinate>\]=Math\.max\(\k<max>\[\k<coordinate>\],\k<bounds>\[\k<item>\]\.max\[\k<coordinate>\]\);if\(\k<items>\.length<=\k<threshold>\)return\{min:\k<min>,max:\k<max>,items:\k<items>\};const (?<axis>[\w$]+)=\k<axes>\.reduce\(\((?<best>[\w$]+),(?<candidate>[\w$]+)\)=>\k<max>\[\k<candidate>\]-\k<min>\[\k<candidate>\]>\k<max>\[\k<best>\]-\k<min>\[\k<best>\]\?\k<candidate>:\k<best>\);\k<items>\.sort\(\((?<left>[\w$]+),(?<right>[\w$]+)\)=>\k<bounds>\[\k<left>\]\.min\[\k<axis>\]\+\k<bounds>\[\k<left>\]\.max\[\k<axis>\]-\(\k<bounds>\[\k<right>\]\.min\[\k<axis>\]\+\k<bounds>\[\k<right>\]\.max\[\k<axis>\]\)\|\|\k<left>-\k<right>\);const (?<middle>[\w$]+)=\k<items>\.length>>1;return\{min:\k<min>,max:\k<max>,left:\k<build>\(\k<items>\.slice\(0,\k<middle>\)\),right:\k<build>\(\k<items>\.slice\(\k<middle>\)\)\}\};this\.root=\k<bounds>\.length\?\k<build>\(\k<bounds>\.map\(\((?<value>[\w$]+),(?<index>[\w$]+)\)=>\k<index>\)\):null\}bounds;root;query\((?<query>[\w$]+)\)\{const (?<results>[\w$]+)=\[\],(?<visit>[\w$]+)=(?<node>[\w$]+)=>\{if\((?<overlap>[\w$]+)\(\k<node>,\k<query>\)\)if\(\k<node>\.items\)for\(const (?<id>[\w$]+) of \k<node>\.items\)\k<overlap>\(this\.bounds\[\k<id>\],\k<query>\)&&\k<results>\.push\(\k<id>\);else \k<visit>\(\k<node>\.left\),\k<visit>\(\k<node>\.right\)\};return this\.root&&\k<visit>\(this\.root\),\k<results>\.sort\(\((?<resultLeft>[\w$]+),(?<resultRight>[\w$]+)\)=>\k<resultLeft>-\k<resultRight>\)\}\}/g;
   const matches = [...source.matchAll(pattern)];
   if (matches.length !== 1) return source;
-  const match = matches[0], {name, bounds, threshold, axes} = match.groups;
+  const match = matches[0], {name, bounds, threshold, axes, overlap} = match.groups;
   const escapedAxes = axes.replace(/\$/g, () => '\\$');
-  if (!new RegExp(`(?:^|[^\\w$])${escapedAxes}=\\["x","y","z"\\]`).test(source)) return source;
+  const escapedOverlap = overlap.replace(/\$/g, () => '\\$');
+  // A namesake XYZ array elsewhere in the bundle does not identify the
+  // constructor's binding. Require the adjacent axes/overlap declaration and
+  // reject constructor-local variables that shadow it.
+  const adjacent = new RegExp(`(?:^|[^\\w$])${escapedAxes}=\\["x","y","z"\\],${escapedOverlap}=\\([^()]*\\)=>[^;]*;$`);
+  if (!adjacent.test(source.slice(0, match.index)) ||
+      ['bounds', 'threshold', 'build', 'items', 'min', 'max', 'item', 'coordinate', 'axis',
+        'best', 'candidate', 'left', 'right', 'middle'].some(key => match.groups[key] === axes)) return source;
   const header = `class ${name}{constructor(${bounds},${threshold}=12){`;
   const replacement = `${header}const __qolCollisionTree=(${buildCollisionTree.toString()})(${bounds},${threshold});if(__qolCollisionTree!==void 0){this.bounds=${bounds};this.root=__qolCollisionTree;return}${match[0].slice(header.length)}`;
   return source.slice(0, match.index) + replacement + source.slice(match.index + match[0].length);

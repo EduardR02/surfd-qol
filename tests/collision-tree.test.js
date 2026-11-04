@@ -1,5 +1,5 @@
 import {expect, test} from 'bun:test';
-import {buildCollisionTree} from '../extension/collision-tree.js';
+import {buildCollisionTree, nativeCollisionTreeHooks} from '../extension/collision-tree.js';
 import {packCollisionWorld, unpackCollisionWorld} from '../extension/collision-world.js';
 
 const axes = ['x', 'y', 'z'];
@@ -302,3 +302,44 @@ for (const [name, build] of builders) {
     }
   });
 }
+
+test('native collision hook leaves accessors, inherited data and custom array methods to native construction', () => {
+  const source = 'const a=["x","y","z"],o=(n,e)=>a.every(t=>n.min[t]<=e.max[t]&&n.max[t]>=e.min[t]);' +
+    'class T{constructor(b,t=12){this.bounds=b;const d=i=>{const n={x:1/0,y:1/0,z:1/0},m={x:-1/0,y:-1/0,z:-1/0};' +
+    'for(const j of i)for(const k of a)n[k]=Math.min(n[k],b[j].min[k]),m[k]=Math.max(m[k],b[j].max[k]);' +
+    'if(i.length<=t)return{min:n,max:m,items:i};const c=a.reduce((x,y)=>m[y]-n[y]>m[x]-n[x]?y:x);' +
+    'i.sort((l,r)=>b[l].min[c]+b[l].max[c]-(b[r].min[c]+b[r].max[c])||l-r);const h=i.length>>1;' +
+    'return{min:n,max:m,left:d(i.slice(0,h)),right:d(i.slice(h))}};this.root=b.length?d(b.map((v,k)=>k)):null}' +
+    'bounds;root;query(q){const r=[],v=n=>{if(o(n,q))if(n.items)for(const j of n.items)o(this.bounds[j],q)&&r.push(j);' +
+    'else v(n.left),v(n.right)};return this.root&&v(this.root),r.sort((l,r)=>l-r)}}';
+  const patched = nativeCollisionTreeHooks(source);
+  expect(patched).toContain('__qolCollisionTree');
+  const shadowed = source.replace('const a=["x","y","z"],o=',
+    'const a=["x","y","z"];function wrapper(){const a=["x","y"],o=') + ';return T}';
+  expect(nativeCollisionTreeHooks(shadowed)).toBe(shadowed);
+  const Native = Function(`${source};return T`)();
+  const Optimized = Function(`${patched};return T`)();
+  function construct(Tree, variant) {
+    let reads = 0;
+    const bounds = Array.from({length: 20}, (_, i) => box(i, 0, 0, i + 1, 1, 1));
+    if (variant === 'coordinate') Object.defineProperty(bounds[0].min, 'x', {
+      get() { reads++; return reads; },
+    });
+    if (variant === 'bound') {
+      const bound = bounds[0];
+      Object.defineProperty(bounds, 0, {get() { reads++; return bound; }});
+    }
+    if (variant === 'inherited') {
+      bounds[0].min = Object.assign(Object.create({get x() { reads++; return 0; }}), {y: 0, z: 0});
+    }
+    if (variant === 'map') bounds.map = function (callback) {
+      reads++;
+      return Array.prototype.map.call(this, callback);
+    };
+    const tree = new Tree(bounds);
+    return {root: tree.root, reads};
+  }
+  for (const variant of ['coordinate', 'bound', 'inherited', 'map']) {
+    expect(construct(Optimized, variant)).toEqual(construct(Native, variant));
+  }
+});

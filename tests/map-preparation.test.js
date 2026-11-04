@@ -65,6 +65,20 @@ test('ready compact preparation preserves native tree bounds, flags and ramp loo
   assert.ok(jobs.jobs.every(job => job.disposed));
 });
 
+test('an omitted displacement array uses the prepared tree with the native empty default', async () => {
+  const map = mapFixture(), jobs = jobsFixture(), controller = new AbortController();
+  delete map.displacementTriangles;
+  const preparation = createMapPreparation(), load = preparation.createLoad(controller.signal, () => jobs.create());
+  await flush();
+  await load.prepare(map, .7);
+  const world = {}, triangles = [];
+  assert.equal(preparation.useWorld(world, map.brushes, triangles, true, true, Tree), true);
+  assert.equal(world.brushes, map.brushes);
+  assert.equal(world.triangles, triangles);
+  assert.deepEqual(world.tree.root, new Tree(map.brushes).root);
+  assert.equal(preparation.useRamps(map, .7), true);
+});
+
 test('a missed preparation window immediately keeps native work and cannot later replace its cache', async () => {
   const map = mapFixture(), jobs = jobsFixture({holdReady: true}), controller = new AbortController();
   const preparation = createMapPreparation(), load = preparation.createLoad(controller.signal, () => jobs.create());
@@ -77,6 +91,30 @@ test('a missed preparation window immediately keeps native work and cannot later
   assert.equal(getRampSurfaces(map, .7), native);
   assert.equal(preparation.useRamps(map, .7), false);
   assert.ok(jobs.jobs.every(job => job.disposed));
+});
+
+test('entry joins the ready worker without waiting for a still-starting sibling', async () => {
+  const map = mapFixture(), controller = new AbortController();
+  const tree = jobsFixture({holdResults: true}), ramps = jobsFixture({holdReady: true});
+  const preparation = createMapPreparation();
+  const load = preparation.createLoad(controller.signal, type =>
+    (type === 'map-bvh' ? tree : ramps).create());
+  await flush();
+  let joined = false;
+  const pending = load.prepare(map, .7).then(() => { joined = true; });
+  await flush();
+  assert.equal(joined, false);
+  tree.results.resolve();
+  await pending;
+  assert.equal(joined, true);
+  assert.equal(preparation.useWorld({}, map.brushes, map.displacementTriangles, false, false, Tree), true);
+  assert.equal(preparation.useRamps(map, .7), false);
+  const native = getRampSurfaces(map, .7);
+  ramps.ready.resolve(true);
+  await flush();
+  assert.equal(getRampSurfaces(map, .7), native);
+  assert.ok(tree.jobs.every(job => job.disposed));
+  assert.ok(ramps.jobs.every(job => job.disposed));
 });
 
 test('pending BVH results never delay construction after triangle bounds are available', async () => {

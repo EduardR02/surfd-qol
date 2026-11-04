@@ -11,10 +11,17 @@ export function nativeMapPreparationHooks(source, contract, Session) {
   if (fresh.length !== 1 || loads.length !== 1 || !header || !Tree ||
       source.indexOf(header[0]) < 0 || source.indexOf(header[0]) !== source.lastIndexOf(header[0])) return source;
   const load = loads[0], l = load.groups, h = header.groups;
+  // Looking up the ramp threshold adds an early factory call. Only the
+  // reviewed, side-effect-free native config expression is safe to call here.
+  const configFactory = 'T0=n=>({...oe.unrestrictedStart?E1:T1,...n?.physicsOverrides,autoBhop:oe.autoBhop,unrestrictedStart:oe.unrestrictedStart})';
+  if (fresh[0][3] !== 'T0' || source.indexOf(configFactory) < 0 ||
+      source.indexOf(configFactory) !== source.lastIndexOf(configFactory)) return source;
   // Trusted packing skips per-coordinate accessor checks only for this
   // reviewed JSON reader. A changed parser must keep native construction.
   const jsonReader = `async function ${l.json}(n){if(!n.body)return n.json();const e=n.body.getReader(),t=[];let i=0;for(;i<2;){const o=await e.read();if(o.done)break;t.push(o.value),i+=o.value.length}const s=t.flatMap(o=>Array.from(o.subarray(0,2))).slice(0,2),r=new ReadableStream({start(o){for(const c of t)o.enqueue(c)},async pull(o){try{const c=await e.read();c.done?o.close():o.enqueue(c.value)}catch(c){o.error(c)}},cancel(o){return e.cancel(o)}}),a=s[0]===31&&s[1]===139?r.pipeThrough(new DecompressionStream("gzip")):r;return new Response(a).json()}`;
   if (source.indexOf(jsonReader) < 0 || source.indexOf(jsonReader) !== source.lastIndexOf(jsonReader)) return source;
+  const readerDeclarations = new RegExp(`\\b(?:async\\s+)?function\\s+${escape(l.json)}\\s*\\(`, 'g');
+  if ([...source.matchAll(readerDeclarations)].length !== 1) return source;
   const begin = `async function ${l.name}(${l.entry},${l.signal}){`;
   const body = load[0].slice(begin.length, -1);
   const prepared = body.replace(`return ${l.map}`, `let __qolThreshold;try{__qolThreshold=${fresh[0][3]}(${l.map}).groundNormal}catch{}await __qolMapPreparation?.prepare(${l.map},__qolThreshold);return ${l.map}`);

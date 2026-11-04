@@ -354,6 +354,31 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
     expect(floor(changed, zone)).toBe(nativeFloor(changed, zone));
   });
 
+  if (kind === 'game') test('floor broadphase preserves original brush order for coincident trace ties', () => {
+    const native = `;const ${nativeCollisionFixture};const ju={};${nativeFloorFixture}`;
+    const source = instrumentReplayFixture(nativeSource + native, undefined, 'unused worker bundle');
+    const {World, floor} = new Function('globalThis', source + ';return {World:k1,floor:Vb};')({});
+    const nativeFloor = new Function(native + ';return Vb;')();
+    const bounds = {min: point(-1, -1, -1), max: point(1, 1, 1)};
+    const flat = {...bounds, id: 'flat', planes: [{normal: point(0, 0, 1), distance: 0}]};
+    // Half the Z normal and half the epsilon make both entry fractions exact ties.
+    const steep = {...bounds, id: 'steep', planes: [{normal: point(Math.sqrt(.75), 0, .5), distance: -.015625}]};
+    const outside = Array.from({length: 30}, (_, i) => ({
+      id: `outside-${i}`, min: point(100 + i, -1, -1), max: point(101 + i, 1, 1), planes: [],
+    }));
+    const triangles = [], zone = {kind: 'start', min: point(-1, -1, -8), max: point(1, 1, 20)};
+    for (const first of [flat, steep]) {
+      const second = first === flat ? steep : flat;
+      const brushes = [first, ...outside, second];
+      const map = {id: 'floor-tie', brushes, displacementTriangles: triangles, spawn: {position: point(0, 0, 7)}};
+      const world = new World(brushes, triangles);
+      expect(world.tree.query({min: point(0, 0, -136), max: point(0, 0, 8)})).toEqual([0, 31]);
+      const expected = nativeFloor(map, zone);
+      expect(first === flat ? expected > zone.min.z : expected === zone.min.z).toBe(true);
+      expect(floor(map, zone)).toBe(expected);
+    }
+  });
+
   if (kind === 'game') test('an unreviewed floor calculation retains its native result', () => {
     const changed = nativeFloorFixture.replace('e.kind==="start"?l.end.z:', 'e.kind==="start"?l.end.z+5:');
     const source = instrumentReplayFixture(nativeSource + `;const ${nativeCollisionFixture};const ju={};${changed}`,

@@ -91,6 +91,49 @@ test('cancelling first-view preparation prevents late worker textures from uploa
   assert.deepEqual(uploads, []);
 });
 
+test('context loss cancels a first-view texture wait even without parallel shader preparation', async () => {
+  const run = fixture(), uploads = [], canvas = eventSource();
+  let lost = false;
+  run.resources.preparedMeshes = new Map();
+  run.renderer.domElement = canvas;
+  run.renderer.getContext = () => ({isContextLost: () => lost});
+  run.renderer.initTexture = texture => uploads.push(texture);
+  const initial = run.bindings.prepare(run.renderer, run.draw);
+  lost = true;
+  canvas.emit('webglcontextlost');
+  await assert.rejects(initial, {name: 'AbortError'});
+  assert.equal(run.resources.signal.aborted, true);
+  run.publish('visible');
+  run.publish('offscreen');
+  run.finished.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(uploads, []);
+  assert.equal(run.textures.visible.image, null);
+});
+
+test('an already lost context skips the first-view probe and cancels resources', async () => {
+  const run = fixture();
+  let probes = 0;
+  run.renderer.domElement = eventSource();
+  run.renderer.getContext = () => ({isContextLost: () => true});
+  await assert.rejects(run.bindings.prepare(run.renderer, () => { probes++; }), {name: 'AbortError'});
+  assert.equal(probes, 0);
+  assert.equal(run.resources.signal.aborted, true);
+});
+
+test('context loss after first-view readiness does not cancel the live resource owner', async () => {
+  const run = fixture(), canvas = eventSource();
+  run.renderer.domElement = canvas;
+  run.renderer.getContext = () => ({isContextLost: () => false});
+  const initial = run.bindings.prepare(run.renderer, run.draw);
+  run.publish('visible');
+  await initial;
+  canvas.emit('webglcontextlost');
+  assert.equal(run.resources.signal.aborted, false);
+  run.bindings.dispose();
+});
+
 test('a first-view upload failure rejects preparation instead of hiding an incomplete GPU texture', async () => {
   const run = fixture(), failure = new Error('Texture upload failed');
   run.resources.preparedMeshes = new Map();
@@ -945,6 +988,25 @@ test('texture-version invalidation replaces a pending fence and uploads the new 
     assert.equal(run.fences, 2);
     assert.equal(run.deletedFences.length, 2);
   });
+});
+
+test('a continuously changing live texture cannot keep the background scan running forever', async () => {
+  await withGpuQueue(async run => {
+    run.preparation.start();
+    await run.publish();
+    run.link();
+    let slices = 0;
+    while (run.callbacks.size && slices++ < 1000) {
+      // Native canvas textures can change while successive idle slices run.
+      run.texture.version++;
+      run.slice(0);
+    }
+    assert.ok(slices < 1000, 'Live texture updates restarted the scan indefinitely');
+    await run.preparation.ready;
+    assert.ok(run.uploaded.includes(run.texture));
+    assert.ok(run.uploaded.includes(run.scene.background));
+    assert.equal(run.callbacks.size, 0);
+  }, {count: 3});
 });
 
 test('browsers without sync APIs report submission-only completion explicitly', async () => {

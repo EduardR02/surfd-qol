@@ -75,27 +75,31 @@ export function packMapBounds(map, trustedJson = false) {
 export function buildMapBoundsTree(packedBounds) {
   if (!(packedBounds instanceof Float64Array) || !(packedBounds.buffer instanceof ArrayBuffer)) return undefined;
   try { new Uint8Array(packedBounds.buffer, 0, 0); } catch { return undefined; }
-  return buildCollisionTree(packedBounds, 12, true);
+  const tree = buildCollisionTree(packedBounds, 12, true);
+  if (tree !== undefined) tree.sourceBounds = packedBounds;
+  return tree;
 }
 
 // Decodes only the compact worker result. Preorder, balanced native splits,
-// exact child bounds, unique item IDs and the twelve-item leaves are checked
-// without reading the geometry again. Undefined means unusable; null is the
-// valid empty tree.
+// bounds, unique item IDs and the twelve-item leaves are checked against the
+// transferred source bounds. Undefined means unusable; null is the valid
+// empty tree.
 export function unpackMapBoundsTree(packet, itemCount) {
-  let nodeBounds, nodeData, indices, nodeCount;
+  let nodeBounds, nodeData, indices, sourceBounds, nodeCount;
   try {
     if (!packet || !Number.isSafeInteger(itemCount) || itemCount < 0 || itemCount > 0x3fffffff ||
         packet.itemCount !== itemCount || !(packet.nodeBounds instanceof Float64Array) ||
-        !(packet.nodeData instanceof Int32Array) || !(packet.indices instanceof Uint32Array)) return undefined;
-    ({nodeBounds, nodeData, indices} = packet);
-    for (const view of [nodeBounds, nodeData, indices]) {
+        !(packet.nodeData instanceof Int32Array) || !(packet.indices instanceof Uint32Array) ||
+        !(packet.sourceBounds instanceof Float64Array)) return undefined;
+    ({nodeBounds, nodeData, indices, sourceBounds} = packet);
+    for (const view of [nodeBounds, nodeData, indices, sourceBounds]) {
       if (!(view.buffer instanceof ArrayBuffer)) return undefined;
       new Uint8Array(view.buffer, 0, 0);
     }
     nodeCount = nodeBounds.length / 6;
     if (!Number.isInteger(nodeCount) || nodeCount > 0x7fffffff || nodeData.length !== nodeCount * 4 ||
-        indices.length !== itemCount || (itemCount ? nodeCount < 1 || nodeCount > itemCount * 2 - 1 : nodeCount !== 0)) {
+        indices.length !== itemCount || sourceBounds.length !== itemCount * 6 ||
+        (itemCount ? nodeCount < 1 || nodeCount > itemCount * 2 - 1 : nodeCount !== 0)) {
       return undefined;
     }
   } catch { return undefined; }
@@ -118,12 +122,23 @@ export function unpackMapBoundsTree(packet, itemCount) {
         return undefined;
       }
       const items = new Array(length);
+      let leafMinX = Infinity, leafMinY = Infinity, leafMinZ = Infinity;
+      let leafMaxX = -Infinity, leafMaxY = -Infinity, leafMaxZ = -Infinity;
       for (let i = 0; i < length; i++) {
         const index = indices[nextItem++];
         if (index >= itemCount || seen[index]) return undefined;
         seen[index] = 1;
         items[i] = index;
+        const bound = index * 6;
+        const x = sourceBounds[bound], y = sourceBounds[bound + 1], z = sourceBounds[bound + 2];
+        const X = sourceBounds[bound + 3], Y = sourceBounds[bound + 4], Z = sourceBounds[bound + 5];
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) ||
+            !Number.isFinite(X) || !Number.isFinite(Y) || !Number.isFinite(Z)) return undefined;
+        leafMinX = Math.min(leafMinX, x); leafMinY = Math.min(leafMinY, y); leafMinZ = Math.min(leafMinZ, z);
+        leafMaxX = Math.max(leafMaxX, X); leafMaxY = Math.max(leafMaxY, Y); leafMaxZ = Math.max(leafMaxZ, Z);
       }
+      if (!Object.is(minX, leafMinX) || !Object.is(minY, leafMinY) || !Object.is(minZ, leafMinZ) ||
+          !Object.is(maxX, leafMaxX) || !Object.is(maxY, leafMaxY) || !Object.is(maxZ, leafMaxZ)) return undefined;
       return {min, max, items};
     }
     if (left !== nextNode || right <= left || right >= nodeCount || start !== -1 || length !== 0) return undefined;
@@ -147,7 +162,12 @@ export function unpackMapBoundsTree(packet, itemCount) {
 export function adoptPreparedMapWorld(world, brushes, triangles, feature, corner, Tree, preparedMaps) {
   if (!world || !Array.isArray(brushes) || !preparedMaps || typeof preparedMaps.get !== 'function') return false;
   const record = preparedMaps.get(brushes);
-  if (!record || record.consumed || record.brushes !== brushes || record.triangles !== triangles ||
+  if (!record || record.consumed || record.brushes !== brushes ||
+      record.triangles !== triangles &&
+        !(record.triangles === undefined && Array.isArray(triangles) && triangles.length === 0 &&
+          Object.getPrototypeOf(triangles) === Array.prototype &&
+          !Object.hasOwn(triangles, 'map') && !Object.hasOwn(triangles, 'constructor') &&
+          !Object.hasOwn(triangles, Symbol.iterator)) ||
       !Array.isArray(record.triangleBounds) ||
       record.triangleBounds.length !== (triangles === undefined ? 0 : triangles?.length) ||
       record.itemCount !== brushes.length + record.triangleBounds.length) return false;

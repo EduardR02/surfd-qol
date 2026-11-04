@@ -18,6 +18,9 @@ function validMap(map, groundNormal) {
 // Only the native algorithm's eligible planes and their brushes are copied.
 // Malformed geometry on an eligible brush falls back to the native path.
 export function packRampPreparation(map, groundNormal) {
+  // A later attempt supersedes the previous job even if the current geometry
+  // can no longer be encoded. Its result must not install stale surfaces.
+  if (map && typeof map === 'object') cancelRampPreparation(map, groundNormal);
   if (!validMap(map, groundNormal)) return null;
   const selected = [];
   let planeCount = 0, vertexCount = 0, faceCount = 0, indexCount = 0, ordinal = 0;

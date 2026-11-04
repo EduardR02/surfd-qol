@@ -96,8 +96,8 @@ function nativeSkyResampleHooks(source) {
     function ${name}(images,transforms=[]){
       const size=Math.max(...images.map(image=>Math.max(image.width,image.height)));
       const identity=[1,0,0,0,1,0],matrices=images.map((image,index)=>${parse}(transforms[index]));
+      if(images.every((image,index)=>image.width===size&&image.height===size&&matrices[index].every((value,axis)=>Math.abs(value-identity[axis])<1e-12)))return images;
       return images.map((image,index)=>{
-        if(image.width===size&&image.height===size&&matrices[index].every((value,axis)=>Math.abs(value-identity[axis])<1e-12))return image;
         const input=document.createElement("canvas");input.width=image.width;input.height=image.height;
         const reader=input.getContext("2d",{willReadFrequently:true});reader.drawImage(image,0,0);
         const pixels=reader.getImageData(0,0,image.width,image.height).data;

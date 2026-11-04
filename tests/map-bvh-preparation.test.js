@@ -3,6 +3,7 @@ import {buildCollisionTree} from '../extension/collision-tree.js';
 import {triangleCollisionBrush} from '../extension/collision-world.js';
 import {packMapBounds, buildMapBoundsTree, unpackMapBoundsTree, adoptPreparedMapWorld}
   from '../extension/map-bvh-preparation.js';
+import {nativeMapPreparationHooks} from '../extension/map-preparation-hooks.js';
 
 const axes = ['x', 'y', 'z'];
 const point = (x = 0, y = 0, z = 0) => ({x, y, z});
@@ -160,7 +161,8 @@ function transferBounds(record) {
   return structuredClone(record.packedBounds, {transfer: [record.packedBounds.buffer]});
 }
 function transferPacket(packet) {
-  return structuredClone(packet, {transfer: [packet.nodeBounds.buffer, packet.nodeData.buffer, packet.indices.buffer]});
+  return structuredClone(packet, {transfer: [packet.nodeBounds.buffer, packet.nodeData.buffer, packet.indices.buffer,
+    packet.sourceBounds.buffer]});
 }
 const variants = [
   ['module', packMapBounds, unpackMapBoundsTree, adoptPreparedMapWorld],
@@ -197,6 +199,7 @@ for (const [name, pack, unpack, adopt] of variants) {
       expect(produced.nodeBounds.byteLength).toBe(0);
       expect(produced.nodeData.byteLength).toBe(0);
       expect(produced.indices.byteLength).toBe(0);
+      expect(produced.sourceBounds.byteLength).toBe(0);
       const root = unpack(packet, size);
       expectExactTree(root, native.root);
       expectExactTree(root, buildCollisionTree(bounds));
@@ -275,11 +278,19 @@ for (const [name, pack, unpack, adopt] of variants) {
 
     const absent = {brushes: []}, other = pack(absent), others = new WeakMap([[absent.brushes, other]]);
     expect(other.triangles).toBeUndefined();
-    expect(adopt({}, absent.brushes, [], false, false, NativeTree, others)).toBe(false);
-    const actual = {};
-    expect(adopt(actual, absent.brushes, undefined, undefined, undefined, NativeTree, others)).toBe(true);
-    expect(actual.triangles).toEqual([]);
+    const exotic = [], reads = {count: 0};
+    Object.defineProperty(exotic, 'map', {get() { reads.count++; return Array.prototype.map; }});
+    expect(adopt({}, absent.brushes, exotic, undefined, undefined, NativeTree, others)).toBe(false);
+    expect(reads.count).toBe(0);
+    const defaultTriangles = [], actual = {};
+    expect(adopt(actual, absent.brushes, defaultTriangles, undefined, undefined, NativeTree, others)).toBe(true);
+    expect(actual.triangles).toBe(defaultTriangles);
     expect(actual.tree.root).toBeNull();
+    const otherDefault = pack(absent), otherRecords = new WeakMap([[absent.brushes, otherDefault]]);
+    const undefinedActual = {};
+    expect(adopt(undefinedActual, absent.brushes, undefined, undefined, undefined, NativeTree, otherRecords)).toBe(true);
+    expect(undefinedActual.triangles).toEqual([]);
+    expect(undefinedActual.tree.root).toBeNull();
 
     const changed = makeMap(2, 1), saved = pack(changed), savedMap = new WeakMap([[changed.brushes, saved]]);
     changed.displacementTriangles.push(triangle(point(), point(), point()));
@@ -391,9 +402,13 @@ test('decoder rejects malformed, disconnected, duplicated and detached internal 
     packet => { packet.nodeData[2] = 0; },
     packet => { packet.indices[1] = packet.indices[0]; },
     packet => { packet.indices[0] = packet.itemCount; },
+    packet => { packet.sourceBounds = new Float32Array(packet.sourceBounds); },
+    packet => { packet.sourceBounds = packet.sourceBounds.slice(1); },
+    packet => { packet.sourceBounds[packet.indices[0] * 6] = NaN; },
     packet => { structuredClone(packet.nodeBounds, {transfer: [packet.nodeBounds.buffer]}); },
     packet => { structuredClone(packet.nodeData, {transfer: [packet.nodeData.buffer]}); },
     packet => { structuredClone(packet.indices, {transfer: [packet.indices.buffer]}); },
+    packet => { structuredClone(packet.sourceBounds, {transfer: [packet.sourceBounds.buffer]}); },
   ];
   for (const change of changes) {
     const packet = structuredClone(original);
@@ -406,6 +421,13 @@ test('decoder rejects malformed, disconnected, duplicated and detached internal 
   const empty = buildMapBoundsTree(new Float64Array(0));
   expect(unpackMapBoundsTree(empty, 0)).toBeNull();
   expect(unpackMapBoundsTree({...empty, indices: new Uint32Array(1)}, 0)).toBeUndefined();
+});
+
+test('decoder rejects a finite but incorrect root leaf without internal children to expose it', () => {
+  const record = packMapBounds(makeMap(1, 0));
+  const packet = buildMapBoundsTree(transferBounds(record));
+  packet.nodeBounds[0] -= 10;
+  expect(unpackMapBoundsTree(packet, 1)).toBeUndefined();
 });
 
 test('packing frozen geometry never transfers or changes live buffers or vertex owners', () => {
@@ -444,7 +466,7 @@ test('packing frozen geometry never transfers or changes live buffers or vertex 
 
 test('invalid packet properties and shared columns request synchronous fallback', () => {
   const record = packMapBounds(makeMap(1, 1)), packet = buildMapBoundsTree(transferBounds(record));
-  for (const name of ['itemCount', 'nodeBounds', 'nodeData', 'indices']) {
+  for (const name of ['itemCount', 'nodeBounds', 'nodeData', 'indices', 'sourceBounds']) {
     const malformed = {...packet};
     Object.defineProperty(malformed, name, {get() { throw new Error('invalid packet'); }});
     expect(unpackMapBoundsTree(malformed, record.itemCount)).toBeUndefined();
@@ -456,4 +478,19 @@ test('invalid packet properties and shared columns request synchronous fallback'
     sharedNodes.set(packet.nodeBounds);
     expect(unpackMapBoundsTree({...packet, nodeBounds: sharedNodes}, record.itemCount)).toBeUndefined();
   }
+});
+
+test('map preparation hooks reject changed config factories and ambiguous JSON readers atomically', () => {
+  const signature = 'class K0{constructor(e,t=12){}}class k1{constructor(e,t=[],i=!1,s=!1){}}';
+  const contract = {name: 'k1', signature};
+  const config = 'T0=n=>({...oe.unrestrictedStart?E1:T1,...n?.physicsOverrides,autoBhop:oe.autoBhop,unrestrictedStart:oe.unrestrictedStart})';
+  const reader = 'async function gh(n){if(!n.body)return n.json();const e=n.body.getReader(),t=[];let i=0;for(;i<2;){const o=await e.read();if(o.done)break;t.push(o.value),i+=o.value.length}const s=t.flatMap(o=>Array.from(o.subarray(0,2))).slice(0,2),r=new ReadableStream({start(o){for(const c of t)o.enqueue(c)},async pull(o){try{const c=await e.read();c.done?o.close():o.enqueue(c.value)}catch(c){o.error(c)}},cancel(o){return e.cancel(o)}}),a=s[0]===31&&s[1]===139?r.pipeThrough(new DecompressionStream("gzip")):r;return new Response(a).json()}';
+  const load = 'async function load(e,s){const r=catalog.find(c=>c.id===e.id),p=r?`/packed/${r.geometrySha256}.json.gz`:`/maps/${e.slug}-collision.json`,q=await fetch1(p,s),m=await gh(q);if(m.id!==e.id||!m.brushes?.length||!m.zones?.some(z=>z.kind==="start")||!m.zones.some(z=>z.kind==="finish"))throw Error(`Invalid ${e.name} geometry`);return m}';
+  const source = `${signature};const ${config};function fresh(n){const e=new Session(n,T0(n),Zd),t=0;return e}${reader}${load}`;
+  expect(nativeMapPreparationHooks(source, contract, 'Session')).toContain('__qolMapPreparation');
+  for (const changed of [
+    source.replace('autoBhop:oe.autoBhop', 'autoBhop:sideEffect()'),
+    source.replace('if(!n.body)return n.json();', 'if(!n.body)return customJson(n);'),
+    source + 'function outer(){async function gh(n){return customJson(n)}}',
+  ]) expect(nativeMapPreparationHooks(changed, contract, 'Session')).toBe(changed);
 });

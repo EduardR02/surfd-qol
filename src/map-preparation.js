@@ -95,6 +95,9 @@ export function createMapPreparation() {
       record.consume();
       return false;
     }
+    // Native constructors replace an omitted displacement array with a fresh
+    // empty default; the prepared bounds still describe that exact empty set.
+    if (record.triangles === undefined && Array.isArray(triangles)) record.triangles = triangles;
     return adoptPreparedMapWorld(world, brushes, triangles, feature, corner, Tree, worlds);
   }
 

@@ -92,7 +92,7 @@ for (const [name, factory] of factories) {
     }
   });
 
-  test(`${name}: one-pixel faces fill every destination regardless of transform`, () => {
+  test(`${name}: one-pixel faces fill every destination for finite transforms`, () => {
     for (const pixel of [[0, 255, 10, 0], [11, 203, 87, 19], [255, 0, 255, 255]]) {
       const input = new Uint8ClampedArray(pixel);
       for (const size of [1, 2, 7]) {
@@ -103,6 +103,16 @@ for (const [name, factory] of factories) {
         }
       }
     }
+  });
+
+  test(`${name}: nonfinite one-pixel transforms retain native clamping and NaN behavior`, () => {
+    const input = new Uint8ClampedArray([11, 203, 87, 19]);
+    for (const size of [1, 3]) for (const transform of [
+      [NaN, 0, 0, 0, 1, 0],
+      [Infinity, 0, -Infinity, 0, 1, 0],
+      [0, 0, Infinity, 0, 0, -Infinity],
+      [1, 0, 0, 0, NaN, 0],
+    ]) expectResample(resample, input, 1, 1, size, transform);
   });
 
   test(`${name}: non-square and one-dimensional faces retain native strides and sampling`, () => {
@@ -217,7 +227,7 @@ test('resampling reads changed source pixels on each call without retaining deco
   expect(second).not.toEqual(first);
 });
 
-test('mixed sky transforms reuse unchanged faces and resample only changed faces', () => {
+test('mixed sky transforms convert all faces, including individually unchanged ones', () => {
   const native = `function qb(n,e=[]){const t=Math.max(...n.map(o=>Math.max(o.width,o.height))),i=[1,0,0,0,1,0],s=n.map((o,c)=>Wb(e[c]));if(n.every((o,c)=>o.width===t&&o.height===t&&s[c].every((l,d)=>Math.abs(l-i[d])<1e-12)))return n;const r=Array.from({length:256},(o,c)=>{const l=c/255;return l<=.04045?l/12.92:Math.pow((l+.055)/1.055,2.4)}),a=o=>Math.round(255*(o<=.0031308?o*12.92:1.055*Math.pow(o,1/2.4)-.055));return n.map((o,c)=>{const l=document.createElement("canvas");l.width=o.width,l.height=o.height;const d=l.getContext("2d",{willReadFrequently:!0});d.drawImage(o,0,0);const u=d.getImageData(0,0,o.width,o.height).data,h=document.createElement("canvas");h.width=h.height=t;const f=h.getContext("2d"),v=f.createImageData(t,t),g=s[c];for(let m=0;m<t;m++)for(let p=0;p<t;p++){const x=(p+.5)/t,b=(m+.5)/t,y=Math.min(o.width-1,Math.max(0,(g[0]*x+g[1]*b+g[2])*o.width-.5)),S=Math.min(o.height-1,Math.max(0,(g[3]*x+g[4]*b+g[5])*o.height-.5)),E=Math.floor(y),C=Math.floor(S),_=y-E,w=S-C,T=(C*o.width+E)*4,I=(C*o.width+Math.min(E+1,o.width-1))*4,O=(Math.min(C+1,o.height-1)*o.width+E)*4,H=(Math.min(C+1,o.height-1)*o.width+Math.min(E+1,o.width-1))*4,G=(m*t+p)*4;for(let N=0;N<4;N++){if(_===0&&w===0){v.data[G+N]=u[T+N];continue}const F=ae=>N===3?u[ae+N]/255:r[u[ae+N]],z=F(T)*(1-_)+F(I)*_,k=F(O)*(1-_)+F(H)*_,Q=z*(1-w)+k*w;v.data[G+N]=N===3?Math.round(Q*255):a(Q)}}return f.putImageData(v,0,0),h})}`;
   let canvases = 0;
   const document = {createElement() {
@@ -236,11 +246,21 @@ test('mixed sky transforms reuse unchanged faces and resample only changed faces
     (document, transform => transform ?? identity);
   const images = [{width: 2, height: 2, data: patternedInput(2, 2)},
     {width: 2, height: 2, data: patternedInput(2, 2)}];
+  expect(resample(images, [identity, identity])).toBe(images);
+  expect(canvases).toBe(0);
   const rotation = [0, 1, 0, -1, 0, 1];
   const output = resample(images, [identity, rotation]);
-  expect(output[0]).toBe(images[0]);
+  expect(output[0]).not.toBe(images[0]);
+  expect(output[0].data).toEqual(nativeResample(images[0].data, 2, 2, 2, identity));
   expect(output[1].data).toEqual(nativeResample(images[1].data, 2, 2, 2, rotation));
-  expect(canvases).toBe(2);
+  expect(canvases).toBe(4);
+  const sizes = [images[0], {width: 1, height: 1, data: patternedInput(1, 1)}];
+  const resized = resample(sizes, [identity, identity]);
+  expect(resized[0]).not.toBe(sizes[0]);
+  expect(resized[1]).not.toBe(sizes[1]);
+  expect(resized[0].data).toEqual(nativeResample(sizes[0].data, 2, 2, 2, identity));
+  expect(resized[1].data).toEqual(nativeResample(sizes[1].data, 1, 1, 2, identity));
+  expect(canvases).toBe(8);
 });
 
 function workerEnvironment({csp = false, cloneFailure = false, canvasFailure = false} = {}) {
@@ -325,7 +345,7 @@ const preparations = [
 ];
 
 for (const [name, factory] of preparations) {
-  test(`${name}: worker pixels match native conversion and preserve unchanged face upload types`, async () => {
+  test(`${name}: worker pixels match native conversion and convert every face in a mixed sky`, async () => {
     const environment = workerEnvironment(), faces = skyFaces(environment), originals = faces.map(face => face.data.slice());
     const rotation = [0, 1, 0, -1, 0, 1], affine = [.8, .2, -.1, -.3, 1.1, .1];
     const transforms = [identity, rotation, affine, identity, rotation, affine];
@@ -334,7 +354,7 @@ for (const [name, factory] of preparations) {
       createSkyResampler, runSkyResampleWorker, environment);
     const worker = environment.workers[0];
     expect(worker.transfers).toEqual([]);
-    expect(worker.images[0]).toBeNull();
+    expect(worker.images[0]).not.toBeNull();
     expect(environment.revoked).toEqual(['blob:test-1']);
     let finished = false;
     const result = prepared.finish(() => { throw new Error('Unexpected native fallback'); })
@@ -343,14 +363,13 @@ for (const [name, factory] of preparations) {
     expect(finished).toBe(false);
     worker.flush();
     const output = await result;
-    expect(output[0]).toBe(faces[0]);
-    for (let index = 1; index < faces.length; index++) {
+    for (let index = 0; index < faces.length; index++) {
       expect(output[index]).not.toBe(faces[index]);
       expect(output[index].data).toEqual(nativeResample(originals[index], faces[index].width,
         faces[index].height, 3, transforms[index]));
     }
     expect(worker.terminated).toBe(1);
-    expect(environment.clones.map(image => image.closed)).toEqual([1, 1, 1, 1, 1]);
+    expect(environment.clones.map(image => image.closed)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
     expect(faces.map(face => face.data)).toEqual(originals);
     expect(await prepared.finish(() => { throw new Error('Repeated fallback'); })).toBe(output);
@@ -432,5 +451,35 @@ for (const [name, factory] of preparations) {
     prepared.cancel(reason);
     await expect(prepared.finish(() => { throw new Error('Fallback after disposal'); })).rejects.toBe(reason);
     expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  test(`${name}: late worker errors cannot discard completed pixels`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment);
+    const rotation = [0, 1, 0, -1, 0, 1];
+    const prepared = factory(faces, [identity, rotation], new AbortController().signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    const worker = environment.workers[0];
+    worker.flush();
+    await prepared.ready;
+    worker.fail();
+    const result = await prepared.finish(() => { throw new Error('Unexpected native fallback'); });
+    expect(result[0]).not.toBe(faces[0]);
+    expect(result[0].data).toEqual(nativeResample(faces[0].data, 3, 3, 3, identity));
+  });
+
+  test(`${name}: finishing detaches the abort listener even if native conversion throws`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
+    environment.Worker = undefined;
+    let listeners = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = (...args) => { listeners++; return add(...args); };
+    controller.signal.removeEventListener = (...args) => { listeners--; return remove(...args); };
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    expect(listeners).toBe(1);
+    const error = new Error('native conversion failed');
+    await expect(prepared.finish(() => { throw error; })).rejects.toBe(error);
+    expect(listeners).toBe(0);
   });
 }
