@@ -122,6 +122,19 @@ export function decodeMapValue({strings, shapes, streams}) {
       case ARRAY: {
         const length = ints[i++];
         if (length > tags.length - t) throw new Error('Invalid cached map');
+        // Literals give small arrays exact storage, as JSON.parse does; pushing
+        // would reserve 17 slots for every vertex triple and face.
+        switch (length) {
+          case 0: return [];
+          case 1: return [read()];
+          case 2: return [read(), read()];
+          case 3: return [read(), read(), read()];
+          case 4: return [read(), read(), read(), read()];
+          case 5: return [read(), read(), read(), read(), read()];
+          case 6: return [read(), read(), read(), read(), read(), read()];
+          case 7: return [read(), read(), read(), read(), read(), read(), read()];
+          case 8: return [read(), read(), read(), read(), read(), read(), read(), read()];
+        }
         const array = [];
         for (let index = 0; index < length; index++) array.push(read());
         return array;
