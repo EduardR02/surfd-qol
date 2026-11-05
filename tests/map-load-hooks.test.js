@@ -114,6 +114,23 @@ test('unknown native renderer layouts retain their complete native preparation',
   expect(calls.visible).toHaveLength(1);
 });
 
+test('only a drawn first frame reports that the player entered the map', async () => {
+  const entries = [], previous = globalThis.__SURFD_QOL__;
+  globalThis.__SURFD_QOL__ = {enteredMap() { entries.push('entered'); }};
+  try {
+    const drawn = nativeRenderer();
+    await drawn.view.prepare({});
+    expect(entries).toEqual(['entered']);
+    await expect(nativeRenderer({drawError: new Error('GPU failure')}).view.prepare({})).rejects.toThrow('GPU failure');
+    const lost = nativeRenderer();
+    lost.loseContext();
+    await lost.view.prepare({});
+    expect(entries).toEqual(['entered']);
+  } finally {
+    globalThis.__SURFD_QOL__ = previous;
+  }
+});
+
 test('native hook preserves first-frame failures instead of declaring a broken map ready', async () => {
   const failure = new Error('GPU failure');
   const {view} = nativeRenderer({drawError: failure});

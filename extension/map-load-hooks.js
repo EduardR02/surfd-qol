@@ -250,7 +250,7 @@ export function nativeMapLoadHooks(source) {
     try{
     // Native rendering prepares only the PVS/frustum-selected first view.
     const __qolProgressiveMap=${frame}??${finish[5]};if(__qolProgressiveMap&&${current}())${finish[7]}.render(__qolProgressiveMap);
-    if(${current}())__qolGpuPreparation.start();
+    if(${current}()){__qolGpuPreparation.start();globalThis.__SURFD_QOL__?.enteredMap?.()}
     }catch(error){__qolGpuPreparation.dispose(error);throw error}finally{${finish[1]}=performance.now()-${started}}
   },setTriggersVisible:`;
   source = source.slice(0, match.index) + text + source.slice(match.index + all.length);

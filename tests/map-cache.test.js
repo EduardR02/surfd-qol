@@ -1,12 +1,98 @@
 import {expect, test} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, MAP_CACHE_VERSION} from '../src/map-cache.js';
+import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, writeMapCache, MAP_CACHE_VERSION} from '../src/map-cache.js';
 import {buildCollisionTree} from '../extension/collision-tree.js';
 import {getRampSurfaces} from '../src/surfaces.js';
 import {installCachedRampSurfaces} from '../src/map-ramp-preparation.js';
 import {createMapPreparation} from '../src/map-preparation.js';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  promise.catch(() => {});
+  return {promise, resolve, reject};
+}
+
+// In-memory IndexedDB. Requests settle on later tasks in issue order; writes
+// apply when their transaction commits, after its last request settles.
+function memoryIndexedDB({quota = Infinity} = {}) {
+  const stores = new Map(), later = callback => setTimeout(callback, 0);
+  const factory = {stores, afterGet: null,
+    open() {
+      const request = {};
+      later(() => {
+        const db = {closed: false,
+          objectStoreNames: {contains: name => stores.has(name)},
+          createObjectStore(name) { stores.set(name, new Map()); },
+          transaction(names, mode = 'readonly') {
+            if (db.closed) throw new DOMException('Database closed', 'InvalidStateError');
+            return transaction([names].flat(), mode);
+          },
+          close() { db.closed = true; },
+        };
+        request.result = db;
+        if (!stores.size) request.onupgradeneeded?.();
+        request.onsuccess?.();
+      });
+      return request;
+    },
+  };
+  function transaction(names, mode) {
+    const writes = [];
+    let pending = 0, finished = false;
+    const result = {error: null, objectStore(name) {
+      if (!names.includes(name)) throw new DOMException('Store outside the transaction', 'NotFoundError');
+      const store = stores.get(name);
+      function write(change) {
+        if (mode !== 'readwrite') throw new DOMException('Read-only transaction', 'ReadOnlyError');
+        writes.push(() => change(store));
+        return issue(() => undefined);
+      }
+      return {
+        get: key => issue(() => { const value = structuredClone(store.get(key)); factory.afterGet?.(name, key); return value; }),
+        getKey: key => issue(() => store.has(key) ? key : undefined),
+        getAll: () => issue(() => [...store.values()].map(value => structuredClone(value))),
+        put(value) {
+          const copy = structuredClone(value);
+          if (copy.buffer?.byteLength > quota) abort(new DOMException('Quota exceeded', 'QuotaExceededError'));
+          return write(target => target.set(copy.key, copy));
+        },
+        delete: key => write(target => target.delete(key)),
+      };
+    }};
+    function issue(read) {
+      const request = {};
+      pending++;
+      later(() => {
+        if (finished) return;
+        request.result = read();
+        request.onsuccess?.();
+        if (--pending === 0) later(commit);
+      });
+      return request;
+    }
+    function commit() {
+      if (finished || pending) return;
+      finished = true;
+      for (const apply of writes) apply();
+      result.oncomplete?.();
+    }
+    function abort(error) {
+      later(() => {
+        if (finished) return;
+        finished = true;
+        result.error = error;
+        result.onerror?.();
+        result.onabort?.();
+      });
+    }
+    later(commit);
+    return result;
+  }
+  return factory;
+}
 
 function mapFixture() {
   const normal = {x: 0, y: .8, z: .6};
@@ -116,59 +202,11 @@ test('a cached load adopts the stored tree and ramps without starting workers', 
   expect(scheduled).toEqual([]);
 });
 
-test('a miss schedules one record rebuild, which a later load interrupts and restarts', async () => {
-  const map = mapFixture(), created = [], scheduled = [], runs = [];
-  const preparation = createMapPreparation({read: async () => null,
-    schedule: (start, delay) => { const item = {start, delay, cancelled: false}; scheduled.push(item); return () => { item.cancelled = true; }; }});
-  const jobs = type => {
-    created.push(type);
-    return {ready: Promise.resolve(false), run: async (kind, payload) => { runs.push({kind, payload}); return {stored: true}; }, dispose() {}};
-  };
-  const load = preparation.createLoad(new AbortController().signal, jobs, true);
-  expect(created).toEqual([]);
-  expect(await load.read('a'.repeat(64))).toBe(null);
-  expect(created).toEqual(['map-bvh', 'map-ramps']);
-  load.prepare(map, .7, {key: 'a'.repeat(64), url: 'https://assets.example/packed/a.json.gz'});
-  const second = preparation.createLoad(new AbortController().signal, jobs, true);
-  await second.read('a'.repeat(64));
-  second.prepare(mapFixture(), .7, {key: 'a'.repeat(64), url: 'https://assets.example/packed/a.json.gz'});
-  expect(scheduled).toHaveLength(2);
-  expect(scheduled.map(item => item.cancelled)).toEqual([true, false]);
-  expect(scheduled[1].delay).toBeGreaterThan(0);
-  scheduled[1].start();
-  await Promise.resolve();
-  expect(runs).toEqual([{kind: 'map-cache', payload: {key: 'a'.repeat(64), url: 'https://assets.example/packed/a.json.gz', groundNormal: .7, mapId: map.id}}]);
-});
-
 test('a load without a signal keeps native preparation available', async () => {
   const preparation = createMapPreparation({read: async () => null, schedule: () => () => {}});
   const load = preparation.createLoad(undefined, () => ({ready: Promise.resolve(false), run: async () => null, dispose() {}}), true);
   expect(load).not.toBe(null);
   expect(await load.read(undefined)).toBe(null);
-});
-
-test('a new load stops a running record rebuild and restarts it after its own geometry', async () => {
-  const scheduled = [], jobs = [];
-  const preparation = createMapPreparation({read: async () => null,
-    schedule: start => { scheduled.push(start); return () => {}; }});
-  const createJobs = type => {
-    const job = {type, disposed: false, ready: Promise.resolve(false), run: () => new Promise(() => {}), dispose() { this.disposed = true; }};
-    jobs.push(job);
-    return job;
-  };
-  const first = preparation.createLoad(new AbortController().signal, createJobs, true);
-  await first.read('b'.repeat(64));
-  first.prepare(mapFixture(), .7, {key: 'b'.repeat(64), url: 'https://assets.example/b'});
-  scheduled[0]();
-  const rebuild = jobs.find(job => job.type === 'map-cache');
-  expect(rebuild.disposed).toBe(false);
-  const second = preparation.createLoad(new AbortController().signal, createJobs, true);
-  expect(rebuild.disposed).toBe(true);
-  expect(scheduled).toHaveLength(1);
-  await second.read('c'.repeat(64));
-  second.prepare(mapFixture(), .7, null);
-  expect(scheduled).toHaveLength(2);
-  preparation.destroy();
 });
 
 test('eviction keeps the most recently used records within one byte budget', () => {
@@ -183,4 +221,135 @@ test('eviction keeps the most recently used records within one byte budget', () 
   expect(staleMapCacheKeys(Array.from({length: 40}, (_, index) => ({key: String(index), size: 4 * MB, usedAt: index})))).toEqual([]);
   expect(staleMapCacheKeys([{key: 'huge', size: 300 * MB, usedAt: 1}])).toEqual(['huge']);
   expect(staleMapCacheKeys([{key: 'broken', size: 'large', usedAt: 9}, {key: 'kept', size: MB, usedAt: 1}])).toEqual(['broken']);
+});
+
+// Rebuild jobs that finish when the test settles them; disposal rejects them.
+function rebuildFixture() {
+  const timers = [], runs = [];
+  const preparation = createMapPreparation({read: async () => null,
+    schedule: (start, delay) => { const timer = {start, delay, live: true}; timers.push(timer); return () => { timer.live = false; }; }});
+  const createJobs = type => {
+    const job = {type, disposed: false, ready: Promise.resolve(false),
+      run(kind, payload) {
+        const run = {payload, job, ...deferred()};
+        runs.push(run);
+        return run.promise;
+      },
+      dispose() {
+        this.disposed = true;
+        for (const run of runs) if (run.job === this) run.reject(new DOMException('Disposed', 'AbortError'));
+      }};
+    return job;
+  };
+  return {preparation, timers, runs,
+    async visit(key) {
+      const load = preparation.createLoad(new AbortController().signal, createJobs, true);
+      await load.read(key.repeat(64));
+      load.prepare(mapFixture(), .7, {key: key.repeat(64), url: `https://assets.example/packed/${key}.json.gz`});
+    },
+    fire() { for (const timer of timers.splice(0)) if (timer.live) timer.start(); },
+    started: () => runs.map(run => run.payload.key[0]),
+    running: () => runs.filter(run => !run.job.disposed).map(run => run.payload.key[0]),
+    async finish(result = {stored: true}) {
+      runs.find(run => !run.job.disposed).resolve(result);
+      await flush();
+    },
+  };
+}
+
+test('record rebuilds wait for entry and run one at a time, newest map first', async () => {
+  const fixture = rebuildFixture();
+  for (const key of ['a', 'b', 'c']) await fixture.visit(key);
+  expect(fixture.timers).toEqual([]);
+  fixture.preparation.enterMap();
+  expect(fixture.timers.map(timer => timer.delay)).toEqual([3000]);
+  expect(fixture.runs).toEqual([]);
+  fixture.fire();
+  expect(fixture.running()).toEqual(['c']);
+  expect(fixture.runs[0].payload).toEqual({key: 'c'.repeat(64), url: 'https://assets.example/packed/c.json.gz', groundNormal: .7, mapId: 'surf_fixture'});
+  await fixture.finish();
+  expect(fixture.running()).toEqual(['b']);
+  await fixture.finish({stored: false});
+  expect(fixture.running()).toEqual(['a']);
+  await fixture.finish();
+  expect(fixture.started()).toEqual(['c', 'b', 'a']);
+  expect(fixture.running()).toEqual([]);
+  expect(fixture.timers).toEqual([]);
+});
+
+test('a missed map is queued once and only the newest few wait', async () => {
+  const fixture = rebuildFixture();
+  for (const key of ['a', 'b', 'a', 'c', 'd', 'e', 'f']) await fixture.visit(key);
+  fixture.preparation.enterMap();
+  fixture.fire();
+  for (let index = 0; index < 4; index++) await fixture.finish();
+  expect(fixture.started()).toEqual(['f', 'e', 'd', 'c']);
+  expect(fixture.running()).toEqual([]);
+});
+
+test('a new load stops the running rebuild, which resumes after the new map', async () => {
+  const fixture = rebuildFixture();
+  await fixture.visit('a');
+  fixture.preparation.enterMap();
+  fixture.fire();
+  expect(fixture.running()).toEqual(['a']);
+  await fixture.visit('b');
+  expect(fixture.running()).toEqual([]);
+  fixture.preparation.enterMap();
+  fixture.fire();
+  expect(fixture.running()).toEqual(['b']);
+  await fixture.finish();
+  expect(fixture.running()).toEqual(['a']);
+  await fixture.visit('c');
+  expect(fixture.timers.filter(timer => timer.live)).toEqual([]);
+  fixture.preparation.destroy();
+  fixture.preparation.enterMap();
+  expect(fixture.timers).toEqual([]);
+  expect(fixture.started()).toEqual(['a', 'b', 'a']);
+});
+
+test('storage that cannot keep a record stops rebuilds for the session', async () => {
+  const fixture = rebuildFixture();
+  await fixture.visit('a');
+  await fixture.visit('b');
+  fixture.preparation.enterMap();
+  fixture.fire();
+  await fixture.finish({stored: false, unavailable: true});
+  expect(fixture.started()).toEqual(['b']);
+  await fixture.visit('c');
+  fixture.preparation.enterMap();
+  expect(fixture.timers).toEqual([]);
+  expect(fixture.started()).toEqual(['b']);
+});
+
+function geometryFixture() {
+  const map = mapFixture(), raw = new TextEncoder().encode(JSON.stringify(map)), key = sha(raw);
+  const fetched = [], fetcher = async url => { fetched.push(url); return new Response(raw); };
+  return {key, fetched, fetcher, payload: {key, url: 'https://assets.example/packed/map.json.gz', groundNormal: .7, mapId: map.id}};
+}
+
+test('a rebuild opens storage first and skips a key that is already stored', async () => {
+  const {key, fetched, fetcher, payload} = geometryFixture(), indexedDB = memoryIndexedDB();
+  expect(await writeMapCache(payload, fetcher, indexedDB)).toEqual({stored: true, size: expect.any(Number)});
+  expect(fetched).toHaveLength(1);
+  expect(indexedDB.stores.get('index').get(key)).toMatchObject({key, version: MAP_CACHE_VERSION});
+  expect(await writeMapCache(payload, fetcher, indexedDB)).toEqual({stored: true});
+  expect(fetched).toHaveLength(1);
+  // A record from another version is rebuilt.
+  indexedDB.stores.get('index').get(key).version = 'old';
+  expect(await writeMapCache(payload, fetcher, indexedDB)).toEqual({stored: true, size: expect.any(Number)});
+  expect(fetched).toHaveLength(2);
+  expect(indexedDB.stores.get('index').get(key).version).toBe(MAP_CACHE_VERSION);
+});
+
+test('blocked or full storage is reported and keeps nothing', async () => {
+  const {key, fetched, fetcher, payload} = geometryFixture();
+  expect(await writeMapCache(payload, fetcher, undefined)).toEqual({stored: false, unavailable: true});
+  expect(await writeMapCache(payload, fetcher, {open() { throw new DOMException('Blocked', 'SecurityError'); }})).toEqual({stored: false, unavailable: true});
+  expect(fetched).toEqual([]);
+  const full = memoryIndexedDB({quota: 16});
+  expect(await writeMapCache(payload, fetcher, full)).toEqual({stored: false, unavailable: true});
+  expect(fetched).toHaveLength(1);
+  expect(full.stores.get('records').has(key)).toBe(false);
+  expect(full.stores.get('index').has(key)).toBe(false);
 });

@@ -125,6 +125,10 @@ const api = {
   usePreparedMapWorld(...args) {
     return destroyed || failed ? false : mapPreparation.useWorld(...args);
   },
+  enteredMap() {
+    if (destroyed || failed) return;
+    try { mapPreparation.enterMap(); } catch { /* Cache rebuilds are optional. */ }
+  },
   prepareMap() {
     if (destroyed || failed) return;
     const session = api.adapter?.getSession();

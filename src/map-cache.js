@@ -251,21 +251,31 @@ export async function buildMapCacheRecord(raw, {key, groundNormal, mapId}) {
   return {key, version: MAP_CACHE_VERSION, digest: await digest(buffer), buffer};
 }
 
+// Index rows name their record's version, so the small index store alone
+// says whether a usable record exists.
+export async function hasMapCache(db, key) {
+  const entry = await done(db.transaction('index').objectStore('index').get(key));
+  return entry?.version === MAP_CACHE_VERSION;
+}
+
 // Worker job: rebuild the record from the HTTP-cached geometry after entry.
+// Storage is checked before the download. `unavailable` means no rebuild can
+// be stored: the database cannot be opened or is out of quota.
 export async function writeMapCache({key, url, groundNormal, mapId}, fetcher = fetch, indexedDB = globalThis.indexedDB) {
-  if (typeof url !== 'string') return {stored: false};
-  const response = await fetcher(url, {credentials: 'omit'});
-  if (!response.ok || !response.body) return {stored: false};
-  const compressed = new Uint8Array(await response.arrayBuffer());
-  const raw = compressed[0] === 31 && compressed[1] === 139
-    ? new Uint8Array(await new Response(new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())
-    : compressed;
-  const record = await buildMapCacheRecord(raw, {key, groundNormal, mapId});
-  if (!record) return {stored: false};
-  const buffer = record.buffer;
+  if (typeof key !== 'string' || typeof url !== 'string') return {stored: false};
   const db = await openMapCache(indexedDB);
-  if (!db) return {stored: false};
+  if (!db) return {stored: false, unavailable: true};
   try {
+    if (await hasMapCache(db, key)) return {stored: true};
+    const response = await fetcher(url, {credentials: 'omit'});
+    if (!response.ok || !response.body) return {stored: false};
+    const compressed = new Uint8Array(await response.arrayBuffer());
+    const raw = compressed[0] === 31 && compressed[1] === 139
+      ? new Uint8Array(await new Response(new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())
+      : compressed;
+    const record = await buildMapCacheRecord(raw, {key, groundNormal, mapId});
+    if (!record) return {stored: false};
+    const buffer = record.buffer;
     // Stored uncompressed: Chrome already compresses IndexedDB values on disk,
     // and quota counts that size (Demise: 45.5 MB serialized, 17.1 MB on disk).
     // Our own deflate would save about 6 MB more and add about 33 ms to each
@@ -273,8 +283,11 @@ export async function writeMapCache({key, url, groundNormal, mapId}, fetcher = f
     // default): smaller than level 1 and faster to unpack.
     const transaction = db.transaction(['records', 'index'], 'readwrite');
     transaction.objectStore('records').put(record);
-    transaction.objectStore('index').put({key, size: buffer.byteLength, usedAt: Date.now()});
-    await committed(transaction);
+    transaction.objectStore('index').put({key, size: buffer.byteLength, usedAt: Date.now(), version: record.version});
+    try { await committed(transaction); } catch (error) {
+      if (error?.name === 'QuotaExceededError') return {stored: false, unavailable: true};
+      throw error;
+    }
     await evictMapCache(db);
     return {stored: true, size: buffer.byteLength};
   } finally { db.close(); }
@@ -310,7 +323,7 @@ export async function readMapCache(db, key) {
   if (decoded) {
     try {
       const transaction = db.transaction('index', 'readwrite');
-      transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now()});
+      transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now(), version: record.version});
     } catch { /* Recency is advisory. */ }
   }
   return decoded;
@@ -334,7 +347,7 @@ export async function readVerifiedMapCache({key}, indexedDB = globalThis.indexed
     if (!record || record.key !== key || record.version !== MAP_CACHE_VERSION || !(record.buffer instanceof ArrayBuffer) ||
         await digest(record.buffer) !== record.digest) return null;
     const transaction = db.transaction('index', 'readwrite');
-    transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now()});
+    transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now(), version: record.version});
     await committed(transaction).catch(() => {});
     return {bytes: new Uint8Array(record.buffer)};
   } catch { return null; } finally { db.close(); }
