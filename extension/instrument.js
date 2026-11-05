@@ -8,9 +8,10 @@ import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 import {nativeMapWorkerHooks} from './map-worker-hooks.js';
 import {nativeMapFloorHooks} from './map-floor-hooks.js';
 import {nativeMapPreparationHooks} from './map-preparation-hooks.js';
+import {nativeRunTicketHooks} from './run-ticket-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v40:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v41:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -702,6 +703,8 @@ export function instrumentGame(source, mapWorkerSource = '') {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
+  // Before the map hooks, which rewrite the loaders it recognises.
+  source = nativeRunTicketHooks(source);
   const worldContract = knownNativeWorld(source);
   source = nativeCollisionWorldHooks(source, worldContract);
   source = collisionBoundsHook(source);

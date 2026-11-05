@@ -4,6 +4,7 @@ import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/prot
 import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
 import {zoneFloorCandidates} from '../extension/map-floor-hooks.js';
+import {existsSync, readFileSync} from 'node:fs';
 
 const nativePracticePanelSource = `
 function fixturePanel(n,e,document){const save=document.getElementById("save"),count={};
@@ -1929,5 +1930,16 @@ describe('shared savelocs in the game before any save of your own', () => {
     r.add('other', 2, 4, 4);
     playable(r, 4, 3);
     r.close();
+  });
+});
+
+// A local copy of the live bundle, kept untracked at the repository root.
+const liveBundle = new URL('../.surfd-game.js', import.meta.url);
+describe.skipIf(!existsSync(liveBundle))('the live game bundle', () => {
+  test('asks for the run ticket as a solo, practice or room map load starts', () => {
+    const output = instrumentGame(readFileSync(liveBundle, 'utf8'));
+    expect(output.split('__qolPrefetchRun(').length - 1).toBe(2);
+    expect(output).toMatch(/\{__qolPrefetchRun\(__qolMap\)\{[^]{0,600}?\},ready:[\w$]+,setMap\(/);
+    expect(output).toMatch(/async function [\w$]+\(([\w$]+),[\w$]+=(?:!1|false),([\w$]+)=(?:!1|false)\)\{if\(!\2&&[^;]+;if\([\w$]+\)return;if\(!\2\)try\{[\w$]+\.__qolPrefetchRun\(\1\)\}catch\{\}/);
   });
 });
