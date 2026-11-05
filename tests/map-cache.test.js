@@ -1,10 +1,10 @@
 import {expect, test} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, writeMapCache, MAP_CACHE_VERSION} from '../src/map-cache.js';
+import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, writeMapCache, readVerifiedMapCache, MAP_CACHE_VERSION} from '../src/map-cache.js';
 import {buildCollisionTree} from '../extension/collision-tree.js';
 import {getRampSurfaces} from '../src/surfaces.js';
 import {installCachedRampSurfaces} from '../src/map-ramp-preparation.js';
-import {createMapPreparation} from '../src/map-preparation.js';
+import {createMapPreparation, defaultCache} from '../src/map-preparation.js';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -352,4 +352,55 @@ test('blocked or full storage is reported and keeps nothing', async () => {
   expect(fetched).toHaveLength(1);
   expect(full.stores.get('records').has(key)).toBe(false);
   expect(full.stores.get('index').has(key)).toBe(false);
+});
+
+async function storedCache() {
+  const map = mapFixture(), raw = new TextEncoder().encode(JSON.stringify(map)), key = sha(raw), indexedDB = memoryIndexedDB();
+  await writeMapCache({key, url: 'https://assets.example/packed/map.json.gz', groundNormal: .7, mapId: map.id}, async () => new Response(raw), indexedDB);
+  const timers = [];
+  const cache = defaultCache(indexedDB, (start, delay) => { const timer = {start, delay, live: true}; timers.push(timer); return () => { timer.live = false; }; });
+  return {map, key, indexedDB, timers, cache};
+}
+
+function readJob({ready = Promise.resolve(true), read} = {}) {
+  const pending = [];
+  return {ready, disposed: false, runs: 0,
+    run(type, payload) {
+      this.runs++;
+      return read ? read(payload) : new Promise((resolve, reject) => pending.push(reject));
+    },
+    dispose() { this.disposed = true; for (const reject of pending.splice(0)) reject(new DOMException('Disposed', 'AbortError')); }};
+}
+
+test('a key without a current index row misses before the reading worker has started', async () => {
+  const {key, indexedDB, cache} = await storedCache();
+  const unknown = readJob({ready: new Promise(() => {})});
+  expect(await cache.read('f'.repeat(64), () => unknown)).toBe(null);
+  expect(unknown.disposed).toBe(true);
+  indexedDB.stores.get('index').get(key).version = 'old';
+  const stale = readJob({ready: new Promise(() => {})});
+  expect(await cache.read(key, () => stale)).toBe(null);
+  expect(stale.runs).toBe(0);
+});
+
+test('a stored record is read and verified by the worker without starting the download', async () => {
+  const {map, key, indexedDB, timers, cache} = await storedCache();
+  const job = readJob({read: payload => readVerifiedMapCache(payload, indexedDB)});
+  const created = [], preparation = createMapPreparation(cache);
+  const load = preparation.createLoad(new AbortController().signal, type => { created.push(type); return job; }, true);
+  const decoded = await load.read(key);
+  expect(sameMapValue(decoded, JSON.parse(JSON.stringify(map)))).toBe(true);
+  expect(created).toEqual(['map-cache-read']);
+  expect(job.disposed).toBe(true);
+  expect(timers.map(timer => [timer.delay, timer.live])).toEqual([[20000, false]]);
+});
+
+test('a record read that stops replying falls back to the download', async () => {
+  const {key, timers, cache} = await storedCache(), job = readJob();
+  const result = cache.read(key, () => job);
+  while (!job.runs) await flush();
+  expect(timers.map(timer => timer.delay)).toEqual([20000]);
+  timers[0].start();
+  expect(await result).toBe(null);
+  expect(job.disposed).toBe(true);
 });

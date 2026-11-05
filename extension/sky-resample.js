@@ -173,7 +173,11 @@ export function createSkyPreparation(faces, transforms, signal, parse, createRes
 
   function finish(nativeConversion) {
     if (finishPromise) return finishPromise;
-    finishPromise = ready.then(() => {
+    // The first draw waits here. Demise's sky, the largest known, takes about
+    // 0.5 s even in one worker, so only workers that stopped replying reach
+    // this deadline; the draw then converts natively.
+    const timer = settled ? null : environment.setTimeout?.(() => fallback(), 20000);
+    finishPromise = ready.finally(() => { if (timer != null) environment.clearTimeout(timer); }).then(() => {
       if (cancelled) throw cancellationReason;
       try {
         if (pixels && opaque.every(Boolean)) {

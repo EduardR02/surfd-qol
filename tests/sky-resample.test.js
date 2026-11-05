@@ -538,6 +538,39 @@ for (const [name, factory] of preparations) {
     });
   }
 
+  test(`${name}: workers that stop replying are given up on and the draw converts natively`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), timers = [];
+    environment.setTimeout = (callback, delay) => timers.push({callback, delay, live: true});
+    environment.clearTimeout = id => { timers[id - 1].live = false; };
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
+    const native = [{native: true}];
+    let calls = 0;
+    const result = prepared.finish(() => { calls++; return native; });
+    expect(timers.map(timer => timer.delay)).toEqual([20000]);
+    await turn();
+    expect(calls).toBe(0);
+    timers[0].callback();
+    expect(await result).toBe(native);
+    expect(calls).toBe(1);
+    expect(environment.workers.every(worker => worker.terminated === 1)).toBe(true);
+    expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  test(`${name}: a sky that converts in time clears its deadline`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), timers = [];
+    environment.setTimeout = (callback, delay) => timers.push({callback, delay, live: true});
+    environment.clearTimeout = id => { timers[id - 1].live = false; };
+    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
+    const result = prepared.finish(() => { throw new Error('Unexpected native fallback'); });
+    environment.workers[0].flush();
+    expect((await result)[1].data).toEqual(nativeResample(faces[1].data, 3, 3, 3, [0, 1, 0, -1, 0, 1]));
+    expect(timers.map(timer => timer.live)).toEqual([false]);
+  });
+
   test(`${name}: cancellation terminates pending work without closing renderer-owned faces`, async () => {
     const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
     const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,

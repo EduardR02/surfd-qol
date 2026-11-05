@@ -1,30 +1,52 @@
 import {packMapBounds, unpackMapBoundsTree, adoptPreparedMapWorld} from '../extension/map-bvh-preparation.js';
 import {packRampPreparation, installPreparedRampSurfaces, installCachedRampSurfaces, hasRampSurfaces, cancelRampPreparation} from './map-ramp-preparation.js';
-import {openMapCache, readMapCache, decodeVerifiedMapCache, cachedWorld} from './map-cache.js';
+import {openMapCache, hasMapCache, readMapCache, decodeVerifiedMapCache, cachedWorld} from './map-cache.js';
 
 // After entry, a worker rebuilds the cache record from the HTTP-cached file.
 const PERSIST_DELAY = 3000;
 // A Demise-sized rebuild holds a 70 MB JSON and its record, so rebuilds run
 // one at a time and only the most recent missed maps wait.
 const PERSIST_QUEUE = 4;
+// Entry waits for the record read and the tree and ramp jobs. The largest,
+// Demise's tree, takes about 1.6 s on a fast machine; this leaves room for a
+// machine many times slower, so only a worker that stopped replying reaches
+// it. The map then loads natively.
+const WORKER_DEADLINE = 20000;
 
-function defaultCache() {
+const timer = (start, delay) => { const id = setTimeout(start, delay); return () => clearTimeout(id); };
+
+export function defaultCache(indexedDB = globalThis.indexedDB, schedule = timer) {
   let database;
-  const db = () => database ??= openMapCache();
+  const db = () => database ??= openMapCache(indexedDB);
+  async function stored(key) {
+    try {
+      const value = await db();
+      return !!value && await hasMapCache(value, key);
+    } catch {
+      // A closed connection can't tell; the reader opens its own.
+      database = null;
+      return true;
+    }
+  }
   return {
-    // A worker reads and verifies the record when one can start.
+    // The small index store decides first, so a miss starts the download at
+    // once. A worker reads and verifies a stored record when one can start.
     async read(key, createJobs) {
       let job = null;
       try {
         job = createJobs?.('map-cache-read');
+        if (!await stored(key)) return null;
         if (job && await job.ready) {
-          const result = await job.run('map-cache-read', {key});
-          return result?.bytes instanceof Uint8Array ? decodeVerifiedMapCache(result.bytes.buffer, key) : null;
+          const stop = schedule(() => job.dispose(), WORKER_DEADLINE);
+          try {
+            const result = await job.run('map-cache-read', {key});
+            return result?.bytes instanceof Uint8Array ? decodeVerifiedMapCache(result.bytes.buffer, key) : null;
+          } finally { stop(); }
         }
       } catch { return null; } finally { job?.dispose(); }
       return readMapCache(await db(), key);
     },
-    schedule: (start, delay) => { const timer = setTimeout(start, delay); return () => clearTimeout(timer); },
+    schedule,
   };
 }
 
@@ -210,7 +232,10 @@ export function createMapPreparation(cache = defaultCache()) {
       const joined = [];
       if (treeAvailable) joined.push(treeTask);
       if (rampAvailable) joined.push(rampTask);
-      if (joined.length) return Promise.all(joined);
+      if (!joined.length) return;
+      // Disposal ends both jobs; the tree and ramps are then built natively.
+      const stop = cache.schedule(() => { treeJob.dispose(); rampJob.dispose(); }, WORKER_DEADLINE);
+      return Promise.all(joined).finally(stop);
     }
 
     return {read, prepare, dispose};

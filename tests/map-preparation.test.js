@@ -132,6 +132,49 @@ test('pending BVH results never delay construction after triangle bounds are ava
   assert.equal(getRampSurfaces(map, .7), native);
 });
 
+function deadlineFixture() {
+  const timers = [], jobs = [];
+  const preparation = createMapPreparation({read: async () => null,
+    schedule: (start, delay) => { const timer = {start, delay, live: true}; timers.push(timer); return () => { timer.live = false; }; }});
+  return {preparation, timers, jobs, create(hang) {
+    if (!hang) return jobsFixture().create();
+    const pending = [];
+    const job = {ready: Promise.resolve(true), disposed: false,
+      run() { return new Promise((resolve, reject) => pending.push(reject)); },
+      dispose() { this.disposed = true; for (const reject of pending.splice(0)) reject(new DOMException('Disposed', 'AbortError')); }};
+    jobs.push(job);
+    return job;
+  }};
+}
+
+test('tree and ramp jobs that stop replying are given up on, and both are built natively', async () => {
+  const map = mapFixture(), fixture = deadlineFixture();
+  const load = fixture.preparation.createLoad(new AbortController().signal, () => fixture.create(true));
+  await flush();
+  let joined = false;
+  const entry = load.prepare(map, .7).then(() => { joined = true; });
+  await flush();
+  assert.equal(joined, false);
+  assert.deepEqual(fixture.timers.map(timer => timer.delay), [20000]);
+  fixture.timers[0].start();
+  await entry;
+  assert.ok(fixture.jobs.every(job => job.disposed));
+  const world = {};
+  assert.equal(fixture.preparation.useWorld(world, map.brushes, map.displacementTriangles, false, false, Tree), true);
+  assert.ok(world.tree instanceof Tree);
+  assert.deepEqual(world.tree.root, new Tree(map.brushes).root);
+  assert.equal(fixture.preparation.useRamps(map, .7), false);
+});
+
+test('jobs that reply in time clear their deadline', async () => {
+  const map = mapFixture(), fixture = deadlineFixture();
+  const load = fixture.preparation.createLoad(new AbortController().signal, () => fixture.create(false));
+  await flush();
+  await load.prepare(map, .7);
+  assert.deepEqual(fixture.timers.map(timer => timer.live), [false]);
+  assert.equal(fixture.preparation.useRamps(map, .7), true);
+});
+
 for (const stop of ['abort', 'destroy']) test(`${stop} prevents late results from entering a live map`, async () => {
   const map = mapFixture(), jobs = jobsFixture({holdResults: true}), controller = new AbortController();
   const preparation = createMapPreparation(), load = preparation.createLoad(controller.signal, () => jobs.create());
