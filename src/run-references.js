@@ -1,5 +1,6 @@
 import { createReferenceReplayStore, feedbackApplies, visitKey } from './replay-store.js';
 import { analysisKey, referenceIdentity } from './references.js';
+import { hasStepped, whenIdle } from './reference-hold.js';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const copyEntry = entry => referenceIdentity(entry) ? {runId: entry.runId, timeUs: entry.timeUs, splitsUs: entry.splitsUs.slice()} : null;
 
@@ -13,8 +14,12 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
   let mapId = null, mapVersion = null, ownerKey = null;
   let runArray = null, startTick = null, previousTick = -1, phase = null;
   let baseline = null, baselineIdentity = null, destroyed = false, visible = true;
+  function drop(slot) {
+    slot?.handle?.release();
+    slot?.idle?.();
+  }
   function invalidate() {
-    for (const slot of slots.values()) slot.handle?.release();
+    for (const slot of slots.values()) drop(slot);
     slots.clear();
   }
   function freezePersonal(entry) {
@@ -38,8 +43,8 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const key = `${context}:${ksf ? 'ksf' : `official:${identity ?? 'missing'}`}`;
     let requested = slots.get(source);
     if (requested?.key === key) return requested;
-    requested?.handle?.release();
-    requested = {key, status: 'loading', reference: null, handle: null};
+    drop(requested);
+    requested = {key, status: 'loading', reference: null, handle: null, held: null, idle: null};
     slots.set(source, requested);
     const load = ksf ? refs?.loadRecordRoute?.bind(refs) : identity && typeof refs?.loadReplay === 'function' ? () => refs.loadReplay(entry.runId) : null;
     if (!load || typeof adapter?.Session !== 'function' || typeof adapter?.Movement !== 'function') {
@@ -59,15 +64,20 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;
-    const handle = replayStore.acquire({key, session, entry, load, feedback: true, isCurrent});
-    requested.handle = handle;
-    const publish = result => {
-      if (!isCurrent()) return;
-      requested.reference = feedbackApplies(result, session) ? result.feedback : null;
-      requested.status = requested.reference ? 'ready' : result?.status ?? 'missing';
+    const current = requested;
+    const start = () => {
+      const handle = replayStore.acquire({key, session, entry, load, feedback: true, isCurrent});
+      current.handle = handle;
+      const publish = result => {
+        if (!isCurrent()) return;
+        current.reference = feedbackApplies(result, session) ? result.feedback : null;
+        current.status = current.reference ? 'ready' : result?.status ?? 'missing';
+      };
+      if (handle.result) publish(handle.result);
+      else handle.promise.then(publish);
     };
-    if (handle.result) publish(handle.result);
-    else handle.promise.then(publish);
+    if (hasStepped(session)) start();
+    else requested.held = start;
     return requested;
   }
   function visitResult(measurement, source, field) {
@@ -138,11 +148,18 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     if (timer.phase === 'ready') freezePersonal(refs?.own);
     previousTick = session.state.tick; phase = timer.phase;
     for (const [source, slot] of slots) if (source !== boardSource && source !== startSource && source !== surfSource) {
-      slot.handle?.release(); slots.delete(source);
+      drop(slot); slots.delete(source);
     }
     if (boardSource !== 'fixed') request(session, refs, boardSource);
     if (startSource !== 'fixed' && startSource !== boardSource) request(session, refs, startSource);
     if (surfSource !== 'fixed' && surfSource !== boardSource && surfSource !== startSource) request(session, refs, surfSource);
+    if (hasStepped(session)) for (const slot of slots.values()) if (slot.held && !slot.idle) {
+      slot.idle = whenIdle(() => {
+        const start = slot.held;
+        slot.held = slot.idle = null;
+        start?.();
+      });
+    }
     return result();
   }
   return {update, destroy() { destroyed = true; invalidate(); if (ownsStore) replayStore.destroy(); }};

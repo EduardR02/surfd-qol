@@ -1,4 +1,5 @@
 import { checkpointApplies, createReferenceReplayStore, reconstructReferenceReplay } from './replay-store.js';
+import { hasStepped, whenIdle } from './reference-hold.js';
 
 const CACHE_KEY = 'surfd.qol.checkpoints.v1';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -89,7 +90,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
   }
   function release(slot) {
     slot.handle?.release();
-    slot.handle = null;
+    slot.idle?.();
+    slot.handle = slot.held = slot.idle = null;
   }
   function clear(slot) {
     release(slot);
@@ -118,21 +120,33 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;
-    const handle = replayStore.acquire({key, session, entry, load, feedback: false, isCurrent});
-    slot.handle = handle;
-    const publish = result => {
-      if (slot.handle !== handle || !isCurrent()) return;
-      const route = checkpointApplies(result, session, ksf ? null : entry) ? result.checkpoint : null;
-      slot.speeds = route?.speeds ?? null;
-      slot.status = route ? 'ready' : 'missing';
-      slot.retryable = result?.status === 'missing';
-      if (route) {
-        slot.splitsUs = route.splitsUs; slot.timeUs = route.timeUs;
-        if (cacheKey) { cache.set(cacheKey, route.speeds); save(); }
-      }
+    const start = () => {
+      const handle = replayStore.acquire({key, session, entry, load, feedback: false, isCurrent});
+      slot.handle = handle;
+      const publish = result => {
+        if (slot.handle !== handle || !isCurrent()) return;
+        const route = checkpointApplies(result, session, ksf ? null : entry) ? result.checkpoint : null;
+        slot.speeds = route?.speeds ?? null;
+        slot.status = route ? 'ready' : 'missing';
+        slot.retryable = result?.status === 'missing';
+        if (route) {
+          slot.splitsUs = route.splitsUs; slot.timeUs = route.timeUs;
+          if (cacheKey) { cache.set(cacheKey, route.speeds); save(); }
+        }
+      };
+      if (handle.result) publish(handle.result);
+      else handle.promise.then(publish);
     };
-    if (handle.result) publish(handle.result);
-    else handle.promise.then(publish);
+    if (hasStepped(session)) start();
+    else slot.held = start;
+  }
+  function startHeld(slot, session) {
+    if (!slot.held || slot.idle || !hasStepped(session)) return;
+    slot.idle = whenIdle(() => {
+      const start = slot.held;
+      slot.held = slot.idle = null;
+      start?.();
+    });
   }
   function update(active = true) {
     visible = active;
@@ -195,6 +209,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     if (enabled && settings.checkpointReference !== 'pb') {
       request(recordSlot, source === 'leaderboard' ? copyEntry(refs?.record) : null, null, session, refs, source === 'ksf');
     } else clear(recordSlot);
+    startHeld(ownSlot, session);
+    startHeld(recordSlot, session);
     const result = {
       own: ownSlot.speeds,
       record: recordSlot.speeds,
