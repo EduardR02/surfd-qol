@@ -1,6 +1,6 @@
 import {expect, test} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, MAP_CACHE_VERSION} from '../src/map-cache.js';
+import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, MAP_CACHE_VERSION} from '../src/map-cache.js';
 import {buildCollisionTree} from '../extension/collision-tree.js';
 import {getRampSurfaces} from '../src/surfaces.js';
 import {installCachedRampSurfaces} from '../src/map-ramp-preparation.js';
@@ -169,4 +169,18 @@ test('a new load stops a running record rebuild and restarts it after its own ge
   second.prepare(mapFixture(), .7, null);
   expect(scheduled).toHaveLength(2);
   preparation.destroy();
+});
+
+test('eviction keeps the most recently used records within one byte budget', () => {
+  const MB = 1024 * 1024;
+  const entries = [
+    {key: 'oldest', size: 46 * MB, usedAt: 1}, {key: 'small', size: 4 * MB, usedAt: 7},
+    {key: 'a', size: 46 * MB, usedAt: 2}, {key: 'b', size: 46 * MB, usedAt: 3}, {key: 'c', size: 46 * MB, usedAt: 4},
+    {key: 'd', size: 46 * MB, usedAt: 5}, {key: 'e', size: 46 * MB, usedAt: 6},
+  ];
+  expect(staleMapCacheKeys(entries)).toEqual(['oldest']);
+  expect(staleMapCacheKeys(entries.filter(entry => entry.key !== 'oldest'))).toEqual([]);
+  expect(staleMapCacheKeys(Array.from({length: 40}, (_, index) => ({key: String(index), size: 4 * MB, usedAt: index})))).toEqual([]);
+  expect(staleMapCacheKeys([{key: 'huge', size: 300 * MB, usedAt: 1}])).toEqual(['huge']);
+  expect(staleMapCacheKeys([{key: 'broken', size: 'large', usedAt: 9}, {key: 'kept', size: MB, usedAt: 1}])).toEqual(['broken']);
 });

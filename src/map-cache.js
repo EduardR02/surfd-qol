@@ -8,7 +8,8 @@ import {packRampPreparation, buildPackedRampPreparation} from './map-ramp-prepar
 /* global __QOL_MAP_CACHE__ */
 export const MAP_CACHE_VERSION = typeof __QOL_MAP_CACHE__ === 'string' ? __QOL_MAP_CACHE__ : 'development';
 const DB_NAME = 'surfd-qol-maps', DB_VERSION = 1;
-const MAX_ENTRIES = 6, MAX_BYTES = 384 * 1024 * 1024;
+// One budget of serialized record bytes, least recently used evicted first.
+const MAX_BYTES = 256 * 1024 * 1024;
 const MAGIC = 0x51434d31;
 
 const NULL = 0, FALSE = 1, TRUE = 2, INT = 3, STRING = 4, ARRAY = 5, OBJECT = 6, FLOAT = 7, DOUBLE = 8;
@@ -265,6 +266,11 @@ export async function writeMapCache({key, url, groundNormal, mapId}, fetcher = f
   const db = await openMapCache(indexedDB);
   if (!db) return {stored: false};
   try {
+    // Stored uncompressed: Chrome already compresses IndexedDB values on disk,
+    // and quota counts that size (Demise: 45.5 MB serialized, 17.1 MB on disk).
+    // Our own deflate would save about 6 MB more and add about 33 ms to each
+    // warm read. If compression is ever added, use level 6 (CompressionStream's
+    // default): smaller than level 1 and faster to unpack.
     const transaction = db.transaction(['records', 'index'], 'readwrite');
     transaction.objectStore('records').put(record);
     transaction.objectStore('index').put({key, size: buffer.byteLength, usedAt: Date.now()});
@@ -274,15 +280,18 @@ export async function writeMapCache({key, url, groundNormal, mapId}, fetcher = f
   } finally { db.close(); }
 }
 
-async function evictMapCache(db) {
-  const entries = await done(db.transaction('index').objectStore('index').getAll());
-  entries.sort((left, right) => right.usedAt - left.usedAt);
+// Keys to drop so the most recently used records fit the budget.
+export function staleMapCacheKeys(entries, budget = MAX_BYTES) {
   let total = 0;
-  const stale = [];
-  entries.forEach((entry, index) => {
+  return [...entries].sort((left, right) => right.usedAt - left.usedAt).filter(entry => {
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0) return true;
     total += entry.size;
-    if (index >= MAX_ENTRIES || total > MAX_BYTES) stale.push(entry.key);
-  });
+    return total > budget;
+  }).map(entry => entry.key);
+}
+
+async function evictMapCache(db) {
+  const stale = staleMapCacheKeys(await done(db.transaction('index').objectStore('index').getAll()));
   if (!stale.length) return;
   const transaction = db.transaction(['records', 'index'], 'readwrite');
   for (const key of stale) {
