@@ -465,3 +465,28 @@ test('a worker refusing a fetched pack hands it back to the page loader', async 
     globalThis.fetch = fetch;
   }
 });
+
+for (const [name, url] of [['a query string', `/packed/${'4'.repeat(64)}.visual-assets.gz?v=2`],
+  ['a renamed path', `/visual/${'4'.repeat(64)}.visual-assets.gz`]]) {
+  test(`a pack URL with ${name} loads through the page loader`, async () => {
+    const mesh = meshBytes(), packs = [pack(url, [{url: 'mesh', kind: 'mesh', bytes: mesh.slice()}])];
+    const fetch = globalThis.fetch, workerReads = [], pageReads = [];
+    globalThis.fetch = async value => { workerReads.push(value); throw new Error('Unexpected worker fetch'); };
+    try {
+      const loader = Function('__qolCreateMapLoadJobs', '__qolMapWorkerSource',
+        `return (${loadProgressiveAssets.toString()})`)(() => localBroker(), 'worker source');
+      const resources = await loader({sky: [], compressedTextures: {}, world: [{url: 'mesh', vertexCount: 1}]}, packs, false,
+        new AbortController().signal, {
+          fetchPack: async value => { pageReads.push(value.url); return new Response(value.bytes); },
+          packUrl: value => `https://assets.example${value.url}`,
+          decodeImage: async (bytes, file) => image(file), validateDDS() {}, abort(error) { throw error; },
+        });
+      await resources.ready;
+      expect(workerReads).toEqual([]);
+      expect(pageReads).toEqual([url]);
+      expect(Array.from(new Uint8Array(resources.meshes.get('mesh')))).toEqual(Array.from(mesh));
+    } finally {
+      globalThis.fetch = fetch;
+    }
+  });
+}

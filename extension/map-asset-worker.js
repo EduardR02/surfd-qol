@@ -70,10 +70,17 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
     emit(id, {kind: asset.kind, url: asset.url, value, prepared}, transfers);
   }
 
+  function pageLoaderRequired() {
+    const error = new Error('Visual pack needs the page loader');
+    error.name = 'PackFetchError';
+    return error;
+  }
+
   // The worker reads cached packs itself, so the page thread never paces them.
-  // Anything but a plain successful asset response is left to the page's
-  // native loader, which owns challenge and error handling.
+  // An unfamiliar URL, or anything but a plain successful asset response, is
+  // left to the page's native loader, which owns challenge and error handling.
   async function fetchPack(url) {
+    if (typeof url !== 'string' || !/^https:\/\/[^/]+\/packed\/[a-f0-9]{64}\.visual-assets\.gz$/.test(url)) throw pageLoaderRequired();
     let response;
     try {
       response = await fetch(url, {signal: controller.signal});
@@ -86,18 +93,13 @@ export function createVisualPackProcessor({inflate, decodeImage, decodeMesh, emi
         response.headers.get('x-vercel-mitigated')?.toLowerCase() !== 'challenge' &&
         response.headers.get('cf-mitigated')?.toLowerCase() !== 'challenge') return response.body;
     try { await response?.body?.cancel(); } catch { /* Already closed. */ }
-    const error = new Error('Visual pack needs the page loader');
-    error.name = 'PackFetchError';
-    throw error;
+    throw pageLoaderRequired();
   }
 
   async function readPack(id, {stream, url, pack}) {
     const foreign = new Set(Array.isArray(pack?.foreign) ? pack.foreign : []);
     if (!initialized) throw new Error('Visual worker is not initialized');
-    if (!stream) {
-      if (typeof url !== 'string' || !/^https:\/\/[^/]+\/packed\/[a-f0-9]{64}\.visual-assets\.gz$/.test(url)) throw new Error('Invalid visual pack URL');
-      stream = await fetchPack(url);
-    }
+    if (!stream) stream = await fetchPack(url);
     const {byteLength, entries} = pack;
     if (!Number.isSafeInteger(byteLength) || byteLength <= 0 || byteLength > maxBytes || !Array.isArray(entries)) {
       throw new Error('Invalid visual pack size');
