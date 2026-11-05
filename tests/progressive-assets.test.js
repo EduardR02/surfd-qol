@@ -530,7 +530,7 @@ const view={prepare:async frame=>{globalThis.__SURFD_QOL__?.prepareMap?.();const
 async function startMap(entry,resume=!1,bypass=!1){const controller=new AbortController;try{const[collision,visual]=await Promise.all([geometry(entry,controller.signal),relay(entry.slug,{signal:controller.signal})]);ready=!1;const frame=install(collision,visual,resume,bypass);await currentView.prepare?.(frame),ready=!0,success()}catch(error){if(controller.abort(error),error instanceof Error){failed(error);return}error instanceof Error&&(controls.unlock(),overlay.hidden=!1,failed(error))}finally{loading=!1,element("play").disabled=!ready,clock=performance.now(),input.reset()}if(ready)done()}async function next(){}
 `;
 
-function progressiveFixtureRunner(prepareSky, {unknownSky = false, initTexture} = {}) {
+function progressiveFixtureRunner(prepareSky, {unknownSky = false, initTexture, capabilities} = {}) {
   const urls = Array.from({length: 6}, (_, index) => `face-${index}`);
   const faces = urls.map(image), selected = pack('visual', urls.map((url, index) => ({url, bytes: [index]})));
   const data = {sky: urls, skyTransforms: ['rotate 90'], compressedTextures: {}};
@@ -541,6 +541,7 @@ function progressiveFixtureRunner(prepareSky, {unknownSky = false, initTexture} 
   class Renderer {
     constructor() {
       if (initTexture) this.initTexture = initTexture;
+      if (capabilities) this.capabilities = capabilities;
       this.renderBufferDirect = (camera, scene, geometry, material, object, group) => {
         this.initTexture?.(this.sky);
         calls.real.push({frame: this.frame, faces: this.sky.image});
@@ -592,6 +593,17 @@ test('progressive sky delays the first real draw but not renderer construction o
   expect(fixture.calls.real[0].faces).toBe(converted);
   expect(fixture.calls.fallback).toBe(0);
   expect(allocatedSize).toBe(512);
+  view.dispose();
+});
+
+test('sky preparation receives the renderer cube size limit', async () => {
+  const limits = [], converted = Array.from({length: 6}, () => ({width: 512, height: 512}));
+  const preparation = {ready: Promise.resolve(), finish: async (native, maxSize) => { limits.push(maxSize); return converted; }, cancel() {}};
+  const fixture = progressiveFixtureRunner(() => preparation, {capabilities: {maxCubemapSize: 4096}});
+  const view = fixture.run.factory({}, await fixture.run.relay('map'), {});
+  await view.prepare({id: 'first'});
+  expect(limits).toEqual([4096]);
+  expect(fixture.calls.real[0].faces).toBe(converted);
   view.dispose();
 });
 

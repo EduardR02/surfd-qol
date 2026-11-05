@@ -76,7 +76,7 @@ export function nativeProgressiveMapHooks(source) {
     .replace(sky[0], () => skyConstruction);
   renderer = renderer.replace(draw[0], () => `const __qolProgressiveMap=${v.frame}??${v.previous};
     if(!__qolSkyApplied&&${f.data}.resources.skyPreparation&&${v.alive}()){
-      const faces=await ${f.data}.resources.skyPreparation.finish(()=>${s.call});
+      const faces=await ${f.data}.resources.skyPreparation.finish(()=>${s.call},${f.renderer}.capabilities?.maxCubemapSize);
       if(${v.alive}()){${s.scene}.background.image=faces;${s.scene}.background.needsUpdate=true;__qolSkyApplied=true}
     }
     if(__qolProgressiveMap&&${v.alive}())${v.view}.render(__qolProgressiveMap)`);

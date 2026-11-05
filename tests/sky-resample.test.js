@@ -436,7 +436,7 @@ for (const [name, factory] of preparations) {
       createSkyResampler, runSkyResampleWorker, environment);
     await turn();
     environment.workers[0].flush();
-    const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); });
+    const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); }, 3);
     for (let index = 0; index < faces.length; index++) {
       expect(output[index].isDataTexture).toBe(true);
       expect(output[index].image.data).toBeInstanceOf(Uint8Array);
@@ -446,6 +446,23 @@ for (const [name, factory] of preparations) {
     prepared.release();
     expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
   });
+
+  for (const [limit, maxSize] of [['above the GPU cube limit', 2], ['with an unknown cube limit', undefined]]) {
+    test(`${name}: an opaque sky ${limit} uploads as canvases, which three.js shrinks`, async () => {
+      const environment = workerEnvironment(), faces = skyFaces(environment, true);
+      const originals = faces.map(face => face.data.slice()), transforms = [identity, [0, 1, 0, -1, 0, 1]];
+      const prepared = factory(faces, transforms, new AbortController().signal, value => value ?? identity,
+        createSkyResampler, runSkyResampleWorker, environment);
+      await turn();
+      environment.workers[0].flush();
+      const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); }, maxSize);
+      for (let index = 0; index < faces.length; index++) {
+        expect(output[index].isDataTexture).toBeUndefined();
+        expect([output[index].width, output[index].height]).toEqual([3, 3]);
+        expect(pixelsOf(output[index])).toEqual(expected(faces[index], originals[index], transforms[index] ?? identity));
+      }
+    });
+  }
 
   test(`${name}: a translucent pixel keeps the native canvas round trip for every face`, async () => {
     const environment = workerEnvironment(), faces = skyFaces(environment, true);

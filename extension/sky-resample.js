@@ -171,7 +171,10 @@ export function createSkyPreparation(faces, transforms, signal, parse, createRes
     cancel(signal.reason);
   }
 
-  function finish(nativeConversion) {
+  // three.js shrinks canvas cube faces, which native conversion produces, to
+  // the GPU's maxCubemapSize but uploads raw pixels as given. A larger face,
+  // or an unknown limit, takes the canvas path.
+  function finish(nativeConversion, maxSize) {
     if (finishPromise) return finishPromise;
     // The first draw waits here. Demise's sky, the largest known, takes about
     // 0.5 s even in one worker, so only workers that stopped replying reach
@@ -180,7 +183,7 @@ export function createSkyPreparation(faces, transforms, signal, parse, createRes
     finishPromise = ready.finally(() => { if (timer != null) environment.clearTimeout(timer); }).then(() => {
       if (cancelled) throw cancellationReason;
       try {
-        if (pixels && opaque.every(Boolean)) {
+        if (pixels && opaque.every(Boolean) && size <= maxSize) {
           return pixels.map(buffer => ({isDataTexture: true, image: {data: new Uint8Array(buffer), width: size, height: size}}));
         }
         if (pixels) {
