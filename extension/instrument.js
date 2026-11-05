@@ -8,7 +8,7 @@ import {nativeProgressiveMapHooks} from './progressive-map-hooks.js';
 import {nativeMapWorkerHooks} from './map-worker-hooks.js';
 import {nativeMapFloorHooks} from './map-floor-hooks.js';
 import {nativeMapPreparationHooks} from './map-preparation-hooks.js';
-import {nativeRunTicketHooks} from './run-ticket-hooks.js';
+import {nativeMapEntryHooks} from './map-entry-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 
 export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v41:';
@@ -704,7 +704,8 @@ export function instrumentGame(source, mapWorkerSource = '') {
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
   // Before the map hooks, which rewrite the loaders it recognises.
-  source = nativeRunTicketHooks(source);
+  const entry = nativeMapEntryHooks(source);
+  source = entry.source;
   const worldContract = knownNativeWorld(source);
   source = nativeCollisionWorldHooks(source, worldContract);
   source = collisionBoundsHook(source);
@@ -735,7 +736,8 @@ ${practice.setup}
     getView: () => { viewed.target = ${viewed[1]}; viewed.view = ${viewed[2]}; return viewed; },
     getInput: () => ${binding[1]},
     getBindings: () => ${binding[2]}.bindings,
-    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${previewViewHook(source, binding[1])}${replayHooks(source)}${practice.adapter}${noticeHook(source)}${cinema.adapter}${rooms.adapter}
+    setInputBindings: bindings => ${binding[1]}.setBindings(bindings),${previewViewHook(source, binding[1])}${replayHooks(source)}${practice.adapter}${noticeHook(source)}${cinema.adapter}${rooms.adapter}${entry.controller ? `
+    onlineRuns: () => ${entry.controller},` : ''}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;

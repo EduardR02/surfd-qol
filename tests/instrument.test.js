@@ -1936,10 +1936,12 @@ describe('shared savelocs in the game before any save of your own', () => {
 // A local copy of the live bundle, kept untracked at the repository root.
 const liveBundle = new URL('../.surfd-game.js', import.meta.url);
 describe.skipIf(!existsSync(liveBundle))('the live game bundle', () => {
-  test('asks for the run ticket as a solo, practice or room map load starts', () => {
+  test('asks for the run ticket and reports the start of a solo, practice or room map load', () => {
     const output = instrumentGame(readFileSync(liveBundle, 'utf8'));
     expect(output.split('__qolPrefetchRun(').length - 1).toBe(2);
     expect(output).toMatch(/\{__qolPrefetchRun\(__qolMap\)\{[^]{0,600}?\},ready:[\w$]+,setMap\(/);
-    expect(output).toMatch(/async function [\w$]+\(([\w$]+),[\w$]+=(?:!1|false),([\w$]+)=(?:!1|false)\)\{if\(!\2&&[^;]+;if\([\w$]+\)return;if\(!\2\)try\{[\w$]+\.__qolPrefetchRun\(\1\)\}catch\{\}/);
+    expect(output).toMatch(/async function [\w$]+\(([\w$]+),[\w$]+=(?:!1|false),([\w$]+)=(?:!1|false)\)\{if\(!\2&&[^;]+;if\([\w$]+\)return;if\(!\2\)\{try\{([\w$]+)\.__qolPrefetchRun\(\1\)\}catch\{\}globalThis\.__SURFD_QOL__\?\.mapLoadStarted\?\.\(\1\)\}/);
+    const controller = output.match(/try\{([\w$]+)\.__qolPrefetchRun\(/)[1];
+    expect(output).toContain(`onlineRuns: () => ${controller},`);
   });
 });

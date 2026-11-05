@@ -16,6 +16,7 @@ import { createPrivateRooms } from './private-rooms/index.js';
 import { createStrafePreview } from './strafe-preview.js';
 import { createCinema } from './cinema.js';
 import {createMapPreparation} from './map-preparation.js';
+import {createEntryTiming} from './entry-timing.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -95,6 +96,8 @@ const privateRooms = createPrivateRooms({ getAdapter: () => api.adapter });
 const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
 const cinema = createCinema({getAdapter: () => api.adapter, onChange: () => hud?.cinemaChanged?.()});
 const mapPreparation = createMapPreparation();
+const entryTiming = createEntryTiming();
+let restoreBeginAttempt = null;
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
   applySettings(patch);
@@ -125,8 +128,13 @@ const api = {
   usePreparedMapWorld(...args) {
     return destroyed || failed ? false : mapPreparation.useWorld(...args);
   },
+  mapLoadStarted(entry) {
+    if (destroyed || failed) return;
+    try { entryTiming.start(entry?.name ?? entry?.id); } catch { /* Timing is diagnostic only. */ }
+  },
   enteredMap() {
     if (destroyed || failed) return;
+    try { entryTiming.loaded(mapPreparation.recordSource()); } catch { /* Timing is diagnostic only. */ }
     try { mapPreparation.enterMap(); } catch { /* Cache rebuilds are optional. */ }
   },
   prepareMap() {
@@ -142,6 +150,7 @@ const api = {
     try {
       observer = observePhysics(adapter, metrics, {
         onBeforeTick(session) {
+          if (entryTiming.pending) entryTiming.step();
           if (strafePreview.active) strafePreview.check();
           replayControl.observe(session);
         },
@@ -159,6 +168,7 @@ const api = {
         onError: fail
       });
       api.adapter = adapter;
+      restoreBeginAttempt = timeTicketRequests(adapter.onlineRuns?.());
       try { privateRooms.attach(); }
       catch (error) { console.warn('[Surfd QoL] Private room discovery unavailable:', error); }
       runtimeStatus = 'Tick observer connected';
@@ -179,6 +189,7 @@ const api = {
     if (destroyed) return;
     destroyed = true;
     mapPreparation.destroy();
+    restoreBeginAttempt?.();
     clearInterval(bindingTimer);
     strafePreview.destroy();
     cinema.destroy();
@@ -200,6 +211,19 @@ const api = {
     delete window.__SURFD_QOL__;
   }
 };
+// The entry timing line counts a run ticket request still pending once the
+// map has loaded, since the game's first step waits for it.
+function timeTicketRequests(runs) {
+  const original = runs?.beginAttempt;
+  if (typeof original !== 'function') return null;
+  const timed = function (...args) {
+    const result = original.apply(this, args);
+    if (entryTiming.pending) entryTiming.attempt(result);
+    return result;
+  };
+  runs.beginAttempt = timed;
+  return () => { if (runs.beginAttempt === timed) runs.beginAttempt = original; };
+}
 Object.defineProperty(window, '__SURFD_QOL__', { configurable: true, value: api });
 function publishPageState() {
   window.dispatchEvent(new CustomEvent('surfd-qol-page-state', {

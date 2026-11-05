@@ -59,6 +59,8 @@ export function createMapPreparation(cache = defaultCache()) {
   // player enters a map; a new load stops the running one and queues it again.
   const queue = [];
   let rebuild = null, resume = null, entered = false, storage = true, rebuildJobs = null;
+  // Where the latest load's collision data came from: 'cache', 'download' or null.
+  let recordSource = null;
 
   function queuePersist(payload) {
     if (!storage || rebuild?.payload.key === payload.key) return;
@@ -113,6 +115,7 @@ export function createMapPreparation(cache = defaultCache()) {
     if (signal.aborted) return null;
     pausePersist();
     rebuildJobs = createJobs;
+    recordSource = null;
     let treeJob, rampJob, treeRecord, rampRecord, prepared = false, disposed = false, finished = 0;
     let treeAvailable = false, rampAvailable = false, jobsStarted = false, cached = null;
 
@@ -165,6 +168,7 @@ export function createMapPreparation(cache = defaultCache()) {
         try { record = await cache.read(key, createJobs); } catch { record = null; }
       }
       if (disposed || signal.aborted) return null;
+      if (typeof key === 'string' && key) recordSource = record ? 'cache' : 'download';
       if (record) {
         cached = {...record, key};
         return record.map;
@@ -283,5 +287,5 @@ export function createMapPreparation(cache = defaultCache()) {
     storage = false;
   }
 
-  return {createLoad, useWorld, useRamps, enterMap, destroy};
+  return {createLoad, useWorld, useRamps, enterMap, recordSource: () => recordSource, destroy};
 }

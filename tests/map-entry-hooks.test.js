@@ -1,5 +1,5 @@
 import {expect, test} from 'bun:test';
-import {nativeRunTicketHooks} from '../extension/run-ticket-hooks.js';
+import {nativeMapEntryHooks} from '../extension/map-entry-hooks.js';
 
 // The game's online controller, ticket buffer, catalogue and map load, with
 // names unrelated to the live bundle's.
@@ -22,7 +22,7 @@ async function loadMap(entry,keep=!1,bypass=!1){if(!bypass&&!available(entry.id)
 
 function run(source = nativeSource) {
   const deps = {events: [], attempt: async board => { deps.events.push('attempt'); return {id: board}; }};
-  const exports = new Function('deps', `${nativeRunTicketHooks(source)};return {loadMap,online}`)(deps);
+  const exports = new Function('deps', `${nativeMapEntryHooks(source).source};return {loadMap,online}`)(deps);
   return {deps, ...exports, ...deps.state, state: deps.state};
 }
 
@@ -83,10 +83,26 @@ test('a failed early request never surfaces from the load', async () => {
   expect(game.client.attempts).toEqual(['guest:board-one']);
 });
 
-test('an unfamiliar online controller or map load leaves the game unchanged', () => {
-  for (const [from, to] of [['initialized||await loaded', 'await loaded'], ['if(busy)return;', 'if(busy){return}'],
-    ['catalog.find(item=>item.id===entry.id)', 'catalog.find(item=>item.slug===entry.slug)'], ['async prefetch(board,user){', 'async prefetch(user,board){']]) {
-    const source = nativeSource.replace(from, to);
-    expect([from, nativeRunTicketHooks(source) === source]).toEqual([from, true]);
+test('the start of a solo, practice or room load is reported, after its ticket is asked for', async () => {
+  const previous = globalThis.__SURFD_QOL__, game = run();
+  globalThis.__SURFD_QOL__ = {mapLoadStarted(map) { game.deps.events.push(`started ${map.id}`); }};
+  try {
+    await game.loadMap(entry);
+    await game.loadMap(entry, false, true);
+    expect(game.deps.events.slice(0, 3)).toEqual(['attempt', 'started surf_one', 'loading']);
+    expect(game.deps.events.filter(event => event.startsWith('started'))).toEqual(['started surf_one']);
+  } finally {
+    globalThis.__SURFD_QOL__ = previous;
   }
+  expect(nativeMapEntryHooks(nativeSource).controller).toBe('online');
+});
+
+test('an unfamiliar online controller keeps only the load report; an unfamiliar map load changes nothing', () => {
+  for (const [from, to] of [['initialized||await loaded', 'await loaded'], ['catalog.find(item=>item.id===entry.id)', 'catalog.find(item=>item.slug===entry.slug)'],
+    ['async prefetch(board,user){', 'async prefetch(user,board){']]) {
+    const hooked = nativeMapEntryHooks(nativeSource.replace(from, to));
+    expect([from, hooked.controller, hooked.source.includes('__qolPrefetchRun'), hooked.source.includes('mapLoadStarted')]).toEqual([from, null, false, true]);
+  }
+  const source = nativeSource.replace('if(busy)return;', 'if(busy){return}');
+  expect(nativeMapEntryHooks(source)).toEqual({source, controller: null});
 });
