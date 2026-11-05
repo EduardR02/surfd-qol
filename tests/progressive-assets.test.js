@@ -146,7 +146,7 @@ for (const [name, loader] of [
   ['module', loadProgressiveAssets],
   ['standalone injection', Function(`return (${loadProgressiveAssets.toString()})`)()],
 ]) {
-  test(`${name}: sky processing starts on the final face, before mesh handoff, without awaiting it`, async () => {
+  test(`${name}: sky preparation starts with the load and receives the faces on the final decode, before mesh handoff`, async () => {
     const urls = Array.from({length: 6}, (_, index) => `sky-${index}`);
     const transforms = ['rotate 90'], started = deferred(), skyReady = deferred(), cancellations = [];
     const preparation = {ready: skyReady.promise, cancel: reason => cancellations.push(reason)};
@@ -157,13 +157,18 @@ for (const [name, loader] of [
       started.resolve({faces, values, signal});
       return preparation;
     }}, loader);
+    const call = await started.promise;
+    let received = null;
+    call.faces.then(faces => { received = faces; });
     run.read('sky-pack');
     await run.decodeStarted(urls[3]);
     const images = urls.slice(0, 4).map(url => run.decode(url));
     await run.decodeStarted(urls[5]);
-    images.push(run.decode(urls[4]), run.decode(urls[5]));
-    const call = await started.promise;
-    expect(call.faces).toEqual(images);
+    images.push(run.decode(urls[4]));
+    await Promise.resolve();
+    expect(received).toBe(null);
+    images.push(run.decode(urls[5]));
+    expect(await call.faces).toEqual(images);
     expect(call.values).toBe(transforms);
     expect(call.signal).toBe(run.controller.signal);
 
@@ -190,8 +195,10 @@ for (const [name, loader] of [
       pack('sky-pack', [{url: 'shared-sky', bytes: [1]}]),
       pack('mesh-pack', [{url: 'world', kind: 'mesh', bytes: [2]}]),
     ], {sky: Array(6).fill('shared-sky'), prepareSky(faces) {
-      expect(faces).toEqual(Array(6).fill(face));
-      started.resolve();
+      faces.then(values => {
+        expect(values).toEqual(Array(6).fill(face));
+        started.resolve();
+      });
       return {cancel: reason => cancellations.push(reason)};
     }}, loader);
     run.read('sky-pack');

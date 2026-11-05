@@ -354,18 +354,60 @@ const preparations = [
   ['standalone injected factory', Function(`return (${createSkyPreparation.toString()})`)()],
 ];
 
+// Faces reach workers after a promise turn; let that happen.
+const turn = () => new Promise(resolve => setTimeout(resolve, 0));
+const pixelsOf = face => Array.from(face.image?.data ?? face.data);
+const expected = (face, original, transform, size = 3) => Array.from(nativeResample(original, face.width, face.height, size, transform));
+
 for (const [name, factory] of preparations) {
+  test(`${name}: workers start before the faces arrive and receive only the faces they need`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment);
+    environment.navigator = {hardwareConcurrency: 12};
+    let deliver;
+    const pending = new Promise(resolve => { deliver = resolve; });
+    const prepared = factory(pending, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    expect(environment.workers).toHaveLength(3);
+    expect(environment.revoked).toEqual(['blob:test-1']);
+    expect(environment.workers.every(worker => worker.pending === undefined)).toBe(true);
+    deliver(faces);
+    await turn();
+    for (const worker of environment.workers) {
+      expect(worker.images.map(Boolean)).toEqual(worker.pending.images.map((_, face) => worker.pending.tasks.some(task => task.face === face)));
+    }
+    for (const worker of environment.workers) worker.flush();
+    await prepared.ready;
+    expect(environment.workers.every(worker => worker.terminated === 1)).toBe(true);
+  });
+
+  test(`${name}: identity transforms start workers only once a face size differs`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment);
+    let deliver;
+    const prepared = factory(new Promise(resolve => { deliver = resolve; }), [], new AbortController().signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    expect(environment.workers).toHaveLength(0);
+    prepared.observe(faces[0]);
+    prepared.observe(faces[1]);
+    expect(environment.workers).toHaveLength(0);
+    prepared.observe(faces[2]);
+    expect(environment.workers).toHaveLength(1);
+    prepared.observe(faces[3]);
+    expect(environment.workers).toHaveLength(1);
+    deliver(faces);
+    await turn();
+    environment.workers[0].flush();
+    const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); });
+    expect(output[2].data).toEqual(nativeResample(faces[2].data, 1, 1, 3, identity));
+  });
+
   test(`${name}: worker pixels match native conversion and convert every face in a mixed sky`, async () => {
     const environment = workerEnvironment(), faces = skyFaces(environment), originals = faces.map(face => face.data.slice());
     const rotation = [0, 1, 0, -1, 0, 1], affine = [.8, .2, -.1, -.3, 1.1, .1];
     const transforms = [identity, rotation, affine, identity, rotation, affine];
-    const controller = new AbortController();
-    const prepared = factory(faces, transforms, controller.signal, value => value ?? identity,
+    const prepared = factory(faces, transforms, new AbortController().signal, value => value ?? identity,
       createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     const worker = environment.workers[0];
-    expect(worker.transfers).toEqual([]);
-    expect(worker.images[0]).not.toBeNull();
-    expect(environment.revoked).toEqual(['blob:test-1']);
     let finished = false;
     const result = prepared.finish(() => { throw new Error('Unexpected native fallback'); })
       .then(value => { finished = true; return value; });
@@ -385,103 +427,85 @@ for (const [name, factory] of preparations) {
     expect(await prepared.finish(() => { throw new Error('Repeated fallback'); })).toBe(output);
   });
 
-  test(`${name}: opaque faces return unpremultiplied worker bitmaps released with the renderer`, async () => {
-    const environment = workerEnvironment({bitmaps: true}), faces = skyFaces(environment, true);
+  test(`${name}: an opaque converted sky uploads as raw pixels`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment, true);
     const originals = faces.map(face => face.data.slice());
     const rotation = [0, 1, 0, -1, 0, 1], affine = [.8, .2, -.1, -.3, 1.1, .1];
     const transforms = [identity, rotation, affine, identity, rotation, affine];
     const prepared = factory(faces, transforms, new AbortController().signal, value => value ?? identity,
       createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     environment.workers[0].flush();
     const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); });
-    expect(output).toEqual(environment.created);
     for (let index = 0; index < faces.length; index++) {
-      expect(output[index]).toBeInstanceOf(environment.ImageBitmap);
-      expect(output[index].data).toEqual(nativeResample(originals[index], faces[index].width,
-        faces[index].height, 3, transforms[index]));
+      expect(output[index].isDataTexture).toBe(true);
+      expect(output[index].image.data).toBeInstanceOf(Uint8Array);
+      expect([output[index].image.width, output[index].image.height]).toEqual([3, 3]);
+      expect(pixelsOf(output[index])).toEqual(expected(faces[index], originals[index], transforms[index]));
     }
-    expect(environment.workers[0].transfers).toEqual([]);
-    expect(environment.clones.every(image => image.closed === 1)).toBe(true);
-    expect(output.map(bitmap => bitmap.closed)).toEqual([0, 0, 0, 0, 0, 0]);
     prepared.release();
-    prepared.release();
-    expect(output.map(bitmap => bitmap.closed)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
-  test(`${name}: a translucent pixel keeps the native canvas round trip`, async () => {
-    const environment = workerEnvironment({bitmaps: true}), faces = skyFaces(environment, true);
+  test(`${name}: a translucent pixel keeps the native canvas round trip for every face`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment, true);
     faces[4].data[7] = 254;
     const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
       value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     environment.workers[0].flush();
     const output = await prepared.finish(() => { throw new Error('Unexpected native fallback'); });
-    expect(environment.created).toEqual([]);
-    expect(output.every(face => face instanceof environment.ImageBitmap)).toBe(false);
+    expect(output.some(face => face.isDataTexture)).toBe(false);
+    expect(output.every(face => face instanceof Object && 'width' in face && face.data)).toBe(true);
   });
 
-  test(`${name}: faces split across workers keep bitmaps for opaque faces and canvases for the rest`, async () => {
-    const environment = workerEnvironment({bitmaps: true}), faces = skyFaces(environment, true);
+  test(`${name}: a resampled face is split into row bands across workers`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment, true);
     environment.navigator = {hardwareConcurrency: 12};
-    faces[4].data[7] = 254;
     const originals = faces.map(face => face.data.slice());
     const rotation = [0, 1, 0, -1, 0, 1], transforms = [identity, rotation, identity, rotation, identity, rotation];
     const prepared = factory(faces, transforms, new AbortController().signal, value => value ?? identity,
       createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     expect(environment.workers).toHaveLength(3);
-    expect(environment.workers.map(worker => worker.images.map(Boolean))).toEqual([
-      [true, false, false, true, false, false], [false, true, false, false, true, false], [false, false, true, false, false, true]]);
+    const owners = face => environment.workers.filter(worker => worker.pending.tasks.some(task => task.face === face)).length;
+    expect(owners(1)).toBe(3);
+    expect(owners(0)).toBe(1);
     let finished = false;
     const result = prepared.finish(() => { throw new Error('Unexpected native fallback'); }).then(value => { finished = true; return value; });
     environment.workers[0].flush();
     environment.workers[2].flush();
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await turn();
     expect(finished).toBe(false);
     environment.workers[1].flush();
     const output = await result;
-    for (let index = 0; index < 6; index++) {
-      expect(output[index] instanceof environment.ImageBitmap).toBe(index !== 1 && index !== 4);
-      expect(output[index].data).toEqual(nativeResample(originals[index], faces[index].width, faces[index].height, 3, transforms[index]));
-    }
+    for (let index = 0; index < 6; index++) expect(pixelsOf(output[index])).toEqual(expected(faces[index], originals[index], transforms[index]));
     expect(environment.workers.every(worker => worker.terminated === 1)).toBe(true);
-    prepared.release();
-    expect(output.filter(face => face instanceof environment.ImageBitmap).map(face => face.closed)).toEqual([1, 1, 1, 1]);
   });
 
-  test(`${name}: one failed worker closes the faces others returned and converts natively`, async () => {
-    const environment = workerEnvironment({bitmaps: true}), faces = skyFaces(environment, true);
+  test(`${name}: one failed worker discards the bands others returned and converts natively`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment, true);
     environment.navigator = {hardwareConcurrency: 8};
     const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
       value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     environment.workers[0].flush();
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await turn();
     environment.workers[1].fail();
-    const expected = [{native: true}];
-    expect(await prepared.finish(() => expected)).toBe(expected);
-    expect(environment.created.length).toBeGreaterThan(0);
-    expect(environment.created.every(bitmap => bitmap.closed === 1)).toBe(true);
+    const native = [{native: true}];
+    expect(await prepared.finish(() => native)).toBe(native);
+    expect(environment.workers.every(worker => worker.terminated === 1)).toBe(true);
   });
 
-  test(`${name}: cancellation closes worker bitmaps that were never published`, async () => {
-    const environment = workerEnvironment({bitmaps: true}), faces = skyFaces(environment, true), controller = new AbortController();
-    const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
-      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
-    environment.workers[0].flush();
-    await prepared.ready;
-    controller.abort(new Error('map switched'));
-    expect(environment.created).toHaveLength(6);
-    expect(environment.created.map(bitmap => bitmap.closed)).toEqual([1, 1, 1, 1, 1, 1]);
-    await expect(prepared.finish(() => { throw new Error('Fallback after abort'); })).rejects.toThrow('map switched');
-  });
-
-  test(`${name}: an identity sky bypasses workers and returns the original bitmaps`, async () => {
+  test(`${name}: an identity sky stops its workers and returns the original bitmaps`, async () => {
     const environment = workerEnvironment();
     const faces = Array.from({length: 6}, () => new environment.ImageBitmap(3, 3, patternedInput(3, 3)));
     const prepared = factory(faces, [], new AbortController().signal, value => value ?? identity,
       createSkyResampler, runSkyResampleWorker, environment);
+    const started = [...environment.workers];
     expect(await prepared.finish(() => { throw new Error('Unexpected native fallback'); })).toBe(faces);
-    expect(environment.workers).toEqual([]);
-    expect(environment.revoked).toEqual([]);
+    expect(started.every(worker => worker.terminated === 1 && worker.pending === undefined)).toBe(true);
+    expect(environment.clones).toEqual([]);
   });
 
   for (const failure of ['unsupported worker', 'unsupported canvas', 'native image', 'CSP', 'clone', 'worker', 'worker canvas', 'malformed result', 'sparse result']) {
@@ -494,20 +518,22 @@ for (const [name, factory] of preparations) {
       if (failure === 'native image') faces[1] = {width: 3, height: 3, data: patternedInput(3, 3)};
       const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], new AbortController().signal,
         value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+      const started = [...environment.workers];
       if (failure === 'worker') environment.workers[0].fail();
+      await turn();
       if (failure === 'worker canvas') environment.workers[0].flush();
-      if (failure === 'malformed result') environment.workers[0].onmessage({data: {buffers: [new ArrayBuffer(1)]}});
-      if (failure === 'sparse result') environment.workers[0].onmessage({data: {buffers: new Array(6)}});
+      if (failure === 'malformed result') environment.workers[0].onmessage({data: {bands: [{face: 0, start: 0, end: 1, opaque: true, buffer: new ArrayBuffer(1)}]}});
+      if (failure === 'sparse result') environment.workers[0].onmessage({data: {bands: new Array(6)}});
       let calls = 0;
-      const expected = [{native: true}];
-      const convert = () => { calls++; return expected; };
+      const native = [{native: true}];
+      const convert = () => { calls++; return native; };
       expect(calls).toBe(0);
-      expect(await prepared.finish(convert)).toBe(expected);
-      expect(await prepared.finish(convert)).toBe(expected);
+      expect(await prepared.finish(convert)).toBe(native);
+      expect(await prepared.finish(convert)).toBe(native);
       expect(calls).toBe(1);
       expect(faces.filter(face => face instanceof environment.ImageBitmap).map(face => face.closed))
         .toEqual(Array(faces.filter(face => face instanceof environment.ImageBitmap).length).fill(0));
-      if (environment.workers.length) expect(environment.workers[0].terminated).toBe(1);
+      expect(started.every(worker => worker.terminated === 1)).toBe(true);
       expect(environment.clones.every(image => image.closed === 1)).toBe(true);
     });
   }
@@ -516,16 +542,30 @@ for (const [name, factory] of preparations) {
     const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
     const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
       value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     const worker = environment.workers[0], reason = new Error('map switched');
     const finished = prepared.finish(() => { throw new Error('Fallback after abort'); });
     controller.abort(reason);
     await expect(prepared.ready).rejects.toBe(reason);
     await expect(finished).rejects.toBe(reason);
     prepared.cancel();
-    worker.onmessage({data: {buffers: []}});
+    worker.onmessage({data: {bands: []}});
     expect(worker.terminated).toBe(1);
     expect(environment.clones.every(image => image.closed === 1)).toBe(true);
     expect(faces.map(face => face.closed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  test(`${name}: cancellation before the faces arrive never sends them`, async () => {
+    const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
+    let deliver;
+    const prepared = factory(new Promise(resolve => { deliver = resolve; }), [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
+      value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    const started = [...environment.workers];
+    controller.abort(new Error('map switched'));
+    deliver(faces);
+    await turn();
+    await expect(prepared.ready).rejects.toThrow('map switched');
+    expect(started.every(worker => worker.terminated === 1 && worker.pending === undefined)).toBe(true);
   });
 
   test(`${name}: an already-aborted load never starts a worker`, async () => {
@@ -544,6 +584,7 @@ for (const [name, factory] of preparations) {
     const environment = workerEnvironment(), faces = skyFaces(environment), controller = new AbortController();
     const prepared = factory(faces, [identity, [0, 1, 0, -1, 0, 1]], controller.signal,
       value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     environment.workers[0].flush();
     await prepared.ready;
     const reason = new Error('map disposed');
@@ -557,6 +598,7 @@ for (const [name, factory] of preparations) {
     const rotation = [0, 1, 0, -1, 0, 1];
     const prepared = factory(faces, [identity, rotation], new AbortController().signal,
       value => value ?? identity, createSkyResampler, runSkyResampleWorker, environment);
+    await turn();
     const worker = environment.workers[0];
     worker.flush();
     await prepared.ready;

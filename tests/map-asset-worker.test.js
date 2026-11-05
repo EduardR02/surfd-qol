@@ -314,7 +314,7 @@ test('a late native DDS validation failure invalidates worker-owned background w
   run.end('dds');
 });
 
-test('worker sky preparation starts on the sixth face before a blocked mesh handoff', async () => {
+test('worker sky preparation receives the faces on the sixth decode before a blocked mesh handoff', async () => {
   const sky = Array.from({length: 6}, (_, index) => `sky-${index}`), started = deferred();
   const packs = [pack('sky', sky.map((url, index) => ({url, bytes: [index]}))),
     pack('mesh', [{url: 'mesh', kind: 'mesh', bytes: [7]}])];
@@ -327,7 +327,7 @@ test('worker sky preparation starts on the sixth face before a blocked mesh hand
   run.send('sky');
   run.end('sky');
   const call = await started.promise;
-  expect(call.faces.map(value => value.url)).toEqual(sky);
+  expect((await call.faces).map(value => value.url)).toEqual(sky);
   expect(call.signal).toBe(run.controller.signal);
   let handedOff = false;
   run.initial.then(() => { handedOff = true; });

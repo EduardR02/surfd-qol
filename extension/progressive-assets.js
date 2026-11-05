@@ -103,6 +103,13 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     meshes, preparedMeshes, images, compressed, pendingImages, pendingCompressed,
     ready: completion.promise, prioritize, cancel, signal, skyPreparation: null,
   };
+  // Preparation starts its workers now and receives the faces once the last
+  // one is decoded. It never takes ownership of these images.
+  let skyFaces = null;
+  if (sky.size && hooks.prepareSky) {
+    skyFaces = deferred();
+    resources.skyPreparation = hooks.prepareSky(skyFaces.promise, data.skyTransforms, signal);
+  }
 
   function sortWork() {
     // Stable sorting preserves manifest order among equally important work.
@@ -198,10 +205,9 @@ export async function loadProgressiveAssets(data, packs, useCompressed, signal, 
     }
     else if (asset.kind === 'compressed-texture') compressed.set(asset.alternative.key, value);
     else images.set(asset.url, value);
-    if (sky.has(asset.url) && --skyRemaining === 0 && hooks.prepareSky) {
-      // Begin as soon as the last face is decoded, not when meshes or the
-      // renderer finish. Preparation never takes ownership of these images.
-      resources.skyPreparation = hooks.prepareSky(data.sky.map(url => images.get(url)), data.skyTransforms, signal);
+    if (sky.has(asset.url)) {
+      resources.skyPreparation?.observe?.(value);
+      if (--skyRemaining === 0) skyFaces?.resolve(data.sky.map(url => images.get(url)));
     }
     asset.settled = true;
     asset.bytes = null;
