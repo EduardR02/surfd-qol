@@ -4,9 +4,9 @@
 
 *The compact HUD you surf with, just after a checkpoint. Replays and spectating show everything, and each part can be shown or hidden on its own.*
 
-A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history, replay tools with a cinematic camera and other runs alongside, private rooms, a crouch-jump bind and nullbinds.
+A browser extension for [surfd.net](https://surfd.net/) that shows where you lose speed, on each ramp and in the air, so you can find your mistakes and see what an optimal run does differently. It also adds start stats, PB and WR checkpoint splits, run history with ramp stats, cinematic replays with other runs alongside, community rooms, a crouch-jump bind, nullbinds and faster map loading.
 
-Everything on the HUD can be configured or turned off. The code is plain JavaScript with no dependencies, so it's easy to change or extend yourself, or with your own coding agent. It preserves movement rules, maps and your runs: feedback watches the game's own movement code and reports what happened.
+Everything on the HUD can be configured or turned off. Movement, collision, maps and your runs stay exactly as the game makes them: the feedback watches the game's own movement code and reports what happened.
 
 **Download page: [eduardr02.github.io/surfd-qol](https://eduardr02.github.io/surfd-qol/)**
 
@@ -19,163 +19,125 @@ You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (
 3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, then click the reload icon on the extension on your browser's extensions page and reload Surfd. Your settings stay.
+**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, click the reload icon on the extension in your browser's extensions page, then reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 
-Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That is the only way to reach the game's private physics objects. It only attaches to surfd.net's game page and touches `assets/game-*.js` and the game's checkpoint-speed, ghost and replay-index worker scripts.
+Your browser shows this bar because the extension uses the debugger permission to patch the game script as it loads. That's the only way to reach the game's physics. It only attaches to surfd.net's game page and only touches the game's own scripts.
 
-You can close the bar with × or **Cancel**. Everything already loaded keeps working, including the binds, until you reload the page. The toolbar badge shows **ON** when the extension is active on the page and **!** if setup failed or the bar was closed before setup finished. Click the toolbar button to reconnect; that reloads the tab, so do it between runs. The bar comes back after each reload.
+You can close the bar with × or **Cancel**. Everything already loaded keeps working until you reload the page. The toolbar badge shows **ON** when the extension is active and **!** if setup failed or the bar was closed too early. Click the toolbar button to reconnect; that reloads the tab, so do it between runs. The bar comes back after each reload.
 
-## What you get
+## The HUD
 
-### The HUD
+Speed sits big in the middle of the screen, with a bar for your last ramp under it. Size, height, opacity and colors are all adjustable. The HUD hides in menus and loading screens and stays up for replays and spectating.
 
-Speed sits big on the centre line of the screen, with a bar for your last ramp under it. Size, height, opacity and all colors are adjustable, and the HUD uses its own bundled font (Instrument Sans), so nothing is fetched from the web. It hides in menus, loading screens and dialogs, and stays up for replays and spectating.
+**Two layouts.** While you surf, the HUD stays compact: the speed, the ramp bar and two values under it. For a few seconds after the start and each checkpoint, your start stats or checkpoint deltas show above the speed. Replays and spectating show the full HUD: timer, strafe sync, each checkpoint's split and every ramp value. Under **QoL → Display** you can keep the full HUD on while you surf, add the timer, turn off the value labels, or pick **Zen** for just the speed and start stats.
 
-**Two layouts.** While you surf, the HUD stays compact: the speed and the ramp bar with two labelled values under it, and no timer (turn on **Timer** under **While surfing** if you want it). Turn off **Value labels** under **Display** for numbers alone. For a few seconds after the start and each checkpoint, your start stats or checkpoint deltas show above the speed. Run labels like PRACTICE or INVALID still show. Replays and spectating show the full HUD: the timer and strafe sync, each checkpoint's split, and every ramp value written out. Set **While surfing** to **Full** under **Display** to keep everything on while you run. **Zen** keeps just the speed and the start stats.
+**The ramp bar** shows your last flight (AIR) and the ramp you landed on, in the order they happened, each part in the color of its grade. The tick marks where the ramp would have ended had it cost what the reference ramp did, so anything right of it is what you lost beyond the reference. The two values under the bar are the flight's loss and what the ramp has cost so far: its touch right after you land, then the whole ramp once you leave it.
 
-**The ramp bar** keeps one width, centred under the speed. Your last flight (AIR) and the ramp you landed on share it in the order they happened: the flight, then the touch and the rest of the ramp, each part in the color of its grade. Choosing **Down + Up** splits the ramp into downhill and uphill portions. The tick marks where the ramp would have ended had it cost what the reference ramp did, so whatever lies right of it is what you lost beyond the reference. Beat the reference and your parts end early, with the tick at the bar's end. With fixed grading there's no reference, so there's no tick. While surfing, the two values under the bar are the flight's loss and what the ramp has cost you so far: its touch right after you land, then the whole ramp once you leave it. Turn off **Ramp bar** under **Display** to keep just the values.
-
-The values, all in u/s. Each one stays until the next ramp or flight replaces it, so you can glance at it in the air instead of mid-ramp.
+The values, all in u/s. Each stays until the next ramp or flight replaces it, so you can read it in the air.
 
 | Value | What it measures |
 |---|---|
-| **TOUCH** | Speed clipped off when you touch a ramp. Pure collision loss: height conversion doesn't count. Quick re-touches during the landing count as part of the same touch. It's also the first part of DOWN, so DOWN and SURF include it. |
-| **DOWN** | What the ramp cost you on the way down, from the moment you touched it (so it includes the touch) to the lowest point you reached. |
-| **UP** | What it cost you from the lowest point to where you left the ramp: the turn up and the exit. |
-| **AIR** | Your last flight between ramps: speed lost to air braking plus gain missed by imperfect strafes. You can show either part on its own. |
-| **SURF** | The whole ramp: DOWN + UP, touch included. It's the value under the bar while you surf. |
+| **TOUCH** | Speed clipped off when you land on a ramp. Height conversion doesn't count. |
+| **DOWN** | What the ramp cost on the way down, from the touch (included) to the lowest point. |
+| **UP** | What it cost from the lowest point to where you left the ramp. |
+| **AIR** | Your last flight: speed lost to braking plus gain missed by imperfect strafes. |
+| **SURF** | The whole ramp, touch included: Down + Up. |
 
-Down and Up are measured against perfect gravity-only conversion. If you land at 2500 u/s and leave lower or higher, the height change is converted back to speed before comparing, so climbing a ramp is never counted as a loss. **Down + Up equals the whole-ramp loss exactly, touch included.** **Net Surf** is the default; choose **Down + Up** under **QoL → Feedback → Show as** for the split.
+Down and Up are measured against perfect gravity-only conversion, so climbing a ramp never counts as a loss. **Net Surf** is the default; choose **Down + Up** under **QoL → Feedback → Show as** to split it.
 
-Don't chase zero. Ramp surfing always bleeds some speed; on Cannonball's second ramp the KSF record still loses 34 u/s going down and 16 coming up. That's why the useful comparison is against a reference run, which is the default.
-
-Turn any of them off and the bar and the values leave it out.
+Don't chase zero: surfing always bleeds some speed, and even the KSF record loses 34 u/s going down Cannonball's second ramp. That's why the default compares you against a reference run.
 
 ### Colors
 
-Touch and the ramp values compare against the same ramp in a reference run, matched by ramp, checkpoint and visit:
+Touch and the ramp values compare against the same ramp in a reference run, your PB or the WR:
 
 - **teal**: as good as the reference or better
 - **gold**: worse, but within the near-reference margin (2 u/s by default)
 - **red**: worse than that
-- **grey**: no matching data (reference still loading, different route, or no PB on this map)
+- **grey**: no matching data (reference still loading, a different route, or no PB on this map)
 
-The reference can be your PB replay or the WR. "WR" means the KSF record route (the site's "Watch the record route") by default, or Surfd's leaderboard #1. You can also switch any value to fixed cutoffs. Air always uses fixed cutoffs, since there's no meaningful per-flight reference.
+"WR" means the KSF record route by default, or Surfd's leaderboard #1. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
 
-A worse number is a measurement, not proof of a mistake. A different line or entry speed changes it too.
+### Start and checkpoints
 
-### Start
+For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded), your **height** above the start platform (lower is better; crouching doesn't fake it) and your strafe sync. Grade them against fixed targets, your PB or the WR.
 
-For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded) and your **height** above the start platform (lower is better; crouching doesn't fake it), where the checkpoint deltas go. While surfing, your strafe sync sits between them. Grade them against fixed targets, your PB or the WR.
-
-### Checkpoints
-
-At each checkpoint you get time and speed deltas against your PB, the WR, or both, for a few seconds; the full HUD also shows the split's own time and speed above them. The reference comes from the full replay, never per-checkpoint bests.
+At each checkpoint you get time and speed deltas against your PB, the WR or both. The reference comes from the full replay, never per-checkpoint bests.
 
 ![The full HUD on Utopia just after a checkpoint, as replays show it: the split with its PB and KSF deltas, the timer and sync, the speed, and the ramp bar with air, touch and surf written out under it](docs/hud-full.jpg)
 
 *The full HUD, as replays and spectating show it, just after a checkpoint.*
 
-### Binds
+## Binds
 
-- **Crouch-jump** (off by default; turn it on under **Controls**, Space unless you rebind it): holding jump presses crouch for exactly one physics tick per jump. That's enough for the crouched jump impulse (+6 u/s vertical, the same as holding crouch) without staying crouched. Rebind it to any free key.
-- **Nullbinds** (off by default): for left/right and for forward/jump, the newest key you press wins, and releasing it hands control back to the other one if it's still held. They follow your Surfd key bindings, including alternate and mouse binds. Forward/jump cuts forward input while jump wins (not your momentum) and blocks jump while forward wins.
+Both are off by default; turn them on under **QoL → Controls**.
 
-Both work inside the game's own input sampling, so the commands it records are exactly what you'd get from a keyboard that did this in hardware. Your binds on disk aren't changed.
+- **Crouch-jump:** holding jump presses crouch for exactly one physics tick per jump, enough for the crouched jump impulse without staying crouched. Uses Space unless you rebind it.
+- **Nullbinds:** for left/right and for forward/jump, the newest key you press wins, and releasing it hands control back to the other one if it's still held. They follow your Surfd key bindings. Forward/jump cuts forward input, not your momentum.
 
-### Strafe preview
+Both work inside the game's own input sampling, so your replay records exactly what a keyboard doing this in hardware would produce. Your Surfd binds aren't changed.
 
-Not sure how fast to turn? Stand still in the start zone, open **QoL → Controls**, enter a speed in u/s, pick **Ground** (the prestrafe) or **Air**, and press **Start**. Your view turns the way a good strafe would: alternating strokes at the best turn rate for your speed, while the speed grows as perfect strafing would grow it. The HUD shows which of A or D you'd hold, the speed and the turn rate. Any key, mouse button or mouse movement stops it and puts your view back. It only moves the camera: no keys are pressed and you don't move.
+## Strafe preview
 
-### Run history
+Not sure how fast to turn? Stand still in the start zone, open **QoL → Controls**, enter a speed, pick **Ground** (the prestrafe) or **Air** and press **Start**. Your view turns the way a good strafe would, at the best turn rate for that speed, and the HUD shows which of A or D you'd hold. Any key, click or mouse movement stops it and puts your view back. It only moves the camera.
+
+## Run history
 
 **Runs**, next to **QoL** in the menu, opens on the map you're on; pick another map from the title.
 
-- **Runs:** your leaderboard PB, or your best recorded finish if no PB is available. Watch it with ▶. Alongside are your best and average start speed, attempt and finish counts, and best checkpoint times compared with that finish. Below are your latest attempt and recent runs, with a replay for each. **Recent best** keeps your fastest retained finish from the last 24 hours.
-- **Ramps:** one row per ramp, showing where you lose speed: how many of your runs reach it and one measurement against your PB or the WR. The bars share one scale for the map, so the costliest ramps stand out; a ramp far past the rest runs off the end with a break.
-  - Pick the measurement (Surf, Touch, Angle, Down, Up, speed In or Out; it's remembered) and whether to show your best, your last 10 measurements or your average.
-  - Click a ramp to open it: Touch with its **angle** (how far your landing was from parallel to the ramp; 0° loses no speed on touch), Surf with Down and Up, and your speed in and out, each next to the reference. Buttons play the ramp in your PB, the WR or your recent best, paused half a second before the touch, unless that run skips the ramp.
-  - Reach, angle and speeds count normal timed attempts only. Runs that crash into the ramp's edge or a wall are left out of its last 10 and average, and an open ramp says how many. An angle within 0.5° of the reference counts as near.
-  - **Reset averages** clears the averages without touching bests or replays.
+- **Runs:** your leaderboard PB (or best recorded finish), start speed stats, attempt and finish counts, best checkpoint times, your latest attempt and recent runs, each with a replay. **Recent best** keeps your fastest finish from the last 24 hours.
+- **Ramps:** one row per ramp, showing how often you reach it and one measurement against your PB or the WR, so the costliest ramps stand out. Pick the measurement (Surf, Touch, Angle, Down, Up, speed in or out) and whether to show your best, your last 10 or your average. Click a ramp for the details, including the touch **angle** (how far your landing was from parallel to the ramp; 0° loses no speed), and buttons to watch that ramp in your PB, the WR or your recent best.
 
-Bests count clean recorded runs, including ones you reset. Practice and invalid runs don't count. Short resets don't fill up your recent history, but your latest attempt is always available.
+Runs that crash into a ramp's edge or a wall are left out of its averages, and an open ramp says how many. Practice and invalid runs don't count. **Reset averages** clears averages without touching bests or replays.
 
-The average start leaves out clipped starts, where you landed back in the start zone after your jump, so the game blocked the next hop and you left on the ground. Averages from earlier versions included them, so each map's average starts over at its next clean start.
+Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Your best finish, splits and ramp bests stay when older runs are removed. Everything is stored in this browser; the same page shows storage use and has **Clear all**.
 
-The last 10 count measurements of each ramp, not your last 10 runs. Averages start collecting when you update; old recordings aren't re-analysed. Recent best uses your existing replay allowance, not extra storage.
+## Replays
 
-### Watching replays
+▶ in Runs plays a recording with the full HUD. Surfd's own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
 
-▶ in Runs plays a recording with the full HUD, including the prestrafe. Surfd's own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
+The replay bar marks each ramp touch on the timeline in the color of its grade, on your own runs and on any other replay once the game has indexed it. **Saveloc** (or your usual save bind) bookmarks a moment; your saved moments become practice savelocs when you leave the replay, so you can try the section yourself. **Restart current stage** also works after you load a practice saveloc or visit a practice station. The custom replay bar is on by default; switch to Surfd's own bar under **QoL → History**. Both have the same marks and savelocs.
 
-The custom replay bar is on by default, with Saveloc, Runs and saved-location marks. Ramp touches are marked on the timeline, coloured like the HUD: your recorded runs have them from the moment you surfed them, and any other replay (your PB, the WR, the leaderboard) gets them a moment after the game has indexed it. Each replay is analysed once and remembered. Playback shortcuts stay the game's own.
+After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight, because the extension hasn't analysed what came before.
 
-**Savelocs:** click **Saveloc** or use your usual Save position bind to bookmark a moment. Your saved moments become practice savelocs when you leave the replay, so you can load them and try the section yourself. Loading one keeps the start position you set.
-
-On recognised game builds, **Restart current stage** also works after visiting a practice station or loading a practice saveloc, even without the preceding checkpoint splits. It uses the native stage spawn and keeps the session in practice; replay simulation and ranked-run restart rules stay unchanged.
-
-Prefer Surfd's bar? Turn off **QoL → History → Custom replay bar**. Both bars drive the same native player and show the same touch marks and savelocs. You can switch while watching.
-
-After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight: the game restores the movement there, but the extension hasn't analysed what came before, so it leaves that measurement out.
+Replays also show a **Hull: crouched / standing** line in the key display. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback.
 
 ### Cinematic replays
 
-While you watch any replay, the view menu on the replay bar picks how you watch it: **POV** (the player's own first-person view, where every replay starts), **Steady** or **Cinematic**. Both cameras work for a single run too. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run (search by name or rank). Adding a run switches to the camera you used last (Cinematic the first time). The replay bar, seeking and stage jumps work as usual.
+The view menu on the replay bar switches between **POV** (the player's own view), **Steady** and **Cinematic**. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run.
 
 ![A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and the replay bar below with a chip and gap for each run](docs/cinematic.jpg)
 
 *The Fiellu record with four more runs added, in Cinematic. Each chip shows that run's gap to the one you're watching.*
 
-- **Chips:** each run gets a chip in its colour next to the cinematic tools. Click one to follow that run (from POV, this switches to your camera); click it again to frame everyone. × removes a run.
-- **Real time** (the default) starts each run's clock when it leaves the start zone, from the last exit if a prestrafe pops out and back in. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ; it isn't a race.
-- **Gaps:** an added run's chip shows its gap to the run you're watching at this point: negative (teal) means it got here sooner, positive (red) later.
-- **Cameras:** both plan ahead from the recorded route, so they move ahead of the action, look onto the face of the ramp being surfed rather than through it, and steer around walls. Both mostly look across the ramp from the side it faces, a little ahead, where the lines read best. **Steady** keeps to that view. **Cinematic** varies it along the route: alongside at body height, low along the ramp, and now and then ahead as the runs come towards it. Switching views flies the camera instead of cutting. **Drag** to look around and **scroll** to zoom; **Reset view** or a double-click goes back to the planned camera.
-- **POV** keeps added runs visible as ghosts with their trails and names, with the timeline's touch marks and Saveloc, since the view is the watched run's own.
-- **Trails:** behind each ghost, six seconds of light in its colour, hot at the head and cooling as it tapers, with pulses running back along it and embers shed near the head, then a thin line of where it has been. Ahead, a slim line of light marks the route still to come. Trails follow replay time, so pausing freezes them and seeking restores them.
-- In Steady and Cinematic with other runs added, the timeline's touch marks and savelocs hide and Saveloc is off, since they belong to the watched run alone.
+- **Chips:** each run gets a chip in its color. Click one to follow that run, click it again to frame everyone, × removes it. Its gap shows whether it got to this point sooner (teal) or later (red).
+- **Real time** (the default) starts each run's clock when it leaves the start zone. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ.
+- **Cameras:** both plan ahead along the route, look onto the face of the ramp being surfed and steer around walls. **Steady** holds one view from the side; **Cinematic** varies it along the route. **Drag** to look around, **scroll** to zoom, double-click to go back to the planned camera.
+- **Trails:** each ghost leaves a fading trail of light, and a thin line marks the route still to come. Pausing freezes them and seeking restores them.
 
-Preparation starts only when requested. The camera first prepares a window a few seconds before and after the playhead, then fills in the remaining recording and path in the background. Seeking prioritises the requested region; an unprepared region temporarily uses native POV rather than a stale camera position. Reopening the same replay and loaded map reuses completed recordings and solo plans. Closing frees ghosts and GPU resources. Supported clients prepare shaders alongside the camera while POV keeps rendering.
+With other runs added in Steady or Cinematic, the watched run's touch marks and Saveloc are hidden. Each added run costs some performance, so remove runs if playback gets slow.
 
-While already in Steady or Cinematic, composition changes blend an offset around the moving destination. Adding or removing a run, changing focus or switching styles keeps following the replay rather than stopping at the previous camera position. Another reframe during the flight preserves its current motion, including when an added run becomes ready during the initial flight out of POV.
-
-On recognised builds, recording, route matching and camera planning run in the retained replay worker using the loaded collision world. Generated native snapshots let preparation start near the playhead without first reconstructing the entire replay. Ordinary POV indexing does not record cinematic tracks or calculate camera paths. Adding runs reuses existing recordings and prepares the new group view nearby first; unsupported or failed workers retain the bounded main-thread fallback.
-
-Both cameras check the planned path and the final interpolated or blended view against opaque geometry. See-through and non-solid brushes are excluded from camera collision, including during replay-worker preparation. Obstructed shots search above, below and around obstacles, fitting continuous curves with matching entry and exit motion. Repairs check visibility, ramp side, framing and separation between surfers. Clear shots retain their planned framing; where the bounded search cannot find a safe replacement, a conservative close view remains.
-
-Cached results stay in the tab's memory, not on disk. Main-thread recordings use weak replay and map/world references; the worker retains active tracks and a bounded recent-recording cache. Changing maps or reloading releases the worker's data.
-
-There's no limit on how many runs you add, but each costs some performance, so remove runs if playback gets slow.
-
-### What's kept
-
-Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Each run includes its replay. Your best recorded finish, best splits and ramp bests stay even after older attempts are removed.
-
-Everything is stored in this browser. The same page shows storage use and has **Clear all**.
-
-### Replays and spectating
-
-Replays get full feedback, plus a **Hull: crouched / standing** line in the game's key display, so you can see when the player is surfing crouched after letting go of crouch. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback. Energy tint is also unavailable while spectating: interpolated network poses can look like gains or losses even during a physically neutral arc. The setting still applies to your own runs and locally simulated replays.
-
-### Private rooms
+## Community rooms
 
 Surf with friends in a room of your own: no time limit, no map votes, and the host picks the map. Everyone in the room needs Surfd QoL.
 
-- **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Public** (default; listed under **Community** for everyone with the extension) or **Private** (room code or invite link only). Your visibility choice is remembered. Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open; the room view shows the upload your player limit needs.
-- **Join:** pick a room in the **Community** tab, type its code next to the filters, or open an invite link.
-- **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers. Runs count for the leaderboard as they do in solo play: Surfd checks each replay itself.
-- **Shared savelocs:** a location anyone saves shows up in everyone's saveloc list (Settings → Gameplay), labelled with its owner. Everyone keeps up to 20 per map, as in the game.
-- **Friends UI:** the native **Invite** button is temporarily hidden in private and public community rooms because delivery through the site's backend is unverified. Share a room code or link instead; those work independently of native invitations. The invite integration remains in place.
-- **Friend status and Join:** automatic room status and Join buttons require server presence from Surfd's backend. Community rooms do not currently publish that presence; a received community invite or server-presence Join action uses the extension's room connection instead of an official-server ticket.
-- **Room controls:** unsupported native player reports, official-server moderation and map votes are hidden, including their legacy scoreboard variants. Chat, spectating, local mute, host Kick/Ban and Change map remain available. Official-server controls are unchanged.
-- **Browser freshness:** public listings refresh every 10 seconds while the foreground tab shows the menu or server browser. Polling pauses during play and in background tabs; returning to an open menu or browser refreshes immediately. Official servers load independently, and community rows update when their directory results arrive. Leaving removes the local cached listing and roster; a lost guest connection also clears its peer roster. Directory caching can add another 10 seconds before remote changes appear. A stalled community lookup times out after 5 seconds without delaying official results.
-Passive directory errors appear only inside the server browser and clear after a successful refresh or when it closes. An empty community list is normal; it does not interrupt solo or official-server play.
+- **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Public** (listed under **Community** for everyone with the extension) or **Private** (room code or invite link only). Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open.
+- **Join:** pick a room under **Community**, type its code above the list, or open an invite link.
+- **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers, and runs count for the leaderboard as in solo play, since Surfd checks each replay itself. Savelocs are shared: everyone sees everyone's, and each player keeps up to 20 per map, as in the game.
+- **Differences from Surfd's servers:** Surfd's **Invite** button and friend status don't work for rooms yet, so share the code or link. Reports, votes and official moderation are hidden; the host can kick, ban for an hour and change the map.
 
-### Optional extras
+Game traffic goes through Cloudflare's relay, so players never see each other's IP addresses.
 
-- **Live feedback** (off by default): a row of values that update continuously instead of the ramp bar. Meant for watching replays, not for runs.
-- **Tint speed by energy** (experimental, off by default): the speed number turns a vivid red (its own, brighter than the HUD's usual red) while you lose units and keeps its colour while you gain or hold them (surfing gains a little almost all the time, so only losses are worth flagging). It tracks speed and height together, so falling or climbing doesn't count, only strafe gains, braking, clips and friction do. Ramps are excluded unless you enable **Include ramps**, because surfing a ramp always bleeds some energy and would read red almost all the time. The colour follows a short average (about a tenth of a second), so it shows whether you're losing overall. **Per tick** drops the averaging and the fade instead: each tick's own loss shows, such as the brief one as you switch from A to D in a prestrafe. It flickers, and the Speed refresh rate has to be above 66 fps to show every tick.
+## Faster map loading
+
+Getting back into a map you've played recently is much faster than in the native game, with the same textures, collision and physics. The [download page](https://eduardr02.github.io/surfd-qol/) has the measured times. To make that possible, Surfd QoL keeps prepared collision data for the maps you played most recently in the browser, up to 256 MB in total, which Chrome stores compressed on disk (about 17 MB for the largest maps). It's part of surfd.net's site data, so clearing that removes it, and the next load rebuilds it.
+
+## Optional extras
+
+- **Live feedback** (off by default): a row of continuously updating values instead of the ramp bar. Meant for watching replays.
+- **Tint speed by energy** (experimental, off by default): the speed number turns red while you lose energy, counting speed and height together, so only strafe gains, braking, clips and friction count. Ramps are excluded unless you turn on **Include ramps**. **Per tick** shows each tick's own loss instead of a short average.
 
 ## Is it safe for ranked runs?
 
@@ -183,74 +145,51 @@ The extension doesn't change physics, collision, timing or replays, and it doesn
 
 ## Performance and privacy
 
-- Hidden feedback skips its analysis. PB/WR comparisons share saved results rather than analysing the same replay repeatedly.
-- The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. You can change both; the game itself stays uncapped.
-- No telemetry. Settings and recordings stay in your browser. The extension downloads reference replays from surfd.net and checks GitHub for updates at most once a day, without sending your runs or settings.
-- Private rooms use a small room service on Cloudflare to list rooms and connect players, only while the main menu or Find a server is open, you host, or you are in a room. Game traffic between players goes through Cloudflare's relay, not directly between computers.
+- Hidden feedback skips its analysis, and features you don't use don't run at all.
+- The speed counter updates at 60 FPS and the timer at 30 FPS by default, so digits stay readable. The game itself stays uncapped.
+- No telemetry. Settings, recordings and map data stay in your browser. The extension downloads reference replays from surfd.net and checks GitHub for updates at most once a day, without sending your runs or settings.
+- Community rooms use a small room service on Cloudflare, only while the main menu or **Find a server** is open, while you host, or while you're in a room.
 
 ## Troubleshooting
 
 - **No custom HUD:** check the badge. **!** means setup failed; click the toolbar button to reload. If Surfd shipped an update the extension doesn't recognise, it stays out of the way and the game's own HUD remains.
 - **Everything grey:** the reference is still loading, you have no PB on this map, or your route visits ramps in a different order than the reference.
-- **A value shows —:** nothing measured yet this run, the contact was ambiguous (e.g. ramp and wall at once), or the value was hidden for part of that ramp or flight. Flights with under 50 ms of strafing don't replace the previous AIR value at all.
+- **A value shows —:** nothing measured yet this run, the contact was ambiguous (ramp and wall at once), or the flight was too short to count.
 - **The debugger bar keeps coming back:** expected after every reload; see above.
 
 ## Development
 
-You only need [Bun](https://bun.sh) to work on the source; no other dependencies.
+You only need [Bun](https://bun.sh); there are no other dependencies.
 
 ```sh
 bun run build   # writes the unpacked extension to dist/
 bun test
 ```
 
-Tests run offline against fixtures: none of them load the site, the game's code or the signalling Worker. (`bun signal/check-live.mjs` checks a deployed Worker, by hand.)
+Tests run offline against fixtures. Load `dist/` with **Load unpacked** while developing. `dev/` has a harness that renders the HUD, panels and replay bars over screenshots (see `dev/README.md`), and `docs/` is the download page, served by GitHub Pages.
 
-Load `dist/` with **Load unpacked** while developing. To publish a release, bump `version` in `extension/manifest.json`, commit, then push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release, which the download links always point at. The download page lives in `docs/` and is served by GitHub Pages; `dev/` has a harness for rendering HUD states (see `dev/README.md`).
+To release, bump `version` in `extension/manifest.json`, commit, and push a matching tag (`git tag v1.0.1 && git push origin v1.0.1`). The release workflow tests, builds and attaches `surfd-qol.zip` to a GitHub release.
 
-On recognised builds, the loader unrolls the native collision-box helper in the main module and those three physics workers. It keeps inclusive comparisons, axis order and NaN rejection. The replay-index worker reuses the loaded map's collision geometry and BVH: packing validates and copies geometry in the same scans, then transfers owned Float64 geometry/bounds, brush-plane and tree-index buffers without detaching live map data. Packing overlaps worker startup and yields through `scheduler.yield()` where available, avoiding nested-timer delays; older runtimes retain timer yields. Render/import fields stay out of the packet. The worker queries the packed tree directly, materialises contacted geometry lazily, and preserves native candidate order, collision flags and rules. Unsupported layouts retain native geometry loading. Cinematic capture observes only its recording Session's movement instance.
+Every change keeps these rules:
 
-The index worker is created on the first replay watch, not during map loading. Sessions start in the replay's actual format, avoiding a second collision-world construction when loading legacy recordings. The first exact indexing slice runs for up to 8 ms; later slices use native throughput budgets, or short slices while servicing camera requests. Accepted prefixes are immediately seekable by the native player; full-timeline seeking still requires full indexing. Later watches under the same renderer and map/replay revision reuse the collision world without repacking, including separately parsed archived maps. Cinematic requests reuse native indexing simulation where possible; discarded positions are reconstructed on demand. Track handles keep recordings inside the worker, with bounded position chunks and camera results sent to the renderer. Indexing and camera requests cancel independently. Renderer disposal, revision changes and failures release retained worlds; unsupported builds keep the native indexer's fallback.
+- Movement, collision, timing and replays stay identical to the native game. A faster path has to give the same results as the native code, checked against native replays tick by tick.
+- Hooks fail open: when Surfd ships code a hook doesn't recognise, that hook leaves the native code alone.
+- Idle means idle: a feature that isn't in use sends no requests and runs no timers or per-frame work.
+- Nothing is submitted on your behalf, and the extension never signs in.
 
-A standalone cinematic worker uses the native indexer's 120-second startup limit. Constructor, handshake and world-initialisation failures fall back to bounded main-thread recording and camera planning; closing the view cancels unfinished startup. Releasing a recording's retention does not cancel other active subscribers to the same replay.
+For how something works, read the code, its tests and the commit that introduced it: commit messages say what changed and why.
 
-Camera preparation shares native displacement convexes rather than rebuilding their SAT planes. Ordinary future-prefix growth is coalesced while the initial scene's shaders compile, avoiding repeated ghost/path construction and restarted compile waits; the scene catches up to the latest track before it becomes visible. Regional updates and retiming still apply immediately. The camera's existing entrance animation and reveal timing are unchanged.
+Where things are:
 
-Recognised collision-tree constructors select median partitions instead of repeatedly sorting and copying every subtree. Flat temporary bounds/centre arrays keep construction work predictable; longest-axis selection, stable ID ties, leaf order, node bounds and native query methods are preserved. Unsupported constructor layouts or non-finite inputs keep the native constructor. This applies to initial map loading and physics-worker fallback builds; replay workers can still reuse the already-built tree.
-
-During recognised main-map loads, transient workers prepare the collision tree and ramp index alongside visual loading. The BVH worker transfers owned Float64 bounds and numeric tree columns, not the full geometry graph, and uses the same partition algorithm as synchronous construction. The loader joins workers whose startup has already completed; blocked, unsupported or still-starting workers keep the synchronous fallback without a startup wait. Workers terminate when their result is ready, cancelled or no longer needed. Native geometry, collision flags and query order remain unchanged.
-
-A few seconds after a map version is first prepared, a background worker re-reads its geometry file from the browser cache, checks it against the catalogue's SHA-256, and stores one IndexedDB record: the parsed collision data in typed form (key order and every number exact; the decoded copy is compared with the parse before storing), the collision tree and the ramp index. Later loads verify the record's digest, rebuild the identical map without downloading or parsing the JSON, and adopt the stored tree and index without starting either worker. The native validation still checks the map; a missing or mismatched record, or unavailable storage, keeps the normal path. A record takes about 46 MB for the largest maps (Demise, Fiellu, Mesa) and 4 MB for Utopia; the store keeps at most the six most recently loaded maps and 384 MB in total, dropping the least recently used first. Reading and verifying a record runs in a worker, and a rebuild pauses while another map loads.
-
-Recognised displacement-triangle bounds use direct scalar XYZ minima/maxima instead of allocating eight axis/vertex arrays per triangle. Sparse or non-triangle inputs, accessor-backed coordinates, custom mapping and nonstandard array species keep the native calculation. Native sweep rejection and corner-fix classification likewise avoid nested axis callbacks and temporary filter arrays; candidate order and collision arithmetic stay unchanged. Triangle SAT expansion uses the scalar path only for dense triples with finite numeric coordinates; other inputs keep the original native method. Packed replay worlds skip native construction only when the complete reviewed world, helpers and methods match; unsupported triangle shapes, unknown constructor state or algorithms use native geometry loading and construction.
-
-The extension's ramp-surface index uses median partitions and shared leaf ranges rather than recursively sorting and copying faces. A paired-tree traversal tests each unordered candidate pair once, while preserving existing geometric predicates and stable surface IDs. Projection and hull construction reuse owned point records. Its preparation worker receives only brushes with eligible ramp planes, binds results to the original map and actual ground threshold, and never replaces an existing index. The index is ready before play; failed or unavailable preparation retains synchronous construction.
-
-The recognised BSP loader pipelines pack reads, fragment assembly and bounded image decoding. Map workers fetch packs from the browser cache themselves and inflate them, one worker per four logical cores up to three; part of an asset split across packs goes to the worker assembling it. A response that is not a plain cached asset is fetched again by the native loader, which keeps its error and challenge handling. Collision, all meshes and complete skyboxes are ready before entry; absent or incomplete skyboxes retain native fog. The native visibility probe prioritises first-view textures while collision-tree and ramp preprocessing run. Recognised BSP shaders wait only for samplers enabled by their current defines; unknown shaders remain conservative. Off-screen textures finish proactively in the background at full resolution. Failures use the native load-error UI; cancellation and disposal release outstanding work and decoded images. Meshes remain upfront because packed data lacks per-mesh bounds and shared batches can span most of a map.
-
-While first-view textures are pending, supported browsers prepare the selected shader variants with cancellable parallel-completion polling. Uncertain variants and unsupported APIs retain normal first-draw compilation. The native first view renders before entry. Afterwards, a cancellable queue proactively prepares remaining geometry, index buffers, textures and shaders through their native owners, without a hidden all-map draw. Work yields between bounded slices; individual driver operations remain non-preemptible. Texture decoding and existing player-atlas requests finish before upload readiness. Supported APIs confirm shader completion and use a nonblocking WebGL2 fence; other browsers report submission-only completion. Disposal and context loss cancel pending work. Future player/cinematic variants can still require preparation, so later draws are not guaranteed stall-free.
-
-Recognised packed meshes combine coordinate/normal conversion and bounding-box construction in one vertex pass, followed by one bounding-sphere pass. Other vertex attributes, native bounds and immutable packed source buffers are preserved. Fragment assembly hands off an already exact-sized mesh/DDS buffer directly instead of making another full copy.
-
-Where supported, WebCodecs decodes packed image bytes directly, then converts the decoded frame to ImageBitmap without a per-image Blob read. Frames and decoders close immediately after conversion; unsupported codecs or conversion fall back to Blob/ImageBitmap and then the native image loader. ImageBitmap preserves the existing upload, orientation and alpha handling. Bitmaps close when loading fails, is cancelled, or their renderer is disposed. This adds no persistent image cache and does not reduce texture quality.
-
-Recognised skybox resampling preserves face dimensions, affine transforms, linear-light blending and alpha rounding. A sky whose faces are all output-sized and untransformed is used as is; colour-transfer lookups retain exact conversion at ambiguous rounding boundaries. Conversion workers (one per four logical cores, up to six) start as soon as a sky is known to need conversion: at once for a transformed face, otherwise when a decoded face's size differs from the others, so they are running before the page thread is busy installing the map. Each receives transferred copies of only the faces it needs, and a face that needs resampling is split into row bands across all of them. Opaque converted skies upload as raw RGBA faces, which carry the same bytes as the native canvases and go through three.js's faster typed-array upload; translucent skies keep the canvas path. The sky cubemap stays empty during the visibility probe so GPU storage is allocated only for the finished square faces, which are installed before the first real draw. Blocked or unsupported workers retain synchronous conversion, and cancellation terminates pending work without detaching native images. No persistent image cache is added; unknown native layouts stay unchanged.
-
-Source layout:
-
-- `extension/`: manifest, the background loader (debugger attach and script patching), `instrument.js` and optional native hooks for rooms, savelocs, live practice stage resets, collision preparation, image decoding, sky resampling and progressive map GPU preparation.
-- `src/metrics.js`: per-tick movement analysis (Touch, Down/Up/Surf, Air, live feedback).
-- `src/observer.js`: wraps the game's movement methods without changing their results.
-- `src/hud-model.js`: decides what the HUD shows; `src/hud.js` renders it and the settings panel.
-- `src/strafe-preview.js`, `src/strafe-preview-ui.js`: the strafe preview and its indicator.
-- `src/energy.js`: the speed tint's energy trend.
-- `src/references.js`, `src/run-references.js`, `src/replay-store.js`: PB/WR replay download, native re-simulation and ramp matching.
-- `src/run-history.js`, `src/runs-panel.js`, `src/ramp-reference.js`: recent runs and per-map bests, the Runs panel, and PB/WR ramp values to compare against.
-- `src/replay-archive.js`, `src/replay-trim.js`: saved replays (compressed, in IndexedDB), trimmed to a few seconds before the start.
-- `src/replay-control.js`, `src/replay-frames.js`, `src/replay-bar.js`, `src/native-replay-ui.js`: native-player integration, bounded analysis checkpoints, replay savelocs and the native/custom replay bars.
-- `src/cinema.js` and `src/cinema-*.js`: cinematic replays: runs re-simulated as tracks, matching them in time or place, the planned camera, the ghosts and trails, and their controls.
-- `src/private-rooms/`, `signal/`: private rooms in the browser, and the Cloudflare Worker that connects their players (see `signal/README.md`).
-- `src/start.js`, `src/bindings.js`, `src/settings.js`, `src/visibility.js`: start stats, binds, settings schema and HUD visibility rules.
+- `extension/`: the manifest, the background loader (debugger attach and script patching), `instrument.js` and the native hooks for rooms, savelocs, replays and map loading (`map-*`, `progressive-*`, `collision-tree.js`, `sky-resample.js`).
+- `src/metrics.js`, `src/observer.js`: per-tick movement analysis, from the game's own movement methods.
+- `src/hud-model.js`, `src/hud.js`, `src/settings-panel.js`: what the HUD shows, how it's drawn, and the settings.
+- `src/references.js`, `src/replay-store.js`, `src/ramp-reference.js`: PB and WR replays, re-simulated and matched ramp by ramp.
+- `src/run-history.js`, `src/runs-panel.js`, `src/replay-archive.js`: recorded runs, bests and the Runs panel.
+- `src/replay-control.js`, `src/replay-bar.js`, `src/native-replay-ui.js`: the replay player integration and both replay bars.
+- `src/cinema.js`, `src/cinema-*.js`: cinematic replays.
+- `src/map-cache.js`, `src/map-preparation.js`: the saved collision data and map preparation.
+- `src/private-rooms/`, `signal/`: community rooms, and the Cloudflare Worker that connects players (see `signal/README.md`).
 
 ## License
 
