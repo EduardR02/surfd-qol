@@ -404,3 +404,20 @@ test('a record read that stops replying falls back to the download', async () =>
   expect(await result).toBe(null);
   expect(job.disposed).toBe(true);
 });
+
+test('reading a record marks it used unless it was evicted after the read', async () => {
+  const {key, indexedDB} = await storedCache(), index = indexedDB.stores.get('index');
+  index.get(key).usedAt = 1;
+  expect((await readVerifiedMapCache({key}, indexedDB)).bytes).toBeInstanceOf(Uint8Array);
+  expect(index.get(key).usedAt).toBeGreaterThan(1);
+  expect(index.get(key).version).toBe(MAP_CACHE_VERSION);
+  // Another tab evicts the record between the read and the recency update.
+  indexedDB.afterGet = (store, evicted) => {
+    if (store !== 'records') return;
+    indexedDB.stores.get('records').delete(evicted);
+    index.delete(evicted);
+  };
+  expect((await readVerifiedMapCache({key}, indexedDB)).bytes).toBeInstanceOf(Uint8Array);
+  await flush();
+  expect(index.has(key)).toBe(false);
+});

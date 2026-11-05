@@ -314,6 +314,19 @@ async function evictMapCache(db) {
   await committed(transaction);
 }
 
+// Marks a record as used only if it is still stored, in one transaction. A
+// record evicted since the read must not get its index row back, where it
+// would count against the budget.
+function touchMapCache(db, record) {
+  const transaction = db.transaction(['records', 'index'], 'readwrite');
+  const stored = transaction.objectStore('records').getKey(record.key);
+  stored.onsuccess = () => {
+    if (stored.result === undefined) return;
+    transaction.objectStore('index').put({key: record.key, size: record.buffer.byteLength, usedAt: Date.now(), version: record.version});
+  };
+  return committed(transaction);
+}
+
 // Page side: the decoded map plus the prepared tree and ramp data, or null.
 export async function readMapCache(db, key) {
   if (!db || typeof key !== 'string') return null;
@@ -321,10 +334,7 @@ export async function readMapCache(db, key) {
   try { record = await done(db.transaction('records').objectStore('records').get(key)); } catch { return null; }
   const decoded = await decodeMapCacheRecord(record, key);
   if (decoded) {
-    try {
-      const transaction = db.transaction('index', 'readwrite');
-      transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now(), version: record.version});
-    } catch { /* Recency is advisory. */ }
+    try { touchMapCache(db, record).catch(() => {}); } catch { /* Recency is advisory. */ }
   }
   return decoded;
 }
@@ -346,9 +356,7 @@ export async function readVerifiedMapCache({key}, indexedDB = globalThis.indexed
     const record = await done(db.transaction('records').objectStore('records').get(key));
     if (!record || record.key !== key || record.version !== MAP_CACHE_VERSION || !(record.buffer instanceof ArrayBuffer) ||
         await digest(record.buffer) !== record.digest) return null;
-    const transaction = db.transaction('index', 'readwrite');
-    transaction.objectStore('index').put({key, size: record.buffer.byteLength, usedAt: Date.now(), version: record.version});
-    await committed(transaction).catch(() => {});
+    await touchMapCache(db, record).catch(() => {});
     return {bytes: new Uint8Array(record.buffer)};
   } catch { return null; } finally { db.close(); }
 }
