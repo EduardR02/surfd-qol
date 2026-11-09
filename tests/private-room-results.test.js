@@ -7,7 +7,7 @@ const rosterTick = () => new Promise(resolve => setTimeout(resolve, 110));
 
 const roomId = 'p-abcdefghjkmn';
 const maps = [{id: 'one', title: 'One'}, {id: 'two', title: 'Two'}];
-const claim = {type: 'finish', mapId: 'one', epoch: 1, timeUs: 12000000, personalBest: true, previousBestUs: null};
+const claim = {type: 'finish', mapId: 'one', epoch: 1, course: 0, timeUs: 12000000, personalBest: true, previousBestUs: null};
 const hello = name => ({name, guest: false, userId: crypto.randomUUID(), browserId: crypto.randomUUID()});
 class Socket extends EventTarget {
   readyState = 1;
@@ -405,5 +405,32 @@ describe('verified runs', () => {
       {verified: false}, {verified: false, pointsDelta: 0}]) {
       expect(() => read({type: 'result', result: {...result, ...invalid}})).toThrow('Invalid room result');
     }
+  });
+});
+
+describe('bonus courses in community rooms', () => {
+  test('room records are kept per course and bonus results name their bonus', () => {
+    const {room, connect, at} = fixture(), host = connect(true), peer = connect();
+    try {
+      peer.receive(claim);
+      at(3000);
+      peer.receive({...claim, course: 2, timeUs: 30000000});
+      expect(host.results().at(-1)).toMatchObject({mapId: 'one', bonus: 2, record: true, roomRecord: true, previousBestUs: null});
+      at(6000);
+      peer.receive({...claim, course: 2, timeUs: 29000000, personalBest: false});
+      expect(host.results().at(-1)).toMatchObject({bonus: 2, record: true, previousBestUs: 30000000});
+      at(9000);
+      peer.receive({...claim, timeUs: 12500000, personalBest: false});
+      expect(host.results().at(-1)).toMatchObject({record: false});
+      expect(host.results().at(-1).bonus).toBeUndefined();
+    } finally { room.close(); }
+  });
+  test('the client filter keeps a valid bonus number and refuses others', () => {
+    const read = createRoomFilter({roomId, maps});
+    const result = {id: crypto.randomUUID(), userId: crypto.randomUUID(), name: 'Surfer', rank: 'Guest', mapId: 'one', mapTitle: 'One',
+      timeUs: 12000000, record: false, personalBest: true, previousBestUs: null, pointsDelta: 0, promoted: false};
+    expect(read({type: 'result', result: {...result, bonus: 3}}).result).toMatchObject({bonus: 3, mapTitle: 'One'});
+    for (const bonus of [0, 100, 1.5, '2']) expect(() => read({type: 'result', result: {...result, bonus}})).toThrow('Invalid room result');
+    for (const course of [-1, 100, 1.5, '2']) expect(() => decodeControl(JSON.stringify({...claim, course}))).toThrow('Invalid room finish');
   });
 });

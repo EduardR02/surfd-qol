@@ -27,7 +27,7 @@ export function nativeRoomHooks(source, hook, lobby) {
   }
   try {
     const reply = unique(source, new RegExp(`(${identifier})\\("Use /vote followed by one of the displayed numbers\\."\\)`, 'g'), 'native command reply')[1];
-    const command = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const\\[(${identifier}),\\.\\.\\.(${identifier})\\]=\\2\\.trim\\(\\)\\.split\\(/\\\\s\\+/\\),(${identifier})=\\4\\.join\\(" "\\),(${identifier})=\\3\\.replace\\(/\\^\\[!/\\]/,""\\)\\.toLowerCase\\(\\);if\\(\\6==="played"\\)\\{if\\((${identifier})\\?\\.status==="connected"&&!\\7\\.playtime\\)`, 'g'), 'native command entry');
+    const command = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const\\[(${identifier}),\\.\\.\\.(${identifier})\\]=\\2\\.trim\\(\\)\\.split\\(/\\\\s\\+/\\),(${identifier})=\\4\\.join\\(" "\\),(${identifier})=\\3\\.replace\\(/\\^\\[!/\\]/,""\\)\\.toLowerCase\\(\\);(?:if\\(!${identifier}\\.onCommand\\?\\.\\(\\6,\\5\\)\\)\\{)?if\\(\\6==="played"\\)\\{if\\((${identifier})\\?\\.status==="connected"&&!\\7\\.playtime\\)`, 'g'), 'native command entry');
     const entry = `function ${command[1]}(${command[2]}){`;
     source = source.replace(entry, () => `${entry}if(${community(`${command[7]}?.roomId`)}){const __qolReply=${hook}?.commandReply(${command[2]},${command[7]}.roomId);if(typeof __qolReply==="string"){${reply}(__qolReply);return}}`);
   } catch (error) {
@@ -50,11 +50,13 @@ export function nativeRoomHooks(source, hook, lobby) {
 
 function resultHooks(source, lobby) {
   const native = unique(source, new RegExp(`${literal(lobby)}\\.sync\\(\\{joined:${identifier},visible:!${identifier}\\.hidden,roomId:(${identifier})\\?\\.roomId\\(\\)\\?\\?null\\}\\)`, 'g'), 'native result room')[1];
-  const formatter = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const (${identifier})=\\2\\.record\\?"New Surfd record!":`, 'g'), 'native result text');
+  // Bonus builds name a bonus record separately; the result line already names the bonus.
+  const formatter = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const ((?:(${identifier})=${identifier}\\(\\2\\),)?${identifier}=\\2\\.record\\?)((?:\\4\\?"New bonus record!":)?"New Surfd record!"):`, 'g'), 'native result text');
+  if (!formatter[4] !== !formatter[5].startsWith(`${formatter[4]}?`)) throw new Error('Unsupported Surfd build: native bonus result text');
   const first = unique(source, /"First verified completion\."/g, 'native first completion');
   const call = unique(source, new RegExp(`${literal(formatter[1])}\\((${identifier})\\),"result",\\1\\.name,\\1\\.rank`, 'g'), 'native result notification');
   // Community hosts mark room records and unverified runs; the site's own results never carry these marks.
-  source = source.replace(formatter[0], () => `function ${formatter[1]}(${formatter[2]},__qolCommunity=false){const ${formatter[3]}=${formatter[2]}.record?(__qolCommunity&&${formatter[2]}.roomRecord?"New room record!":"New Surfd record!"):`);
+  source = source.replace(formatter[0], () => `function ${formatter[1]}(${formatter[2]},__qolCommunity=false){const ${formatter[3]}(__qolCommunity&&${formatter[2]}.roomRecord?"New room record!":${formatter[5]}):`);
   source = source.replace(first[0], () => `(__qolCommunity&&${formatter[2]}.verified===false?"First completion.":"First verified completion.")`);
   return source.replace(call[0], () => `${formatter[1]}(${call[1]},${community(`${native}?.roomId()`)}),"result",${call[1]}.name,${call[1]}.rank`);
 }

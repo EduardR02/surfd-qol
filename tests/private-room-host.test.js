@@ -961,3 +961,35 @@ describe('community room ranks', () => {
     room.close();
   });
 });
+
+describe('bonus courses', () => {
+  test('welcomes with course support, shows each player\'s course and resets courses with the map', async () => {
+    const {room, connect} = fixture(), host = connect(true), peer = connect();
+    expect(peer.messages('welcome')[0]).toMatchObject({courses: true});
+    expect(peer.messages('welcome')[0].player.course).toBe(0);
+    peer.receive({type: 'course', course: 2});
+    await rosterTick();
+    expect(host.messages('roster').at(-1).players.map(player => player.course)).toEqual([0, 2]);
+    for (const course of [-1, 100, 1.5, '1']) {
+      const other = connect();
+      other.receive({type: 'course', course});
+      expect(other.closed?.code).toBe(CLOSE.invalid);
+    }
+    const rosters = host.messages('roster').length;
+    host.receive({type: 'change-map', mapId: 'two'});
+    await rosterTick();
+    expect(room.players.map(player => player.course)).toEqual([0, 0]);
+    expect(host.messages('roster').length).toBe(rosters + 1);
+    room.close();
+  });
+  test('course reports are rate limited and repeats change nothing', async () => {
+    const {room, connect} = fixture(), host = connect(true), peer = connect();
+    await rosterTick();
+    const rosters = host.messages('roster').length;
+    for (let i = 0; i < 20; i++) peer.receive({type: 'course', course: 1 + i % 2});
+    await rosterTick();
+    expect(host.messages('roster').length).toBe(rosters + 1);
+    expect(room.players[1].course).toBe(2);
+    room.close();
+  });
+});

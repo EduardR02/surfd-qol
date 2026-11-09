@@ -304,3 +304,18 @@ describe('native shared snapshot safety', () => {
     } finally { room.close(); }
   });
 });
+
+test('bonus movement state is shared when the loaded course can produce it', () => {
+  const course = {...map, ladderBrushIds: ['ladder'], waterZones: [{hulls: []}], pushZones: [{id: 'push'}],
+    playerOutputZones: [{id: 'output', onStart: [{property: 'gravity', value: 0.5, delay: 1}], onEnd: [],
+      onTouch: [{property: 'laggedMovement', value: 0.25, suppressJump: true}, {property: 'targetname', value: 'touched'}]}]};
+  const value = snapshot();
+  Object.assign(value.state, {gravityScale: Math.fround(0.5), laggedMovement: Math.fround(0.25), jumpDisabled: true,
+    acceptedPushes: ['push'], ladderNormal: {x: 0, y: -1, z: 0}, waterJumpTime: 1985, waterJumpVelocity: {x: 50, y: 0, z: 0},
+    mapOutputState: {contacts: ['output'], accepted: ['output'], targetname: 'touched', pendingGravity: [{tick: 120, value: 0.5}]}});
+  expect(sanitizeSaveloc(value, course)).toEqual(value);
+  for (const [field, wrong] of [['gravityScale', 2], ['laggedMovement', 0.5], ['acceptedPushes', ['other']], ['jumpDisabled', false]]) {
+    expect(() => sanitizeSaveloc({...value, state: {...value.state, [field]: wrong}}, course)).toThrow('Invalid shared saveloc');
+  }
+  expect(() => sanitizeSaveloc(value, map)).toThrow('Invalid shared saveloc');
+});

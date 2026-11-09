@@ -46,27 +46,35 @@ function practiceKey(value, map) {
   // Config is an inert string, not installed into the destination simulation. Runtime rebases this key.
   return value;
 }
+// A map output zone's events, including those it fires on every touching tick.
+const events = zone => [...zone.onStart, ...zone.onEnd, ...zone.onTouch ?? []];
+// The values a map's output events can set a state property to.
+const outputs = (map, property) => (map?.playerOutputZones ?? []).flatMap(events).filter(event => event.property === property);
 function outputState(value, map, tick) {
-  object(value, ['contacts', 'accepted', 'targetname'], ['pending', 'pendingVelocity']);
+  object(value, ['contacts', 'accepted', 'targetname'], ['pending', 'pendingVelocity', 'pendingGravity']);
   const zones = map?.playerOutputZones ?? [];
   const zoneId = id => { text(id); if (map) check(zones.some(zone => zone.id === id)); return id; };
   const target = name => {
     text(name);
-    if (map && name !== '') check(zones.some(zone => [...zone.onStart, ...zone.onEnd].some(event => event.property === 'targetname' && event.value === name)));
+    if (map && name !== '') check(outputs(map, 'targetname').some(event => event.value === name));
     return name;
   };
   const result = {contacts: list(value.contacts, zoneId), accepted: list(value.accepted, zoneId), targetname: target(value.targetname)};
   for (const key of ['contacts', 'accepted']) check(new Set(result[key]).size === result[key].length);
-  for (const key of ['pending', 'pendingVelocity']) if (Object.hasOwn(value, key)) {
+  for (const key of ['pending', 'pendingVelocity', 'pendingGravity']) if (Object.hasOwn(value, key)) {
     let previous = tick;
     result[key] = list(value[key], item => {
       object(item, ['tick', key === 'pending' ? 'targetname' : 'value']);
       const at = integer(item.tick, tick, MAX_TICK);
       check(at >= previous); previous = at;
       if (key === 'pending') return {tick: at, targetname: target(item.targetname)};
+      if (key === 'pendingGravity') {
+        const gravity = number(item.value, -100, 100);
+        if (map) check(outputs(map, 'gravity').some(event => event.value === gravity));
+        return {tick: at, value: gravity};
+      }
       const velocity = vector(item.value, 32767);
-      if (map) check(zones.some(zone => [...zone.onStart, ...zone.onEnd].some(event => event.property === 'velocity'
-        && ['x', 'y', 'z'].every(axis => event.value[axis] === velocity[axis]))));
+      if (map) check(outputs(map, 'velocity').some(event => ['x', 'y', 'z'].every(axis => event.value[axis] === velocity[axis])));
       return {tick: at, value: velocity};
     }, 128);
   }
@@ -87,7 +95,9 @@ export function sanitizeSaveloc(snapshot, map = null) {
   const key = practiceKey(snapshot.key, map);
   const source = object(snapshot.state, ['position', 'velocity', 'grounded', 'groundId', 'ducked', 'duckFraction',
     'eyeHeight', 'jumpHeld', 'surfaceFriction', 'yaw', 'pitch', 'tick'],
-  ['stage', 'pendingStageTeleport', 'baseVelocity', 'pendingMapPush', 'lastMapTeleportTick', 'mapGroundCheck', 'mapOutputState']);
+  ['stage', 'pendingStageTeleport', 'baseVelocity', 'pendingMapPush', 'lastMapTeleportTick', 'mapGroundCheck', 'mapOutputState',
+    // Bonus courses: map output gravity and slowdown, filtered pushes, ladders and water.
+    'gravityScale', 'laggedMovement', 'jumpDisabled', 'acceptedPushes', 'ladderNormal', 'waterJumpTime', 'waterJumpVelocity']);
   const state = {position: vector(source.position), velocity: vector(source.velocity, 32767), grounded: bool(source.grounded),
     groundId: source.groundId === null ? null : text(source.groundId), ducked: bool(source.ducked),
     duckFraction: number(source.duckFraction, 0, 1), eyeHeight: number(source.eyeHeight, 0, 128), jumpHeld: bool(source.jumpHeld),
@@ -106,6 +116,34 @@ export function sanitizeSaveloc(snapshot, map = null) {
     state.mapGroundCheck = source.mapGroundCheck;
   }
   if (Object.hasOwn(source, 'mapOutputState')) state.mapOutputState = outputState(source.mapOutputState, map, state.tick);
+  // Each value must be one the map's own events, zones or brushes can produce.
+  const fround = value => Math.fround(value);
+  if (Object.hasOwn(source, 'gravityScale')) {
+    state.gravityScale = number(source.gravityScale, -100, 100);
+    if (map) check(outputs(map, 'gravity').some(event => fround(event.value) === state.gravityScale));
+  }
+  if (Object.hasOwn(source, 'laggedMovement')) {
+    state.laggedMovement = number(source.laggedMovement, 0, 100);
+    if (map) check(outputs(map, 'laggedMovement').some(event => fround(event.value) === state.laggedMovement));
+  }
+  if (Object.hasOwn(source, 'jumpDisabled')) {
+    check(source.jumpDisabled === true);
+    if (map) check(outputs(map, 'laggedMovement').some(event => event.suppressJump === true));
+    state.jumpDisabled = true;
+  }
+  if (Object.hasOwn(source, 'acceptedPushes')) {
+    state.acceptedPushes = list(source.acceptedPushes, id => { text(id); if (map) check(map.pushZones?.some(zone => zone.id === id)); return id; });
+    check(state.acceptedPushes.length && new Set(state.acceptedPushes).size === state.acceptedPushes.length);
+  }
+  if (Object.hasOwn(source, 'ladderNormal')) {
+    if (map) check(map.ladderBrushIds?.length);
+    state.ladderNormal = vector(source.ladderNormal, 1);
+  }
+  if (Object.hasOwn(source, 'waterJumpTime') || Object.hasOwn(source, 'waterJumpVelocity')) {
+    if (map) check(map.waterZones?.length);
+    if (Object.hasOwn(source, 'waterJumpTime')) state.waterJumpTime = number(source.waterJumpTime, -1000, 10000);
+    if (Object.hasOwn(source, 'waterJumpVelocity')) state.waterJumpVelocity = vector(source.waterJumpVelocity, 32767);
+  }
   const sourceTimer = object(snapshot.timer, ['state', 'armed', 'prehops']);
   const timerState = object(sourceTimer.state, ['phase', 'startTick', 'endTick', 'splits', 'invalidReason', 'elapsed']);
   check(timerState.phase === 'ready' || timerState.phase === 'running');

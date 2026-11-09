@@ -6,6 +6,7 @@ import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } 
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
 import { createSharedSavelocs } from './shared-savelocs.js';
+import { courseOf } from '../courses.js';
 
 const CLOSED = ROOM_TEXTS.closed;
 const SERVICE = "Couldn't reach the room service. Try again in a moment.";
@@ -257,8 +258,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     return response.ok ? response.json() : null;
   }
   // The uncached board, as the game reads it right after a verified run.
-  async function siteBoard(mapId) {
-    const boardId = getAdapter()?.rooms?.boardId?.(mapId);
+  async function siteBoard(mapId, course = 0) {
+    const boardId = getAdapter()?.rooms?.boardId?.(mapId, course);
     return typeof boardId === 'string' && boardId ? siteRead({action: 'leaderboard', boardId}) : null;
   }
   // Drops the runs waiting on a socket, or all of them, and stops watching verdicts once none wait.
@@ -279,12 +280,14 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   }
   function verifiedClaim(claim, result) {
     if (!result || typeof result !== 'object' || result.mapId !== claim.mapId) return null;
+    const bonus = Number.isSafeInteger(result.bonus) && result.bonus > 0 ? result.bonus : 0;
+    if (bonus !== claim.course) return null;
     const personalBest = result.personalBest === true, record = result.record === true, promoted = result.promoted === true;
     const ranked = Number.isSafeInteger(result.leaderboardRank) && Number.isSafeInteger(result.leaderboardTotal)
       && result.leaderboardRank > 0 && result.leaderboardTotal >= result.leaderboardRank;
     try {
       return decodeControl(JSON.stringify({type: 'verified', ...(isUuid(result.id) ? {id: result.id} : {}),
-        mapId: claim.mapId, epoch: claim.epoch, timeUs: result.timeUs, personalBest, record,
+        mapId: claim.mapId, epoch: claim.epoch, course: claim.course, timeUs: result.timeUs, personalBest, record,
         previousBestUs: (personalBest || record) && Number.isSafeInteger(result.previousBestUs) && result.previousBestUs > result.timeUs
           ? result.previousBestUs : null,
         pointsDelta: Number.isSafeInteger(result.pointsDelta) && result.pointsDelta > 0 ? result.pointsDelta : 0, promoted,
@@ -672,7 +675,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const bestUs = best === null ? null : Math.round(best * 1e6);
       if (bestUs !== null && (!Number.isSafeInteger(bestUs) || bestUs <= 0 || bestUs > 86400000000)) return false;
       const personalBest = bestUs === null || timeUs < bestUs;
-      const claim = {type: 'finish', mapId: state.mapId, epoch: state.epoch, timeUs,
+      const claim = {type: 'finish', mapId: state.mapId, epoch: state.epoch, course: courseOf(live.map), timeUs,
         personalBest, previousBestUs: personalBest ? bestUs : null};
       const attempt = queuedRun, onVerdict = adapter.rooms?.onVerdict;
       queuedRun = undefined;

@@ -482,7 +482,7 @@ function roomHooks(source, client, state) {
     if (tickets.length !== 2) throw new Error(`Unsupported Surfd build: room tickets (${tickets.length} matches)`);
     const bind = unique(source, new RegExp(`bindServers\\((${identifier}),(${identifier})\\)\\{(${identifier})=\\1,(${identifier})=\\2,\\2\\(\\)\\}`, 'g'), 'room join callback');
     const lobby = unique(source, new RegExp(`(${identifier})\\.bindServers\\(`, 'g'), 'room lobby')[1];
-    const maps = unique(source, new RegExp(`refreshTop10\\(\\)\\{${identifier}\\.refresh\\((${identifier})\\.find\\((${identifier})=>\\2\\.id===${identifier}\\.currentMap\\(\\)\\)\\?\\?null\\)\\}`, 'g'), 'room maps')[1];
+    const maps = unique(source, new RegExp(`refreshTop10\\(\\)\\{${identifier}\\.refresh\\((${identifier})\\.find\\((${identifier})=>\\2\\.id===${identifier}\\.currentMap\\(\\)\\)\\?\\?null(?:,${identifier}\\.currentCourse\\(\\))?\\)\\}`, 'g'), 'room maps')[1];
     const countdown = unique(source, new RegExp(`function (${identifier})\\((${identifier}),(${identifier})\\)\\{const (${identifier})=(${identifier})\\(\\2,\\3\\);return \\4===0\\?"Changing map…":`, 'g'), 'room countdown')[1];
     const clocks = new RegExp(`${literal(countdown)}\\((${identifier}(?:\\.state)?)\\.endsAt,Date\\.now\\(\\)(?:\\+${identifier})?\\)`, 'g');
     const clockCount = [...source.matchAll(clocks)].length;
@@ -550,7 +550,9 @@ function roomHooks(source, client, state) {
       signIn: () => ${account}.openAccount(),
       maps: () => ${maps},
       currentMap: () => ${state}?.map ?? ${lobby}.selected(),
-      boardId: mapId => (${client}.config.maps.find(map => map.id === mapId && !map.archived) ?? ${client}.config.maps.find(map => map.id === mapId))?.boardId ?? null,
+      // The board of a map's main course or of one of its bonuses, found as the game finds a result's board.
+      boardId: (mapId, course = 0) => course ? ${client}.config.bonusBoards?.find(board => board.id === mapId && board.bonus?.number === course && !board.archived)?.boardId ?? null
+        : (${client}.config.maps.find(map => map.id === mapId && !map.archived) ?? ${client}.config.maps.find(map => map.id === mapId))?.boardId ?? null,
       // Every answer the site gives about a submitted run, as listener(attemptId, submission), until stopped.
       onVerdict: __qolListener => {
         const __qolClient = ${client}, __qolRestore = [];

@@ -195,7 +195,7 @@ describe('community room finish claims', () => {
         await f.history.ready;
         f.live.timer.state.elapsed = elapsed;
         expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
-        expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 1,
+        expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 1, course: 0,
           timeUs: Math.round(elapsed * 1e6), personalBest, previousBestUs}]);
         expect(f.history.runs()).toEqual([]);
         expect(f.history.bestTime(f.live.map)).toBe(best);
@@ -214,7 +214,7 @@ describe('community room finish claims', () => {
       const sent = [], send = socket.send.bind(socket);
       socket.send = data => { sent.push(JSON.parse(data)); return send(data); };
       expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
-      expect(sent).toEqual([{type: 'finish', mapId: 'map', epoch: 1,
+      expect(sent).toEqual([{type: 'finish', mapId: 'map', epoch: 1, course: 0,
         timeUs: 12345678, personalBest: true, previousBestUs: 20000000}]);
     } finally { f.runtime.destroy(); }
   });
@@ -277,7 +277,7 @@ describe('community room finish claims', () => {
       socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'other', epoch: 2}}));
       socket.message(JSON.stringify({type: 'state', state: {roomId: ROOM, mapId: 'other', epoch: 3}}));
       expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
-      expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 3,
+      expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 3, course: 0,
         timeUs: 12345678, personalBest: true, previousBestUs: null}]);
       expect(old.sent).toEqual([]);
     } finally { f.runtime.destroy(); }
@@ -306,7 +306,7 @@ describe('community room finish claims', () => {
     const site = {id: RESULT, userId: ACCOUNT, name: 'Surfer', rank: 'Rookie', mapId: 'map', mapTitle: 'Map', timeUs: 12345678,
       record: false, personalBest: true, previousBestUs: 13000000, pointsDelta: 25, promoted: false,
       leaderboardRank: 5, leaderboardTotal: 80, stageRecords: []};
-    const unverified = {type: 'finish', mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: true, previousBestUs: null};
+    const unverified = {type: 'finish', mapId: 'map', epoch: 1, course: 0, timeUs: 12345678, personalBest: true, previousBestUs: null};
     async function queued(attempt = 'attempt-1') {
       const f = finishFixture(), watch = {listener: null, starts: 0, stops: 0};
       f.adapter.rooms.onVerdict = listener => {
@@ -333,7 +333,7 @@ describe('community room finish claims', () => {
         expect(sent()).toEqual([]);
         listener('attempt-1', {status: 'verified', result: site});
         listener('attempt-1', {status: 'verified', result: site});
-        expect(sent()).toEqual([{type: 'verified', id: RESULT, mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: true,
+        expect(sent()).toEqual([{type: 'verified', id: RESULT, mapId: 'map', epoch: 1, course: 0, timeUs: 12345678, personalBest: true,
           previousBestUs: 13000000, record: false, pointsDelta: 25, promoted: false, leaderboardRank: 5, leaderboardTotal: 80}]);
         expect(watch.stops).toBe(1);
         expect(f.requests).toEqual([]);
@@ -345,7 +345,7 @@ describe('community room finish claims', () => {
       try {
         watch.listener('attempt-1', {status: 'verified', result: {...site, id: 'not-a-uuid', promoted: true, rank: 'Surfer',
           personalBest: false, previousBestUs: 13000000, pointsDelta: -5, leaderboardRank: 81}});
-        expect(sent()).toEqual([{type: 'verified', mapId: 'map', epoch: 1, timeUs: 12345678, personalBest: false,
+        expect(sent()).toEqual([{type: 'verified', mapId: 'map', epoch: 1, course: 0, timeUs: 12345678, personalBest: false,
           previousBestUs: null, record: false, pointsDelta: 0, promoted: true, rank: 'Surfer'}]);
       } finally { f.runtime.destroy(); }
     });
@@ -1908,4 +1908,16 @@ describe('private room runtime', () => {
       expect(f.timers.pending()).toBe(0);
     } finally { f.runtime.destroy(); }
   });
+});
+
+test('a bonus finish claims its course and the bonus best', async () => {
+  const f = finishFixture({best: 20});
+  try {
+    const socket = await f.guest();
+    await f.history.ready;
+    f.live.map = {id: 'map', version: '3/bonus-2'};
+    expect(await f.runtime.observeFinish(f.live, f.history)).toBe(true);
+    expect(socket.sent.map(JSON.parse)).toEqual([{type: 'finish', mapId: 'map', epoch: 1, course: 2,
+      timeUs: 12345678, personalBest: true, previousBestUs: null}]);
+  } finally { f.runtime.destroy(); }
 });

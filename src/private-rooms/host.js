@@ -7,7 +7,7 @@ import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_
 
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
-const SAVELOC_LIMIT = {rate: 1, burst: 3};
+const SAVELOC_LIMIT = {rate: 1, burst: 3}, COURSE_LIMIT = {rate: 2, burst: 4};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
@@ -22,8 +22,8 @@ const guestName = () => 'Guest_' + crypto.randomUUID().slice(0, 5);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 // lookupProfile(userId) resolves to the site's public profile ({username, rank, points}), null when the
-// site has no such player, or rejects when it can't answer. lookupBoard(mapId) resolves to the map's
-// leaderboard ({entries: [{rank, userId, timeUs}], total}) or null.
+// site has no such player, or rejects when it can't answer. lookupBoard(mapId, course) resolves to the
+// leaderboard of the map's main course (0) or bonus ({entries: [{rank, userId, timeUs}], total}) or null.
 export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}], name = "Host's room", visibility = 'private', maxPlayers = DEFAULT_MAX_PLAYERS, onChange = () => {}, now = Date.now, getMap = () => null,
   ranks = RANKS, lookupProfile = null, lookupBoard = null}) {
   if (!isPrivateRoomId(roomId)) throw new Error('Invalid private room ID');
@@ -249,9 +249,9 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   // record is the room's; the finisher's own game already shows the site's result for a verified run.
   function announce(client, claim, verified = null) {
     const player = client.player;
-    const previous = records.get(claim.mapId) ?? null;
+    const course = claim.mapId + ':' + claim.course, previous = records.get(course) ?? null;
     const roomRecord = previous === null || claim.timeUs < previous;
-    if (roomRecord) records.set(claim.mapId, claim.timeUs);
+    if (roomRecord) records.set(course, claim.timeUs);
     const siteRecord = !!verified && claim.record;
     let promoted = false;
     if (verified) {
@@ -266,7 +266,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }
     broadcast({type: 'result', result: {
       id: claim.id ?? crypto.randomUUID(), userId: player.userId ?? player.id, name: player.name, rank: player.rank,
-      mapId: claim.mapId, mapTitle: catalog.get(claim.mapId).title, timeUs: claim.timeUs,
+      mapId: claim.mapId, mapTitle: catalog.get(claim.mapId).title, ...(claim.course ? {bonus: claim.course} : {}), timeUs: claim.timeUs,
       record: siteRecord || roomRecord, ...(roomRecord && !siteRecord ? {roomRecord: true} : {}),
       personalBest: claim.personalBest,
       previousBestUs: roomRecord && !siteRecord ? previous : claim.personalBest || siteRecord ? claim.previousBestUs : null,
@@ -293,7 +293,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
       announce(client, claim, {});
       return;
     }
-    const read = take(boardReads, BOARD_LIMIT) ? () => lookupBoard?.(claim.mapId) : () => null;
+    const read = take(boardReads, BOARD_LIMIT) ? () => lookupBoard?.(claim.mapId, claim.course) : () => null;
     Promise.resolve().then(read).catch(() => null).then(board => {
       if (closed || !clients.has(client)) return;
       const place = standing(board, claim, player.userId);
@@ -400,6 +400,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
         case 'verified':
           verify(client, message);
           break;
+        case 'course':
+          if (message.course !== client.player.course && take(client.course, COURSE_LIMIT)) {
+            client.player.course = message.course;
+            roster();
+          }
+          break;
         case 'change-map':
           if (!client.host) {
             send(client, {type: 'error', text: ROOM_TEXTS.hostChangesMaps});
@@ -413,11 +419,16 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
             clearPending();
             savelocs.clear();
             for (const owner of owners.values()) owner.entries.length = 0;
+            // A new map starts everyone on its main course.
+            let courses = false;
             for (const peer of clients) {
               peer.sequence = null;
               peer.spectatorSequence = null;
+              courses ||= peer.player.course !== 0;
+              peer.player.course = 0;
             }
             broadcast({type: 'state', state, serverTime: Date.now()});
+            if (courses) roster();
             for (const peer of clients) initSavelocs(peer);
             // The native client clears its viewer count on each epoch, not its demand flag.
             for (const peer of clients) demand(peer);
@@ -481,19 +492,20 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const client = {socket, host, owner, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
       spectatorSequence: null, spectator: {tokens: SPECTATOR_LIMIT.burst, at: now()},
       chat: {tokens: CHAT_LIMIT.burst, at: now(), limited: false}, spectate: {tokens: SPECTATE_LIMIT.burst, at: now()},
+      course: {tokens: COURSE_LIMIT.burst, at: now()},
       nextResultAt: -Infinity, verified: {tokens: VERIFIED_LIMIT.burst, at: now()},
       backlogSince: null, player: {
       id: 'private-' + connectionId, connectionId, slot,
       name: guest ? (isGuestName(hello.name) ? hello.name : guestName()) : hello.name,
       appearance: normalizeAppearance(hello.appearance), guest, ...(userId ? {userId} : {}),
       rank: guest ? 'Guest' : claimed ? hello.rank : ranks[0].title, points: claimed ? hello.points : 0,
-      moderator: host, spectating: false,
+      moderator: host, spectating: false, course: 0,
     }};
     client.onOpen = () => {
       if (client.open || closed || !clients.has(client)) return;
       client.open = true;
       send(client, {type: 'welcome', state, player: client.player, players: players(), maps: [...catalog.values()],
-        serverTime: Date.now(), spectatorStream: true, playtime: false, activityTracking: false,
+        serverTime: Date.now(), spectatorStream: true, playtime: false, courses: true, activityTracking: false,
         recentResults: [], chatMute: null});
       initSavelocs(client);
       for (const {entry} of savelocs.values()) send(client, {type: 'saveloc-add', mapId: state.mapId, epoch: state.epoch, entry});

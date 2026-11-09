@@ -1729,6 +1729,37 @@ describe('native community behavior integration', () => {
     await Promise.resolve();
     expect(seen).toHaveLength(2);
   });
+
+  // The bonus update names bonus records, lets the game handle course commands
+  // first, and refreshes the menu's top ten for the current course.
+  test('community rooms hook the bonus update’s result wording, command entry and top ten', () => {
+    const source = roomSource
+      .replace('function nativeResultText(result){const text=result.record?"New Surfd record!":',
+        'function nativeResultText(result){const bonus=bonusOf(result),text=result.record?bonus?"New bonus record!":"New Surfd record!":')
+      .replace('command=token.replace(/^[!/]/,"").toLowerCase();if(command==="played")',
+        'command=token.replace(/^[!/]/,"").toLowerCase();if(!courses.onCommand?.(command,argument)){if(command==="played")')
+      .replace('localReply("Unknown command")}', 'localReply("Unknown command")}}function bonusOf(result){return result.bonus??null}const courses={onCommand:command=>command==="b"};')
+      .replace('refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}',
+        'refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null,options.currentCourse())}');
+    expect(source).toContain('"New bonus record!"');
+    expect(source).toContain('if(!courses.onCommand?.(command,argument)){');
+    expect(source).toContain(',options.currentCourse())}');
+    const commands = [], {runtime} = roomFixture(socialHooks({
+      commandReply: command => { commands.push(command); return command === '/help' ? 'Community help' : null; },
+    }), source), native = runtime.native;
+    native.setRoom(communityId);
+    native.command('/help');
+    expect(native.nativeReplies).toEqual(['Community help']);
+    const result = {mapTitle: 'Fixture map', timeUs: 1000000, name: 'Surfer', rank: 'Guest',
+      record: true, roomRecord: true, personalBest: true, previousBestUs: null, verified: false};
+    native.announceResult({...result, bonus: 2});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New room record!');
+    native.setRoom('eu');
+    native.announceResult({...result, bonus: 2, roomRecord: undefined, verified: undefined});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New bonus record!');
+    native.announceResult({...result, roomRecord: undefined, verified: undefined});
+    expect(native.results.at(-1).text).toBe('Fixture map in 1000000. New Surfd record!');
+  });
 });
 
 // A consumer fixture: real native buttons call the store, and the selector
@@ -1963,3 +1994,4 @@ test('finds the movement class behind a movement factory', () => {
   expect(source).toContain('this.movement=createMovement(');
   expect(instrumentGame(source)).toContain('Movement: Movement,');
 });
+

@@ -19,14 +19,14 @@ const spectator = (sequence, slot) => ({
 const uuid = slot => '00000000-0000-4000-8000-' + String(slot).padStart(12, '0');
 const roomPlayer = (slot = 0) => ({
   id: 'private-' + uuid(slot), connectionId: uuid(slot), slot, name: 'Guest',
-  rank: 'Unranked', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false,
+  rank: 'Unranked', points: 0, guest: false, moderator: false, appearance: DEFAULT_APPEARANCE, spectating: false, course: 0,
 });
 const maps = [{id: 'one', title: 'One', tier: 1}];
 const roomState = {roomId: 'room-a', name: "Host's room", visibility: 'private', maxPlayers: DEFAULT_MAX_PLAYERS, mapId: 'one', mapTitle: 'One',
   epoch: 1, startedAt: 1, endsAt: 0, untimed: true, recent: [], nominations: {}, rtv: [], vote: null, nextMap: null};
 const welcome = () => ({type: 'welcome', state: {...roomState}, player: roomPlayer(), players: [roomPlayer()],
   maps: [{id: 'one', title: 'One', tier: 1}], serverTime: 1, spectatorStream: true,
-  playtime: false, activityTracking: false, recentResults: [], chatMute: null});
+  playtime: false, courses: true, activityTracking: false, recentResults: [], chatMute: null});
 const notice = text => JSON.stringify({type: 'notice', text});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) cleanup();

@@ -198,7 +198,7 @@ describe('private room control boundaries', () => {
     const players = Array.from({length: MAX_ROOM_PLAYERS}, (_, slot) => ({
       id: 'private-' + uuid(slot), connectionId: uuid(slot), slot,
       name: 'Player_' + slot, rank: 'Unranked', points: 0, guest: false,
-      moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE,
+      moderator: false, spectating: false, appearance: DEFAULT_APPEARANCE, course: 0,
     }));
     const message = {type: 'roster', players};
     const reader = createRoomControlReader(filter());

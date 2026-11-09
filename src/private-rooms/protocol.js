@@ -51,6 +51,9 @@ export const FLAGS = Object.freeze({grounded: 1, crouched: 2, teleport: 4, pract
 export const DEFAULT_APPEARANCE = Object.freeze({title: '', titleColor: null, nameColor: null, revision: 0});
 const PHASES = ['ready', 'running', 'finished'];
 const uint = (value, max = 0xffffffff) => Number.isInteger(value) && value >= 0 && value <= max;
+// A course is the main course (0) or a bonus number, as in the game's bonus versions.
+export const MAX_COURSE = 99;
+const course = value => value === undefined || uint(value, MAX_COURSE);
 const bounded = (value, max) => Number.isFinite(value) && Math.abs(value) <= max;
 
 function requireValid(valid, message) {
@@ -293,24 +296,27 @@ export function decodeControl(text) {
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');
       return {type: 'chat', text: message.text.trim().slice(0, 240)};
+    case 'course':
+      requireValid(uint(message.course, MAX_COURSE), 'Invalid course');
+      return {type: 'course', course: message.course};
     case 'finish':
-      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
+      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0 && course(message.course)
         && runTime(message.timeUs) && typeof message.personalBest === 'boolean'
         && (message.previousBestUs === null || message.personalBest && runTime(message.previousBestUs)
           && message.previousBestUs > message.timeUs), 'Invalid room finish');
-      return {type: 'finish', mapId: message.mapId, epoch: message.epoch, timeUs: message.timeUs,
+      return {type: 'finish', mapId: message.mapId, epoch: message.epoch, course: message.course ?? 0, timeUs: message.timeUs,
         personalBest: message.personalBest, previousBestUs: message.previousBestUs};
     case 'verified': {
       const ranked = message.leaderboardRank !== undefined || message.leaderboardTotal !== undefined;
       requireValid((message.id === undefined || isUuid(message.id)) && identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
-        && runTime(message.timeUs) && typeof message.personalBest === 'boolean' && typeof message.record === 'boolean'
+        && course(message.course) && runTime(message.timeUs) && typeof message.personalBest === 'boolean' && typeof message.record === 'boolean'
         && (message.previousBestUs === null || (message.personalBest || message.record) && runTime(message.previousBestUs)
           && message.previousBestUs > message.timeUs)
         && isPointsDelta(message.pointsDelta) && typeof message.promoted === 'boolean'
         && (message.rank === undefined || message.promoted && textValue(message.rank, 32))
         && (!ranked || isStanding(message.leaderboardRank, message.leaderboardTotal)), 'Invalid room finish');
       return {type: 'verified', ...(message.id === undefined ? {} : {id: message.id}), mapId: message.mapId, epoch: message.epoch,
-        timeUs: message.timeUs, personalBest: message.personalBest, previousBestUs: message.previousBestUs, record: message.record,
+        course: message.course ?? 0, timeUs: message.timeUs, personalBest: message.personalBest, previousBestUs: message.previousBestUs, record: message.record,
         pointsDelta: message.pointsDelta, promoted: message.promoted, ...(message.rank === undefined ? {} : {rank: message.rank}),
         ...(ranked ? {leaderboardRank: message.leaderboardRank, leaderboardTotal: message.leaderboardTotal} : {})};
     }
@@ -387,11 +393,12 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
       && (player.guest === true ? isGuestName(player.name) && player.userId === undefined && player.rank === 'Guest' && player.points === 0
         : player.guest === false && (player.userId === undefined || isUuid(player.userId))
           && titles.has(player.rank) && isPoints(player.points))
-      && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean'
+      && typeof player.moderator === 'boolean' && typeof player.spectating === 'boolean' && course(player.course)
       && validAppearance(player.appearance), 'Invalid room player');
     return {id: player.id, connectionId: player.connectionId, slot: player.slot, name: player.name,
       rank: player.rank, points: player.points, guest: player.guest, ...(player.userId === undefined ? {} : {userId: player.userId}),
-      moderator: player.moderator, appearance: normalizeAppearance(player.appearance), spectating: player.spectating};
+      moderator: player.moderator, appearance: normalizeAppearance(player.appearance), spectating: player.spectating,
+      course: player.course ?? 0};
   }
   const validRank = rank => rank === 'Guest' || titles.has(rank);
   function readPlayers(players) {
@@ -435,13 +442,13 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
         requireValid(entry && JSON.stringify(entry) === JSON.stringify(player), 'Invalid own room player');
         requireValid(Array.isArray(message.maps) && timestamp(message.serverTime)
           && message.spectatorStream === true && message.playtime === false && message.activityTracking === false
-          && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
+          && [undefined, true].includes(message.courses) && Array.isArray(message.recentResults) && message.recentResults.length === 0 && message.chatMute === null,
         'Invalid room welcome');
         const ids = new Set(message.maps.map(map => record(map) ? map.id : null));
         current = state;
         return {type: 'welcome', state, player, players, maps: [...ids].filter(id => catalog.has(id)).map(id => catalog.get(id)),
-          serverTime: message.serverTime, spectatorStream: true, playtime: false, activityTracking: false,
-          recentResults: [], chatMute: null};
+          serverTime: message.serverTime, spectatorStream: true, playtime: false, courses: message.courses === true,
+          activityTracking: false, recentResults: [], chatMute: null};
       }
       case 'state': {
         requireValid(timestamp(message.serverTime), 'Invalid room time');
@@ -485,6 +492,7 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
         const ranked = verified && (result.leaderboardRank !== undefined || result.leaderboardTotal !== undefined);
         requireValid(record(result) && isUuid(result.id) && (isUuid(result.userId) || playerId(result.userId))
           && isPlayerName(result.name) && validRank(result.rank) && catalog.has(result.mapId)
+          && (result.bonus === undefined || uint(result.bonus, MAX_COURSE) && result.bonus > 0)
           && runTime(result.timeUs) && typeof result.record === 'boolean' && typeof result.personalBest === 'boolean'
           && (result.previousBestUs === null || (result.record || result.personalBest)
             && runTime(result.previousBestUs) && result.previousBestUs > result.timeUs)
@@ -494,8 +502,8 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
             : result.pointsDelta === 0 && result.promoted === false), 'Invalid room result');
         const roomRecord = result.record && (!verified || result.roomRecord === true);
         return {type: 'result', result: {id: result.id, userId: result.userId, name: result.name, rank: result.rank,
-          mapId: result.mapId, mapTitle: catalog.get(result.mapId).title, timeUs: result.timeUs,
-          record: result.record, ...(roomRecord ? {roomRecord} : {}), personalBest: result.personalBest, previousBestUs: result.previousBestUs,
+          mapId: result.mapId, mapTitle: catalog.get(result.mapId).title, ...(result.bonus ? {bonus: result.bonus} : {}),
+          timeUs: result.timeUs, record: result.record, ...(roomRecord ? {roomRecord} : {}), personalBest: result.personalBest, previousBestUs: result.previousBestUs,
           pointsDelta: verified ? result.pointsDelta : 0, promoted: verified && result.promoted,
           ...(ranked ? {leaderboardRank: result.leaderboardRank, leaderboardTotal: result.leaderboardTotal} : {}), verified}};
       }
