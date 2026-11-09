@@ -106,3 +106,28 @@ test('an unfamiliar online controller keeps only the load report; an unfamiliar 
   const source = nativeSource.replace('if(busy)return;', 'if(busy){return}');
   expect(nativeMapEntryHooks(source)).toEqual({source, controller: null});
 });
+
+// The bonus update: boardless bonuses run locally for guests, board() first
+// looks up bonus boards, and the map load fetches the map's bonus courses too.
+const bonusSource = nativeSource
+  .replace('if(!client.config.enabled||!client.session&&!client.config.guestRuns){', 'const local=client.config.enabled&&!session.practice&&isBonus(session.map)&&!client.board(session.map);if(!client.config.enabled||!client.session&&!client.config.guestRuns&&!local){')
+  .replace('const board=client.board(session.map);if(!board', 'const board=client.board(session.map),bonus=isBonus(session.map);if(!board')
+  .replace('board(map){const found', 'board(map){if(isBonus(map)){const entry=null;return entry?void 0:void 0}const found')
+  .replace('try{const[collision,visual]=await Promise.all([loadGeometry(entry,signal),Promise.resolve()]);',
+    'try{const file=bonusFile(entry.id),[collision,visual,bonuses]=await Promise.all([loadGeometry(entry,signal),Promise.resolve(),file?Promise.resolve(file):Promise.resolve(null)]);')
+  + 'function isBonus(map){return String(map.version??"").includes("/bonus-")}function bonusFile(id){return null}';
+
+test('the bonus update keeps the early main-course ticket for signed-in players and guests', async () => {
+  expect(bonusSource).toContain('&&!local){');
+  expect(bonusSource).toContain(',[collision,visual,bonuses]=');
+  const member = run(bonusSource);
+  member.client.session = {user: {id: 'user-a'}};
+  await member.loadMap(entry);
+  expect(member.tickets.calls).toEqual(['user-a:board-one']);
+  const guest = run(bonusSource);
+  await guest.loadMap(entry);
+  expect(guest.guests.calls).toEqual(['guest:board-one']);
+  guest.client.config.guestRuns = false;
+  await guest.loadMap(entry);
+  expect(guest.guests.calls).toEqual(['guest:board-one']);
+});

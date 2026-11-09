@@ -20,18 +20,20 @@ function runTicketPrefetch(source, load, entry) {
   if (!prefetch || !controller || controller.index < factory.index) return null;
   const [, ready, , object] = controller;
   const end = source.indexOf(`return ${object}}`, controller.index);
-  const begin = unique(source.slice(controller.index, end), new RegExp(`async beginAttempt\\((${identifier})\\)\\{[^]{0,700}?(${identifier})\\|\\|await ${literal(ready)},!${identifier}\\(\\)\\)return;if\\(${literal(client)}\\.session\\)\\{if\\(await ${identifier},!${identifier}\\(\\)\\)return;if\\((${identifier})\\.retained>=6\\)\\{${literal(tickets)}\\.invalidate\\(\\),[^]{0,300}?return\\}\\}if\\((${identifier})\\)\\{${literal(tickets)}\\.invalidate\\(\\),${literal(guests)}\\.invalidate\\(\\),[^]{0,300}?return\\}if\\(!${literal(client)}\\.config\\.enabled\\|\\|!${literal(client)}\\.session&&!${literal(client)}\\.config\\.guestRuns\\)\\{[^]{0,300}?return\\}const (${identifier})=${literal(client)}\\.board\\(\\1\\.map\\);if\\(!\\5\\|\\|\\1\\.practice\\)\\{[^]{0,600}?\\?await ${literal(guests)}\\.begin\\(\\1,\\5,"guest"\\):await ${literal(tickets)}\\.begin\\(\\1,\\5,${literal(client)}\\.session\\.user\\.id,`, 'g'));
-  if (end < 0 || !begin) return null;
+  const begin = unique(source.slice(controller.index, end), new RegExp(`async beginAttempt\\((${identifier})\\)\\{[^]{0,700}?(${identifier})\\|\\|await ${literal(ready)},!${identifier}\\(\\)\\)return;if\\(${literal(client)}\\.session\\)\\{if\\(await ${identifier},!${identifier}\\(\\)\\)return;if\\((${identifier})\\.retained>=6\\)\\{${literal(tickets)}\\.invalidate\\(\\),[^]{0,300}?return\\}\\}if\\((${identifier})\\)\\{${literal(tickets)}\\.invalidate\\(\\),${literal(guests)}\\.invalidate\\(\\),[^]{0,300}?return\\}(?:const (${identifier})=${literal(client)}\\.config\\.enabled&&!\\1\\.practice&&${identifier}\\(\\1\\.map\\)&&!${literal(client)}\\.board\\(\\1\\.map\\);)?if\\(!${literal(client)}\\.config\\.enabled\\|\\|!${literal(client)}\\.session&&!${literal(client)}\\.config\\.guestRuns(?:&&!\\5)?\\)\\{[^]{0,300}?return\\}const (${identifier})=${literal(client)}\\.board\\(\\1\\.map\\)(?:,${identifier}=${identifier}\\(\\1\\.map\\))?;if\\(!\\6\\|\\|\\1\\.practice\\)\\{[^]{0,600}?\\?await ${literal(guests)}\\.begin\\(\\1,\\6,"guest"\\):await ${literal(tickets)}\\.begin\\(\\1,\\6,${literal(client)}\\.session\\.user\\.id,`, 'g'));
+  // Bonus builds let guests run a bonus without a board locally. That case has
+  // no board, so the prefetch below never requests a ticket for it either.
+  if (end < 0 || !begin || begin[5] && !begin[0].includes(`guestRuns&&!${begin[5]}){`)) return null;
   const [, , initialized, retained, failure] = begin;
   // The catalogue entry carries the version the geometry loader fetches, and
   // board() looks boards up in the same catalogue.
-  const board = unique(source, new RegExp(`board\\((${identifier})\\)\\{const (${identifier})=(${identifier})\\.find\\((${identifier})=>\\4\\.id===\\1\\.id&&\\4\\.version===\\1\\.version\\);return \\2\\?this\\.config\\.maps\\.find\\(`, 'g'));
+  const board = unique(source, new RegExp(`board\\((${identifier})\\)\\{(?:if\\(${identifier}\\(\\1\\)\\)\\{[^{}]{0,200}\\})?const (${identifier})=(${identifier})\\.find\\((${identifier})=>\\4\\.id===\\1\\.id&&\\4\\.version===\\1\\.version\\);return \\2\\?this\\.config\\.maps\\.find\\(`, 'g'));
   const instance = unique(source, new RegExp(`const (${identifier})=${literal(factoryName)}\\(\\{`, 'g'));
   if (!board || !instance) return null;
   const catalog = board[3];
   const geometry = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),${identifier}\\)\\{const (${identifier})=${literal(catalog)}\\.find\\((${identifier})=>\\4\\.id===\\2\\.id\\),`, 'g'));
   const body = source.slice(load.index + load[0].length, load.index + load[0].length + 1200);
-  if (!geometry || !new RegExp(`try\\{const\\[${identifier},${identifier}\\]=await Promise\\.all\\(\\[${literal(geometry[1])}\\(${literal(entry)},`).test(body)) return null;
+  if (!geometry || !new RegExp(`try\\{const(?: ${identifier}=${identifier}\\(${literal(entry)}\\.id\\),)?\\[${identifier},${identifier}(?:,${identifier})?\\]=await Promise\\.all\\(\\[${literal(geometry[1])}\\(${literal(entry)},`).test(body)) return null;
   return {instance: instance[1], at: controller.index + controller[0].length - `ready:${ready},setMap(`.length,
     method: `__qolPrefetchRun(__qolMap){if(!${initialized}||${failure}||!${client}.config.enabled||!${client}.session&&!${client}.config.guestRuns||${client}.session&&${retained}.retained>=6)return;
     const __qolRecord=${catalog}.find(__qolEntry=>__qolEntry.id===__qolMap?.id),__qolBoard=__qolRecord&&${client}.board(__qolRecord);
