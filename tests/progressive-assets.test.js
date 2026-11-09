@@ -568,11 +568,13 @@ function progressiveFixtureRunner(prepareSky, {unknownSky = false, initTexture, 
   return {run, data, faces, calls, probe: probe.promise};
 }
 
-test('progressive sky delays the first real draw but not renderer construction or its visibility probe', async () => {
+test('prepared sky is installed before the visibility probe and first real draw', async () => {
   const gate = deferred(), converted = Array.from({length: 6}, () => ({width: 512, height: 512}));
   const preparation = {ready: gate.promise, finish: async () => { await gate.promise; return converted; }, cancel() {}};
   let allocatedSize;
+  const uploadedFaces = [];
   const fixture = progressiveFixtureRunner(() => preparation, {initTexture(texture) {
+    uploadedFaces.push(texture.image);
     const faces = texture.image;
     if (faces.length !== 6) return;
     const size = faces[0].width;
@@ -585,11 +587,13 @@ test('progressive sky delays the first real draw but not renderer construction o
   const view = fixture.run.factory({}, data, {});
   expect(fixture.calls.fallback).toBe(0);
   const frame = {id: 'first'}, preparing = view.prepare(frame);
-  await fixture.probe;
-  expect(fixture.calls.real).toEqual([]);
+  expect(fixture.calls.passes).toEqual([]);
   gate.resolve();
+  await fixture.probe;
+  expect(uploadedFaces[0]).toBe(converted);
   await preparing;
   expect(fixture.calls.real).toEqual([{frame, faces: converted}]);
+  expect(fixture.calls.passes.every(faces => faces === converted)).toBe(true);
   expect(fixture.calls.real[0].faces).toBe(converted);
   expect(fixture.calls.fallback).toBe(0);
   expect(allocatedSize).toBe(512);
@@ -628,7 +632,6 @@ test('disposing while the sky worker is pending cancels it and prevents a real d
     cancel(reason) { gate.reject(reason); }};
   const fixture = progressiveFixtureRunner(() => preparation), data = await fixture.run.relay('map');
   const view = fixture.run.factory({}, data, {}), preparing = view.prepare({id: 'cancelled'});
-  await fixture.probe;
   view.dispose();
   await expect(preparing).rejects.toMatchObject({name: 'AbortError'});
   expect(fixture.calls.real).toEqual([]);

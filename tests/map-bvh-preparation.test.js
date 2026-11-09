@@ -507,6 +507,7 @@ test('the hooked geometry load uses a cached map before downloading and reports 
   const calls = [], fetched = [];
   const qol = {createMapPreparationLoad: (signal, jobs, lookup) => ({
     read: async key => { calls.push(['read', key, lookup]); return key === 'cached' ? geometry('surf_cached') : null; },
+    parse: async (response, native) => { calls.push(['parse', response.url]); return native(); },
     prepare: async (map, threshold, from) => { calls.push(['prepare', map.id, threshold, from]); },
     dispose() { calls.push(['dispose']); },
   })};
@@ -521,11 +522,11 @@ test('the hooked geometry load uses a cached map before downloading and reports 
   calls.length = 0;
   expect((await loadMap({id: 'surf_fresh', name: 'fresh'}, undefined)).id).toBe('surf_fresh');
   expect(fetched).toEqual(['/packed/fresh.json.gz']);
-  expect(calls).toEqual([['read', 'fresh', true],
+  expect(calls).toEqual([['read', 'fresh', true], ['parse', 'https://assets.example/packed/fresh.json.gz'],
     ['prepare', 'surf_fresh', .7, {key: 'fresh', url: 'https://assets.example/packed/fresh.json.gz'}]]);
   calls.length = 0;
   await expect(loadMap({id: 'surf_other', name: 'other', slug: 'other'}, undefined)).rejects.toThrow('Invalid other geometry');
-  expect(calls).toEqual([['read', undefined, true], ['dispose']]);
+  expect(calls).toEqual([['read', undefined, true], ['parse', 'https://assets.example/maps/other-collision.json'], ['dispose']]);
 });
 
 test('the bonus update shape: a live Session subclass, renamed config and reader locals', () => {

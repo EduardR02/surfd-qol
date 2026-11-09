@@ -50,7 +50,7 @@ export function nativeProgressiveMapHooks(source) {
   if (!finalize || !unlock || finalize.groups.ready !== k.ready ||
       !k.failure.startsWith(abortPrefix) || k.failure.split(';return}').length !== 2) return source;
 
-  const factoryHelpers = `let __qolSkyApplied=false;const __qolMapBindings=(${createProgressiveTextureBindings.toString()})(${f.data}.resources,(${nativeBspShaderSignature.toString()})());
+  const factoryHelpers = `let __qolSkyReady;const __qolMapBindings=(${createProgressiveTextureBindings.toString()})(${f.data}.resources,(${nativeBspShaderSignature.toString()})());
     let __qolWhiteImage;const __qolDxtImages=new Map;
     function __qolWhite(){if(!__qolWhiteImage){const canvas=document.createElement("canvas");canvas.width=canvas.height=1;const context=canvas.getContext("2d");context.fillStyle="#fff";context.fillRect(0,0,1,1);__qolWhiteImage=canvas}return __qolWhiteImage}
     function __qolDxt(format){const size=format==="DXT1"||format==="DXT1A"?8:16;let levels=__qolDxtImages.get(size);if(!levels){const bytes=new Uint8Array(size);bytes.fill(255);bytes.fill(0,size-4);levels=[4,2,1].map(width=>({data:bytes,width,height:width}));__qolDxtImages.set(size,levels)}return levels}
@@ -77,14 +77,22 @@ export function nativeProgressiveMapHooks(source) {
     `${f.data}.resources.skyPreparation?[]:${s.call}`);
   let renderer = scope.replace(branch[0], () => textureBranch).replace(cube[0], () => cubeFactory)
     .replace(sky[0], () => skyConstruction);
-  renderer = renderer.replace(draw[0], () => `const __qolProgressiveMap=${v.frame}??${v.previous};
-    if(!__qolSkyApplied&&${f.data}.resources.skyPreparation&&${v.alive}()){
-      const faces=await ${f.data}.resources.skyPreparation.finish(()=>${s.call},${f.renderer}.capabilities?.maxCubemapSize);
-      if(${v.alive}()){${s.scene}.background.image=faces;${s.scene}.background.needsUpdate=true;__qolSkyApplied=true}
-    }
-    if(__qolProgressiveMap&&${v.alive}())${v.view}.render(__qolProgressiveMap)`);
   renderer = renderer.replace(factory[0], () => factory[0] + factoryHelpers);
-  renderer = renderer.replace(rampPreparation, () => `const __qolFirstViewReady=__qolMapBindings.prepare(${f.renderer},()=>{const __qolProbeFrame=${v.frame}??${v.previous};if(__qolProbeFrame&&${v.alive}())${v.view}.render(__qolProbeFrame)});
+  renderer = renderer.replace(rampPreparation, () => `if(${f.data}.resources.skyPreparation){
+      __qolSkyReady??=(async()=>{
+        const faces=await ${f.data}.resources.skyPreparation.finish(()=>${s.call},${f.renderer}.capabilities?.maxCubemapSize);
+        if(!${v.alive}()||${f.data}.resources.signal.aborted)throw ${f.data}.resources.signal.reason??new DOMException("Renderer disposed during sky preparation","AbortError");
+        ${s.scene}.background.image=faces;${s.scene}.background.needsUpdate=true;
+        if(typeof ${f.renderer}.initTexture==="function")await new Promise((resolve,reject)=>setTimeout(()=>{
+          try{
+            if(!${v.alive}()||${f.data}.resources.signal.aborted)throw ${f.data}.resources.signal.reason??new DOMException("Renderer disposed during sky preparation","AbortError");
+            ${f.renderer}.initTexture(${s.scene}.background);resolve();
+          }catch(error){reject(error)}
+        },0));
+      })();
+      await __qolSkyReady;
+    }
+    const __qolFirstViewReady=__qolMapBindings.prepare(${f.renderer},()=>{const __qolProbeFrame=${v.frame}??${v.previous};if(__qolProbeFrame&&${v.alive}())${v.view}.render(__qolProbeFrame)});
     ${rampPreparation}`);
   renderer = renderer.replace(preparation, () => `await __qolFirstViewReady;\n${preparation}`);
   renderer = renderer.replace(footer[0], () => `${footerText.slice(0, footerText.lastIndexOf('return '))}

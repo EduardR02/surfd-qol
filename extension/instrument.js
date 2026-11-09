@@ -12,7 +12,7 @@ import {nativeMapEntryHooks} from './map-entry-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 import {nativeWorldContracts} from './native-world-contracts.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v42:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v44:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';

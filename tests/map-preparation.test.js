@@ -5,8 +5,13 @@ import {buildCollisionTree} from '../extension/collision-tree.js';
 import {buildMapBoundsTree} from '../extension/map-bvh-preparation.js';
 import {buildPackedRampPreparation} from '../src/map-ramp-preparation.js';
 import {getRampSurfaces} from '../src/surfaces.js';
+import {parseMapGeometry} from '../src/map-cache.js';
+import {gzipSync} from 'node:zlib';
 
-const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+const flush = async () => {
+  for (let i = 0; i < 16; i++) await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
+};
 function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -33,7 +38,8 @@ function jobsFixture({holdReady = false, holdResults = false} = {}) {
     const job = {ready: ready.promise, disposed: false,
       async run(type, payload, transfers) {
         const input = structuredClone(payload, {transfer: transfers});
-        const packet = type === 'map-bvh' ? buildMapBoundsTree(input) : buildPackedRampPreparation(input);
+        const packet = type === 'map-bvh' ? buildMapBoundsTree(input) :
+          type === 'map-geometry' ? await parseMapGeometry(input) : buildPackedRampPreparation(input);
         await results.promise;
         if (job.disposed) throw new DOMException('Disposed', 'AbortError');
         return structuredClone(packet, {transfer: Object.values(packet).filter(ArrayBuffer.isView).map(value => value.buffer)});
@@ -44,6 +50,60 @@ function jobsFixture({holdReady = false, holdResults = false} = {}) {
     return job;
   }};
 }
+
+test('cold geometry is parsed in the worker for plain and gzip responses without consuming the native body', async () => {
+  for (const gzip of [false, true]) {
+    const json = '{"id":"test","point":[-0,1.25,3],"__proto__":{"x":1}}';
+    const bytes = new TextEncoder().encode(json);
+    const response = new Response(gzip ? gzipSync(bytes) : bytes);
+    const jobs = jobsFixture(), preparation = createMapPreparation();
+    const load = preparation.createLoad(new AbortController().signal, () => jobs.create());
+    let nativeCalls = 0;
+    const parsed = await load.parse(response, () => { nativeCalls++; throw new Error('unexpected fallback'); });
+    assert.equal(nativeCalls, 0);
+    assert.deepEqual(parsed, JSON.parse(json));
+    assert.equal(Object.is(parsed.point[0], -0), true);
+    assert.equal(response.bodyUsed, false);
+    load.dispose();
+  }
+});
+
+test('invalid worker JSON preserves the native reader error', async () => {
+  const jobs = jobsFixture(), preparation = createMapPreparation();
+  const load = preparation.createLoad(new AbortController().signal, () => jobs.create());
+  const response = new Response('{invalid');
+  await assert.rejects(load.parse(response, () => response.json()), SyntaxError);
+  assert.equal(response.bodyUsed, true);
+  load.dispose();
+});
+
+test('aborted geometry parsing throws the exact reason without reading the native response', async () => {
+  const fixture = deadlineFixture(), controller = new AbortController(), reason = new Error('map changed');
+  const load = fixture.preparation.createLoad(controller.signal, () => fixture.create(true));
+  const response = new Response('{"native":true}');
+  let nativeCalls = 0;
+  const native = () => { nativeCalls++; return response.json(); };
+  const pending = load.parse(response, native);
+  await flush();
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  await assert.rejects(load.parse(response, native), error => error === reason);
+  assert.equal(nativeCalls, 0);
+  assert.equal(response.bodyUsed, false);
+  assert.ok(fixture.jobs.every(job => job.disposed));
+  assert.equal(fixture.timers[0].live, false);
+});
+
+test('worker geometry deadline falls back to the untouched native response', async () => {
+  const fixture = deadlineFixture(), load = fixture.preparation.createLoad(new AbortController().signal, () => fixture.create(true));
+  const response = new Response('{"native":true}');
+  const pending = load.parse(response, () => response.json());
+  await flush();
+  fixture.timers[0].start();
+  assert.deepEqual(await pending, {native: true});
+  assert.equal(fixture.timers[0].live, false);
+  load.dispose();
+});
 
 test('ready compact preparation preserves native tree bounds, flags and ramp lookup', async () => {
   const map = mapFixture(), expectedMap = structuredClone(map), expectedTree = new Tree(map.brushes);
@@ -79,21 +139,21 @@ test('an omitted displacement array uses the prepared tree with the native empty
   assert.equal(preparation.useRamps(map, .7), true);
 });
 
-test('a missed preparation window immediately keeps native work and cannot later replace its cache', async () => {
+test('entry waits for workers that are still starting', async () => {
   const map = mapFixture(), jobs = jobsFixture({holdReady: true}), controller = new AbortController();
   const preparation = createMapPreparation(), load = preparation.createLoad(controller.signal, () => jobs.create());
-  assert.equal(load.prepare(map, .7), undefined);
-  assert.equal(preparation.useWorld({}, map.brushes, map.displacementTriangles, false, false, Tree), false);
-  assert.equal(preparation.useRamps(map, .7), false);
-  const native = getRampSurfaces(map, .7);
-  jobs.ready.resolve(true);
+  let joined = false;
+  const pending = load.prepare(map, .7).then(() => { joined = true; });
   await flush();
-  assert.equal(getRampSurfaces(map, .7), native);
-  assert.equal(preparation.useRamps(map, .7), false);
+  assert.equal(joined, false);
+  jobs.ready.resolve(true);
+  await pending;
+  assert.equal(preparation.useWorld({}, map.brushes, map.displacementTriangles, false, false, Tree), true);
+  assert.equal(preparation.useRamps(map, .7), true);
   assert.ok(jobs.jobs.every(job => job.disposed));
 });
 
-test('entry joins the ready worker without waiting for a still-starting sibling', async () => {
+test('entry joins the ready worker and the still-starting sibling', async () => {
   const map = mapFixture(), controller = new AbortController();
   const tree = jobsFixture({holdResults: true}), ramps = jobsFixture({holdReady: true});
   const preparation = createMapPreparation();
@@ -105,14 +165,13 @@ test('entry joins the ready worker without waiting for a still-starting sibling'
   await flush();
   assert.equal(joined, false);
   tree.results.resolve();
+  await flush();
+  assert.equal(joined, false);
+  ramps.ready.resolve(true);
   await pending;
   assert.equal(joined, true);
   assert.equal(preparation.useWorld({}, map.brushes, map.displacementTriangles, false, false, Tree), true);
-  assert.equal(preparation.useRamps(map, .7), false);
-  const native = getRampSurfaces(map, .7);
-  ramps.ready.resolve(true);
-  await flush();
-  assert.equal(getRampSurfaces(map, .7), native);
+  assert.equal(preparation.useRamps(map, .7), true);
   assert.ok(tree.jobs.every(job => job.disposed));
   assert.ok(ramps.jobs.every(job => job.disposed));
 });

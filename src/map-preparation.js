@@ -1,6 +1,6 @@
 import {packMapBounds, unpackMapBoundsTree, adoptPreparedMapWorld} from '../extension/map-bvh-preparation.js';
 import {packRampPreparation, installPreparedRampSurfaces, installCachedRampSurfaces, hasRampSurfaces, cancelRampPreparation} from './map-ramp-preparation.js';
-import {openMapCache, hasMapCache, readMapCache, decodeVerifiedMapCache, cachedWorld} from './map-cache.js';
+import {openMapCache, hasMapCache, readMapCache, decodeVerifiedMapCacheCooperatively, decodeMapValueCooperatively, cachedWorld} from './map-cache.js';
 
 // After entry, a worker rebuilds the cache record from the HTTP-cached file.
 const PERSIST_DELAY = 3000;
@@ -31,7 +31,7 @@ export function defaultCache(indexedDB = globalThis.indexedDB, schedule = timer)
   return {
     // The small index store decides first, so a miss starts the download at
     // once. A worker reads and verifies a stored record when one can start.
-    async read(key, createJobs) {
+    async read(key, createJobs, signal) {
       let job = null;
       try {
         job = createJobs?.('map-cache-read');
@@ -40,19 +40,18 @@ export function defaultCache(indexedDB = globalThis.indexedDB, schedule = timer)
           const stop = schedule(() => job.dispose(), WORKER_DEADLINE);
           try {
             const result = await job.run('map-cache-read', {key});
-            return result?.bytes instanceof Uint8Array ? decodeVerifiedMapCache(result.bytes.buffer, key) : null;
+            return result?.bytes instanceof Uint8Array ? await decodeVerifiedMapCacheCooperatively(result.bytes.buffer, key, signal) : null;
           } finally { stop(); }
         }
       } catch { return null; } finally { job?.dispose(); }
-      return readMapCache(await db(), key);
+      return readMapCache(await db(), key, signal);
     },
     schedule,
   };
 }
 
-// Pack only derived data while visuals load. Join workers which have already
-// started; unsupported or still-starting workers never add an entry-time wait.
-// A cached load skips the download, parse and both workers.
+// Start preparation while visuals load and join both workers before the native
+// synchronous constructor can install the world.
 export function createMapPreparation(cache = defaultCache()) {
   const worlds = new WeakMap(), ramps = new WeakMap(), active = new Set();
   // Record rebuilds of missed maps, newest first. They start a delay after the
@@ -117,7 +116,7 @@ export function createMapPreparation(cache = defaultCache()) {
     rebuildJobs = createJobs;
     recordSource = null;
     let treeJob, rampJob, treeRecord, rampRecord, prepared = false, disposed = false, finished = 0;
-    let treeAvailable = false, rampAvailable = false, jobsStarted = false, cached = null;
+    let jobsStarted = false, cached = null, cancelParse = null;
 
     function startJobs() {
       if (jobsStarted || disposed) return jobsStarted;
@@ -131,8 +130,6 @@ export function createMapPreparation(cache = defaultCache()) {
         return false;
       }
       jobsStarted = true;
-      treeJob.ready.then(value => { treeAvailable = !!value; }, () => {});
-      rampJob.ready.then(value => { rampAvailable = !!value; }, () => {});
       return true;
     }
     if (!lookup && !startJobs()) return null;
@@ -140,6 +137,7 @@ export function createMapPreparation(cache = defaultCache()) {
     function dispose() {
       if (disposed) return;
       disposed = true;
+      cancelParse?.();
       if (treeRecord) treeRecord.consumed = true;
       if (rampRecord) { rampRecord.consumed = true; rampRecord.cancel(); }
       treeJob?.dispose();
@@ -165,7 +163,7 @@ export function createMapPreparation(cache = defaultCache()) {
       if (disposed || signal.aborted) return null;
       let record = null;
       if (typeof key === 'string' && key) {
-        try { record = await cache.read(key, createJobs); } catch { record = null; }
+        try { record = await cache.read(key, createJobs, signal); } catch { record = null; }
       }
       if (disposed || signal.aborted) return null;
       if (typeof key === 'string' && key) recordSource = record ? 'cache' : 'download';
@@ -177,15 +175,60 @@ export function createMapPreparation(cache = defaultCache()) {
       return null;
     }
 
+    async function parse(response, nativeReader) {
+      if (signal.aborted) throw signal.reason;
+      if (disposed || !response?.body || typeof response.clone !== 'function' || !startJobs()) return nativeReader();
+      const controller = new AbortController();
+      let cancel;
+      const cancelled = new Promise(resolve => { cancel = () => { controller.abort(); resolve(null); }; });
+      cancelParse = cancel;
+      let stop;
+      const deadline = new Promise(resolve => {
+        stop = cache.schedule(() => {
+          cancel();
+          treeJob.dispose();
+          resolve(null);
+        }, WORKER_DEADLINE);
+      });
+      try {
+        const parsed = await Promise.race([deadline, cancelled, (async () => {
+          if (!await treeJob.ready || controller.signal.aborted) return null;
+          // Aborting the pipe cancels the clone's reader without consuming the
+          // original response needed by the native fallback.
+          const clone = response.clone(), pipe = new TransformStream();
+          const piping = clone.body.pipeTo(pipe.writable, {signal: controller.signal});
+          piping.catch(() => {});
+          const bytes = await new Response(pipe.readable).arrayBuffer();
+          await piping;
+          if (controller.signal.aborted) return null;
+          const packet = await treeJob.run('map-geometry', new Uint8Array(bytes), [bytes]);
+          if (controller.signal.aborted || !packet) return null;
+          const {strings, shapes, ...streams} = packet;
+          const value = await decodeMapValueCooperatively({strings, shapes, streams}, controller.signal);
+          return {value};
+        })().catch(() => null)]);
+        if (parsed && !disposed && !signal.aborted) return parsed.value;
+      } finally {
+        stop?.();
+        if (cancelParse === cancel) cancelParse = null;
+        controller.abort();
+      }
+      if (signal.aborted) throw signal.reason;
+      return nativeReader();
+    }
+
     function persist(map, groundNormal, source) {
       const key = source?.key, url = source?.url;
       if (typeof key === 'string' && typeof url === 'string') queuePersist({key, url, groundNormal, mapId: map.id});
     }
 
-    function prepareCached(map, groundNormal) {
+    async function prepareCached(map, groundNormal) {
       const record = cached;
       cached = null;
-      dispose();
+      // Separate verified map reconstruction, tree validation and native
+      // world installation into distinct event-loop turns.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (disposed || signal.aborted) return;
       const world = cachedWorld(record, map);
       if (world) {
         worlds.set(map.brushes, {brushes: map.brushes, triangles: map.displacementTriangles, signal,
@@ -194,12 +237,13 @@ export function createMapPreparation(cache = defaultCache()) {
       if (Object.is(record.header.groundNormal, groundNormal)) {
         ramps.set(map, {groundNormal, signal, consumed: false, consume() {}, cancel() {}, cached: record.sections});
       }
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (!disposed && !signal.aborted) dispose();
     }
 
     function prepare(map, groundNormal, source) {
       if (cached && cached.map === map && !disposed && !signal.aborted && Array.isArray(map?.brushes)) {
-        prepareCached(map, groundNormal);
-        return;
+        return prepareCached(map, groundNormal);
       }
       if (prepared || disposed || signal.aborted || !Array.isArray(map?.brushes) || !startJobs()) { dispose(); return; }
       prepared = true;
@@ -213,6 +257,9 @@ export function createMapPreparation(cache = defaultCache()) {
 
       const treeTask = treeJob.ready.then(async available => {
         if (!available || disposed || signal.aborted || treeRecord.consumed) return;
+        // Do not join both packing passes to the geometry decode's task.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (disposed || signal.aborted || treeRecord.consumed) return;
         const packed = packMapBounds(map, true);
         if (!packed) return;
         Object.assign(treeRecord, packed);
@@ -226,6 +273,8 @@ export function createMapPreparation(cache = defaultCache()) {
 
       const rampTask = rampJob.ready.then(async available => {
         if (!available || disposed || signal.aborted || rampRecord.consumed || hasRampSurfaces(map, groundNormal)) return;
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (disposed || signal.aborted || rampRecord.consumed) return;
         const packet = packRampPreparation(map, groundNormal);
         if (!packet) return;
         rampRecord.requestId = packet.requestId;
@@ -233,16 +282,13 @@ export function createMapPreparation(cache = defaultCache()) {
         const result = await rampJob.run('map-ramps', packet, transfers);
         if (!disposed && !signal.aborted && !rampRecord.consumed) rampRecord.result = result;
       }).catch(() => rampRecord.cancel()).finally(() => complete(rampJob));
-      const joined = [];
-      if (treeAvailable) joined.push(treeTask);
-      if (rampAvailable) joined.push(rampTask);
-      if (!joined.length) return;
+      const joined = [treeTask, rampTask];
       // Disposal ends both jobs; the tree and ramps are then built natively.
       const stop = cache.schedule(() => { treeJob.dispose(); rampJob.dispose(); }, WORKER_DEADLINE);
       return Promise.all(joined).finally(stop);
     }
 
-    return {read, prepare, dispose};
+    return {read, parse, prepare, dispose};
   }
 
   function useWorld(world, brushes, triangles, feature, corner, Tree) {

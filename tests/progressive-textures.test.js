@@ -77,6 +77,20 @@ test('worker-prepared first-view textures upload as each becomes ready, not afte
   await run.bindings.complete();
 });
 
+test('an already published native texture uploads before first-view readiness', async () => {
+  const run = fixture(), uploaded = [];
+  const texture = {isTexture: true, image: {url: 'warm'}};
+  run.resources.preparedMeshes = new Map();
+  run.renderer.initTexture = value => uploaded.push(value);
+  const initial = run.bindings.prepare(run.renderer, () => {
+    run.renderer.renderBufferDirect(null, null, null, {uniforms: {baseMap: {value: texture}}});
+  });
+  assert.deepEqual(uploaded, []);
+  await initial;
+  assert.deepEqual(uploaded, [texture]);
+  run.bindings.dispose();
+});
+
 test('cancelling first-view preparation prevents late worker textures from uploading', async () => {
   const run = fixture(), uploads = [];
   run.resources.preparedMeshes = new Map();
@@ -412,6 +426,8 @@ test('pending textures overlap only selected shader variants, with native owners
     run.renderer.renderBufferDirect(cameraB, sceneB, geometryA, material, ordinary);
   }).then(() => { settled = true; });
 
+  assert.deepEqual(run.order, ['prioritize']);
+  while (run.compiled.length < 5) await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(run.order, ['prioritize', 'compile', 'compile', 'compile', 'compile', 'compile']);
   assert.deepEqual(run.prioritized, new Set(['visible', 'offscreen']));
   assert.equal(run.renderer.renderBufferDirect, original);
@@ -463,15 +479,17 @@ test('pending textures overlap only selected shader variants, with native owners
   run.bindings.dispose();
 });
 
-test('completed visible textures do not cause shader preparation for unrelated background work', async () => {
+test('warm visible textures still prepare selected shaders without waiting for unrelated textures', async () => {
   const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
   const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
   run.renderer.lights = [run.light('sun')];
   run.publish('visible');
   await new Promise(resolve => setTimeout(resolve, 0));
+  run.linked.value = true;
   await run.bindings.prepare(run.renderer,
     () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
-  assert.deepEqual(run.compiled, []);
+  assert.equal(run.compiled.length, 1);
+  assert.equal(run.reflected.length, 2);
   assert.deepEqual(run.prioritized, new Set());
   assert.equal(run.textures.offscreen.image, null);
   run.bindings.dispose();
@@ -558,6 +576,8 @@ test('cancellation, disposal, context loss and texture failure stop first-view s
     run.renderer.lights = [run.light('sun')];
     const initial = run.bindings.prepare(run.renderer,
       () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
+    assert.equal(run.compiled.length, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(run.compiled.length, 1);
     const polls = run.polls.value;
     if (kind === 'bindings') run.bindings.dispose();
@@ -573,6 +593,37 @@ test('cancellation, disposal, context loss and texture failure stop first-view s
     assert.equal(run.polls.value, polls);
     run.bindings.dispose();
   }
+});
+
+test('disposing before scheduled shader work prevents compilation', async () => {
+  const run = firstViewFixture(), material = visibleShader(run), scene = run.scene('world');
+  const camera = run.camera('world'), geometry = run.geometry(), object = run.object(geometry);
+  run.renderer.lights = [run.light('sun')];
+  const initial = run.bindings.prepare(run.renderer,
+    () => run.renderer.renderBufferDirect(camera, scene, geometry, material, object));
+  run.bindings.dispose();
+  await assert.rejects(initial, error => error.name === 'AbortError');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(run.compiled, []);
+});
+
+test('many visible shader variants yield before all native compiles and stop on cancellation', async () => {
+  const run = firstViewFixture(), material = visibleShader(run), geometry = run.geometry();
+  const object = run.object(geometry);
+  run.renderer.lights = [run.light('sun')];
+  const initial = run.bindings.prepare(run.renderer, () => {
+    for (let index = 0; index < 100; index++) {
+      run.renderer.renderBufferDirect(run.camera(String(index)), run.scene(String(index)), geometry, material, object);
+    }
+  });
+  assert.equal(run.compiled.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(run.compiled.length > 0 && run.compiled.length <= 64);
+  run.bindings.dispose();
+  await assert.rejects(initial, error => error.name === 'AbortError');
+  const count = run.compiled.length;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(run.compiled.length, count);
 });
 
 async function withGpuQueue(run, {parallel = true, sync = true, count = 180, budget = Infinity, atlases = []} = {}) {

@@ -31,7 +31,7 @@ export function nativeMapPreparationHooks(source, contract, Session) {
   // below still checks the decoded map.
   const download = `${l.response}=await ${l.fetch}(${l.path},${l.signal}),${l.map}=await ${l.json}(${l.response});`;
   if (body.split(download).length !== 2) return source;
-  const prepared = body.replace(download, `__qolCached=await __qolMapPreparation?.read(${l.record}?.geometrySha256),${l.response}=__qolCached?null:await ${l.fetch}(${l.path},${l.signal}),${l.map}=__qolCached??await ${l.json}(${l.response});`)
+  const prepared = body.replace(download, `__qolCached=await __qolMapPreparation?.read(${l.record}?.geometrySha256),${l.response}=__qolCached?null:await ${l.fetch}(${l.path},${l.signal}),${l.map}=__qolCached??await (__qolMapPreparation?.parse?__qolMapPreparation.parse(${l.response},()=>${l.json}(${l.response})):${l.json}(${l.response}));`)
     .replace(`return ${l.map}`, `let __qolThreshold;try{__qolThreshold=${fresh[0][3]}(${l.map}).groundNormal}catch{}await __qolMapPreparation?.prepare(${l.map},__qolThreshold,${l.response}&&${l.record}?{key:${l.record}.geometrySha256,url:${l.response}.url}:null);return ${l.map}`);
   const replacement = `${begin}const __qolMapPreparation=globalThis.__SURFD_QOL__?.createMapPreparationLoad?.(${l.signal},()=>__qolCreateMapLoadJobs(__qolMapWorkerSource,${l.signal},false),true);try{${prepared}}catch(error){__qolMapPreparation?.dispose();throw error}}`;
   source = source.slice(0, load.index) + replacement + source.slice(load.index + load[0].length);

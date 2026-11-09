@@ -186,7 +186,7 @@ export function createMapLoadJobs(source, signal, streamProbe = true) {
 
 // Bundled into the map worker. Pack bodies require a disposable stream probe;
 // optional numeric analysis jobs transfer only their own compact buffers.
-export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decodeMesh, buildMapBoundsTree, buildPackedRampPreparation, writeMapCache, readMapCache, scope = globalThis}) {
+export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decodeMesh, buildMapBoundsTree, buildPackedRampPreparation, writeMapCache, readMapCache, parseMapGeometry, scope = globalThis}) {
   async function inflate(stream) {
     const reader = stream.getReader(), prefix = [];
     let count = 0, first = -1, second = -1;
@@ -244,7 +244,8 @@ export function runMapLoadWorker({createVisualPackProcessor, decodeImage, decode
   async function dispatch({id, type, payload}) {
     try {
       const task = type === 'map-bvh' ? buildMapBoundsTree : type === 'map-ramps' ? buildPackedRampPreparation :
-        type === 'map-cache' && writeMapCache ? writeMapCache : type === 'map-cache-read' && readMapCache ? readMapCache : null;
+        type === 'map-cache' && writeMapCache ? writeMapCache : type === 'map-cache-read' && readMapCache ? readMapCache :
+          type === 'map-geometry' && parseMapGeometry ? parseMapGeometry : null;
       const result = await (task ? task(payload) : processor.run(id, type, payload));
       const transfers = task ? [...new Set(Object.values(result ?? {}).filter(ArrayBuffer.isView).map(value => value.buffer))] : [];
       scope.postMessage({id, result}, transfers);

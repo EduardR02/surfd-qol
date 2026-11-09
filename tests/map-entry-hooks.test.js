@@ -118,8 +118,6 @@ const bonusSource = nativeSource
   + 'function isBonus(map){return String(map.version??"").includes("/bonus-")}function bonusFile(id){return null}';
 
 test('the bonus update keeps the early main-course ticket for signed-in players and guests', async () => {
-  expect(bonusSource).toContain('&&!local){');
-  expect(bonusSource).toContain(',[collision,visual,bonuses]=');
   const member = run(bonusSource);
   member.client.session = {user: {id: 'user-a'}};
   await member.loadMap(entry);

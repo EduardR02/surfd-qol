@@ -20,7 +20,7 @@ export function loadNativeAtlas(load, onLoad, onError) {
 export function createProgressiveTextureBindings(resources, bspShader = nativeBspShaderSignature()) {
   const bindings = new WeakMap(), completions = [], signatureCache = new WeakMap(), preparations = new Set(), listeners = new Set();
   const signal = resources.signal;
-  let disposed = false, cancelledResources = false, disposalReason, rejectDisposed, completion, pendingBindings = 0;
+  let disposed = false, cancelledResources = false, disposalReason, rejectDisposed, completion;
 
   function handled(promise) {
     // Observe background failures immediately without changing what callers await.
@@ -64,7 +64,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
   }
 
   function bind(texture, urls, apply) {
-    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null, pending: false, ready: false};
+    const binding = {urls: typeof urls === 'string' ? [urls] : [...new Set(urls)], promise: null, ready: false};
     let registered = bindings.get(texture);
     if (!registered) bindings.set(texture, registered = []);
     registered.push(binding);
@@ -89,19 +89,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
         if (image) pending.push(image);
         if (compressed) pending.push(compressed);
       }
-      if (pending.length) {
-        binding.pending = true;
-        pendingBindings++;
-        binding.promise = Promise.all(pending).then(finish).then(value => {
-          binding.pending = false;
-          pendingBindings--;
-          return value;
-        }, error => {
-          binding.pending = false;
-          pendingBindings--;
-          throw error;
-        });
-      }
+      if (pending.length) binding.promise = Promise.all(pending).then(finish);
       else {
         // Already-published sky faces and cache hits keep native synchronous setup.
         finish();
@@ -188,9 +176,11 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
 
     function collectTexture(value) {
       const registered = bindings.get(value);
-      if (registered) {
-        for (const binding of registered) selected.add(binding);
-        selectedTextures.set(value, registered);
+      if (registered) for (const binding of registered) selected.add(binding);
+      // Cache hits are constructed directly by the native texture factory and
+      // therefore have no delayed binding, but still need a first-view upload.
+      if (registered || value?.isTexture && !value.isRenderTargetTexture) {
+        selectedTextures.set(value, registered ?? []);
       }
       return registered !== undefined;
     }
@@ -219,8 +209,8 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
     }
 
     const extensions = renderer.extensions;
-    const parallel = pendingBindings > 0 && (typeof extensions?.has === 'function' ? extensions.has('KHR_parallel_shader_compile') :
-      typeof extensions?.get === 'function' && extensions.get('KHR_parallel_shader_compile') != null);
+    const parallel = typeof extensions?.has === 'function' ? extensions.has('KHR_parallel_shader_compile') :
+      typeof extensions?.get === 'function' && extensions.get('KHR_parallel_shader_compile') != null;
     const canCompile = parallel && typeof renderer.compileAsync === 'function' && typeof renderer.compile === 'function' &&
       typeof renderer.properties?.get === 'function' && typeof renderer.__qolProbeLights === 'function' &&
       typeof renderer.getRenderTarget === 'function' && renderer.localClippingEnabled !== true &&
@@ -382,7 +372,7 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
         const context = renderer.getContext(), canvas = renderer.domElement;
         const originalDispose = renderer.dispose, ownsDispose = Object.hasOwn(renderer, 'dispose');
         const programs = new Set(), materials = new Set(), geometries = new Set();
-        let timer = null, settled = false;
+        let timer = null, settled = false, submissionIndex = 0, programIterator, pollStarted;
 
         function cleanup() {
           clearTimeout(timer);
@@ -420,18 +410,30 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
           if (settled) return;
           try {
             if (context.isContextLost()) { contextLost(); return; }
-            for (const program of programs) {
+            // Native preparation also stops waiting for shader links after ten seconds.
+            pollStarted ??= performance.now();
+            if (performance.now() - pollStarted >= 10000) { finish(); return; }
+            const began = performance.now();
+            if (!programIterator) programIterator = programs.values();
+            for (let count = 0; count < 64; count++) {
+              const next = programIterator.next();
+              if (next.done) {
+                programIterator = null;
+                if (programs.size) timer = setTimeout(poll, 10);
+                else finish();
+                return;
+              }
+              const program = next.value;
               if (program.program === undefined) { objectDisposed(); return; }
-              if (!program.isReady()) continue;
-              // Reflection is cached by Three; never ask for it until KHR says
-              // linking is complete and never on an unsupported driver.
-              program.getUniforms();
-              program.getAttributes();
-              if (program.diagnostics?.runnable === false) throw new Error('Map shader failed to link');
-              programs.delete(program);
+              if (program.isReady()) {
+                program.getUniforms();
+                program.getAttributes();
+                if (program.diagnostics?.runnable === false) throw new Error('Map shader failed to link');
+                programs.delete(program);
+              }
+              if (performance.now() - began >= 1) break;
             }
-            if (programs.size) timer = setTimeout(poll, 10);
-            else finish();
+            timer = setTimeout(poll, 0);
           } catch (error) {
             finish(error);
           }
@@ -440,50 +442,62 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
         preparations.add(cancel);
         canvas?.addEventListener('webglcontextlost', contextLost);
         if (typeof originalDispose === 'function') renderer.dispose = disposeRenderer;
-        try {
-          if (context.isContextLost()) { contextLost(); return; }
-          for (const entry of submissions) {
-            if (settled) return;
-            const {material, geometry, object, view, state, camera} = entry;
-            // Probe callbacks may mutate or dispose an earlier submission.
-            // Only replay side/defines; skip any other uncertain state.
-            if (deadOwners.has(material) || deadOwners.has(geometry) || !unchangedView(view) ||
-                !sameArray(geometryShape(object, geometry), entry.shape) || !sameMaterial(material, state, false)) continue;
-            if (!materials.has(material)) {
-              materials.add(material);
-              material.addEventListener?.('dispose', objectDisposed);
-            }
-            if (!geometries.has(geometry)) {
-              geometries.add(geometry);
-              geometry.addEventListener?.('dispose', objectDisposed);
-            }
-            const objectView = Object.create(object);
-            for (const [key, value] of Object.entries({...entry.properties, geometry, material})) {
-              Object.defineProperty(objectView, key, {value, configurable: true, writable: true});
-            }
-            const root = {traverse: visit => visit(objectView), traverseVisible() {}};
-            const properties = renderer.properties.get(material);
-            const savedSide = material.side, savedDefines = material.defines;
-            try {
-              material.side = state.side;
-              material.defines = state.macros;
-              renderer.compile(root, camera, view.compileScene);
-            } finally {
-              material.side = savedSide;
-              material.defines = savedDefines;
-              // compile() changes the material's current program and lighting
-              // state. Make the next real draw select its own native variant.
-              properties.__version = -1;
-            }
-            if (settled) return;
-            const program = properties.currentProgram;
-            if (program && typeof program.isReady === 'function' &&
-                typeof program.getUniforms === 'function' && typeof program.getAttributes === 'function') programs.add(program);
+        for (const {material, geometry} of submissions) {
+          if (!deadOwners.has(material) && !materials.has(material)) {
+            materials.add(material);
+            material.addEventListener?.('dispose', objectDisposed);
           }
-          poll();
-        } catch (error) {
-          finish(error);
+          if (!deadOwners.has(geometry) && !geometries.has(geometry)) {
+            geometries.add(geometry);
+            geometry.addEventListener?.('dispose', objectDisposed);
+          }
         }
+        function submit() {
+          timer = null;
+          if (settled) return;
+          try {
+            if (context.isContextLost()) { contextLost(); return; }
+            const began = performance.now();
+            for (let count = 0; count < 64 && submissionIndex < submissions.length; count++) {
+              const entry = submissions[submissionIndex++];
+              const {material, geometry, object, view, state, camera} = entry;
+              // Probe callbacks may mutate or dispose an earlier submission.
+              // Only replay side/defines; skip any other uncertain state.
+              if (deadOwners.has(material) || deadOwners.has(geometry) || !unchangedView(view) ||
+                  !sameArray(geometryShape(object, geometry), entry.shape) || !sameMaterial(material, state, false)) {
+                if (performance.now() - began >= 1) break;
+                continue;
+              }
+              const objectView = Object.create(object);
+              for (const [key, value] of Object.entries({...entry.properties, geometry, material})) {
+                Object.defineProperty(objectView, key, {value, configurable: true, writable: true});
+              }
+              const root = {traverse: visit => visit(objectView), traverseVisible() {}};
+              const properties = renderer.properties.get(material);
+              const savedSide = material.side, savedDefines = material.defines;
+              try {
+                material.side = state.side;
+                material.defines = state.macros;
+                renderer.compile(root, camera, view.compileScene);
+              } finally {
+                material.side = savedSide;
+                material.defines = savedDefines;
+                // The next real draw must select its own native variant.
+                properties.__version = -1;
+              }
+              if (settled) return;
+              const program = properties.currentProgram;
+              if (program && typeof program.isReady === 'function' &&
+                  typeof program.getUniforms === 'function' && typeof program.getAttributes === 'function') programs.add(program);
+              if (performance.now() - began >= 1) break;
+            }
+            if (submissionIndex < submissions.length) timer = setTimeout(submit, 0);
+            else poll();
+          } catch (error) {
+            finish(error);
+          }
+        }
+        timer = setTimeout(submit, 0);
       }));
       return {promise, cancel};
     }
@@ -508,27 +522,31 @@ export function createProgressiveTextureBindings(resources, bspShader = nativeBs
     }
     active();
     const urls = new Set(), pending = [];
-    let needsShaders = false;
     for (const binding of selected) {
       for (const url of binding.urls) if (!published(url)) urls.add(url);
       pending.push(binding.promise);
-      needsShaders ||= binding.pending;
     }
     resources.prioritize(urls);
     active();
     // Three's compileAsync uses uncancellable internal timers and can throw
     // after renderer disposal. Submit the same KHR-parallel work through its
     // native compile path, but own the cancellable readiness polling.
-    const shaders = canCompile && submissions.length && needsShaders ? preparePrograms() : null;
+    const shaders = canCompile && submissions.length ? preparePrograms() : null;
     const uploads = [];
     if (resources.preparedMeshes && typeof renderer.initTexture === 'function') {
       // Worker asset preparation continues independently while the page uploads
       // finished first-view textures through Three's native ownership/cache.
       for (const [texture, registered] of selectedTextures) {
-        uploads.push(handled(wait(Promise.all(registered.map(binding => binding.promise))).then(() => {
-          active();
-          if (!renderer.getContext?.().isContextLost?.()) renderer.initTexture(texture);
-        })));
+        uploads.push(handled(wait(Promise.all(registered.map(binding => binding.promise))).then(() =>
+          wait(new Promise((resolve, reject) => {
+            setTimeout(() => {
+              try {
+                active();
+                if (!renderer.getContext?.().isContextLost?.()) renderer.initTexture(texture);
+                resolve();
+              } catch (error) { reject(error); }
+            }, 0);
+          })))));
       }
     }
     try {
@@ -651,7 +669,7 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
 
   function schedule() {
     if (stopped || scheduled !== null) return;
-    scheduled = idle ? requestIdleCallback(step, {timeout: 100}) : setTimeout(step, 16);
+    scheduled = idle ? requestIdleCallback(step, {timeout: 16}) : setTimeout(step, 0);
   }
 
   function invalidateTextures() {
@@ -928,7 +946,7 @@ export function createMapGpuPreparation(renderer, scenes, camera, textureMaps, a
           } else schedule();
           return;
         }
-        if (performance.now() - began >= 1 || deadline?.timeRemaining() <= 0) break;
+        if (performance.now() - began >= 1 || deadline?.timeRemaining() <= 0 && !deadline.didTimeout) break;
       }
       schedule();
     } catch (error) {

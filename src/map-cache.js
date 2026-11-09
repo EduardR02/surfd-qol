@@ -89,6 +89,17 @@ export function encodeMapValue(root) {
   };
 }
 
+// The reviewed loader sniffs the first two bytes, regardless of HTTP headers.
+// Keep parsing in the worker and transfer compact numeric streams, not the
+// decoded object graph, back to the page.
+export async function parseMapGeometry(bytes) {
+  if (!(bytes instanceof Uint8Array)) throw new Error('Invalid map geometry');
+  let stream = new Blob([bytes]).stream();
+  if (bytes[0] === 31 && bytes[1] === 139) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+  const encoded = encodeMapValue(await new Response(stream).json());
+  return {strings: encoded.strings, shapes: encoded.shapes, ...encoded.streams};
+}
+
 function objectBuilder(keys) {
   // Literal construction gives each shape its own fixed layout. A __proto__
   // key is an own data property in parsed JSON, so it takes the generic path.
@@ -157,6 +168,147 @@ export function decodeMapValue({strings, shapes, streams}) {
     throw new Error('Invalid cached map');
   }
   return value;
+}
+
+// Reconstruct verified records in bounded tasks. The synchronous decoder is
+// retained for worker-side record validation; page-side decoding must not hold
+// the event loop for an entire large map.
+export async function decodeMapValueCooperatively({strings, shapes, streams}, signal, yieldTask = () =>
+  globalThis.scheduler?.yield ? globalThis.scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0))) {
+  const {float64, float32, int32, ints, tags} = streams;
+  let builders = null;
+  try { builders = shapes.map(objectBuilder); } catch { builders = null; }
+  let t = 0, i = 0, n32 = 0, f32 = 0, f64 = 0, result, complete = false;
+  // Reuse stack slots by depth rather than allocating a frame or staging
+  // array for every geometry object and vertex.
+  const containers = [], keyStack = [], lengths = [], positions = [];
+  let depth = 0;
+  const undefinedValue = () => undefined;
+  function scalar() {
+    switch (tags[t++]) {
+      case INT: return int32[n32++];
+      case FLOAT: return float32[f32++];
+      case DOUBLE: return float64[f64++];
+      case STRING: {
+        const id = ints[i++];
+        if (id >= strings.length) throw new Error('Invalid cached map');
+        return strings[id];
+      }
+      case NULL: return null;
+      case FALSE: return false;
+      case TRUE: return true;
+    }
+    throw new Error('Invalid cached map');
+  }
+  function scalarArray(length) {
+    if (t + length > tags.length) return null;
+    for (let at = t; at < t + length; at++) {
+      const tag = tags[at];
+      if (tag === ARRAY || tag === OBJECT || tag > DOUBLE) return null;
+    }
+    // Literals retain the packed numeric element kind of the synchronous
+    // reader without a staging array or a frame per vertex.
+    switch (length) {
+      case 1: return [scalar()];
+      case 2: return [scalar(), scalar()];
+      case 3: return [scalar(), scalar(), scalar()];
+      case 4: return [scalar(), scalar(), scalar(), scalar()];
+      case 5: return [scalar(), scalar(), scalar(), scalar(), scalar()];
+      case 6: return [scalar(), scalar(), scalar(), scalar(), scalar(), scalar()];
+      case 7: return [scalar(), scalar(), scalar(), scalar(), scalar(), scalar(), scalar()];
+      case 8: return [scalar(), scalar(), scalar(), scalar(), scalar(), scalar(), scalar(), scalar()];
+    }
+    return null;
+  }
+  function smallArray(length) {
+    switch (length) {
+      case 1: return [undefined];
+      case 2: return [undefined, undefined];
+      case 3: return [undefined, undefined, undefined];
+      case 4: return [undefined, undefined, undefined, undefined];
+      case 5: return [undefined, undefined, undefined, undefined, undefined];
+      case 6: return [undefined, undefined, undefined, undefined, undefined, undefined];
+      case 7: return [undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+      case 8: return [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+      default: return [];
+    }
+  }
+  function finish(value) {
+    while (depth) {
+      const slot = depth - 1, index = positions[slot]++, container = containers[slot], keys = keyStack[slot];
+      if (keys) {
+        const key = keys[index];
+        if (key === '__proto__') Object.defineProperty(container, key, {value, writable: true, enumerable: true, configurable: true});
+        else container[key] = value;
+      } else if (lengths[slot] <= 8) container[index] = value;
+      else container.push(value);
+      if (positions[slot] < lengths[slot]) return;
+      depth--;
+      containers[slot] = keyStack[slot] = undefined;
+      value = container;
+    }
+    result = value;
+    complete = true;
+  }
+  while (!complete) {
+    if (signal?.aborted) throw signal.reason;
+    const end = Math.min(t + 8192, tags.length);
+    while (!complete && t < end) {
+      const tag = tags[t++];
+      let value;
+      switch (tag) {
+        case INT: value = int32[n32++]; break;
+        case FLOAT: value = float32[f32++]; break;
+        case DOUBLE: value = float64[f64++]; break;
+        case STRING: {
+          const id = ints[i++];
+          if (id >= strings.length) throw new Error('Invalid cached map');
+          value = strings[id]; break;
+        }
+        case ARRAY: {
+          const length = ints[i++];
+          if (length > tags.length - t) throw new Error('Invalid cached map');
+          if (length && length <= 8) {
+            const packed = scalarArray(length);
+            if (packed) { finish(packed); continue; }
+          }
+          if (length) {
+            containers[depth] = smallArray(length); keyStack[depth] = null;
+            lengths[depth] = length; positions[depth++] = 0;
+            continue;
+          }
+          value = []; break;
+        }
+        case OBJECT: {
+          const id = ints[i++];
+          if (id >= shapes.length) throw new Error('Invalid cached map');
+          const keys = shapes[id], length = keys.length;
+          if (length) {
+            const build = builders?.[id];
+            // Build the final shape once, without staging every field in a
+            // second array. Generic objects add keys in their encoded order.
+            containers[depth] = build ? build(undefinedValue) : {}; keyStack[depth] = keys;
+            lengths[depth] = length; positions[depth++] = 0;
+            continue;
+          }
+          value = {}; break;
+        }
+        case NULL: value = null; break;
+        case FALSE: value = false; break;
+        case TRUE: value = true; break;
+        default: throw new Error('Invalid cached map');
+      }
+      finish(value);
+    }
+    if (!complete) {
+      if (t >= tags.length) throw new Error('Invalid cached map');
+      await yieldTask();
+    }
+  }
+  if (t !== tags.length || i !== ints.length || n32 !== int32.length || f32 !== float32.length || f64 !== float64.length) {
+    throw new Error('Invalid cached map');
+  }
+  return result;
 }
 
 // Key order, array density and Object.is equality, as JSON.parse produced them.
@@ -328,22 +480,21 @@ function touchMapCache(db, record) {
 }
 
 // Page side: the decoded map plus the prepared tree and ramp data, or null.
-export async function readMapCache(db, key) {
+export async function readMapCache(db, key, signal) {
   if (!db || typeof key !== 'string') return null;
   let record;
   try { record = await done(db.transaction('records').objectStore('records').get(key)); } catch { return null; }
-  const decoded = await decodeMapCacheRecord(record, key);
+  const decoded = await decodeMapCacheRecord(record, key, signal);
   if (decoded) {
     try { touchMapCache(db, record).catch(() => {}); } catch { /* Recency is advisory. */ }
   }
   return decoded;
 }
 
-export async function decodeMapCacheRecord(record, key) {
+export async function decodeMapCacheRecord(record, key, signal) {
   if (!record || record.key !== key || record.version !== MAP_CACHE_VERSION || !(record.buffer instanceof ArrayBuffer)) return null;
-  const verified = digest(record.buffer).then(value => value === record.digest, () => false);
-  const decoded = decodeVerifiedMapCache(record.buffer, key);
-  return decoded && await verified ? decoded : null;
+  if (await digest(record.buffer).then(value => value !== record.digest, () => true)) return null;
+  return decodeVerifiedMapCacheCooperatively(record.buffer, key, signal);
 }
 
 // Worker job: read and verify the record off the page thread, which then
@@ -367,6 +518,15 @@ export function decodeVerifiedMapCache(buffer, key) {
     if (header.version !== MAP_CACHE_VERSION || header.key !== key) return null;
     const map = decodeMapValue({strings: header.strings, shapes: header.shapes, streams: sections});
     return {map, header, sections};
+  } catch { return null; }
+}
+
+export async function decodeVerifiedMapCacheCooperatively(buffer, key, signal) {
+  try {
+    const {header, sections} = unpackRecord(buffer);
+    if (header.version !== MAP_CACHE_VERSION || header.key !== key) return null;
+    const map = await decodeMapValueCooperatively({strings: header.strings, shapes: header.shapes, streams: sections}, signal);
+    return signal?.aborted ? null : {map, header, sections};
   } catch { return null; }
 }
 

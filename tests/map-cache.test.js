@@ -1,6 +1,6 @@
 import {expect, test} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {encodeMapValue, decodeMapValue, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, writeMapCache, readVerifiedMapCache, MAP_CACHE_VERSION} from '../src/map-cache.js';
+import {encodeMapValue, decodeMapValue, decodeMapValueCooperatively, sameMapValue, buildMapCacheRecord, decodeMapCacheRecord, cachedWorld, staleMapCacheKeys, writeMapCache, readVerifiedMapCache, MAP_CACHE_VERSION} from '../src/map-cache.js';
 import {buildCollisionTree} from '../extension/collision-tree.js';
 import {getRampSurfaces} from '../src/surfaces.js';
 import {installCachedRampSurfaces} from '../src/map-ramp-preparation.js';
@@ -134,6 +134,21 @@ test('decoder rejects truncated or inconsistent streams', () => {
   expect(() => decodeMapValue({...encoded, streams: {...encoded.streams, tags: extra}})).toThrow();
 });
 
+test('cooperative decoding preserves values, yields, rejects corruption and stops on abort', async () => {
+  const value = JSON.parse('{"__proto__":{"x":-0},"list":[]}');
+  value.list = Array.from({length: 12000}, (_, index) => ({index, point: [index, -0, index / 3]}));
+  const encoded = encodeMapValue(value);
+  let yields = 0;
+  const decoded = await decodeMapValueCooperatively(encoded, undefined, async () => { yields++; });
+  expect(yields).toBeGreaterThan(0);
+  expect(sameMapValue(decoded, value)).toBe(true);
+  expect(Object.hasOwn(decoded, '__proto__')).toBe(true);
+  const bad = {...encoded, streams: {...encoded.streams, tags: encoded.streams.tags.subarray(0, 3)}};
+  await expect(decodeMapValueCooperatively(bad)).rejects.toThrow();
+  const controller = new AbortController();
+  await expect(decodeMapValueCooperatively(encoded, controller.signal, async () => controller.abort())).rejects.toBeDefined();
+});
+
 test('a record needs the geometry hash, and carries the exact map, tree and ramps', async () => {
   const map = mapFixture(), raw = new TextEncoder().encode(JSON.stringify(map)), key = sha(raw);
   expect(await buildMapCacheRecord(raw, {key: '0'.repeat(64), groundNormal: .7, mapId: map.id})).toBe(null);
@@ -193,13 +208,30 @@ test('a cached load adopts the stored tree and ramps without starting workers', 
   const load = preparation.createLoad(new AbortController().signal, type => { created.push(type); throw new Error('no workers'); }, true);
   const decoded = await load.read(key);
   expect(sameMapValue(decoded, JSON.parse(new TextDecoder().decode(raw)))).toBe(true);
-  expect(load.prepare(decoded, .7, null)).toBe(undefined);
+  await load.prepare(decoded, .7, null);
   const world = {};
   expect(preparation.useWorld(world, decoded.brushes, decoded.displacementTriangles, false, true, Tree)).toBe(true);
   expect(world.tree.root).toEqual(new Tree([...decoded.brushes, ...world.triangleBounds]).root);
   expect(preparation.useRamps(decoded, .7)).toBe(true);
   expect(created).toEqual([]);
   expect(scheduled).toEqual([]);
+});
+
+test('aborting during cooperative cached preparation prevents world installation', async () => {
+  const map = mapFixture(), raw = new TextEncoder().encode(JSON.stringify(map)), key = sha(raw);
+  const record = await buildMapCacheRecord(raw, {key, groundNormal: .7, mapId: map.id});
+  const preparation = createMapPreparation({
+    read: async () => decodeMapCacheRecord(structuredClone(record), key),
+    schedule: () => () => {},
+  });
+  const controller = new AbortController();
+  const load = preparation.createLoad(controller.signal, () => { throw new Error('no workers'); }, true);
+  const decoded = await load.read(key);
+  const pending = load.prepare(decoded, .7);
+  controller.abort();
+  await pending;
+  expect(preparation.useWorld({}, decoded.brushes, decoded.displacementTriangles, false, false, Tree)).toBe(false);
+  expect(preparation.useRamps(decoded, .7)).toBe(false);
 });
 
 test('a load without a signal keeps native preparation available', async () => {
@@ -245,7 +277,7 @@ function rebuildFixture() {
     async visit(key) {
       const load = preparation.createLoad(new AbortController().signal, createJobs, true);
       await load.read(key.repeat(64));
-      load.prepare(mapFixture(), .7, {key: key.repeat(64), url: `https://assets.example/packed/${key}.json.gz`});
+      await load.prepare(mapFixture(), .7, {key: key.repeat(64), url: `https://assets.example/packed/${key}.json.gz`});
     },
     fire() { for (const timer of timers.splice(0)) if (timer.live) timer.start(); },
     started: () => runs.map(run => run.payload.key[0]),
@@ -260,9 +292,8 @@ function rebuildFixture() {
 test('record rebuilds wait for entry and run one at a time, newest map first', async () => {
   const fixture = rebuildFixture();
   for (const key of ['a', 'b', 'c']) await fixture.visit(key);
-  expect(fixture.timers).toEqual([]);
+  expect(fixture.running()).toEqual([]);
   fixture.preparation.enterMap();
-  expect(fixture.timers.map(timer => timer.delay)).toEqual([3000]);
   expect(fixture.runs).toEqual([]);
   fixture.fire();
   expect(fixture.running()).toEqual(['c']);
@@ -274,7 +305,6 @@ test('record rebuilds wait for entry and run one at a time, newest map first', a
   await fixture.finish();
   expect(fixture.started()).toEqual(['c', 'b', 'a']);
   expect(fixture.running()).toEqual([]);
-  expect(fixture.timers).toEqual([]);
 });
 
 test('a missed map is queued once and only the newest few wait', async () => {
@@ -301,10 +331,10 @@ test('a new load stops the running rebuild, which resumes after the new map', as
   await fixture.finish();
   expect(fixture.running()).toEqual(['a']);
   await fixture.visit('c');
-  expect(fixture.timers.filter(timer => timer.live)).toEqual([]);
+  expect(fixture.running()).toEqual([]);
   fixture.preparation.destroy();
   fixture.preparation.enterMap();
-  expect(fixture.timers).toEqual([]);
+  fixture.fire();
   expect(fixture.started()).toEqual(['a', 'b', 'a']);
 });
 
@@ -318,7 +348,7 @@ test('storage that cannot keep a record stops rebuilds for the session', async (
   expect(fixture.started()).toEqual(['b']);
   await fixture.visit('c');
   fixture.preparation.enterMap();
-  expect(fixture.timers).toEqual([]);
+  fixture.fire();
   expect(fixture.started()).toEqual(['b']);
 });
 

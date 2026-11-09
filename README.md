@@ -132,6 +132,8 @@ Game traffic goes through Cloudflare's relay, so players never see each other's 
 
 ## Faster map loading
 
+Maps still preload behind the menu; geometry parsing runs off-thread and preparation yields between stages to reduce UI freezes.
+
 Getting back into a map you've played recently is much faster than in the native game, with the same textures, collision and physics. The [download page](https://eduardr02.github.io/surfd-qol/) has the measured times. To make that possible, Surfd QoL keeps prepared collision data for the maps you played most recently in the browser, up to 256 MB in total, which Chrome stores compressed on disk (about 17 MB for the largest maps). It's part of surfd.net's site data, so clearing that removes it, and the next load rebuilds it.
 
 ## Optional extras
