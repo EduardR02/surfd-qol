@@ -677,7 +677,7 @@ test('an unknown native sky layout retains the complete original loader and draw
   view.dispose();
 });
 
-function progressiveLifecycleFixture({background = false, collision = 'ready', prepare = false} = {}) {
+function progressiveLifecycleFixture({background = false, collision = 'ready', prepare = false, bonuses = false} = {}) {
   const gpu = deferred(), read = deferred(), readStarted = deferred(), handoff = deferred();
   const aborted = deferred(), collisionResult = deferred(), preparing = deferred(), prepareGate = deferred();
   gpu.promise.catch(() => {});
@@ -707,8 +707,12 @@ function progressiveLifecycleFixture({background = false, collision = 'ready', p
     if (collision === 'deferred') return collisionResult.promise;
     return Promise.resolve({id: 'collision'});
   }
-  const source = progressiveFixture.replace('const view={prepare:async frame=>',
+  let source = progressiveFixture.replace('const view={prepare:async frame=>',
     'const view={__qolGpuReady:deps.gpu.promise,prepare:async frame=>');
+  // The bonus update loads the map's bonus courses beside it and hands them to the renderer.
+  if (bonuses) source = source.replace('function factory(canvas,data,map){', 'function factory(canvas,data,map,options={}){')
+    .replace('try{const[collision,visual]=await Promise.all([geometry(entry,controller.signal),relay(entry.slug,{signal:controller.signal})]);ready=!1;const frame=install(collision,visual,resume,bypass);',
+      'try{const known=bonusEntry(entry.id),[collision,visual,courses]=await Promise.all([geometry(entry,controller.signal),relay(entry.slug,{signal:controller.signal}),known?bonusFile(known).catch(error=>(deps.failures.push(error),null)):Promise.resolve(null)]);ready=!1;const frame=install(collision,visual,resume,bypass,courses);');
   const run = new Function('deps', 'Renderer', 'CubeTexture', 'manifest', 'geometry', `
     const index={map:"manifest"},SRGB="srgb",validateDDS=()=>{},validateManifest=()=>{},normalize=()=>{};
     const fetchNative=async url=>url,fetchJson=async()=>manifest,supported=()=>false,selectPacks=value=>value.packs;
@@ -716,8 +720,9 @@ function progressiveLifecycleFixture({background = false, collision = 'ready', p
     let ready=false,loading=true,currentView=null,clock=0;
     const button={disabled:true},overlay={hidden:true},controls={unlock(){deps.unlocks++}},input={reset(){deps.resets++}};
     const element=()=>button,success=()=>deps.successes++,failed=error=>deps.failures.push(error),done=()=>{};
-    function install(collision,visual){
-      const view=factory({},visual,collision);currentView=view;deps.installs++;
+    const bonusEntry=id=>({id}),bonusFile=async entry=>({mapId:entry.id,bonuses:[{number:1}]});
+    function install(collision,visual,resume,bypass,courses){
+      const view=factory({},visual,collision,{bonuses:courses});currentView=view;deps.installs++;deps.courses=courses;
       if(deps.prepareGate){const prepare=view.prepare;view.prepare=async frame=>{
         deps.preparing.resolve();await deps.prepareGate.promise;return prepare(frame)}}
       return {id:"first"};
@@ -843,4 +848,12 @@ test('a late GPU failure after disposal does not revive failure handling', async
   expect(fixture.deps.failures).toEqual([]);
   expect(fixture.deps.disposals).toBe(1);
   expect(fixture.deps.signal.aborted).toBe(false);
+});
+
+test('the bonus update installs the bonus courses it loaded beside the map', async () => {
+  const fixture = progressiveLifecycleFixture({bonuses: true});
+  await fixture.run.startMap({id: 'surf_one', slug: 'map'});
+  expect(fixture.deps.installs).toBe(1);
+  expect(fixture.deps.courses).toEqual({mapId: 'surf_one', bonuses: [{number: 1}]});
+  expect(fixture.run.view.__qolTextureBindings).toBeDefined();
 });

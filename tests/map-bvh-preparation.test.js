@@ -527,3 +527,17 @@ test('the hooked geometry load uses a cached map before downloading and reports 
   await expect(loadMap({id: 'surf_other', name: 'other', slug: 'other'}, undefined)).rejects.toThrow('Invalid other geometry');
   expect(calls).toEqual([['read', undefined, true], ['dispose']]);
 });
+
+test('the bonus update shape: a live Session subclass, renamed config and reader locals', () => {
+  const signature = 'class Zm{constructor(e,t=12){}}class w0{constructor(e,t=[],i=!1,a=!1){}}';
+  const contract = {name: 'w0', signature};
+  const config = 'yl=n=>({...ce.unrestrictedStart?y0:S0,...n?.physicsOverrides,autoBhop:ce.autoBhop,unrestrictedStart:ce.unrestrictedStart})';
+  const reader = 'async function Zf(n){if(!n.body)return n.json();const e=n.body.getReader(),t=[];let i=0;for(;i<2;){const o=await e.read();if(o.done)break;t.push(o.value),i+=o.value.length}const a=t.flatMap(o=>Array.from(o.subarray(0,2))).slice(0,2),s=new ReadableStream({start(o){for(const c of t)o.enqueue(c)},async pull(o){try{const c=await e.read();c.done?o.close():o.enqueue(c.value)}catch(c){o.error(c)}},cancel(o){return e.cancel(o)}}),r=a[0]===31&&a[1]===139?s.pipeThrough(new DecompressionStream("gzip")):s;return new Response(r).json()}';
+  const load = 'async function e1(n,e){const t=cl.find(r=>r.id===n.id),i=t?`/packed/${t.geometrySha256}.json.gz`:`/maps/${n.slug}-collision.json`,a=await Rd(i,e),s=await Zf(a);if(s.id!==n.id||!s.brushes?.length||!s.zones?.some(r=>r.kind==="start")||!s.zones.some(r=>r.kind==="finish"))throw Error(`Invalid ${n.name} geometry`);return s}';
+  const source = `${signature};const ${config};class Live extends Session{}function Ws(n){const e=new Live(n,yl(n),Iu),t=a4(n);return t&&e.setStartPosition(t),e}${reader}${load}`;
+  const patched = nativeMapPreparationHooks(source, contract, 'Session');
+  expect(patched).toContain('__qolThreshold=yl(s).groundNormal');
+  expect(patched).toContain('class w0{constructor(e,t=[],i=!1,a=!1){if(globalThis.__SURFD_QOL__?.usePreparedMapWorld?.(this,e,t,i,a,Zm))');
+  expect(nativeMapPreparationHooks(source.replace('class Live extends Session{}', 'class Live extends Other{}'), contract, 'Session'))
+    .not.toContain('__qolMapPreparation');
+});

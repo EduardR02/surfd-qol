@@ -4,6 +4,7 @@ import {MAX_ROOM_CHUNKS, MAX_ROOM_MESSAGE_CHARS} from '../src/private-rooms/prot
 import {createSharedSavelocs} from '../src/private-rooms/shared-savelocs.js';
 import {createPrivateRooms} from '../src/private-rooms/index.js';
 import {zoneFloorCandidates} from '../extension/map-floor-hooks.js';
+import {nativeWorldContracts} from '../extension/native-world-contracts.js';
 import {existsSync, readFileSync} from 'node:fs';
 
 const nativePracticePanelSource = `
@@ -291,23 +292,33 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} sweep scalar com
   });
 });
 
-for (const kind of ['game', 'worker']) describe(`native ${kind} collision world contracts`, () => {
+// The reviewed collision world and zone floor of each supported game build.
+const bonusWorld = nativeWorldContracts.find(contract => contract.name === 'w0').signature;
+const bonusFloorFixture = 'function gd(n,e,t=e.kind==="start"?n.spawn.position:Af[n.id]){const i=t?.x??(e.min.x+e.max.x)/2,a=t?.y??(e.min.y+e.max.y)/2,s=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=n.brushes.filter(l=>l.min.x<=i&&l.max.x>=i&&l.min.y<=a&&l.max.y>=a&&l.min.z<s&&l.max.z>r),c=n.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(u=>u.x))<=i&&Math.max(...l.vertices.map(u=>u.x))>=i&&Math.min(...l.vertices.map(u=>u.y))<=a&&Math.max(...l.vertices.map(u=>u.y))>=a&&Math.min(...l.vertices.map(u=>u.z))<s&&Math.max(...l.vertices.map(u=>u.z))>r),d=new w0(o,c).trace({x:i,y:a,z:s},{x:i,y:a,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}';
+const nativeBuilds = [
+  {label: 'before bonuses', collision: nativeCollisionFixture, floor: nativeFloorFixture, prelude: 'const ju={};', World: 'k1', Floor: 'Vb', trace: 'l', dot: 'un'},
+  {label: 'bonus update', collision: bonusWorld, floor: bonusFloorFixture, prelude: 'const Af={};', World: 'w0', Floor: 'gd', trace: 'd', dot: 'gn'},
+];
+
+for (const build of nativeBuilds) for (const kind of ['game', 'worker']) describe(`native ${kind} collision world contracts (${build.label})`, () => {
+  const {collision: nativeCollisionFixture, floor: nativeFloorFixture, prelude} = build;
   function worldFixture(collision = nativeCollisionFixture) {
     const helper = `;const ${collision}`;
-    const Native = new Function(helper + ';return k1;')();
+    const Native = new Function(helper + `;return ${build.World};`)();
     const source = kind === 'game' ? instrumentReplayFixture(nativeSource + helper) : instrumentPhysicsWorker(helper);
-    const Patched = new Function('globalThis', source + ';return k1;')({});
+    const Patched = new Function('globalThis', source + `;return ${build.World};`)({});
     return {source, Native, Patched};
   }
   const point = (x, y, z) => ({x, y, z});
   const triangle = vertices => ({surfaceId: 3, triangleId: 4, vertices});
 
   if (kind === 'game') test('loaded-world floor selection preserves native bounds, sweeps and version flags', () => {
-    const native = `;const ${nativeCollisionFixture};const ju={};${nativeFloorFixture}`;
+    const native = `;const ${nativeCollisionFixture};${prelude}${nativeFloorFixture}`;
     const source = instrumentReplayFixture(nativeSource + native, undefined, 'unused worker bundle');
+    expect(source).toContain('__qolFloor=__qolZoneFloorCandidates(__qolFloorWorlds.get(n.brushes)');
     const {World, floor} = new Function('globalThis',
-      source + ';return {World:k1,floor:Vb};')({});
-    const {Native, nativeFloor} = new Function(native + ';return {Native:k1,nativeFloor:Vb};')();
+      source + `;return {World:${build.World},floor:${build.Floor}};`)({});
+    const {Native, nativeFloor} = new Function(native + `;return {Native:${build.World},nativeFloor:${build.Floor}};`)();
     const brushes = Array.from({length: 16}, (_, i) => {
       const min = point(i * 16, -8, -8), max = point(i * 16 + 8, 8, 0);
       const planes = ['x', 'y', 'z'].flatMap(axis => [-1, 1].map(sign => ({
@@ -356,10 +367,10 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
   });
 
   if (kind === 'game') test('floor broadphase preserves original brush order for coincident trace ties', () => {
-    const native = `;const ${nativeCollisionFixture};const ju={};${nativeFloorFixture}`;
+    const native = `;const ${nativeCollisionFixture};${prelude}${nativeFloorFixture}`;
     const source = instrumentReplayFixture(nativeSource + native, undefined, 'unused worker bundle');
-    const {World, floor} = new Function('globalThis', source + ';return {World:k1,floor:Vb};')({});
-    const nativeFloor = new Function(native + ';return Vb;')();
+    const {World, floor} = new Function('globalThis', source + `;return {World:${build.World},floor:${build.Floor}};`)({});
+    const nativeFloor = new Function(native + `;return ${build.Floor};`)();
     const bounds = {min: point(-1, -1, -1), max: point(1, 1, 1)};
     const flat = {...bounds, id: 'flat', planes: [{normal: point(0, 0, 1), distance: 0}]};
     // Half the Z normal and half the epsilon make both entry fractions exact ties.
@@ -381,17 +392,17 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
   });
 
   if (kind === 'game') test('an unreviewed floor calculation retains its native result', () => {
-    const changed = nativeFloorFixture.replace('e.kind==="start"?l.end.z:', 'e.kind==="start"?l.end.z+5:');
-    const source = instrumentReplayFixture(nativeSource + `;const ${nativeCollisionFixture};const ju={};${changed}`,
+    const changed = nativeFloorFixture.replace(`e.kind==="start"?${build.trace}.end.z:`, `e.kind==="start"?${build.trace}.end.z+5:`);
+    const source = instrumentReplayFixture(nativeSource + `;const ${nativeCollisionFixture};${prelude}${changed}`,
       undefined, 'unused worker bundle');
-    const floor = new Function('globalThis', source + ';return Vb;')({});
+    const floor = new Function('globalThis', source + `;return ${build.Floor};`)({});
     const min = point(0, 0, -8), max = point(8, 8, 0);
     const planes = ['x', 'y', 'z'].flatMap(axis => [-1, 1].map(sign => ({
       normal: {...point(0, 0, 0), [axis]: sign}, distance: sign * (sign < 0 ? min : max)[axis],
     })));
     const map = {id: 'unknown-floor', brushes: [{id: 'floor', min, max, planes}],
       spawn: {position: point(2, 2, 10)}};
-    const nativeFloor = new Function(`const ${nativeCollisionFixture};const ju={};${nativeFloorFixture};return Vb;`)();
+    const nativeFloor = new Function(`const ${nativeCollisionFixture};${prelude}${nativeFloorFixture};return ${build.Floor};`)();
     const zone = {kind: 'start', min: point(0, 0, -20), max: point(8, 8, 20)};
     const original = nativeFloor(map, zone);
     expect(original).toBeGreaterThan(zone.min.z);
@@ -509,8 +520,8 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} collision world 
   });
 
   test('leaves a changed native SAT vector helper and its result intact', () => {
-    const changed = nativeCollisionFixture.replace('un=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z',
-      'un=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z+10');
+    const changed = nativeCollisionFixture.replace(`${build.dot}=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z`,
+      `${build.dot}=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z+10`);
     const {source, Native, Patched} = worldFixture(changed);
     expect(source).not.toContain('__qolBrush');
     const vertices = [point(0, 0, 0), point(1, 0, 0), point(0, 1, 0)];

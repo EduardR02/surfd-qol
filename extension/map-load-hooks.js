@@ -157,11 +157,11 @@ function nativeGpuUploadHook(source) {
 
 function nativeZoneTextureHook(source, factory, end) {
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const selections = [...source.slice(factory.index, end).matchAll(new RegExp(`const (?<owner>[\\w$]+)=${escape(factory[4])}\\?(?<factory>[\\w$]+)\\(${escape(factory[4])}\\):null`, 'g'))];
+  const selections = [...source.slice(factory.index, end).matchAll(new RegExp(`const (?<owner>[\\w$]+)=${escape(factory[4])}\\?(?<factory>[\\w$]+)\\(${escape(factory[4])}(?:,[\\w$.]+)?\\):null`, 'g'))];
   if (selections.length === 0) return source.includes('"Timer zone boundaries"') ? null : {parameter: 'undefined'};
   if (selections.length !== 1) return null;
   const selected = selections[0].groups;
-  const owners = [...source.matchAll(new RegExp(`function ${escape(selected.factory)}\\((?<map>[\\w$]+)\\)\\{const (?<group>[\\w$]+)=new [\\w$]+;\\k<group>\\.name="Timer zone boundaries";const (?<resources>[\\w$]+)=\\[\\],[\\s\\S]{0,6000}?dispose\\(\\)\\{for\\(const (?<entry>[\\w$]+) of \\k<resources>\\)\\k<entry>\\.dispose\\(\\)\\}\\}\\}`, 'g'))];
+  const owners = [...source.matchAll(new RegExp(`function ${escape(selected.factory)}\\((?<map>[\\w$]+)(?:,[\\w$]+)?\\)\\{const (?<group>[\\w$]+)=new [\\w$]+;\\k<group>\\.name="Timer zone boundaries";const (?<resources>[\\w$]+)=\\[\\],[\\s\\S]{0,6000}?dispose\\(\\)\\{for\\(const (?<entry>[\\w$]+) of \\k<resources>\\)\\k<entry>\\.dispose\\(\\)\\}\\}\\}`, 'g'))];
   if (owners.length !== 1) return null;
   const owner = owners[0], o = owner.groups;
   const labels = [...owner[0].matchAll(/[\w$]+\.push\(\{sprite:[\w$]+,[\s\S]{0,500}?texture:(?<texture>[\w$]+),material:[\w$]+\}\)/g)];
@@ -225,7 +225,7 @@ export function nativeMapLoadHooks(source) {
   const compile = body.match(new RegExp(`for\\(const [\\w$]+ of ${scenes}\\)${renderer}\\.compile\\([\\w$]+,([\\w$]+)\\)`));
   if (!compile) return source;
   const decode = [...source.matchAll(/function ([\w$]+)\(([\w$]+),([\w$]+),([\w$]+)\)\{const ([\w$]+)=\3\.endsWith\("\.png"\)\?"image\/png":[\s\S]*?\}async function ([\w$]+)\(([\w$]+),([\w$]+)=\{\}\)/g)];
-  const factory = [...source.matchAll(new RegExp(`function ([\\w$]+)\\(([\\w$]+),([\\w$]+),([\\w$]+)\\)\\{const ${renderer}=new [\\w$]+\\(\\{canvas:\\2,antialias:!0,alpha:!1,powerPreference:"high-performance"\\}\\)`, 'g'))];
+  const factory = [...source.matchAll(new RegExp(`function ([\\w$]+)\\(([\\w$]+),([\\w$]+),([\\w$]+)(?:,[\\w$]+=\\{\\})?\\)\\{const ${renderer}=new [\\w$]+\\(\\{canvas:\\2,antialias:!0,alpha:!1,powerPreference:"high-performance"\\}\\)`, 'g'))];
   if (decode.length !== 1 || factory.length !== 1) return source;
   const dispose = `${renderer}.dispose()}};return ${finish[7]}}`;
   if (source.split(dispose).length !== 2) return source;

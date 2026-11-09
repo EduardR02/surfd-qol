@@ -10,6 +10,7 @@ import {nativeMapFloorHooks} from './map-floor-hooks.js';
 import {nativeMapPreparationHooks} from './map-preparation-hooks.js';
 import {nativeMapEntryHooks} from './map-entry-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
+import {nativeWorldContracts} from './native-world-contracts.js';
 
 export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v41:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
@@ -25,59 +26,6 @@ function unique(source, pattern, label) {
   if (matches.length !== 1) throw new Error(`Unsupported Surfd build: ${label} (${matches.length} matches)`);
   return matches[0];
 }
-// Exact native vector helpers, BVH, axes, and complete world class. In
-// particular, checking the entire class also rules out new constructor state,
-// field initializers and changed methods before a prepared world skips it.
-// A different bundle stays native until its complete contract is reviewed.
-const nativeWorldContracts = [
-  {name: 'k1', index: 'e', cached: 't', triangle: 'i', vertices: 's',
-    signature: "nt=(n=0,e=0,t=0)=>({x:n,y:e,z:t}),gn=n=>({...n}),vn=(n,e)=>nt(n.x+e.x,n.y+e.y,n.z+e.z),us=(n,e)=>nt(n.x-e.x,n.y-e.y,n.z-e.z),ti=(n,e)=>nt(n.x*e,n.y*e,n.z*e),un=(n,e)" +
-      "=>n.x*e.x+n.y*e.y+n.z*e.z,Xd=(n,e)=>nt(n.y*e.z-n.z*e.y,n.z*e.x-n.x*e.z,n.x*e.y-n.y*e.x),ir=n=>Math.hypot(n.x,n.y,n.z),Ri=n=>Math.hypot(n.x,n.y),rl=n=>{const e=ir(n);return e>1e-12?ti(n,1/e)" +
-      ":nt()},A1=(n,e,t)=>vn(n,ti(us(e,n),t)),Ar=(n,e,t)=>Math.max(e,Math.min(t,n)),Y0=n=>nt(Math.fround(n.x),Math.fround(n.y),Math.fround(n.z)),jd=[\"x\",\"y\",\"z\"],df=(n,e)=>jd.every(t=>n.min[t]" +
-      "<=e.max[t]&&n.max[t]>=e.min[t]);class K0{constructor(e,t=12){this.bounds=e;const i=s=>{const r={x:1/0,y:1/0,z:1/0},a={x:-1/0,y:-1/0,z:-1/0};for(const l of s)for(const d of jd)r[d]" +
-      "=Math.min(r[d],e[l].min[d]),a[d]=Math.max(a[d],e[l].max[d]);if(s.length<=t)return{min:r,max:a,items:s};const o=jd.reduce((l,d)=>a[d]-r[d]>a[l]-r[l]?d:l);s.sort((l,d)=>e[l].min[o]+e[l].max[o]" +
-      "-(e[d].min[o]+e[d].max[o])||l-d);const c=s.length>>1;return{min:r,max:a,left:i(s.slice(0,c)),right:i(s.slice(c))}};this.root=e.length?i(e.map((s,r)=>r)):null}bounds;root;query(e){const t=[]," +
-      "i=s=>{if(df(s,e))if(s.items)for(const r of s.items)df(this.bounds[r],e)&&t.push(r);else i(s.left),i(s.right)};return this.root&&i(this.root),t.sort((s,r)=>s-r)}}const Un=.03125,Xs=[\"x\",\"y\"," +
-      "\"z\"];class k1{constructor(e,t=[],i=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=i,this.bspCornerFix=s," +
-      "this.triangleBounds=t.map(r=>({min:nt(...Xs.map(a=>Math.min(...r.vertices.map(o=>o[a])))),max:nt(...Xs.map(a=>Math.max(...r.vertices.map(o=>o[a]))))})),this.tree=new K0([...e," +
-      "...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;" +
-      "const i=this.triangles[e],s=i.vertices,r=[nt(1,0,0),nt(0,1,0),nt(0,0,1)],o=[rl(Xd(us(s[1],s[0]),us(s[2],s[0]))),...r];for(let d=0;d<3;d++)for(const u of r)o.push(Xd(us(s[(d+1)%3],s[d]),u));" +
-      "const c=[];for(const d of o)if(!(ir(d)<1e-8))for(const u of[1,-1]){const h=ti(rl(d),u);c.some(f=>un(f.normal,h)>1-1e-9)||c.push({normal:h,distance:Math.max(...s.map(f=>un(h,f)))})}" +
-      "const l={id:`disp-${i.surfaceId}-${i.triangleId}`,vertices:s,faces:[[0,1,2]],planes:c,...this.triangleBounds[e],color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,l),l}" +
-      "trace(e,t,i){const s={fraction:1,end:{...t},normal:nt(),startSolid:!1,allSolid:!1,brush:null},r={min:nt(),max:nt()};for(const a of Xs)r.min[a]=Math.min(e[a],t[a])+i.min[a]-Un,r.max[a]" +
-      "=Math.max(e[a],t[a])+i.max[a]+Un;for(const a of this.tree.query(r)){const o=a<this.brushes.length?this.brushes[a]:this.triangleBrush(a-this.brushes.length);if(Xs.some(y=>Math.max(e[y],t[y])" +
-      "+i.max[y]<o.min[y]-Un||Math.min(e[y],t[y])+i.min[y]>o.max[y]+Un)||o.leafBounds&&!o.leafBounds.some(y=>Xs.every(S=>r.max[S]>=y.min[S]&&r.min[S]<=y.max[S])))continue;let c=-1,l=1,d=nt(),u=!1," +
-      "h=!1,f=!1,v,g=-1/0,m=1/0,p=-1,x=nt();const b=this.bspCornerFix&&!o.collisionModel&&o.planes.length===6&&o.planes.every(y=>Xs.filter(S=>y.normal[S]!==0)" +
-      ".length===1&&Xs.some(S=>Math.abs(y.normal[S])===1));for(const y of o.planes){const S=y.normal,E=S.x*(S.x<0?i.max.x:i.min.x)+S.y*(S.y<0?i.max.y:i.min.y)+S.z*(S.z<0?i.max.z:i.min.z)," +
-      "C=y.distance-E,_=un(e,S)-C,w=un(t,S)-C;if(o.collisionModel===\"vphysics\"||b)if(_>w){const T=_/(_-w);T>g&&(g=T,p=Math.max(0,(_-Un)/(_-w)),x=S)}else _<w&&(m=Math.min(m,_/(_-w)));if(_>0&&(u=!0)," +
-      "w>0&&(h=!0),_>0&&w>0&&(!o.collisionModel||w>=_-1e-5)){f=!0;break}if(!(_<=0&&w<=0))if(_>w){const T=Math.max(0,(_-Un)/(_-w));T>c&&(c=T,d=S,v=y.friction)}else l=Math.min(l,(_+Un)/(_-w))}" +
-      "if(!(f||m<1&&g>m)){if(this.vphysicsFeatureFix&&o.collisionModel===\"vphysics\"&&(c=p,d=x),!u){if(s.startSolid=!0,!h)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=o,s;continue}" +
-      "c<l&&c>-1&&c<s.fraction&&(s.fraction=Math.max(0,c),s.normal={...d},s.brush=o,v!==void 0?s.friction=v:delete s.friction)}}return s.end=A1(e,t,s.fraction),s}}"},
-  {name: 'ke', index: 'e', cached: 't', triangle: 'a', vertices: 's',
-    signature: "m=(o=0,e=0,t=0)=>({x:o,y:e,z:t}),x=o=>({...o}),w=(o,e)=>m(o.x+e.x,o.y+e.y,o.z+e.z),P=(o,e)=>m(o.x-e.x,o.y-e.y,o.z-e.z),E=(o,e)=>m(o.x*e,o.y*e,o.z*e),S=(o,e)=>o.x*e.x+o.y*e.y+o.z*e.z,W=(o,e)" +
-      "=>m(o.y*e.z-o.z*e.y,o.z*e.x-o.x*e.z,o.x*e.y-o.y*e.x),N=o=>Math.hypot(o.x,o.y,o.z),C=o=>Math.hypot(o.x,o.y),G=o=>{const e=N(o);return e>1e-12?E(o,1/e):m()},be=(o,e,t)=>w(o,E(P(e,o),t)),j=(o," +
-      "e,t)=>Math.max(e,Math.min(t,o)),ye=o=>m(Math.fround(o.x),Math.fround(o.y),Math.fround(o.z)),$=[\"x\",\"y\",\"z\"],Z=(o,e)=>$.every(t=>o.min[t]<=e.max[t]&&o.max[t]>=e.min[t]);" +
-      "class ve{constructor(e,t=12){this.bounds=e;const a=s=>{const i={x:1/0,y:1/0,z:1/0},c={x:-1/0,y:-1/0,z:-1/0};for(const u of s)for(const f of $)i[f]=Math.min(i[f],e[u].min[f]),c[f]" +
-      "=Math.max(c[f],e[u].max[f]);if(s.length<=t)return{min:i,max:c,items:s};const r=$.reduce((u,f)=>c[f]-i[f]>c[u]-i[u]?f:u);s.sort((u,f)=>e[u].min[r]+e[u].max[r]-(e[f].min[r]+e[f].max[r])||u-f);" +
-      "const n=s.length>>1;return{min:i,max:c,left:a(s.slice(0,n)),right:a(s.slice(n))}};this.root=e.length?a(e.map((s,i)=>i)):null}bounds;root;query(e){const t=[],a=s=>{if(Z(s,e))if(s.items)" +
-      "for(const i of s.items)Z(this.bounds[i],e)&&t.push(i);else a(s.left),a(s.right)};return this.root&&a(this.root),t.sort((s,i)=>s-i)}}const T=.03125,M=[\"x\",\"y\",\"z\"];class ke{constructor(e,t=[]" +
-      ",a=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=a,this.bspCornerFix=s,this.triangleBounds=t.map(i=>({min:m(...M.map(c=>Math.min(...i.vertices.map(r=>r[c]))))," +
-      "max:m(...M.map(c=>Math.max(...i.vertices.map(r=>r[c]))))})),this.tree=new ve([...e,...this.triangleBounds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;" +
-      "triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;const a=this.triangles[e],s=a.vertices,i=[m(1,0,0),m(0,1,0),m(0,0,1)],r=[G(W(P(s[1],s[0]),P(s[2],s[0]))" +
-      "),...i];for(let f=0;f<3;f++)for(const l of i)r.push(W(P(s[(f+1)%3],s[f]),l));const n=[];for(const f of r)if(!(N(f)<1e-8))for(const l of[1,-1]){const d=E(G(f),l);n.some(h=>S(h.normal,d)" +
-      ">1-1e-9)||n.push({normal:d,distance:Math.max(...s.map(h=>S(d,h)))})}const u={id:`disp-${a.surfaceId}-${a.triangleId}`,vertices:s,faces:[[0,1,2]],planes:n,...this.triangleBounds[e]," +
-      "color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,u),u}trace(e,t,a){const s={fraction:1,end:{...t},normal:m(),startSolid:!1,allSolid:!1,brush:null},i={min:m(),max:m()};" +
-      "for(const c of M)i.min[c]=Math.min(e[c],t[c])+a.min[c]-T,i.max[c]=Math.max(e[c],t[c])+a.max[c]+T;for(const c of this.tree.query(i)){const r=c<this.brushes.length?this.brushes[c]" +
-      ":this.triangleBrush(c-this.brushes.length);if(M.some(k=>Math.max(e[k],t[k])+a.max[k]<r.min[k]-T||Math.min(e[k],t[k])+a.min[k]>r.max[k]+T)" +
-      "||r.leafBounds&&!r.leafBounds.some(k=>M.every(_=>i.max[_]>=k.min[_]&&i.min[_]<=k.max[_])))continue;let n=-1,u=1,f=m(),l=!1,d=!1,h=!1,g,p=-1/0,b=1/0,y=-1,I=m();" +
-      "const F=this.bspCornerFix&&!r.collisionModel&&r.planes.length===6&&r.planes.every(k=>M.filter(_=>k.normal[_]!==0).length===1&&M.some(_=>Math.abs(k.normal[_])===1));for(const k of r.planes)" +
-      "{const _=k.normal,Re=_.x*(_.x<0?a.max.x:a.min.x)+_.y*(_.y<0?a.max.y:a.min.y)+_.z*(_.z<0?a.max.z:a.min.z),se=k.distance-Re,A=S(e,_)-se,H=S(t,_)-se;if(r.collisionModel===\"vphysics\"||F)if(A>H)" +
-      "{const B=A/(A-H);B>p&&(p=B,y=Math.max(0,(A-T)/(A-H)),I=_)}else A<H&&(b=Math.min(b,A/(A-H)));if(A>0&&(l=!0),H>0&&(d=!0),A>0&&H>0&&(!r.collisionModel||H>=A-1e-5)){h=!0;break}if(!(A<=0&&H<=0))" +
-      "if(A>H){const B=Math.max(0,(A-T)/(A-H));B>n&&(n=B,f=_,g=k.friction)}else u=Math.min(u,(A+T)/(A-H))}if(!(h||b<1&&p>b)){if(this.vphysicsFeatureFix&&r.collisionModel===\"vphysics\"&&(n=y,f=I),!l)" +
-      "{if(s.startSolid=!0,!d)return s.allSolid=!0,s.fraction=0,s.end={...e},s.brush=r,s;continue}n<u&&n>-1&&n<s.fraction&&(s.fraction=Math.max(0,n),s.normal={...f},s.brush=r," +
-      "g!==void 0?s.friction=g:delete s.friction)}}return s.end=be(e,t,s.fraction),s}}"},
-];
-
 function knownNativeWorld(source) {
   let found = null;
   for (const contract of nativeWorldContracts) {
@@ -236,7 +184,12 @@ function preparedIndexWorkerHooks(source, workerRuntime, contract) {
       names[1].index === factories[0].index + 4 ? factories[0] : null;
     const handler = unique(source, new RegExp(`async function (${identifier})\\((${identifier})\\)\\{try\\{const\\{entry:(${identifier}),currentVersion:(${identifier}),replay:(${identifier})\\}=\\2;`, 'g'), 'index worker request');
     const entry = literal(handler[3]), current = literal(handler[4]), replay = literal(handler[5]);
-    const load = unique(source, new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'), 'index geometry load');
+    // Bonus builds first compose a bonus run's course from the current map and its bonus file.
+    const loads = [
+      new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'),
+      new RegExp(`let (${identifier})=null;const (${identifier})=(${identifier})\\(${replay}\\.mapVersion\\);if\\(\\2\\)\\{const (${identifier})=await (${identifier})\\(${entry}\\);[^{}]{0,300}\\}else\\(${replay}\\.mapVersion===${current}\\|\\|\\3\\(${current}\\)\\?\\.mainVersion===${replay}\\.mapVersion\\)&&\\(\\1=await \\5\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\);\\1\\?\\?=await ${identifier}\\(${entry},${replay}\\.mapVersion\\);`, 'g'),
+    ];
+    const load = unique(source, loads.find(pattern => [...source.matchAll(pattern)].length) ?? loads[0], 'index geometry load');
     const receiver = unique(source, new RegExp(`(${identifier})\\.onmessage=(${identifier})=>\\{${literal(handler[1])}\\(\\2\\.data\\)\\};`, 'g'), 'index worker receiver');
     const loop = unique(source, new RegExp(`const (${identifier})=new (${identifier})\\(${literal(load[1])},${replay}\\);for\\(;;\\)\\{const (${identifier})=performance\\.now\\(\\)\\+(${identifier}),(${identifier})=\\1\\.run\\(\\(\\)=>performance\\.now\\(\\)<\\3\\);if\\(${literal(receiver[1])}\\.postMessage\\(\\{ok:!0,batch:\\5\\},\\{transfer:\\[\\5\\.elapsed\\.buffer,\\5\\.phases\\.buffer\\]\\}\\),\\5\\.done\\)return\\}`, 'g'), 'index worker chunks');
     const failure = unique(source, new RegExp(`${literal(receiver[1])}\\.postMessage\\(\\{ok:!1,error:(${identifier}) instanceof Error\\?\\1\\.message:String\\(\\1\\)\\}\\)`, 'g'), 'index worker failure');

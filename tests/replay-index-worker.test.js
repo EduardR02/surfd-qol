@@ -547,3 +547,23 @@ test('unpatched workers fail immediately and silent workers expire into native f
     expect(f.fallbacks()).toBe(1); expect(f.workers[0].terminated).toBe(1); expect(f.timers.size).toBe(0);
   }
 });
+
+// The bonus update composes a bonus run's course from the current map and its bonus file.
+const bonusWorker = nativeWorker
+  .replace('let s=null;a.mapVersion===t&&(s=await loadCurrent(e),s.version!==a.mapVersion&&(s=null)),s??=await loadArchive(e,a.mapVersion);',
+    'let s=null;const b=bonusOf(a.mapVersion);if(b){const m=await loadCurrent(e);if(m.version!==b.mainVersion)throw Error("earlier map");if(s=compose(m,await loadBonuses(m),b.number),s.version!==a.mapVersion)throw Error("earlier bonus")}else(a.mapVersion===t||bonusOf(t)?.mainVersion===a.mapVersion)&&(s=await loadCurrent(e),s.version!==a.mapVersion&&(s=null));s??=await loadArchive(e,a.mapVersion);')
+  .replace('async function loadCurrent(entry){', 'function bonusOf(version){const at=version.indexOf("/bonus-");return at<0?null:{mainVersion:version.slice(0,at),number:Number(version.slice(at+7))}}async function loadBonuses(map){return {bonuses:[{number:1}]}}function compose(map,file,number){return {...map,version:map.version+"/bonus-"+number}}async function loadCurrent(entry){');
+
+test('the bonus update loads bonus runs natively, or from a packed bonus world', async () => {
+  expect(instrumentPhysicsWorker(bonusWorker)).toContain('__surfdQolPrepared');
+  const native = workerFixture(bonusWorker), replay = {mapId: 'map', mapVersion: 'v1/bonus-1', format: 8, commands: [{}]};
+  native.send({type: 'run', job: 1, entry: {id: 'map'}, currentVersion: 'v1', replay}); await flush();
+  expect(native.probe.loads()).toBe(1);
+  expect(native.probe.simulations[0].map.version).toBe('v1/bonus-1');
+  const map = {id: 'map', version: 'v1/bonus-1', brushes: [], displacementTriangles: []};
+  const packet = await packCollisionWorld(map, {brushes: map.brushes, triangles: map.displacementTriangles, triangleBounds: [], tree: {bounds: [], root: null}});
+  const packed = workerFixture(bonusWorker);
+  packed.send({type: 'run', job: 1, entry: {id: 'map'}, currentVersion: 'v1', replay: {...replay, ...replayFor(map)}, __surfdQolCollision: packet}); await flush();
+  expect(packed.probe.loads()).toBe(0);
+  expect(packed.probe.simulations[0].map.version).toBe('v1/bonus-1');
+});

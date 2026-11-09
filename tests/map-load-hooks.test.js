@@ -22,7 +22,7 @@ for(const node of groups)for(const{object:mesh,matrices:matrices,offsets:offsets
 }finally{prepareMs=performance.now()-started;const initial=frame??previous;initial&&!disposed&&view.render(initial)}},setTriggersVisible:()=>{},render(frame){zones?.update();previous=frame;gpu.drawVisible(frame)},getStats:()=>({prepareMs}),dispose(){disposed=true;zones?.dispose();gpu.dispose()}};return view}
 `;
 
-function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = false, drawError = null, map = null, probeLights = false, unknownLights = false} = {}) {
+function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = false, drawError = null, map = null, probeLights = false, unknownLights = false, bonuses = false} = {}) {
   const calls = {compile: 0, upload: 0, all: 0, visible: [], disposed: 0, closed: 0, traverse: 0,
     geometry: [], indices: [], streams: [], textures: [], resets: 0};
   class Texture { isTexture = true; version = 0; dispose() {} }
@@ -59,6 +59,9 @@ function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = fal
     resources: {compressed: new Map(), images: new Map([['image', {close() { calls.closed++; }}]])},
   };
   let input = unknown ? nativeFixture.replace('powerPreference:"high-performance"', 'powerPreference:"default"') : nativeFixture;
+  // The bonus update passes the map's bonus courses to the renderer and its zone labels.
+  if (bonuses) input = input.replace('function factory(canvas,data,map){', 'function factory(canvas,data,map,options={}){')
+    .replace('const zones=map?Labels(map):null', 'const zones=map?Labels(map,options.bonuses):null').replace('function Labels(map){', 'function Labels(map,bonuses){');
   if (unknownGpu) input = input.replace('new Objects(gl,geometries,attributes,info)', 'new Objects(gl,geometries,attributes,{})');
   if (unknownZones) input = input.replace('texture:texture,material:material', 'source:texture,material:material');
   if (probeLights) {
@@ -69,12 +72,12 @@ function nativeRenderer({unknown = false, unknownGpu = false, unknownZones = fal
   }
   const factory = new Function('Driver', 'Texture', 'Group', 'Attributes', 'Bindings', 'Geometries',
     nativeMapLoadHooks(input) + ';return factory')(Renderer, Texture, Group, Attributes, Bindings, Geometries);
-  const view = factory({}, data, map);
+  const view = factory({}, data, map, {bonuses: null});
   return {view, renderer: instance, data, calls, loseContext() { lost = true; }};
 }
 
-test('native hook avoids constructor-wide uploads and all-map preparation, preserving scene visibility and cleanup', async () => {
-  const {view, data, calls} = nativeRenderer();
+for (const bonuses of [false, true]) test(`native hook avoids constructor-wide uploads and all-map preparation, preserving scene visibility and cleanup${bonuses ? ' (bonus update)' : ''}`, async () => {
+  const {view, data, calls} = nativeRenderer({bonuses});
   expect(calls.upload).toBe(0);
   const frame = {eyePosition: {x: 1, y: 2, z: 3}};
   await view.prepare(frame);
@@ -217,8 +220,8 @@ test('idle uploads cannot suppress next-traversal PVS instance and light-offset 
   view.dispose();
 });
 
-test('GPU completion includes original and shared zone canvases after the native first-view map swap', async () => {
-  const {view, data, calls} = nativeRenderer({map: {labels: ['near-original', 'far-original']}});
+for (const bonuses of [false, true]) test(`GPU completion includes original and shared zone canvases after the native first-view map swap${bonuses ? ' (bonus update)' : ''}`, async () => {
+  const {view, data, calls} = nativeRenderer({map: {labels: ['near-original', 'far-original']}, bonuses});
   await view.prepare({});
   const labelGroup = data.scenes[2].children[0];
   expect(labelGroup.children[0].material.map.name).toBe('hi-res');
