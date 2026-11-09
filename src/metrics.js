@@ -137,6 +137,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let tickMixedContact = false;
   let tickCrashContact = false;
   let tickGround = false;
+  let tickSpecial = '';
   let tickGroundContact = false;
   let tickAirBoundary = false;
   let tickBoardAmbiguous = false;
@@ -493,6 +494,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // resets the route, nothing may claim a PB/WR visit match.
     if (resumed) routePrefix = null;
     duration = Number.isFinite(session.config?.dt) && session.config.dt > 0 ? session.config.dt : 0.015;
+    tickSpecial = '';
     open = true;
     accelerationCount = 0;
     tickGain = tickOptimum = tickRampLoss = 0;
@@ -518,6 +520,12 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     tickAirGated = false;
     tickReason = tickGround ? 'ground' : 'no-acceleration';
   }
+  // Native ladder and swimming branches use different movement equations.
+  // Their slides must not be classified as air or surf contacts.
+  function specialMovement(kind) {
+    if (open) tickSpecial = kind;
+  }
+
 
   function acceleration({ before, after, direction, wishSpeed, airborne, config, surfaceFriction }) {
     if (!open) return;
@@ -677,6 +685,24 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       return;
     }
     open = false;
+    if (tickSpecial) {
+      // Neither side of a special-movement boundary is a complete flight or
+      // ramp visit. Keep prior completed summaries, but discard the interrupted
+      // episode and its live values without inventing a landing.
+      clearSurfEpisode();
+      airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
+      unknownAir = unknownRamp = false;
+      unknownRampGap = 0;
+      head = count = 0;
+      rollingGain = rollingOptimum = 0;
+      eligible = false;
+      status = tickSpecial;
+      elapsed += duration;
+      previousSession = session;
+      previousState = session.state;
+      previousTick = session.state.tick;
+      return;
+    }
     elapsed += duration;
     const nextMode = tickRampContact || tickMixedContact ? 'surf' : 'air';
     if (nextMode === 'surf') {
@@ -986,5 +1012,5 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   const boardRevision = () => boardVersion;
   // Reference reconstruction reads completed Surf visits only, not per-tick copies.
   const surfSnapshot = sequence => surf.sequence !== sequence ? {...surf} : null;
-  return { begin, acceleration, collision, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, saveState, restoreState };
+  return { begin, acceleration, collision, specialMovement, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, saveState, restoreState };
 }

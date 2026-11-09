@@ -17,6 +17,7 @@ export function observePhysics(adapter, metrics, { onBeforeTick = noop, onTick =
     wishSpeed: 0, airborne: false, config: null, surfaceFriction: 0 };
   const collision = { before: vector(), after: null, contacts: null, firstContact: 0, blocked: false, config: null };
   let active = null;
+  let movementTick = null;
   let healthy = true;
 
   function fail(error) {
@@ -49,6 +50,37 @@ export function observePhysics(adapter, metrics, { onBeforeTick = noop, onTick =
         return events;
       } finally { active = previousActive; }
     });
+    // These methods exist only in the native movement implementation with
+    // bonus ladders/water. Observe the selected branch, not mere proximity:
+    // a ladder jump returns false and immediately resumes normal movement,
+    // and water level 1 still uses the normal air/ground solver.
+    if (typeof movementPrototype.tick === 'function' &&
+      typeof movementPrototype.ladderMove === 'function' &&
+      typeof movementPrototype.waterLevel === 'function') {
+      wrap(movementPrototype, 'tick', original => function () {
+        if (!healthy || !active || this !== active.movement) return original.apply(this, arguments);
+        const previous = movementTick;
+        movementTick = '';
+        try {
+          const result = original.apply(this, arguments);
+          if (healthy && movementTick) {
+            try { metrics.specialMovement(movementTick); } catch (error) { fail(error); }
+          }
+          return result;
+        } finally { movementTick = previous; }
+      });
+      wrap(movementPrototype, 'ladderMove', original => function () {
+        const result = original.apply(this, arguments);
+        if (healthy && movementTick !== null && active && this === active.movement && result) movementTick = 'ladder';
+        return result;
+      });
+      wrap(movementPrototype, 'waterLevel', original => function (state) {
+        const jumping = !!state.waterJumpTime;
+        const result = original.apply(this, arguments);
+        if (healthy && movementTick !== null && active && this === active.movement && (jumping || result >= 2)) movementTick = 'water';
+        return result;
+      });
+    }
     wrap(movementPrototype, 'accelerate', original => function (state, direction, wishSpeed, airborne) {
       if (!healthy || !active || this !== active.movement) return original.apply(this, arguments);
       try {

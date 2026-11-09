@@ -45,6 +45,35 @@ function panelRig({data = {key: 'utopia:3', name: 'Utopia', pb: {id: 'local', ti
 }
 
 describe('runs panel', () => {
+  test('an unrecorded loaded bonus stays selectable beside main-course history', () => {
+    const rig = panelRig();
+    rig.history.currentMap = 'utopia:3/bonus-1';
+    rig.history.currentMapName = 'Utopia · Bonus 1';
+    rig.history.maps = () => [{key: 'utopia:3', name: 'Utopia', runs: 1, at: 1000}];
+    rig.history.view = key => key === 'utopia:3' ? {key, name: 'Utopia', ramps: []} : null;
+    rig.session = {map: {id: 'utopia', version: '3/bonus-1'}};
+    rig.refs = null;
+    rig.panel.show('utopia:3/bonus-1');
+    expect(rig.nodes.get('rn-name').textContent).toBe('Utopia · Bonus 1');
+    expect(rig.body.innerHTML).toContain('No runs on Utopia · Bonus 1 yet');
+    rig.panel.showMaps();
+    expect(rig.nodes.get('rn-maps').innerHTML).toContain('data-map="utopia:3/bonus-1"');
+    expect(rig.nodes.get('rn-maps').innerHTML).toContain('data-map="utopia:3"');
+    rig.nodes.get('rn-maps').emit('click', {target: {closest: () => ({dataset: {map: 'utopia:3'}})}});
+    expect(rig.nodes.get('rn-name').textContent).toBe('Utopia');
+    rig.panel.showMaps();
+    rig.nodes.get('rn-maps').emit('click', {target: {closest: () => ({dataset: {map: 'utopia:3/bonus-1'}})}});
+    expect(rig.nodes.get('rn-name').textContent).toBe('Utopia · Bonus 1');
+  });
+
+  test('native PB belongs only to the loaded course', () => {
+    const data = {key: 'utopia:3', pb: {id: 'main', time: 50, outcome: 'finished'}};
+    const refs = {own: {runId: 'bonus', timeUs: 12000000, splitsUs: []}};
+    const session = {map: {id: 'utopia', version: '3/bonus-1'}};
+    expect(bestFinish(data, {session, refs})).toMatchObject({official: false, id: 'main', time: 50});
+    expect(bestFinish(null, {key: 'utopia:3/bonus-1', session, refs})).toMatchObject({official: true, runId: 'bonus', time: 12});
+  });
+
   test('checkpoint bests are coloured against the PB’s own splits', () => {
     const cells = paceCells({pb: {id: 'local', time: 41.233}, splits: [
       {label: 'CP1', time: 10.12, speed: 2412, pb: 10.201},

@@ -163,8 +163,8 @@ export function buildStart(start, startReference, settings, spectator) {
       text: available ? formatNumber(start.speed) : '—',
       tone: relativeStart
         ? referenceTone(ready ? startReference.speed : null, available ? start.speed : null)
-        : startTone(available ? Math.max(0, -start.speedDelta) : null, settings.startDeficitAmazing, settings.startDeficitGood),
-      title: available ? `${formatNumber(start.speed, 1)} u/s at exit; ${start.label === 'Unrestricted start' ? 'uncapped start' : `${formatDelta(start.speedDelta, 1)} versus the ${formatNumber(start.targetSpeed)} cap`}.` : '',
+        : startTone(available && Number.isFinite(start.speedDelta) ? Math.max(0, -start.speedDelta) : null, settings.startDeficitAmazing, settings.startDeficitGood),
+      title: available ? `${formatNumber(start.speed, 1)} u/s at exit; ${start.label === 'Unrestricted start' || start.label === 'Boosted start' ? 'uncapped start' : `${formatDelta(start.speedDelta, 1)} versus the ${formatNumber(start.targetSpeed)} cap`}.` : '',
     },
     height: {
       text: Number.isFinite(start?.heightAboveFloor) ? formatDelta(start.heightAboveFloor, 1) : '—',

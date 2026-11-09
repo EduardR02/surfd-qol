@@ -75,8 +75,9 @@ describe('tracks', () => {
       }
       restart() {} restorePractice() {} visitStation() {}
     }
-    const map = {id: 'm', version: 1};
-    const replay = {mapId: 'm', mapVersion: 1, config: {dt: 0.01, groundNormal: 0.7}, format: 8,
+    const course = {id: 'm', version: 'revision/bonus-1', brushes: [{id: 'bonus-only'}]};
+    const map = course;
+    const replay = {mapId: 'm', mapVersion: course.version, config: {dt: 0.01, groundNormal: 0.7}, format: 8,
       commands: [{}, {}, {ramp: true}, {}, {}, {}, {}]};
     const track = await recordTrack({adapter: {Session, Movement}, session: {map}, replay, yieldTask: async () => null});
     expect(track.count).toBe(8);
@@ -456,7 +457,7 @@ describe('cinematic replay lifecycle', () => {
       })});
     return {cinema, renderer, native, listeners, control, adapter, canvas, counts: () => ({disposed, scenes, recorded, colors, positions, made})};
   }
-  const run = id => ({id, label: id, load: async () => ({commands: [{run: id}]})});
+  const run = id => ({id, label: id, load: async () => ({mapId: 'm', mapVersion: 1, commands: [{run: id}]})});
   const deferred = () => {
     let resolve;
     const promise = new Promise(done => { resolve = done; });
@@ -1486,13 +1487,13 @@ describe('cinematic replay lifecycle', () => {
   });
   test('adding from POV activates the solo camera before download and respects a later POV choice', async () => {
     const entered = deferred(), downloaded = deferred(), activated = deferred();
-    const {cinema} = rig({onChange: () => { if (cinema.camera) activated.resolve(); }});
+    const {cinema, control} = rig({onChange: () => { if (cinema.camera) activated.resolve(); }});
     const adding = cinema.add({id: 'slow', load: async () => { entered.resolve(); return downloaded.promise; }});
     await entered.promise;
     await activated.promise;
     expect(cinema.status()).toMatchObject({view: 'cinematic', runs: [], loading: [{id: 'slow'}]});
     await cinema.setView('pov');
-    downloaded.resolve({commands: [{run: 'slow'}]});
+    downloaded.resolve({...control.playback.replay, commands: [{run: 'slow'}]});
     expect(await adding).toBe(true);
     expect(cinema.status()).toMatchObject({view: 'pov', runs: [{id: 'slow'}], loading: []});
     cinema.close();
@@ -1943,6 +1944,18 @@ describe('cinematic replay lifecycle', () => {
     await expect(cinema.add({...run('alias'), load: run('first').load})).rejects.toThrow('already added');
     expect(counts().recorded).toBe(2);
     expect(cinema.status().runs).toHaveLength(1);
+    cinema.close();
+  });
+  test('rejects a ghost from a different bonus or main course before recording', async () => {
+    const {cinema, control, counts} = rig();
+    control.session.map.version = control.playback.replay.mapVersion = 'revision/bonus-1';
+    await cinema.setEnabled(true);
+    for (const version of ['revision', 'revision/bonus-2']) {
+      await expect(cinema.add({id: version, load: async () => ({mapId: 'm', mapVersion: version, commands: [{}]})}))
+        .rejects.toThrow('different course');
+    }
+    expect(counts().recorded).toBe(1);
+    expect(cinema.status().runs).toHaveLength(0);
     cinema.close();
   });
   test('a failed addition preserves an existing solo camera and later additions work', async () => {

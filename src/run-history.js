@@ -3,6 +3,7 @@
 // bests are saved one record each in IndexedDB (createHistoryStore), so
 // ending a run writes only that run and its map's bests.
 import {visitKey} from './replay-store.js';
+import {courseOfVersion} from './courses.js';
 
 // Maps whose recent runs are kept; bests are kept for every map.
 const MAX_MAPS = 50;
@@ -170,6 +171,13 @@ export function mapKey(map) {
 function prettyName(map) {
   const raw = map?.title ?? map?.name ?? map?.slug ?? map?.id;
   return raw == null ? 'Unknown map' : String(raw);
+}
+
+// Stored names predate bonuses and remain base map names. Derive the course
+// label from the existing identity so old records get the same label as new ones.
+function courseName(name, key) {
+  const course = courseOfVersion(key.slice(key.indexOf(':') + 1));
+  return course ? `${name} · Bonus ${course}` : name;
 }
 
 // Adds one recorded run to its map's bests. Practice and invalid runs only
@@ -609,9 +617,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     get currentMapName() {
       let map = null, name = null;
       try { map = getMap?.(); } catch { /* the last run's map */ }
-      if (!map || mapKey(map) === lastMap) return lastMapName;
+      if (!map || mapKey(map) === lastMap) return courseName(lastMapName, lastMap);
       try { name = getMapName?.(); } catch { /* optional */ }
-      return name ?? prettyName(map);
+      return courseName(name ?? prettyName(map), mapKey(map));
     },
     get running() { return !!current; },
     runs() { return runs; },
@@ -665,7 +673,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
         entry.at = Math.max(entry.at, run.at);
         entries.set(run.map, entry);
       }
-      return [...entries.values()].sort((a, b) => b.at - a.at);
+      return [...entries.values()].map(entry => ({...entry, name: courseName(entry.name, entry.key)})).sort((a, b) => b.at - a.at);
     },
     // What the Runs view shows for one map; null when it has no history.
     view(key = lastMap, {rampMode = 'best'} = {}) {
@@ -689,7 +697,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
       const recent = list.filter(run => run.outcome === 'finished' || run.time >= minimum).slice(-runsPerMap()).filter(run => run !== latest);
       const pbSplits = record?.best?.splits ?? best?.checkpoints.map(checkpoint => checkpoint.split) ?? [];
       return {
-        key, name: record?.name ?? list.at(-1)?.mapName ?? key, kind,
+        key, name: courseName(record?.name ?? list.at(-1)?.mapName ?? key, key), kind,
         totals: {attempts: record?.attempts ?? 0, finishes: record?.finishes ?? 0},
         pb: best ? shape(best, total) : null,
         recentBest: recentBest ? {...shape(recentBest, total), finishedAt: finishedAt(recentBest),

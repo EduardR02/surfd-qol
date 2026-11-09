@@ -1839,6 +1839,75 @@ function observedGame() {
   const game = new Session();
   return { game, adapter: { Session, Movement, getSession: () => game } };
 }
+test('native ladder and swimming branches do not invent ramp or air losses, and normal surfing resumes', () => {
+  for (const kind of ['ladder', 'water', 'water-jump']) {
+    const { game, adapter } = observedGame();
+    const proto = adapter.Movement.prototype;
+    proto.ladderMove = function (state) { return state.climbing === true; };
+    proto.waterLevel = function (state) { return state.level ?? 0; };
+    proto.tick = function (state) {
+      if (this.ladderMove(state)) {
+        this.slide(state, { contacts: [] }, { velocity: vector(100), contacts: [rampContact] });
+        return;
+      }
+      const level = this.waterLevel(state);
+      if (state.waterJumpTime || level >= 2) {
+        this.accelerate(state, vector(1), 260, true);
+        this.slide(state, { contacts: [] }, { velocity: vector(100), contacts: [rampContact] });
+        delete state.waterJumpTime;
+        return;
+      }
+      this.accelerate(state, vector(1), 260, true);
+      this.slide(state, { contacts: [] }, { velocity: vector(900), contacts: [rampContact] });
+    };
+    const metrics = createMetrics();
+    const observer = observePhysics(adapter, metrics);
+    try {
+      game.state.climbing = kind === 'ladder';
+      game.state.level = kind === 'water' ? 2 : 0;
+      for (let i = 0; i < 5; i++) {
+        if (kind === 'water-jump') game.state.waterJumpTime = 15;
+        game.step((movement, state) => movement.tick(state));
+      }
+      let result = metrics.snapshot();
+      assert.equal(result.status, kind === 'ladder' ? 'ladder' : 'water');
+      assert.equal(result.board.available, false);
+      assert.equal(result.surf.available, false);
+      assert.equal(result.air.available, false);
+      assert.equal(result.ramp.totalLoss, 0);
+      assert.equal(result.strafe.totalLoss, 0);
+      // Save/restore at the transition, as replay seeking does.
+      const saved = metrics.saveState();
+      metrics.restoreState(saved);
+      game.state.climbing = false;
+      game.state.level = 1;
+      game.state.velocity = vector(1000);
+      game.step((movement, state) => movement.tick(state));
+      result = metrics.snapshot();
+      assert.equal(result.board.available, true);
+      close(result.board.loss, 100);
+    } finally { observer.destroy(); }
+  }
+});
+
+test('special movement discards interrupted episodes without merging them into later surfing', () => {
+  for (const kind of ['ladder', 'water']) {
+    const metrics = createMetrics();
+    const game = session();
+    for (let i = 0; i < 4; i++) coastContact(metrics, game);
+    metrics.begin(game);
+    metrics.specialMovement(kind);
+    metrics.collision(clip(vector(990), vector(100)));
+    game.state.tick++;
+    metrics.end(game);
+    assert.equal(metrics.snapshot().surf.available, false);
+    for (let i = 0; i < 4; i++) coastContact(metrics, game);
+    const result = tick(metrics, game, null, null, ['finish']);
+    assert.equal(result.surf.available, true);
+    assert.equal(result.surf.measuredSeconds, 4 * config.dt);
+  }
+});
+
 
 test('observer preserves native arguments/results and measures only appended airborne slide contacts', () => {
   const { game, adapter } = observedGame();

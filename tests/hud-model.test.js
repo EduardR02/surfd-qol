@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildFeedback, buildMeter, createHudModel } from '../src/hud-model.js';
+import { buildFeedback, buildMeter, buildStart, createHudModel } from '../src/hud-model.js';
 import { defaults } from '../src/settings.js';
 
 const surf = { available: true, tick: 40, loss: 30, downLoss: 18, upLoss: 12 };
@@ -7,6 +7,13 @@ const air = { available: true, tick: 20, loss: 9, brakingLoss: 4, missedGain: 5 
 const board = { available: true, tick: 30, loss: 3 };
 const metrics = { air, surf, board, strafe: { mode: 'air' } };
 const settings = patch => ({ ...defaults, surfColorReference: 'fixed', ...patch });
+
+test('boosted start speed has no misleading fixed cap grade', () => {
+  const start = { available: true, speed: 1200, targetSpeed: null, speedDelta: null,
+    label: 'Boosted start', heightAboveFloor: 0, age: 0 };
+  const result = buildStart(start, null, settings({ startColorReference: 'fixed' }), false);
+  expect(result.speed).toMatchObject({ text: '1200', tone: 'muted' });
+});
 
 describe('HUD feedback slots', () => {
   test('after a ramp: Down in the shared slot, Board and Up of the same ramp', () => {

@@ -58,11 +58,11 @@ Touch and the ramp values compare against the same ramp in a reference run, your
 - **red**: worse than that
 - **grey**: no matching data (reference still loading, a different route, or no PB on this map)
 
-"WR" means the KSF record route by default, or Surfd's leaderboard #1. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
+"WR" means the KSF record route by default, or Surfd's leaderboard #1. Bonuses use their own leaderboard #1. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
 
 ### Start and checkpoints
 
-For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded), your **height** above the start platform (lower is better; crouching doesn't fake it) and your strafe sync. Grade them against fixed targets, your PB or the WR.
+For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded; current-rule boosted starts are uncapped), your **height** above the start platform (lower is better; crouching doesn't fake it) and your strafe sync. Grade them against fixed targets, your PB or the WR.
 
 At each checkpoint you get time and speed deltas against your PB, the WR or both. The reference comes from the full replay, never per-checkpoint bests.
 
@@ -106,7 +106,7 @@ Replays also show a **Hull: crouched / standing** line in the key display. Spect
 
 ### Cinematic replays
 
-The view menu on the replay bar switches between **POV** (the player's own view), **Steady** and **Cinematic**. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR, or any leaderboard run.
+The view menu on the replay bar switches between **POV** (the player's own view), **Steady** and **Cinematic**. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR (main courses only), or any leaderboard run.
 
 ![A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and the replay bar below with a chip and gap for each run](docs/cinematic.jpg)
 

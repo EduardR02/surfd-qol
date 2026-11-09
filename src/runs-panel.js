@@ -510,7 +510,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     if (!data || view !== 'ramps') rampConsumer?.release();
     const maps = safeMaps();
     write(mapName, data?.name ?? maps.find(map => map.key === key)?.name ?? (key && key === history.currentMap ? history.currentMapName : null) ?? 'Runs');
-    mapButton.disabled = maps.length < (data ? 2 : 1);
+    mapButton.disabled = maps.length < 2;
     for (const tab of tabs) {
       const selected = tab.dataset.view === view;
       tab.setAttribute('aria-selected', String(selected));
@@ -534,7 +534,13 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
     body.scrollTop = scroll;
   }
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
-  function safeMaps() { try { return history.maps() ?? []; } catch { return []; } }
+  function safeMaps() {
+    try {
+      const maps = history.maps() ?? [], current = history.currentMap;
+      return current && !maps.some(map => map.key === current)
+        ? [{key: current, name: history.currentMapName, runs: 0, at: null}, ...maps] : maps;
+    } catch { return []; }
+  }
 
   function renderMaps() {
     const maps = safeMaps(), current = history.currentMap;
@@ -712,7 +718,7 @@ export function createRunsPanel({root, host, history, replays = null, replayCont
   function openPanel(mapKey, anchor = null) {
     onOpen?.();
     key = mapKey ?? key ?? history.currentMap ?? safeMaps()[0]?.key ?? null;
-    if (key && !history.view?.(key) && !currentBest(null)?.official) key = history.currentMap && history.view(history.currentMap) ? history.currentMap : safeMaps()[0]?.key ?? key;
+    if (key && key !== history.currentMap && !history.view?.(key) && !currentBest(null)?.official) key = history.currentMap && history.view(history.currentMap) ? history.currentMap : safeMaps()[0]?.key ?? key;
     // Over a replay the panel sits at the right edge just above the replay bar, clear of the HUD; in menus, above the dock.
     panel.classList.toggle('over-replay', !!anchor);
     if (anchor) {

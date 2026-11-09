@@ -134,14 +134,18 @@ export function createStartFeedback() {
         const candidate = session.map.zones.find(candidate => candidate.kind === 'start' && isExit(candidate, segment, height, fraction));
         if (candidate) { crossing = point; zone = candidate; exitSegment = segment; break; }
       }
-      const targetSpeed = session.timer.startSpeedCap(state.grounded);
+      // The native session skips its boreas exit clamp for boosted stages in
+      // replay format 7+. Historical-policy validation still applies its cap.
+      const boosted = session.replayFormat >= 7 && config.startPolicy === 'boreas' &&
+        session.map.boostedStartStages?.includes(state.stage ?? 1);
+      const targetSpeed = boosted ? null : session.timer.startSpeedCap(state.grounded);
       const speed = Math.hypot(state.velocity.x, state.velocity.y);
       const floorHeight = crossing && zone ? floorAt(session, zone, crossing, exitSegment, ground) : null;
       latest = {
-        available: true, speed, targetSpeed, speedDelta: speed - targetSpeed,
+        available: true, speed, targetSpeed, speedDelta: targetSpeed === null ? null : speed - targetSpeed,
         exitHeight: crossing?.z ?? null, floorHeight,
         heightAboveFloor: floorHeight === null ? null : crossing.z - floorHeight,
-        label: config.unrestrictedStart ? 'Unrestricted start' : state.grounded ? 'Ground start' : 'Airborne start',
+        label: boosted ? 'Boosted start' : config.unrestrictedStart ? 'Unrestricted start' : state.grounded ? 'Ground start' : 'Airborne start',
         clipped, tick: state.tick, dt: config.dt ?? 0.015
       };
     },

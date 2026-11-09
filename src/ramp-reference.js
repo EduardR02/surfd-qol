@@ -1,7 +1,7 @@
 // Per-ramp PB/WR summaries shared with the HUD's native analysis cache.
 // Availability never acquires a replay. Each visible surface owns a consumer
 // and releases it when its comparison is no longer needed.
-import {analysisKey, referenceIdentity} from './references.js';
+import {analysisKey, recordReferenceSource, referenceIdentity} from './references.js';
 import {mapKey} from './run-history.js';
 import {referenceTone, startTone} from './hud-model.js';
 import {feedbackApplies, routeFingerprint, sameMovementConfig} from './replay-store.js';
@@ -19,7 +19,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
   function describe(key, source) {
     const session = getSession?.(), refs = getReferences?.();
     if (destroyed || (source !== 'pb' && source !== 'wr') || !session?.map || mapKey(session.map) !== key || !replayStore) return null;
-    const leaderboard = settings.wrSource === 'leaderboard';
+    const leaderboard = recordReferenceSource(settings, session.map) === 'leaderboard';
     const entry = source === 'pb' ? refs?.own : source === 'wr' && leaderboard ? refs?.record : null;
     const ksf = source === 'wr' && !leaderboard, identity = referenceIdentity(entry);
     if (ksf ? typeof refs?.loadRecordRoute !== 'function' : !identity || typeof refs?.loadReplay !== 'function') return null;

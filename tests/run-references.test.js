@@ -341,6 +341,29 @@ describe('Native run replay references', () => {
     expect(f.update(board)).toMatchObject({status:'missing',loss:null});
     expect(f.calls().route).toBe(1);
   });
+  test.each(['pb', 'wr'])('%s feedback uses separate main and bonus routes', async source => {
+    const f = fixture({source});
+    const board = f.step(contact()), main = f.session.map, reads = [];
+    f.setLoader(async id => {
+      reads.push([f.session.map.version, id]);
+      return {...f.replay(), mapVersion:f.session.map.version,
+        commands:[contact('a', f.session.map === main ? 5 : 9), finish]};
+    });
+    f.setRouteLoader(async () => {
+      reads.push([f.session.map.version, 'ksf']);
+      return {...f.replay(), mapVersion:f.session.map.version};
+    });
+    f.update(board); await flush();
+    expect(f.update(board)).toMatchObject({status:'ready', loss:5});
+    f.session.map = {...main, version:'map-1/bonus-1'};
+    f.update(board); await flush();
+    expect(f.update(board)).toMatchObject({status:'ready', loss:9});
+    expect(reads).toContainEqual(['map-1/bonus-1', source === 'pb' ? 'official-pb' : 'rank-one']);
+    expect(reads).not.toContainEqual(['map-1/bonus-1', 'ksf']);
+    f.session.map = main;
+    f.update(board); await flush();
+    expect(f.update(board)).toMatchObject({status:'ready', loss:5});
+  });
   test('fixed colors never request a replay and switching later still matches the current visit', async () => {
     const f = fixture({source:'fixed',commands:[contact(),contact('b',9),finish]});
     f.step(contact());

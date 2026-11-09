@@ -407,6 +407,31 @@ describe('bests', () => {
     expect([history.currentMap, history.currentMapName]).toEqual(['utopia:3', 'Utopia']);
   });
 
+  test('bonus history keeps course names, bests and ramps separate, including after reload', async () => {
+    const store = memoryStore(), r = rig({store});
+    await r.history.ready;
+    r.go(); r.ramp({boardLoss: 4, surfLoss: 30, surfaceId: 7}); r.finish();
+    r.live.map = {id: 'utopia', version: '3/bonus-2.r3', stages: []};
+    r.go(); r.ramp({boardLoss: 1, surfLoss: 10, surfaceId: 8}); r.finish();
+    const main = r.history.view('utopia:3'), bonus = r.history.view('utopia:3/bonus-2.r3');
+    expect([main.name, bonus.name]).toEqual(['Utopia', 'Utopia · Bonus 2']);
+    expect(main.ramps.map(ramp => ramp.key)).toEqual(['[7,0,1]']);
+    expect(bonus.ramps.map(ramp => ramp.key)).toEqual(['[8,0,1]']);
+    expect(await r.history.bestTime({id: 'utopia', version: 3})).toBe(main.pb.time);
+    expect(await r.history.bestTime(r.live.map)).toBe(bonus.pb.time);
+    expect(r.history.currentMapName).toBe('Utopia · Bonus 2');
+    await flush();
+    const reload = rig({store});
+    await reload.history.ready;
+    expect(reload.history.maps().map(map => map.name).sort()).toEqual(['Utopia', 'Utopia · Bonus 2']);
+    expect(reload.history.view('utopia:3/bonus-2.r3').ramps.map(ramp => ramp.key)).toEqual(['[8,0,1]']);
+  });
+
+  test('the loaded bonus is labelled before recording a run', () => {
+    const history = createRunHistory({getMap: () => ({id: 'utopia', version: '3/bonus-1'}), getMapName: () => 'Utopia'});
+    expect(history.currentMapName).toBe('Utopia · Bonus 1');
+  });
+
   test('each run with a replay marks its ramp boards for the timeline', async () => {
     const r = rig({ onReplay: () => {} });
     await r.history.ready;

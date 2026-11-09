@@ -630,6 +630,18 @@ describe('native replay instrumentation', () => {
     runtime.setOwner(null);
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'guest', own: null});
   });
+
+  test('imported main-map record routes are unavailable on bonus courses', () => {
+    const {adapter} = fixture();
+    const session = adapter.getSession();
+    expect(typeof adapter.getReferences().loadRecordRoute).toBe('function');
+    for (const version of ['map-v1/bonus-1', 'map-v1/bonus-5.r2', 'map-v1/bonus-99.r12']) {
+      session.map.version = version;
+      expect(adapter.getReferences().loadRecordRoute).toBeNull();
+    }
+    session.map.version = 'map-v2';
+    expect(typeof adapter.getReferences().loadRecordRoute).toBe('function');
+  });
 });
 
 describe('optional camera preview instrumentation', () => {

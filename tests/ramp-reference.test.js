@@ -217,6 +217,26 @@ describe('ramp reference', () => {
     expect(leaderboard.consumer.get('utopia:3', 'wr')).toBeNull();
   });
 
+  test.each(['pb', 'wr'])('separates %s ramp requests between main and bonus courses', async source => {
+    const f = rig(), main = f.session;
+    f.refs.record = {runId:'wr1', timeUs:40e6, splitsUs:[10e6]};
+    const reads = [];
+    f.refs.loadReplay = async id => { reads.push(id); return {}; };
+    f.refs.loadRecordRoute = async () => { reads.push('ksf'); return {}; };
+    f.consumer.get('utopia:3', source);
+    const mainRequest = f.acquired[0];
+    await mainRequest.load();
+    f.session = {...main, map:{...main.map, version:'3/bonus-1'}};
+    const slot = f.consumer.get('utopia:3/bonus-1', source);
+    const bonusRequest = f.acquired[1];
+    await bonusRequest.load();
+    expect(mainRequest.key).not.toBe(bonusRequest.key);
+    expect(mainRequest.isCurrent()).toBe(false);
+    expect(reads).toEqual(source === 'pb' ? ['pb1','pb1'] : ['ksf','wr1']);
+    expect(slot.label).toBe(source === 'pb' ? 'PB' : 'Site WR');
+    f.reference.destroy();
+  });
+
   test('source switches and release cancel only their separately owned consumer', async () => {
     const {reference, consumer, acquired, finish} = rig();
     const timeline = reference.createConsumer();

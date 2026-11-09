@@ -22,6 +22,26 @@ function scene({ ducked = false, exitHeight = 100, floorHeight = 100, platformEd
     lastResult: { segments: [{ from: { x: 110, y: 0, z: exitHeight }, to: { x: 122, y: 0, z: exitHeight }, startFraction: 0, endFraction: 1 }] }
   };
 }
+test('boosted boreas starts report no artificial speed cap only in supported replay formats', () => {
+  for (const [format, policy, stage, capped] of [
+    [7, 'boreas', 1, false], [8, 'boreas', 2, false],
+    [6, 'boreas', 1, true], [8, 'historical', 1, true], [8, 'boreas', 3, true],
+  ]) {
+    const game = scene();
+    game.replayFormat = format;
+    game.config.startPolicy = policy;
+    game.map.boostedStartStages = [1, 2];
+    game.state.stage = stage;
+    game.state.velocity.x = 1200;
+    const feedback = createStartFeedback();
+    feedback.observe(game, ['start']);
+    expect(feedback.snapshot()).toMatchObject({
+      speed: 1200, targetSpeed: capped ? 350 : null,
+      speedDelta: capped ? 850 : null, label: capped ? 'Airborne start' : 'Boosted start',
+    });
+  }
+});
+
 
 describe('start platform height', () => {
   test('walking off reads zero with either hull, not plus duck or stand height', () => {

@@ -147,6 +147,44 @@ describe('personal checkpoint references', () => {
     expect(refs.update()).toMatchObject({record:[500,600],recordTimeUs:11000000,recordSplitsUs:[5500000,8800000],recordStatus:'ready',recordSource:'ksf'});
     refs.destroy();
   });
+  test('default WR and PB stay course-specific across main and bonus visits', async () => {
+    const session = makeSession(), main = session.map, calls = [];
+    const refs = createCheckpointReferences({
+      getSession: () => session,
+      getReferences: () => ({
+        boardId: 'board', own: entry, record: {...entry, runId:'rank-one'},
+        loadReplay: async id => { calls.push([session.map.version, id]); return replayFor(session, session.map === main ? [900,1200] : [300,400]); },
+        loadRecordRoute: async () => { calls.push([session.map.version, 'ksf']); return replayFor(session, [500,600]); }
+      }),
+      getSessionClass: () => ReplaySession, storage: memoryStorage(), yieldTask: instantYield
+    });
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[900,1200], record:[500,600], recordSource:'ksf'});
+    session.map = {...main, version:'map-1/bonus-1'};
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[300,400], record:[300,400], recordSource:'leaderboard'});
+    session.map = main;
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[900,1200], record:[500,600], recordSource:'ksf'});
+    expect(calls).toContainEqual(['map-1/bonus-1', 'rank-one']);
+    expect(calls).toContainEqual(['map-1/bonus-1', 'old-pb']);
+    expect(calls).not.toContainEqual(['map-1/bonus-1', 'ksf']);
+    refs.destroy();
+  });
+  test('a bonus without a rank-one replay never uses the main KSF route', async () => {
+    const session = makeSession();
+    session.map.version = 'map-1/bonus-2.r2';
+    let routeCalls = 0;
+    const refs = createCheckpointReferences({
+      getSession: () => session,
+      getReferences: () => ({boardId:'bonus', record:null, loadRecordRoute:async () => { routeCalls++; return replayFor(session); }}),
+      getSessionClass: () => ReplaySession, storage: memoryStorage(), yieldTask: instantYield
+    });
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({record:null, recordStatus:'missing', recordSource:'leaderboard'});
+    expect(routeCalls).toBe(0);
+    refs.destroy();
+  });
   test('uses the selected rank-one replay and its leaderboard timing metadata', async () => {
     const session = makeSession(), settings = {wrSource:'leaderboard'};
     const leaderboardRecord = {...entry,runId:'surfd-rank-one'};

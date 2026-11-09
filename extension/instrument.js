@@ -12,7 +12,7 @@ import {nativeMapEntryHooks} from './map-entry-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 import {nativeWorldContracts} from './native-world-contracts.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v41:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v42:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -723,7 +723,7 @@ ${practice.setup}
       const record = refs?.entries?.find(entry => entry.rank === 1) ?? null;
       return {ownerKey, boardId: board?.boardId ?? null, own: refs?.own ?? null, record, entries: refs?.entries ?? [], mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
         loadReplay: runId => ${client}.replay(runId),
-        loadRecordRoute: () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
+        loadRecordRoute: /\\/bonus-[1-9][0-9]?(?:\\.r(?:[2-9]|[1-9][0-9]+))?$/.test(session.map.version) ? null : () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
     }
   });
 })();

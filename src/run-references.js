@@ -1,5 +1,5 @@
 import { createReferenceReplayStore, feedbackApplies, visitKey } from './replay-store.js';
-import { analysisKey, referenceIdentity } from './references.js';
+import { analysisKey, recordReferenceSource, referenceIdentity } from './references.js';
 import { hasStepped, whenIdle } from './reference-hold.js';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const copyEntry = entry => referenceIdentity(entry) ? {runId: entry.runId, timeUs: entry.timeUs, splitsUs: entry.splitsUs.slice()} : null;
@@ -34,7 +34,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     startTick = session.timer.state.startTick;
   }
   function request(session, refs, source) {
-    const wrSource = settings.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf';
+    const wrSource = recordReferenceSource(settings, session.map);
     const entry = source === 'pb' ? baseline : wrSource === 'leaderboard' ? copyEntry(refs?.record) : null;
     const identity = referenceIdentity(entry);
     const ksf = source === 'wr' && wrSource === 'ksf';
@@ -60,7 +60,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
           settings.showSurf !== false && settings.surfColorReference === source) ||
       settings.showStart !== false && settings.startColorReference === source);
     const isCurrent = () => !destroyed && selected() && slots.get(source) === requested &&
-      (source !== 'wr' || (settings.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf') === wrSource) &&
+      (source !== 'wr' || recordReferenceSource(settings, session.map) === wrSource) &&
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;

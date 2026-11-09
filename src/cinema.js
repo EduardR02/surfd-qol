@@ -301,6 +301,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const replay = await run.load();
     if (!owned()) return false;
     if (!replay) throw new Error('That run’s replay isn’t available.');
+    if (replay.mapId !== current.replay.mapId || replay.mapVersion !== current.replay.mapVersion)
+      throw new Error('That replay is for a different course or map revision.');
     current.fingerprint ??= routeFingerprint(current.replay);
     const fingerprint = routeFingerprint(replay);
     if (replay === current.replay || replay.commands?.length === current.replay.commands.length && fingerprint === current.fingerprint)
