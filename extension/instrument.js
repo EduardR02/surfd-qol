@@ -687,6 +687,14 @@ function cinemaHooks(source, client) {
 // The adapter reads native objects. Optional hooks integrate UI, transport and
 // rendering, and unroll an exactly recognised collision-box comparison without
 // changing movement rules. Unrecognised hooks leave that native code unchanged.
+// Newer builds create the movement through a factory that adds ladder and water state.
+function movementClassOf(source, body) {
+  const direct = [...body.matchAll(new RegExp(`this\\.movement=new (${identifier})\\(`, 'g'))];
+  if (direct.length === 1) return direct[0][1];
+  const factory = unique(body, new RegExp(`this\\.movement=(${identifier})\\(`, 'g'), 'movement class')[1];
+  return unique(source, new RegExp(`function ${literal(factory)}\\(${identifier},${identifier},${identifier}\\)\\{return new (${identifier})\\(`, 'g'), 'movement factory')[1];
+}
+
 export function instrumentGame(source, mapWorkerSource = '') {
   if (alreadyInstrumented(source)) return source;
   const state = unique(source, new RegExp(`state:(${identifier})\\?\\.state,run:\\1\\?\\.timer\\.state`, 'g'), 'session snapshot')[1];
@@ -696,7 +704,7 @@ export function instrumentGame(source, mapWorkerSource = '') {
   const sessionClass = classes.at(-1)?.[1];
   if (!sessionClass) throw new Error('Unsupported Surfd build: Session class');
   const body = source.slice(classes.at(-1).index, marker);
-  const movementClass = unique(body, new RegExp(`this\\.movement=new (${identifier})\\(`, 'g'), 'movement class')[1];
+  const movementClass = movementClassOf(source, body);
   if (!body.includes('this.timer=') || !body.includes('this.map=')) throw new Error('Unsupported Surfd build: Session contract');
   const binding = unique(source, new RegExp(`(${identifier})\\.setBindings\\((${identifier})\\.bindings\\)`, 'g'), 'native input');
   const references = unique(source, new RegExp(`const (${identifier})=(${identifier})\\.current\\?\\.entries\\.find\\((${identifier})=>\\3\\.rank===1\\);(${identifier})\\.prepare\\(([^;]{1,200}?),\\(\\)=>(${identifier})\\.replay\\(\\1\\.runId\\)\\)`, 'g'), 'leaderboard references');

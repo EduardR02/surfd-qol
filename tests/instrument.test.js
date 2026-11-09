@@ -1945,3 +1945,10 @@ describe.skipIf(!existsSync(liveBundle))('the live game bundle', () => {
     expect(output).toContain(`onlineRuns: () => ${controller},`);
   });
 });
+
+test('finds the movement class behind a movement factory', () => {
+  const source = nativeSource.replace('this.movement=new Movement();', 'this.movement=createMovement(map,config,format);')
+    + '\nfunction createMovement(map,config,format){return new Movement(map,config,format>=5)}';
+  expect(source).toContain('this.movement=createMovement(');
+  expect(instrumentGame(source)).toContain('Movement: Movement,');
+});
