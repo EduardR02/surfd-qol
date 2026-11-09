@@ -709,7 +709,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       const current = {id, visibility, sockets: new Set(), uploadMbps: null, listing: undefined};
       current.room = createRoomHost({roomId: id, mapId, maps, visibility, maxPlayers: limit,
         name, ranks: ranks(), lookupProfile: siteProfile, lookupBoard: siteBoard,
-        getMap: () => getAdapter()?.practice?.destination?.()?.map ?? null,
+        // Shared savelocs are for the room map's main course, even while the host plays a bonus.
+        getMap: () => getAdapter()?.loadedMap?.() ?? getAdapter()?.practice?.destination?.()?.map ?? null,
         onChange: () => { if (hosted === current) publish(); }});
       hosted = current;
       // Hosting needs an account, so signing out ends the room for everyone.

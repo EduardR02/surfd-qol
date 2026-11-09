@@ -1369,6 +1369,24 @@ describe('replay locs under current native practice rules', () => {
     } finally { control.destroy(); }
   });
 
+  test('a loc from a bonus replay goes to that bonus’s bank, with its start position', async () => {
+    const {world, run, control} = game();
+    const main = {id: 'utopia', version: 'v3'}, bonus = {id: 'utopia', version: 'v3/bonus-2'};
+    const store = {banks: new Map(), nextId: 1, revision: 0};
+    world.practice = {store: () => store, destination: () => ({mapId: main.id, mapVersion: main.version, key: 'main'}),
+      course: map => ({map, mapId: map.id, mapVersion: map.version, key: 'course:' + map.version, startPosition: null})};
+    try {
+      await control.watch(run);
+      Object.assign(world.session, {map: bonus, capturePractice() { return {key: 'replay', state: {tick: this.state.tick}}; }});
+      control.seek(120); control.saveSpot();
+      expect(world.notices.at(-1)).not.toContain('older version');
+      control.exit(); control.status();
+      expect(store.banks.has('main')).toBe(false);
+      expect(store.banks.get('course:v3/bonus-2').entries.map(entry => entry.snapshot))
+        .toEqual([{key: 'course:v3/bonus-2', state: {tick: 120}, startPosition: null}]);
+    } finally { control.destroy(); }
+  });
+
   test('unavailable or different-version native destinations defer filing instead of using the replay bank', async () => {
     const {world, run, control} = game();
     const store = {banks: new Map(), nextId: 1, revision: 0};

@@ -16,7 +16,8 @@ export function nativeStageResetHooks(source) {
   const action = unique(source, new RegExp(`if\\((${identifier})\\|\\|(${identifier})\\)\\{(${identifier})\\("Return to play before restarting a stage\\."\\);return\\}const (${identifier})=(${identifier})\\.stageRestartReason\\(\\);\\4\\?\\3\\(\\4\\):(${identifier})\\.queueStageRestart\\(\\)`, 'g'));
   if (!session || !action) return source;
   const [, replay, spectator, , , state, input] = action;
-  const tick = unique(source, new RegExp(`const (${identifier})=${literal(input)}\\.sample\\(${literal(state)}\\.config\\.dt\\);\\1\\.restartStage&&${literal(state)}\\.stageRestartReason\\(\\)&&delete \\1\\.restartStage,${literal(replay)}\\|\\|${identifier}\\?\\.recordSpectatorInputs\\(${identifier}\\(\\1\\)\\);const (${identifier})=${identifier}\\(${literal(state)}\\),(${identifier})=${literal(state)}\\.step\\(\\1\\);`, 'g'));
+  // Newer builds also restart a stage queued by the chat command (/rs).
+  const tick = unique(source, new RegExp(`const (${identifier})=${literal(input)}\\.sample\\(${literal(state)}\\.config\\.dt\\);(?:(${identifier})&&\\(\\2=!1,\\1\\.restartStage=!0\\),)?\\1\\.restartStage&&${literal(state)}\\.stageRestartReason\\(\\)&&delete \\1\\.restartStage,${literal(replay)}\\|\\|${identifier}\\?\\.recordSpectatorInputs\\(${identifier}\\(\\1\\)\\);const (${identifier})=${identifier}\\(${literal(state)}\\),(${identifier})=${literal(state)}\\.step\\(\\1\\);`, 'g'));
   if (!tick) return source;
 
   // Match all three gates before changing any of them. Only these native

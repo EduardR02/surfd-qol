@@ -204,3 +204,18 @@ describe('native ranked and replay stage restart isolation', () => {
       .toEqual(['teleport', 'stage-restarted']);
   });
 });
+
+// The bonus update also queues a stage restart from the chat (/rs) through a flag the frame reads.
+const chatSource = source
+  .replace('let replay=false,spectating=false,queued=false,notices=[];', 'let replay=false,spectating=false,queued=false,chatQueued=false,notices=[];')
+  .replace('function frame(){const command=input.sample(current.config.dt);command.restartStage&&', 'function frame(){const command=input.sample(current.config.dt);chatQueued&&(chatQueued=!1,command.restartStage=!0),command.restartStage&&')
+  .replace('queue:()=>input.queueStageRestart()};', 'queue:()=>input.queueStageRestart(),chat:()=>{chatQueued=true}};');
+
+test('the bonus update frame, which also takes chat stage restarts, keeps live practice restarts', () => {
+  expect(chatSource).toContain('chatQueued&&(chatQueued=!1,command.restartStage=!0)');
+  const runtime = fixture(nativeStageResetHooks, chatSource), session = runtime.current;
+  const timer = structuredClone(session.timer.state);
+  expect(restart(runtime)).toEqual(['teleport', 'stage-restarted']);
+  expect(session.timer.state).toEqual(timer);
+  expect(session.state.stage).toBe(2);
+});

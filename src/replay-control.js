@@ -10,6 +10,7 @@ import {bindLabel, savelocBinds} from './key-names.js';
 import {createCoachingFrames, FRAME_TICKS} from './replay-frames.js';
 import {feedbackApplies, routeBoards} from './replay-store.js';
 import {mapKey} from './run-history.js';
+import {mainVersionOf} from './courses.js';
 
 // The game's playback speeds.
 export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
@@ -306,16 +307,20 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   // keeps a legacy replay Session. Only the key and start position are rebased:
   // loading a saveloc restores its start position, and a replay's session has
   // none of yours, so the loc carries the one Restart would use.
+  // A loc from another course of this map (a bonus, or the main course from a
+  // bonus) goes to that course's bank, where its Load finds it.
   function file() {
     if (!pending.length) return;
     const native = practice(), store = native?.store?.(), destination = native?.destination?.();
     if (typeof destination?.key !== 'string') return;
-    const {key, mapId, mapVersion} = destination;
-    const start = destination.startPosition !== undefined ? {startPosition: destination.startPosition} : {};
+    const {mapId, mapVersion} = destination;
     pending = pending.filter(entry => {
-      if (entry.mapId !== mapId || entry.mapVersion !== mapVersion) return true;
-      if (share(entry, native, destination)) return false;
+      if (entry.mapId !== mapId) return true;
+      const target = entry.mapVersion === mapVersion ? destination : entry.course;
+      if (typeof target?.key !== 'string') return true;
+      if (target === destination && share(entry, native, destination)) return false;
       if (!(store?.banks instanceof Map)) return true;
+      const key = target.key, start = target.startPosition !== undefined ? {startPosition: target.startPosition} : {};
       const bank = store.banks.get(key) ?? {entries: [], selected: null};
       if (bank.entries.length >= BANK_SIZE) bank.entries.shift();
       const id = store.nextId++;
@@ -336,12 +341,17 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     // practise on the current one: its locations would never load.
     let destination = null;
     try { destination = practice().destination?.() ?? null; } catch { /* checked again when filing */ }
-    if (destination && destination.mapId === mapId && destination.mapVersion !== mapVersion) return 'outdated';
+    let course = null;
+    if (destination && destination.mapId === mapId && destination.mapVersion !== mapVersion) {
+      if (mainVersionOf(destination.mapVersion) !== mainVersionOf(mapVersion)) return 'outdated';
+      try { course = practice().course?.(watched.session.map) ?? null; } catch { /* filed nowhere */ }
+      if (typeof course?.key !== 'string') return null;
+    }
     let snapshot = null;
     try { snapshot = watched.session.capturePractice?.() ?? null; } catch { /* unsupported */ }
     if (!snapshot) return 'finished';
     // One loc per moment: saving the same tick again replaces it.
-    const entry = {mapId, mapVersion, snapshot, watch: watched.id, tick};
+    const entry = {mapId, mapVersion, snapshot, watch: watched.id, tick, ...(course ? {course} : {})};
     pending = pending.filter(other => other.watch !== watched.id || other.tick !== tick);
     if (share(entry, practice(), destination)) entry.shared = true;
     else pending = [...pending, entry].slice(-BANK_SIZE);

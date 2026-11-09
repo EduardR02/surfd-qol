@@ -327,27 +327,36 @@ function practiceHooks(source, sessionClass, state) {
     const store = unique(source, new RegExp(`const ${identifier}=(${identifier})\\.entries\\((${identifier})\\)\\.length>=${identifier},${identifier}=\\1\\.save\\(\\2\\)`, 'g'), 'saveloc store')[1];
     // Use the same map, rules and replay format as native Restart. A replay
     // session can remain alive after Exit with an older format/rules bank.
-    const fresh = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const ${identifier}=new ${sessionClass}\\(\\2,(${identifier})\\(\\2\\),(${identifier})\\),`, 'g'), 'live session factory');
+    // Newer builds start live runs on a subclass of the Session.
+    const live = `(?:${[sessionClass, ...[...source.matchAll(new RegExp(`class (${identifier}) extends ${literal(sessionClass)}\\{`, 'g'))].map(match => match[1])].map(literal).join('|')})`;
+    const fresh = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const ${identifier}=new ${live}\\(\\2,(${identifier})\\(\\2\\),(${identifier})\\),`, 'g'), 'live session factory');
     const maps = [...new Set([...source.matchAll(new RegExp(`${fresh[1]}\\((${identifier})\\?\\?${state}\\.map\\)`, 'g'))].map(match => match[1]))];
     if (maps.length !== 1) throw new Error('Unsupported Surfd build: practice destination map');
     // The start position the factory applies: yours if you set one, else none.
     let loadStart = null;
     try {
-      const factory = new RegExp(`function ${literal(fresh[1])}\\((${identifier})\\)\\{const (${identifier})=new ${literal(sessionClass)}\\(\\1,${literal(fresh[3])}\\(\\1\\),${literal(fresh[4])}\\),(${identifier})=(${identifier})\\(\\1\\);return \\3&&\\2\\.setStartPosition\\(\\3\\)`, 'g');
+      const factory = new RegExp(`function ${literal(fresh[1])}\\((${identifier})\\)\\{const (${identifier})=new ${live}\\(\\1,${literal(fresh[3])}\\(\\1\\),${literal(fresh[4])}\\),(${identifier})=(${identifier})\\(\\1\\);return \\3&&\\2\\.setStartPosition\\(\\3\\)`, 'g');
       loadStart = unique(source, factory, 'start position loader')[4];
     } catch (error) {
       console.warn('[Surfd QoL] Savelocs from replays keep the replay’s start position:', error.message);
     }
+    // Bonus builds install a map with its bonus file and play its courses on it.
+    const loaded = [...source.matchAll(new RegExp(`(${identifier})=null,(${identifier})=(${identifier}),(${identifier})=(${identifier})&&\\5\\.mapId===\\3\\.id&&\\5\\.mapVersion===\\3\\.version\\?\\5:null`, 'g'))];
     let shared = {source, setup: '', adapter: ''};
     try { shared = nativeSavelocHooks(source, store); }
     catch (error) { console.warn('[Surfd QoL] Shared practice savelocs unavailable:', error.message); }
-    return {...shared, adapter: `
+    return {...shared, adapter: `${loaded.length === 1 ? `
+    // The loaded map's main course, whichever course is being played.
+    loadedMap: () => ${loaded[0][2]} ?? null,` : ''}
     practice: {
       // The saveloc store: one bank of snapshots per practice key (map and movement rules).
       store: () => ${store},
-      destination: () => {
+      destination() {
         const map = ${maps[0]} ?? ${state}?.map;
-        if (!map) return null;
+        return map ? this.course(map) : null;
+      },
+      // Where Restart would practise a course (the main course or a bonus): its bank and start position.
+      course: map => {
         // practiceKey is native's pure metadata key, not a synthetic Session.
         const key = ${sessionClass}.prototype.practiceKey.call({map, config: ${fresh[3]}(map), replayFormat: ${fresh[4]}});
         return {map, mapId: map.id, mapVersion: map.version, key${loadStart ? `, startPosition: ${loadStart}(map) ?? null` : ''}};

@@ -9,3 +9,9 @@ export function courseOfVersion(version) {
 }
 
 export const courseOf = map => courseOfVersion(map?.version);
+
+// The main course's version of any course of a map.
+export function mainVersionOf(version) {
+  const match = typeof version === 'string' ? BONUS_VERSION.exec(version) : null;
+  return match ? match[1] : version;
+}

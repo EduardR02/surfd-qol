@@ -1,5 +1,6 @@
 import {formatTime} from '../hud-model.js';
 import {MAX_ROOM_SAVELOCS, SAVELOC_RING, sanitizeSaveloc} from './saveloc-validation.js';
+import {courseOf} from '../courses.js';
 
 const LIMIT = {rate: 1, burst: 3};
 const TOO_FAST = "You're saving locations too fast.";
@@ -50,7 +51,8 @@ export function createSharedSavelocs({practice, send, invalid, notice = () => {}
   // False leaves the capture to the caller's local fallback.
   function saveSnapshot(snapshot) {
     const map = practice.destination?.()?.map;
-    if (closed || !ownerId || map?.id !== state.mapId) return false;
+    // Rooms share the main course's locations; a bonus keeps its own locally.
+    if (closed || !ownerId || map?.id !== state.mapId || courseOf(map)) return false;
     let safe;
     // Receivers restore their own start position, so the sender's stays private.
     try { safe = sanitizeSaveloc({...snapshot, startPosition: null}, map); } catch { return false; }
