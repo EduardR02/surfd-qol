@@ -149,44 +149,75 @@ describe('personal checkpoint references', () => {
   });
   test('default WR and PB stay course-specific across main and bonus visits', async () => {
     const session = makeSession(), main = session.map, calls = [];
+    const bonus = {...main, version:'map-1/bonus-1'}, secondBonus = {...main, version:'map-1/bonus-2.r2'};
     const refs = createCheckpointReferences({
       getSession: () => session,
       getReferences: () => ({
         boardId: 'board', own: entry, record: {...entry, runId:'rank-one'},
-        loadReplay: async id => { calls.push([session.map.version, id]); return replayFor(session, session.map === main ? [900,1200] : [300,400]); },
-        loadRecordRoute: async () => { calls.push([session.map.version, 'ksf']); return replayFor(session, [500,600]); }
+        loadReplay: async id => {
+          calls.push([session.map.version, id]);
+          return replayFor(session, id === 'rank-one' ? [100,200] : session.map === main ? [900,1200] : session.map === bonus ? [300,400] : [350,450]);
+        },
+        loadRecordRoute: async () => {
+          calls.push([session.map.version, 'ksf']);
+          return session.map === main
+            ? replayFor(session, [500,600], {elapsed:11,splits:[5.5,8.8]})
+            : session.map === bonus ? replayFor(session, [700,800], {elapsed:12,splits:[6,9.6]})
+            : replayFor(session, [1000,1100], {elapsed:13,splits:[6.5,10.4]});
+        }
       }),
       getSessionClass: () => ReplaySession, storage: memoryStorage(), yieldTask: instantYield
     });
     refs.update(); await microtasks();
-    expect(refs.update()).toMatchObject({own:[900,1200], record:[500,600], recordSource:'ksf'});
-    session.map = {...main, version:'map-1/bonus-1'};
+    expect(refs.update()).toMatchObject({own:[900,1200], record:[500,600], recordTimeUs:11000000, recordSource:'ksf'});
+    session.map = bonus;
     refs.update(); await microtasks();
-    expect(refs.update()).toMatchObject({own:[300,400], record:[300,400], recordSource:'leaderboard'});
+    expect(refs.update()).toMatchObject({own:[300,400], record:[700,800], recordTimeUs:12000000,
+      recordSplitsUs:[6000000,9600000], recordSource:'ksf'});
+    session.map = secondBonus;
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[350,450], record:[1000,1100], recordTimeUs:13000000,
+      recordSplitsUs:[6500000,10400000], recordSource:'ksf'});
     session.map = main;
     refs.update(); await microtasks();
     expect(refs.update()).toMatchObject({own:[900,1200], record:[500,600], recordSource:'ksf'});
-    expect(calls).toContainEqual(['map-1/bonus-1', 'rank-one']);
+    session.map = bonus;
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[300,400], record:[700,800], recordSource:'ksf'});
+    session.map = secondBonus;
+    refs.update(); await microtasks();
+    expect(refs.update()).toMatchObject({own:[350,450], record:[1000,1100], recordSource:'ksf'});
     expect(calls).toContainEqual(['map-1/bonus-1', 'old-pb']);
-    expect(calls).not.toContainEqual(['map-1/bonus-1', 'ksf']);
+    expect(calls).toContainEqual(['map-1/bonus-1', 'ksf']);
+    expect(calls).toContainEqual(['map-1/bonus-2.r2', 'old-pb']);
+    expect(calls).toContainEqual(['map-1/bonus-2.r2', 'ksf']);
+    expect(calls.some(([, id]) => id === 'rank-one')).toBe(false);
     refs.destroy();
   });
-  test('a bonus without a rank-one replay never uses the main KSF route', async () => {
+  test.each(['unsupported', 'missing', 'main', 'other-map'])('a bonus %s KSF route never falls back to the main or site record', async scenario => {
     const session = makeSession();
     session.map.version = 'map-1/bonus-2.r2';
-    let routeCalls = 0;
+    let routeCalls = 0, siteCalls = 0;
+    const loadRecordRoute = scenario === 'unsupported' ? undefined : async () => {
+      routeCalls++;
+      if (scenario === 'missing') return null;
+      return {...replayFor(session), ...(scenario === 'main' ? {mapVersion:'map-1'} : {mapId:'other'})};
+    };
     const refs = createCheckpointReferences({
       getSession: () => session,
-      getReferences: () => ({boardId:'bonus', record:null, loadRecordRoute:async () => { routeCalls++; return replayFor(session); }}),
-      getSessionClass: () => ReplaySession, storage: memoryStorage(), yieldTask: instantYield
+      getReferences: () => ({boardId:'bonus', record:{...entry,runId:'rank-one'}, loadRecordRoute,
+        loadReplay:async () => { siteCalls++; return replayFor(session); }}),
+      getSessionClass: () => ReplaySession, settings:{checkpointReference:'wr',wrSource:'ksf'}, storage: memoryStorage(), yieldTask: instantYield
     });
     refs.update(); await microtasks();
-    expect(refs.update()).toMatchObject({record:null, recordStatus:'missing', recordSource:'leaderboard'});
-    expect(routeCalls).toBe(0);
+    expect(refs.update()).toMatchObject({record:null, recordTimeUs:null, recordSplitsUs:null, recordStatus:'missing', recordSource:'ksf'});
+    expect(routeCalls).toBe(scenario === 'unsupported' ? 0 : 1);
+    expect(siteCalls).toBe(0);
     refs.destroy();
   });
-  test('uses the selected rank-one replay and its leaderboard timing metadata', async () => {
+  test.each(['map-1', 'map-1/bonus-1'])('uses the selected rank-one replay and timing metadata on %s', async version => {
     const session = makeSession(), settings = {wrSource:'leaderboard'};
+    session.map.version = version;
     const leaderboardRecord = {...entry,runId:'surfd-rank-one'};
     let replayCalls = 0, routeCalls = 0;
     const refs = createCheckpointReferences({

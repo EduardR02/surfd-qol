@@ -34,7 +34,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     startTick = session.timer.state.startTick;
   }
   function request(session, refs, source) {
-    const wrSource = recordReferenceSource(settings, session.map);
+    const wrSource = recordReferenceSource(settings);
     const entry = source === 'pb' ? baseline : wrSource === 'leaderboard' ? copyEntry(refs?.record) : null;
     const identity = referenceIdentity(entry);
     const ksf = source === 'wr' && wrSource === 'ksf';
@@ -60,7 +60,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
           settings.showSurf !== false && settings.surfColorReference === source) ||
       settings.showStart !== false && settings.startColorReference === source);
     const isCurrent = () => !destroyed && selected() && slots.get(source) === requested &&
-      (source !== 'wr' || recordReferenceSource(settings, session.map) === wrSource) &&
+      (source !== 'wr' || recordReferenceSource(settings) === wrSource) &&
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;

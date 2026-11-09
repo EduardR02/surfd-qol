@@ -746,6 +746,39 @@ describe('cinematic replay lifecycle', () => {
     expect(await enabling).toBe(false);
   });
 
+  test('leaving playback during initial recording cancels preparation on the next frame', async () => {
+    for (const lost of ['replay', 'session']) {
+      const entered = deferred(), finished = deferred(), releases = [], frames = new Map();
+      let signal, nextFrame = 0;
+      const worker = {live: false, release: id => releases.push(id)};
+      const {cinema, control, counts} = rig({worker: () => worker, record: async args => {
+        signal = args.signal;
+        signal.addEventListener('abort', () => finished.resolve(null), {once: true});
+        entered.resolve();
+        return finished.promise;
+      }});
+      globalThis.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+      globalThis.cancelAnimationFrame = id => frames.delete(id);
+      const enabling = cinema.setEnabled(true);
+      try {
+        await entered.promise;
+        if (lost === 'replay') control.playback = {replay: null};
+        else control.session = null;
+        for (const [id, callback] of [...frames]) { frames.delete(id); callback(); }
+        expect(signal.aborted).toBe(true);
+        expect(releases).toEqual([undefined]);
+        expect(await enabling).toBe(false);
+        expect(cinema.status()).toBeNull();
+        expect(counts().scenes).toBe(0);
+        expect(frames.size).toBe(0);
+      } finally {
+        cinema.close();
+        finished.resolve(null);
+        await enabling;
+      }
+    }
+  });
+
   test('removing an added track relinquishes its worker handle without closing the view', async () => {
     const releases = [], worker = {live: false, release: id => releases.push(id)};
     let index = 0;
@@ -2016,6 +2049,44 @@ describe('cinematic replay lifecycle', () => {
     release.resolve();
     expect(cinema.status().runs.map(item => item.id)).toEqual(['next']);
     cinema.close();
+  });
+  test('removing a completed addition before adoption releases only its worker track', async () => {
+    const entered = deferred(), resume = deferred(), releases = [];
+    let waiting = false, nextHandle = 0;
+    const worker = {live: true, release: id => releases.push(id),
+      plan: options => planCamera(options), align: (a, b) => alignByPlace(a, b)};
+    const {cinema} = rig({worker: () => worker, record: () => {
+      const track = straight({count: 60, y: ++nextHandle * 30});
+      track._cinemaWorker = worker;
+      track._cinemaHandle = {id: nextHandle, from: 0};
+      return track;
+    }, loadIdle: () => {
+      if (waiting) { entered.resolve(); return resume.promise; }
+      return Promise.resolve(null);
+    }});
+    let adding;
+    try {
+      await cinema.add(run('one'));
+      await cinema.add(run('two'));
+      waiting = true;
+      adding = cinema.add(run('cancelled'));
+      await entered.promise;
+      await cinema.remove('cancelled');
+      expect(await adding).toBe(false);
+      expect(releases).toEqual([4]);
+      expect(cinema.status().runs.map(run => run.id)).toEqual(['one', 'two']);
+      waiting = false;
+      await cinema.add(run('replacement'));
+      resume.resolve(null);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(releases).toEqual([4]);
+      expect(cinema.status().runs.map(run => run.id)).toEqual(['one', 'two', 'replacement']);
+    } finally {
+      waiting = false;
+      resume.resolve(null);
+      cinema.close();
+      await adding;
+    }
   });
   test('removing a run during matching cannot replace the shown camera or publish a stale run', async () => {
     const entered = deferred(), release = deferred();

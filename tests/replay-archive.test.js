@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createHistoryStore, createReplayArchive, packReplay, unpackReplay } from '../src/replay-archive.js';
 import { createRunHistory } from '../src/run-history.js';
+import {trimReplay} from '../src/replay-trim.js';
 
 test('a packed replay unpacks to exactly the same commands, much smaller', async () => {
   let yaw = -94.72559999999929;
@@ -29,6 +30,55 @@ test('cancelling replay packing stops command serialization at the next yield', 
     yieldTask: async () => { current = false; }});
   expect(result).toBeNull();
   expect(serialized).toBe(4);
+});
+
+for (const boundary of ['pruning', 'committed clear', 'aborted clear']) test(`${boundary} ${boundary === 'aborted clear' ? 'preserves' : 'cancels'} in-flight trim simulation`, async () => {
+  const db = sharedDatabase(), archive = createReplayArchive({database: Promise.resolve(db)});
+  await archive.ready;
+  let steps = 0, entered, resume;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { resume = resolve; });
+  class Session {
+    loadReplay(replay) { this.state = structuredClone(replay.initialState); }
+    step(command) {
+      steps++;
+      this.state.position.x = command.index;
+      return command.index === 250 ? ['start'] : [];
+    }
+  }
+  const state = {position: {x: 0, y: 0, z: 0}, velocity: {x: 0, y: 0, z: 0}};
+  const map = {id: 'surf_andromeda', version: 'v/bonus-1'};
+  const replay = {format: 8, mapId: map.id, mapVersion: map.version, initialState: state,
+    commands: Array.from({length: 300}, (_, index) => ({index}))};
+  const clip = {map, start: 250, expect: {...state, position: {x: 250, y: 0, z: 0}},
+    candidates: [{index: 1, state}, {index: 2, state}]};
+  const saving = archive.save({id: 'discarded', map: 'surf_andromeda:v/bonus-1', at: 1}, replay,
+    isCurrent => trimReplay(Session, replay, clip, {isCurrent, yieldTask: async () => { entered(); await waiting; }}));
+  try {
+    await started;
+    const beforePrune = steps;
+    if (boundary === 'pruning') await archive.retain([]);
+    else {
+      db.abortStore = boundary === 'aborted clear' ? 'meta' : null;
+      if (db.abortStore) await expect(archive.clearMap()).rejects.toThrow('Aborted meta');
+      else await archive.clearMap();
+      db.abortStore = null;
+    }
+    resume();
+    if (boundary === 'aborted clear') {
+      expect(await saving).toEqual({offset: 1});
+      expect(steps).toBe(250);
+      expect((await archive.get('discarded')).commands).toEqual(replay.commands.slice(1));
+    } else {
+      expect(await saving).toBeNull();
+      expect(steps).toBe(beforePrune);
+      expect(archive.has('discarded')).toBe(false);
+      expect(await archive.get('discarded')).toBeNull();
+    }
+  } finally {
+    resume();
+    await saving;
+  }
 });
 
 // Transactions stage deletions until completion, like IndexedDB; abort leaves

@@ -12,7 +12,7 @@ import {nativeMapEntryHooks} from './map-entry-hooks.js';
 import {createReplayIndexJobs, createReplayIndexWorker} from './replay-index-worker.js';
 import {nativeWorldContracts} from './native-world-contracts.js';
 
-export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v44:';
+export const ADAPTER_MARKER = '\n/* surfd-qol-adapter-v45:';
 export const isCurrentInstrumented = source => source.includes(ADAPTER_MARKER);
 
 const identifier = '[A-Za-z_$][\\w$]*';
@@ -318,6 +318,23 @@ function replayHooks(source) {
     console.warn('[Surfd QoL] Replay controls unavailable:', error.message);
     return '';
   }
+}
+
+// The bonus watch path uses a native metadata lookup and its verified packed
+// replay loader. Only expose that helper when its complete course checks match
+// the reviewed build; older or ambiguous builds keep bonus routes unavailable.
+function bonusRecordRouteLoader(source) {
+  const pattern = new RegExp(
+    `async function (?<loader>${identifier})\\((?<map>${identifier}),(?<number>${identifier}),(?<fetcher>${identifier})=fetch\\)\\{` +
+    `const (?<metadata>${identifier})=${identifier}\\(\\k<map>,\\k<number>\\);` +
+    `if\\(!\\k<metadata>\\?\\.replaySha256\\)throw new Error\\([^;]{1,200}\\);` +
+    `const ${identifier}=${identifier}\\(\\k<metadata>\\),(?<bytes>${identifier})=await ${identifier}\\(\\k<metadata>\\.replaySha256,\\k<fetcher>,[^;]{1,500}\\),` +
+    `(?<replay>${identifier})=JSON\\.parse\\(new TextDecoder\\(\\)\\.decode\\(\\k<bytes>\\)\\);` +
+    `if\\(\\k<replay>\\?\\.mapId!==\\k<map>\\|\\|\\k<replay>\\.mapVersion!==\\k<metadata>\\.version\\)throw new Error\\([^;]{1,200}\\);return \\k<replay>\\}`,
+    'g',
+  );
+  const matches = [...source.matchAll(pattern)];
+  return matches.length === 1 ? matches[0].groups.loader : null;
 }
 
 // The game's practice savelocs, also optional: moments saved while watching
@@ -675,6 +692,7 @@ export function instrumentGame(source, mapWorkerSource = '') {
   const boardStore = references[2];
   const client = references[6];
   if (!source.includes(`${client}.board(${state}.map)`)) throw new Error('Unsupported Surfd build: board lookup');
+  const bonusRecordLoader = bonusRecordRouteLoader(source);
   // Before the map hooks, which rewrite the loaders it recognises.
   const entry = nativeMapEntryHooks(source);
   source = entry.source;
@@ -713,17 +731,22 @@ ${practice.setup}
     getReferences: () => {
       const session = ${state};
       if (!session) return null;
+      const mapId = session.map.id, mapVersion = session.map.version;
+      const bonus = /\\/bonus-([1-9][0-9]?)(?:\\.r(?:[2-9]|[1-9][0-9]+))?$/.exec(mapVersion);
       const board = ${client}.board(session.map);
       const ownerKey = ${client}.session?.user.id ?? 'guest';
       const key = board ? board.boardId + ':' + ownerKey : '';
       const current = ${boardStore}.current;
       const refs = board && ${boardStore}.key === key && current?.boardId === board.boardId ? current : null;
-      const mapInfo = ${client}.config.maps.find(entry => entry.id === session.map.id);
+      const mapInfo = ${client}.config.maps.find(entry => entry.id === mapId);
       const recordSlug = mapInfo?.slug ?? session.map.slug;
       const record = refs?.entries?.find(entry => entry.rank === 1) ?? null;
       return {ownerKey, boardId: board?.boardId ?? null, own: refs?.own ?? null, record, entries: refs?.entries ?? [], mapName: mapInfo?.title ?? (mapInfo?.slug ? String(mapInfo.slug).split(/[-_]/).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : mapInfo?.name) ?? null,
         loadReplay: runId => ${client}.replay(runId),
-        loadRecordRoute: /\\/bonus-[1-9][0-9]?(?:\\.r(?:[2-9]|[1-9][0-9]+))?$/.test(session.map.version) ? null : () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
+        loadRecordRoute: bonus ? ${bonusRecordLoader ? `async () => {
+          const replay = await ${bonusRecordLoader}(mapId, Number(bonus[1]));
+          return replay?.mapId === mapId && replay.mapVersion === mapVersion ? replay : null;
+        }` : 'null'} : () => recordSlug ? fetch('/replays/' + encodeURIComponent(recordSlug) + '-complete.json', {signal: AbortSignal.timeout(3e4)}).then(response => response.ok ? response.json() : null) : Promise.resolve(null)};
     }
   });
 })();

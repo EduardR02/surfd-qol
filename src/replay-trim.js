@@ -13,15 +13,18 @@ const SLICE_COMMANDS = 32;
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 const same = (a, b) => !!a && !!b && Object.is(a.x, b.x) && Object.is(a.y, b.y) && Object.is(a.z, b.z);
 
-async function attempt(Session, replay, clip, {index, state}, yieldTask) {
-  if (!state || !(index > 0) || index > clip.start) return null;
+async function attempt(Session, replay, clip, {index, state}, yieldTask, isCurrent) {
+  if (!isCurrent() || !state || !(index > 0) || index > clip.start) return null;
   const trimmed = {...replay, initialState: structuredClone(state), commands: replay.commands.slice(index)};
   const target = clip.start - index;
   try {
     const shadow = new Session(clip.map, replay.config, replay.format);
     shadow.loadReplay(trimmed);
     for (let i = 0; i <= target; i++) {
-      if (i && i % SLICE_COMMANDS === 0) await yieldTask();
+      if (i && i % SLICE_COMMANDS === 0) {
+        await yieldTask();
+        if (!isCurrent()) return null;
+      }
       if (!shadow.step(trimmed.commands[i]).includes('start')) continue;
       return i === target && same(shadow.state.position, clip.expect.position) && same(shadow.state.velocity, clip.expect.velocity)
         ? {replay: trimmed, offset: index} : null;
@@ -31,10 +34,11 @@ async function attempt(Session, replay, clip, {index, state}, yieldTask) {
 }
 
 // clip: {candidates: [{index, state}], start, expect: {position, velocity}, map} from run-history.
-export async function trimReplay(Session, replay, clip, {yieldTask = pause} = {}) {
+export async function trimReplay(Session, replay, clip, {yieldTask = pause, isCurrent = () => true} = {}) {
   if (typeof Session !== 'function' || !clip?.map || !Array.isArray(clip.candidates)) return null;
   for (const candidate of clip.candidates) {
-    const trimmed = await attempt(Session, replay, clip, candidate, yieldTask);
+    if (!isCurrent()) return null;
+    const trimmed = await attempt(Session, replay, clip, candidate, yieldTask, isCurrent);
     if (trimmed) return trimmed;
   }
   return null;

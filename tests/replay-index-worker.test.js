@@ -264,6 +264,62 @@ for (const [kind, makeJobs, makeWorker] of [
     aborts.forEach(abort => abort.abort()); expect(await Promise.all(records)).toEqual([null, null]);
     camera.release(); lease.terminate();
   });
+  test('cancelled recordings relinquish a handle only after its last consumer leaves', async () => {
+    const f = fixture(), primary = replayFor(f.map), lease = f.acquire(primary), worker = f.workers[0];
+    const camera = f.jobs.camera(f.session);
+    lease.postMessage({replay: primary}); worker.ready(true); await flush(); worker.world(lease, primary);
+    const replay = replayFor(f.map), aborts = [new AbortController(), new AbortController()];
+    const recordings = aborts.map(({signal}) => camera.record({replay, signal}));
+    await flush();
+    const messages = worker.posts.filter(({message}) => message.type === 'record').map(({message}) => message);
+    const id = messages[0].id;
+    const released = () => worker.posts.filter(({message}) => message.type === 'camera-release').flatMap(({message}) => message.ids);
+    try {
+      aborts[0].abort();
+      expect(await recordings[0]).toBeNull();
+      expect(released()).not.toContain(id);
+      aborts[1].abort();
+      expect(await recordings[1]).toBeNull();
+      expect(released()).toEqual([id]);
+      expect(camera.live).toBe(true);
+    } finally {
+      aborts.forEach(abort => abort.abort());
+      await Promise.all(recordings);
+      camera.release(); lease.terminate(true);
+    }
+  });
+  test('closing and reacquiring a recording cannot let old cancellation release its new owner', async () => {
+    const f = fixture(), primary = replayFor(f.map), lease = f.acquire(primary), worker = f.workers[0];
+    const camera = f.jobs.camera(f.session), replay = replayFor(f.map), oldAbort = new AbortController();
+    lease.postMessage({replay: primary}); worker.ready(true); await flush(); worker.world(lease, primary);
+    const oldRecording = camera.record({replay, signal: oldAbort.signal});
+    await flush();
+    camera.release();
+    const boundary = worker.posts.length;
+    const nextCamera = f.jobs.camera(f.session), nextAbort = new AbortController();
+    const recording = nextCamera.record({replay, signal: nextAbort.signal});
+    try {
+      oldAbort.abort();
+      expect(await oldRecording).toBeNull();
+      await flush();
+      const request = worker.posts.filter(({message}) => message.type === 'record').at(-1).message;
+      worker.receive(protocol({type: 'record-chunk', request: request.request, id: request.id,
+        total: 2, from: 0, end: 2, done: true, dt: 0.015, start: 0, startTick: 0, finish: 1, splits: [], time: 0.015,
+        arrays: {position: new Float32Array([1, 2, 3, 4, 5, 6]), normal: new Float32Array(6),
+          yaw: new Float32Array(2), ducked: new Uint8Array(2), elapsed: new Float64Array(2),
+          phase: new Uint8Array(2), cut: new Uint8Array(2)}}));
+      const track = await recording;
+      expect([...track.position]).toEqual([1, 2, 3, 4, 5, 6]);
+      nextAbort.abort();
+      expect(worker.posts.slice(boundary).filter(({message}) => message.type === 'camera-release')
+        .flatMap(({message}) => message.ids)).not.toContain(request.id);
+      expect(nextCamera.live).toBe(true);
+    } finally {
+      oldAbort.abort(); nextAbort.abort();
+      await Promise.all([oldRecording, recording]);
+      nextCamera.release(); lease.terminate(true);
+    }
+  });
   test('worker yields between chunks and only the newest pending job runs', async () => {
     const posts = [], pauses = [], starts = [];
     const receive = makeWorker(data => posts.push(data), async (message, job) => {

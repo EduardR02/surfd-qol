@@ -341,28 +341,74 @@ describe('Native run replay references', () => {
     expect(f.update(board)).toMatchObject({status:'missing',loss:null});
     expect(f.calls().route).toBe(1);
   });
-  test.each(['pb', 'wr'])('%s feedback uses separate main and bonus routes', async source => {
-    const f = fixture({source});
-    const board = f.step(contact()), main = f.session.map, reads = [];
+  test.each(['pb', 'ksf', 'leaderboard'])('%s Board, Surf and start feedback stay course-specific on revisits', async selected => {
+    const source = selected === 'pb' ? 'pb' : 'wr';
+    const f = fixture({shared:true, source, startSource:source, surfSource:source, wrSource:selected === 'leaderboard' ? 'leaderboard' : 'ksf'});
+    const main = f.session.map, bonus = {...main, version:'map-1/bonus-1'}, reads = [];
+    const commandsFor = (loss, speed) => [...startCommands({speed}).slice(0,-2), ...surfCommands(loss, speed)];
     f.setLoader(async id => {
       reads.push([f.session.map.version, id]);
-      return {...f.replay(), mapVersion:f.session.map.version,
-        commands:[contact('a', f.session.map === main ? 5 : 9), finish]};
+      const leaderboard = id === 'rank-one';
+      const loss = leaderboard ? (f.session.map === main ? 14 : 15) : (f.session.map === main ? 5 : 9);
+      const speed = leaderboard ? (f.session.map === main ? 370 : 380) : (f.session.map === main ? 350 : 360);
+      return {...f.replay(), mapVersion:f.session.map.version, commands:commandsFor(loss, speed)};
     });
     f.setRouteLoader(async () => {
       reads.push([f.session.map.version, 'ksf']);
-      return {...f.replay(), mapVersion:f.session.map.version};
+      return {...f.replay(), mapVersion:f.session.map.version,
+        commands:commandsFor(f.session.map === main ? 5 : 11, f.session.map === main ? 390 : 410)};
     });
-    f.update(board); await flush();
-    expect(f.update(board)).toMatchObject({status:'ready', loss:5});
-    f.session.map = {...main, version:'map-1/bonus-1'};
-    f.update(board); await flush();
-    expect(f.update(board)).toMatchObject({status:'ready', loss:9});
-    expect(reads).toContainEqual(['map-1/bonus-1', source === 'pb' ? 'official-pb' : 'rank-one']);
-    expect(reads).not.toContainEqual(['map-1/bonus-1', 'ksf']);
+    const mainLoss = selected === 'leaderboard' ? 14 : 5, bonusLoss = selected === 'pb' ? 9 : selected === 'ksf' ? 11 : 15;
+    const mainSpeed = selected === 'pb' ? 350 : selected === 'ksf' ? 390 : 370;
+    const bonusSpeed = selected === 'pb' ? 360 : selected === 'ksf' ? 410 : 380;
+    const reference = createRampReference({getSession:() => f.session, getReferences:f.getReferences,
+      getAdapter:() => f.adapter, replayStore:f.replayStore, settings:f.settings});
+    cleanups.push(() => reference.destroy());
+    const consumer = reference.createConsumer(), label = selected === 'pb' ? 'PB' : selected === 'ksf' ? 'KSF WR' : 'Site WR';
+    const expectReference = async (loss, speed) => {
+      const key = `${f.session.map.id}:${f.session.map.version}`, slot = consumer.get(key, source);
+      f.references(); await flush();
+      expect(f.references()).toMatchObject({
+        board:{status:'ready',source,loss}, surf:{status:'ready',source,loss},
+        start:{status:'ready',source,speed,heightAboveFloor:70}
+      });
+      expect(slot).toMatchObject({status:'ready',label});
+      expect(slot.ramps.get(visitKey(f.metrics.snapshot().board))).toMatchObject({board:loss,surf:loss});
+    };
+    finishLiveSurf(f);
+    await expectReference(mainLoss, mainSpeed);
+    f.session.map = bonus;
+    await expectReference(bonusLoss, bonusSpeed);
     f.session.map = main;
-    f.update(board); await flush();
-    expect(f.update(board)).toMatchObject({status:'ready', loss:5});
+    await expectReference(mainLoss, mainSpeed);
+    f.session.map = bonus;
+    await expectReference(bonusLoss, bonusSpeed);
+    const id = selected === 'pb' ? 'official-pb' : selected === 'ksf' ? 'ksf' : 'rank-one';
+    expect(reads).toEqual([['map-1',id], ['map-1/bonus-1',id]]);
+  });
+  test.each(['missing', 'main', 'other-map'])('a %s bonus KSF replay does not fall back for Board, Surf or start feedback', async scenario => {
+    const f = fixture({shared:true, source:'wr', startSource:'wr', surfSource:'wr'}), reads = [];
+    f.session.map = {...f.session.map, version:'map-1/bonus-1'};
+    f.setLoader(async id => { reads.push(id); return {...f.replay(),mapVersion:f.session.map.version}; });
+    f.setRouteLoader(async () => {
+      reads.push('ksf');
+      if (scenario === 'missing') return null;
+      return {...f.replay(), ...(scenario === 'main' ? {} : {mapId:'other',mapVersion:f.session.map.version})};
+    });
+    finishLiveSurf(f);
+    const reference = createRampReference({getSession:() => f.session, getReferences:f.getReferences,
+      getAdapter:() => f.adapter, replayStore:f.replayStore, settings:f.settings});
+    cleanups.push(() => reference.destroy());
+    const slot = reference.createConsumer().get('surf_test:map-1/bonus-1', 'wr');
+    f.references(); await flush();
+    const status = scenario === 'missing' ? 'missing' : 'unmatched';
+    expect(f.references()).toMatchObject({
+      board:{status,source:'wr',loss:null}, surf:{status,source:'wr',loss:null},
+      start:{status,source:'wr',speed:null,heightAboveFloor:null}
+    });
+    expect(slot).toMatchObject({status:'missing',label:'KSF WR'});
+    expect(slot.ramps.size).toBe(0);
+    expect(reads).toEqual(['ksf']);
   });
   test('fixed colors never request a replay and switching later still matches the current visit', async () => {
     const f = fixture({source:'fixed',commands:[contact(),contact('b',9),finish]});

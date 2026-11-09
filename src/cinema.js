@@ -69,13 +69,17 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   const owns = current => {
     if (state !== current || playing() !== current.replay) return false;
     const session = getAdapter().getSession();
-    return session.map === current.map && (session.movement?.world ?? session.map) === current.world;
+    return !!session && session.map === current.map && (session.movement?.world ?? session.map) === current.world;
   };
   function currentState() {
     if (!available()) throw new Error('Cinematic viewing needs a replay of the loaded map.');
     const replay = playing();
     if (state && !owns(state)) close();
-    return state ??= createState(replay);
+    if (!state) {
+      state = createState(replay);
+      watch(state);
+    }
+    return state;
   }
   // true: the camera in the remembered style; false: everything off.
   async function setEnabled(enabled) {
@@ -159,7 +163,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     let colorIndex = 1;
     while (used.has(colorIndex)) colorIndex++;
     const pending = {id: run.id, label: run.label, colorIndex, controller: new AbortController()};
-    const cancelled = new Promise(resolve => { pending.cancel = () => { if (!pending.adopted) pending.controller.abort(); resolve(false); }; });
+    const cancelled = new Promise(resolve => { pending.cancel = () => {
+      if (!pending.adopted) {
+        pending.controller.abort();
+        const track = pending.track;
+        pending.track = null;
+        if (state === current) track?._cinemaWorker?.release(track._cinemaHandle.id);
+      }
+      resolve(false);
+    }; });
     current.loading.push(pending);
     notify();
     const activation = setView(preferred);
@@ -365,7 +377,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       }});
     const completed = (async () => {
       const track = await recording;
-      if (!owned()) return false;
+      if (!pending.adopted) pending.track = track;
+      if (!owned()) { pending.cancel(); return false; }
       if (!track) throw new Error('That run couldn’t be read on this map.');
       latest = {track, count: track.count, done: true};
       await prepared;
@@ -378,6 +391,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         await loadIdle();
         if (!owned()) return false;
         pending.adopted = true;
+        pending.track = null;
         entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track, complete: true,
           controller: pending.controller, maps: {time: alignByTime(current.track, track), ...(place ? {place} : {})}, time: track.time};
         current.runs = [...current.runs, entry];
@@ -591,18 +605,16 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     }
   }
 
-  // While cinematic viewing is enabled: the renderer wrap, canvas listeners
-  // and a check each frame that the replay still plays.
-  function start(current) {
-    attach(current, getAdapter().cinema.renderer());
-    listen(current);
+  // Monitor ownership from activation, including before recording has produced
+  // a preview. Losing playback must abort preparation as well as a shown view.
+  function watch(current) {
     const check = () => {
       if (state !== current) return;
       const adapter = getAdapter?.();
       if (!owns(current)) { close(); return; }
       // The game makes a new renderer when it reloads the map, as Watch from the menu can.
       const renderer = adapter.cinema?.renderer?.();
-      if (renderer !== current.renderer) {
+      if (current.renderer && renderer !== current.renderer) {
         detach(current);
         if (!renderer?.qolScene) { close(); return; }
         try { attach(current, renderer); } catch { close(); return; }
@@ -610,6 +622,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.checking = requestAnimationFrame(check);
     };
     current.checking = requestAnimationFrame(check);
+  }
+  function start(current) {
+    attach(current, getAdapter().cinema.renderer());
+    listen(current);
   }
   function sceneFor(current, renderer) {
     current.sceneSize = current.runs.length + 1;

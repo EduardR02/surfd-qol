@@ -35,7 +35,7 @@ const history = createRunHistory({
   // The replay is trimmed to a few seconds before the start when the game's
   // own simulation confirms the trimmed one reaches the same start.
   onReplay: (run, replay, clip) => {
-    return replays.save(run, replay, clip ? () => trimReplay(api.adapter?.Session, replay, clip) : null)
+    return replays.save(run, replay, clip ? isCurrent => trimReplay(api.adapter?.Session, replay, clip, {isCurrent}) : null)
       .then(saved => {
         if (!saved) history.setReplayUnavailable(run.id);
         else if (saved.offset) history.setReplayOffset(run.id, saved.offset);

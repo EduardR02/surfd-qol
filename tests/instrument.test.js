@@ -591,6 +591,35 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} scoped collision
   });
 });
 
+// This helper has the live loader's metadata, packed replay and validation
+// shape, but deliberately uses different private names from the game.
+const nativeBonusLoader = 'async function renamedImportedReplay(mapId,bonusNumber,fetcher=fetch){const metadata=findPublishedBonus(mapId,bonusNumber);if(!metadata?.replaySha256)throw new Error("No published bonus route");const title=bonusTitle(metadata),bytes=await verifiedBonusPack(metadata.replaySha256,fetcher,status=>`Unavailable ${status}`,`Invalid ${title}`),replay=JSON.parse(new TextDecoder().decode(bytes));if(replay?.mapId!==mapId||replay.mapVersion!==metadata.version)throw new Error(`Wrong course: ${title}`);return replay}';
+const nativeBonusSource = nativeSource + `
+const publishedRoutes=new Map(),packedRoutes=new Map(),bonusRequests=[],leaderboardRequests=[];
+function findPublishedBonus(mapId,number){bonusRequests.push([mapId,number]);return publishedRoutes.get(mapId+":"+number)}
+function bonusTitle(metadata){return metadata.title}
+async function verifiedBonusPack(hash,fetcher,onStatus,onIntegrity){if(!packedRoutes.has(hash))throw new Error("Missing packed route");return new TextEncoder().encode(JSON.stringify(packedRoutes.get(hash)))}
+client.replay=async(...args)=>{leaderboardRequests.push(args);throw new Error("Unexpected leaderboard replay")};
+` + nativeBonusLoader;
+
+function bonusRouteFixture(source = nativeBonusSource) {
+  let adapter;
+  const fetchCalls = [], mainReplay = {mapId: 'map', mapVersion: 'map-v1', commands: ['main']};
+  const fetcher = (...args) => { fetchCalls.push(args); return Promise.resolve({ok: true, json: async () => mainReplay}); };
+  const runtime = new Function('globalThis', 'fetch', instrumentReplayFixture(source) + `
+    return {bonusRequests,leaderboardRequests,
+      putRoute(mapId,number,version,replay) {
+        const hash=mapId+":"+number+":"+version;
+        publishedRoutes.set(mapId+":"+number,{version,title:"Bonus "+number,replaySha256:hash});
+        packedRoutes.set(hash,replay);
+        return hash;
+      },
+      sessions:()=>sessions,generation:()=>generation,
+      navigate:map=>{nativeSession=new Session(map)}};
+  `)({__SURFD_QOL__: {attach: value => { adapter = value; }}}, fetcher);
+  return {adapter, runtime, fetchCalls, mainReplay};
+}
+
 describe('native replay instrumentation', () => {
   test('extension reservation cancels an older native download without reserving again at startup', async () => {
     const {adapter, runtime} = fixture();
@@ -631,7 +660,7 @@ describe('native replay instrumentation', () => {
     expect(adapter.getReferences()).toMatchObject({ownerKey: 'guest', own: null});
   });
 
-  test('imported main-map record routes are unavailable on bonus courses', () => {
+  test('older builds without a native bonus loader leave bonus routes unavailable', () => {
     const {adapter} = fixture();
     const session = adapter.getSession();
     expect(typeof adapter.getReferences().loadRecordRoute).toBe('function');
@@ -641,6 +670,97 @@ describe('native replay instrumentation', () => {
     }
     session.map.version = 'map-v2';
     expect(typeof adapter.getReferences().loadRecordRoute).toBe('function');
+  });
+
+  test('bonus references load the matching native imported route without watching or using main or leaderboard routes', async () => {
+    const {adapter, runtime, fetchCalls} = bonusRouteFixture();
+    const session = adapter.getSession(), sessions = runtime.sessions();
+    const cases = [
+      {id: 'map', version: 'map-v1/bonus-1', number: 1},
+      {id: 'map', version: 'map-v1/bonus-5.r2', number: 5},
+      {id: 'other-map', version: 'other-v3/bonus-99.r12', number: 99},
+    ];
+    for (const {id, version, number} of cases) {
+      const replay = {mapId: id, mapVersion: version, commands: [number]};
+      session.map = {id, version};
+      runtime.putRoute(id, number, version, replay);
+      const load = adapter.getReferences().loadRecordRoute;
+      expect(typeof load).toBe('function');
+      expect(await load()).toEqual(replay);
+    }
+    expect(fetchCalls).toEqual([]);
+    expect(runtime.leaderboardRequests).toEqual([]);
+    expect(adapter.getSession()).toBe(session);
+    expect(runtime.sessions()).toBe(sessions);
+    expect(runtime.generation()).toBe(0);
+    expect(adapter.replay.playback().replay).toBeNull();
+  });
+
+  test('bonus references capture map identity before mutation or navigation', async () => {
+    const {adapter, runtime, fetchCalls} = bonusRouteFixture();
+    const map = {id: 'map', version: 'map-v1/bonus-1'};
+    const original = {mapId: map.id, mapVersion: map.version, commands: ['original']};
+    runtime.putRoute(map.id, 1, map.version, original);
+    adapter.getSession().map = map;
+    const refs = adapter.getReferences(), pending = refs.loadRecordRoute();
+    map.id = 'mutated';
+    map.version = 'mutated-v1/bonus-99.r12';
+    const nextMap = {id: 'new-map', version: 'new-v1/bonus-5.r2'};
+    const next = {mapId: nextMap.id, mapVersion: nextMap.version, commands: ['next']};
+    runtime.putRoute(nextMap.id, 5, nextMap.version, next);
+    runtime.navigate(nextMap);
+    expect(await pending).toEqual(original);
+    expect(await refs.loadRecordRoute()).toEqual(original);
+    expect(await adapter.getReferences().loadRecordRoute()).toEqual(next);
+    expect(runtime.bonusRequests).toEqual([['map', 1], ['map', 1], ['new-map', 5]]);
+    expect(fetchCalls).toEqual([]);
+    expect(runtime.leaderboardRequests).toEqual([]);
+  });
+
+  test('bonus routes reject old, revised, and wrong-map replays without fallback', async () => {
+    const {adapter, runtime, fetchCalls} = bonusRouteFixture();
+    const version = 'map-v1/bonus-5.r2';
+    adapter.getSession().map = {id: 'map', version};
+    const refs = adapter.getReferences();
+    // Native metadata always identifies its published revision, which can be
+    // newer or older than the course for which these references were made.
+    for (const publishedVersion of ['map-v1/bonus-5', 'map-v1/bonus-5.r3']) {
+      runtime.putRoute('map', 5, publishedVersion, {mapId: 'map', mapVersion: publishedVersion});
+      expect(await refs.loadRecordRoute()).toBeNull();
+    }
+    runtime.putRoute('map', 5, version, {mapId: 'different-map', mapVersion: version});
+    await expect(refs.loadRecordRoute()).rejects.toThrow('Wrong course');
+    runtime.putRoute('map', 5, version, {mapId: 'map', mapVersion: 'map-v1/bonus-5'});
+    await expect(refs.loadRecordRoute()).rejects.toThrow('Wrong course');
+    expect(fetchCalls).toEqual([]);
+    expect(runtime.leaderboardRequests).toEqual([]);
+  });
+
+  test('missing or ambiguous native bonus routes never fall back to another source', async () => {
+    const fixture = bonusRouteFixture();
+    fixture.adapter.getSession().map.version = 'map-v1/bonus-1';
+    await expect(fixture.adapter.getReferences().loadRecordRoute()).rejects.toThrow('No published bonus route');
+    expect(fixture.fetchCalls).toEqual([]);
+    expect(fixture.runtime.leaderboardRequests).toEqual([]);
+
+    const duplicate = nativeBonusLoader.replace('renamedImportedReplay', 'anotherImportedReplay');
+    const ambiguous = bonusRouteFixture(nativeBonusSource + '\n' + duplicate);
+    ambiguous.adapter.getSession().map.version = 'map-v1/bonus-1';
+    expect(ambiguous.adapter.getReferences().loadRecordRoute).toBeNull();
+    expect(ambiguous.fetchCalls).toEqual([]);
+    expect(ambiguous.runtime.leaderboardRequests).toEqual([]);
+    ambiguous.adapter.getSession().map.version = 'map-v1';
+    expect(typeof ambiguous.adapter.getReferences().loadRecordRoute).toBe('function');
+  });
+
+  test('main-course references keep the slug-complete loader', async () => {
+    const {adapter, runtime, fetchCalls, mainReplay} = bonusRouteFixture();
+    adapter.getSession().map.version = 'map-v1';
+    expect(await adapter.getReferences().loadRecordRoute()).toEqual(mainReplay);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0][0]).toBe('/replays/test-map-complete.json');
+    expect(runtime.bonusRequests).toEqual([]);
+    expect(runtime.leaderboardRequests).toEqual([]);
   });
 });
 

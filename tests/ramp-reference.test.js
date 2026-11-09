@@ -215,10 +215,18 @@ describe('ramp reference', () => {
     const leaderboard = rig({settings: {wrSource: 'leaderboard'}});
     expect(leaderboard.reference.sources('utopia:3')).toEqual([{name: 'pb', label: 'PB'}]);
     expect(leaderboard.consumer.get('utopia:3', 'wr')).toBeNull();
+    const unsupported = rig();
+    unsupported.session.map.version = '3/bonus-1';
+    unsupported.refs.record = {runId:'wr1', timeUs:40e6, splitsUs:[10e6]};
+    unsupported.refs.loadRecordRoute = undefined;
+    expect(unsupported.reference.sources('utopia:3/bonus-1')).toEqual([{name:'pb', label:'PB'}]);
+    expect(unsupported.consumer.get('utopia:3/bonus-1', 'wr')).toBeNull();
+    expect(unsupported.acquired).toHaveLength(0);
   });
 
-  test.each(['pb', 'wr'])('separates %s ramp requests between main and bonus courses', async source => {
-    const f = rig(), main = f.session;
+  test.each(['pb', 'ksf', 'leaderboard'])('separates %s ramp requests between main and bonus courses', async selected => {
+    const source = selected === 'pb' ? 'pb' : 'wr';
+    const f = rig({settings:{wrSource:selected === 'leaderboard' ? 'leaderboard' : 'ksf'}}), main = f.session;
     f.refs.record = {runId:'wr1', timeUs:40e6, splitsUs:[10e6]};
     const reads = [];
     f.refs.loadReplay = async id => { reads.push(id); return {}; };
@@ -232,8 +240,8 @@ describe('ramp reference', () => {
     await bonusRequest.load();
     expect(mainRequest.key).not.toBe(bonusRequest.key);
     expect(mainRequest.isCurrent()).toBe(false);
-    expect(reads).toEqual(source === 'pb' ? ['pb1','pb1'] : ['ksf','wr1']);
-    expect(slot.label).toBe(source === 'pb' ? 'PB' : 'Site WR');
+    expect(reads).toEqual(selected === 'pb' ? ['pb1','pb1'] : selected === 'ksf' ? ['ksf','ksf'] : ['wr1','wr1']);
+    expect(slot.label).toBe(selected === 'pb' ? 'PB' : selected === 'ksf' ? 'KSF WR' : 'Site WR');
     f.reference.destroy();
   });
 

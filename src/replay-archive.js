@@ -211,6 +211,7 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
       return Number.isSafeInteger(offset) && offset >= 0 ? offset : null;
     },
     // `prepare` may resolve to a trimmed replay; it runs with the packing, when idle.
+    // Preparation checks isCurrent() between slices, just like packing.
     // Resolves to {offset} once saved (offset > 0 when trimmed), or null.
     async save(run, replay, prepare = null) {
       const job = {map: run.map};
@@ -227,7 +228,7 @@ export function createReplayArchive({database = openSiteDatabase()} = {}) {
         if (!current()) return null;
         let offset = 0;
         try {
-          const trimmed = await prepare?.();
+          const trimmed = await prepare?.(current);
           if (trimmed) { replay = trimmed.replay; offset = trimmed.offset; }
         } catch { /* keep the full replay */ }
         if (!current()) return null;

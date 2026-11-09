@@ -19,7 +19,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
   function describe(key, source) {
     const session = getSession?.(), refs = getReferences?.();
     if (destroyed || (source !== 'pb' && source !== 'wr') || !session?.map || mapKey(session.map) !== key || !replayStore) return null;
-    const leaderboard = recordReferenceSource(settings, session.map) === 'leaderboard';
+    const leaderboard = recordReferenceSource(settings) === 'leaderboard';
     const entry = source === 'pb' ? refs?.own : source === 'wr' && leaderboard ? refs?.record : null;
     const ksf = source === 'wr' && !leaderboard, identity = referenceIdentity(entry);
     if (ksf ? typeof refs?.loadRecordRoute !== 'function' : !identity || typeof refs?.loadReplay !== 'function') return null;

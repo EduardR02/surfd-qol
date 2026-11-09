@@ -1,6 +1,5 @@
 import { checkpointApplies, createReferenceReplayStore, reconstructReferenceReplay } from './replay-store.js';
 import { hasStepped, whenIdle } from './reference-hold.js';
-import { courseOf } from './courses.js';
 
 const CACHE_KEY = 'surfd.qol.checkpoints.v1';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -8,9 +7,7 @@ const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && sp
 const micros = seconds => Math.round(seconds * 1e6);
 const sameSplits = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]);
 
-// Imported KSF routes are map-main only; bonuses use their own site record.
-export const recordReferenceSource = (settings, map) =>
-  settings.wrSource === 'leaderboard' || courseOf(map) ? 'leaderboard' : 'ksf';
+export const recordReferenceSource = settings => settings.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf';
 
 export function referenceIdentity(entry) {
   return entry && entry.runId != null && Number.isSafeInteger(entry.timeUs) && entry.timeUs > 0 && Array.isArray(entry.splitsUs) && entry.splitsUs.length <= 64 && entry.splitsUs.every(value => Number.isSafeInteger(value) && value >= 0)
@@ -121,7 +118,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     const source = recordSource;
     const isCurrent = () => !destroyed && visible && settings.hud !== false && settings.zen !== true && slot.key === key &&
       (slot === ownSlot ? settings.checkpointReference !== 'wr' : settings.checkpointReference !== 'pb' &&
-        recordReferenceSource(settings, session.map) === source) &&
+        recordReferenceSource(settings) === source) &&
       getSession() === session && getAdapter() === expectedAdapter && session.map === expectedMap &&
       session.map.id === expectedMapId && session.map.version === expectedMapVersion &&
       session.config === expectedConfig && session.replayFormat === expectedFormat;
@@ -158,7 +155,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     // Zen hides checkpoints, so their references aren't loaded either.
     const enabled = active && settings.hud !== false && settings.zen !== true;
     const session = getSession();
-    const source = recordReferenceSource(settings, session?.map);
+    const source = recordReferenceSource(settings);
     if (source !== recordSource) {
       recordSource = source;
       clear(recordSlot);

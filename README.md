@@ -58,7 +58,7 @@ Touch and the ramp values compare against the same ramp in a reference run, your
 - **red**: worse than that
 - **grey**: no matching data (reference still loading, a different route, or no PB on this map)
 
-"WR" means the KSF record route by default, or Surfd's leaderboard #1. Bonuses use their own leaderboard #1. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
+"WR" means the current course's published KSF record route by default, including bonuses, or Surfd's leaderboard #1 if selected. An unavailable KSF route leaves comparisons empty; it never falls back to the main course or leaderboard. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
 
 ### Start and checkpoints
 
@@ -94,6 +94,8 @@ Runs that crash into a ramp's edge or a wall are left out of its averages, and a
 
 Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Your best finish, splits and ramp bests stay when older runs are removed. Everything is stored in this browser; the same page shows storage use and has **Clear all**.
 
+When a run is removed by history limits or a successful clear, its pending replay trimming and compression stop at the next processing boundary.
+
 ## Replays
 
 ▶ in Runs plays a recording with the full HUD. Surfd's own player handles playback, seeking and indexing for your recordings, leaderboard runs, the record route and server replays.
@@ -106,7 +108,7 @@ Replays also show a **Hull: crouched / standing** line in the key display. Spect
 
 ### Cinematic replays
 
-The view menu on the replay bar switches between **POV** (the player's own view), **Steady** and **Cinematic**. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the KSF WR (main courses only), or any leaderboard run.
+The view menu on the replay bar switches between **POV** (the player's own view), **Steady** and **Cinematic**. **Add run** puts other runs in the same replay as ghosts: your PB, your recent best, the site WR, the current course's published KSF WR (including bonuses), or any leaderboard run.
 
 ![A cinematic replay on Fiellu, seen from the side a long ramp faces: five runs as coloured ghosts with glowing trails, each labelled with its name, and the replay bar below with a chip and gap for each run](docs/cinematic.jpg)
 
@@ -118,6 +120,8 @@ The view menu on the replay bar switches between **POV** (the player's own view)
 - **Trails:** each ghost leaves a fading trail of light, and a thin line marks the route still to come. Pausing freezes them and seeking restores them.
 
 With other runs added in Steady or Cinematic, the watched run's touch marks and Saveloc are hidden. Each added run costs some performance, so remove runs if playback gets slow.
+
+Leaving a replay cancels cinematic preparation and releases its view resources, even before the first camera preview is ready. Removing a pending added run also releases its worker recording, including one that finished before joining the view.
 
 ## Community rooms
 

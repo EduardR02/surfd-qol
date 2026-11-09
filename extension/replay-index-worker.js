@@ -66,7 +66,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
     }
   }
   function camera(owner) {
-    const handles = new Set();
+    const handles = new Map();
     const live = () => !owner.closed && slot === owner && owner.scope === rendererScope;
     function rpc(type, data, {signal, onProgress} = {}) {
       if (!live() || signal?.aborted) return Promise.resolve(null);
@@ -111,16 +111,27 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
           owner.replays.set(replay, id);
           owner.knownTracks.add(id);
         }
-        handles.add(id);
-        const track = await rpc('record', {id, tick, replay}, {signal, onProgress});
-        if (track) {
-          track._cinemaWorker = api;
-          track._cinemaHandle = {id, from: 0};
+        const handle = handles.get(id) ?? {pending: 0, retained: false};
+        handles.set(id, handle);
+        handle.pending++;
+        try {
+          const track = await rpc('record', {id, tick, replay}, {signal, onProgress});
+          if (signal?.aborted) return null;
+          if (track) {
+            handle.retained = true;
+            track._cinemaWorker = api;
+            track._cinemaHandle = {id, from: 0};
+          }
+          return track;
+        } finally {
+          handle.pending--;
+          if (handles.get(id) === handle && !handle.pending && !handle.retained) api.release(id);
         }
-        return track;
       },
       retain(id, track = null) {
-        handles.add(id);
+        const handle = handles.get(id);
+        if (handle) handle.retained = true;
+        else handles.set(id, {pending: 0, retained: true});
         if (!live()) return;
         try {
           if (track && (track._cinemaWorker !== api || !owner.knownTracks.has(id))) {
@@ -149,7 +160,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
           request.cleanup(); request.resolve(null); owner.requests.delete(id);
           try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-cancel', request: id}); } catch {}
         }
-        if (live()) try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-release', ids: [...handles]}); } catch {}
+        if (live()) try { owner.worker.postMessage({__surfdQolIndex: protocol, type: 'camera-release', ids: [...handles.keys()]}); } catch {}
         handles.clear();
         owner.viewOwned = false;
         if (owner.viewOnly && !owner.world) evict(owner);
