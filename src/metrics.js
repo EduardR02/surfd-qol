@@ -114,6 +114,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let tickStartSpeedSquared = NaN;
   let tickStartHeight = NaN;
   let tickGravity = NaN;
+  let tickStartDucked = false;
+  let tickStartGrounded = false;
   let head = 0;
   let count = 0;
   let rollingGain = 0;
@@ -171,6 +173,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   let airBrakingLoss = 0;
   let airMissedGain = 0;
   let airMeasuredSeconds = 0;
+  let airFrom = null;
+  let airRouteTrusted = true;
+  let episodeEndpoint = null;
   // tick is the completed simulation step (session.state.tick), not wall time.
   // Each sequence counts accepted summaries since reset; invalidating a board
   // clears its values/tick but does not pretend another board was measured.
@@ -180,7 +185,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     surfaceId: null, visit: null, checkpoint: null, routePrefix: null,
   };
   let boardVersion = 0;
-  const air = { available: false, loss: 0, brakingLoss: 0, missedGain: 0, measuredSeconds: 0, tick: null, sequence: 0 };
+  const air = {
+    available: false, loss: 0, brakingLoss: 0, missedGain: 0, measuredSeconds: 0, tick: null, sequence: 0,
+    from: null, to: null, routePrefix: null,
+  };
   // downLoss + upLoss === loss: the visit splits at its lowest contact point.
   const surf = {
     available: false, loss: null, downLoss: null, upLoss: null, entrySpeed: null, exitSpeed: null,
@@ -205,7 +213,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
   const live = () => !referenceOnly && settings.continuousFeedback === true;
   const active = () => referenceOnly ||
     (settings.hud !== false && settings.zen !== true && (shown('showBoard') || shown('showAir') || shown('showSurf')));
-  const airWanted = () => !referenceOnly && shown('showAir');
+  const airWanted = () => referenceOnly || shown('showAir');
   const heldSurfWanted = () => referenceOnly || (shown('showSurf') && !live());
 
   function clearBoard() {
@@ -219,20 +227,21 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     board.surfaceId = board.visit = board.checkpoint = board.routePrefix = null;
   }
 
-  function finishAir(tick) {
+  function finishAir(tick, to = null, prefix = routePrefix) {
+    const sequence = air.sequence;
     // Tiny contact-grace gaps are not useful flights. Unsupported/coasting
     // ticks contribute neither time nor invented input opportunity. Contact
     // closes the segment even when too short to replace the retained summary.
     if (unknownAir) {
       unknownAir = false;
-    } else if (airSkippedSeconds > 0 && airSkippedSeconds + airMeasuredSeconds >= MIN_AIR_SECONDS) {
+    } else if (airSkippedSeconds > 0 && airSkippedSeconds + airMeasuredSeconds + TIME_EPSILON >= MIN_AIR_SECONDS) {
       // Part of this flight was not analysed while Air was hidden.
       air.available = false;
       air.loss = air.brakingLoss = air.missedGain = 0;
       air.measuredSeconds = airMeasuredSeconds;
       air.tick = tick;
       air.sequence++;
-    } else if (airMeasuredSeconds >= MIN_AIR_SECONDS) {
+    } else if (airMeasuredSeconds + TIME_EPSILON >= MIN_AIR_SECONDS) {
       air.available = true;
       air.brakingLoss = airBrakingLoss;
       air.missedGain = airMissedGain;
@@ -241,6 +250,12 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       air.tick = tick;
       air.sequence++;
     }
+    if (air.sequence !== sequence) {
+      air.from = air.available ? airFrom : null;
+      air.to = air.available ? to : null;
+      air.routePrefix = air.available && airRouteTrusted ? prefix : null;
+    }
+    airFrom = null;
     airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
   }
 
@@ -252,6 +267,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     surfLowEnergy = NaN;
     surfTick = null;
     episodeSurface = null;
+    episodeEndpoint = null;
     episodeActive = false;
     airborneGapSeconds = 0;
     episodeUnknown = false;
@@ -276,10 +292,10 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       // exactly to the whole-visit result, in exit-speed units.
       const scale = surf.available ? surf.expectedExitSpeed + surf.exitSpeed : 0;
       if (scale > 0) {
-        const entryEnergy = surfEntrySpeedSquared + 2 * surfGravity * surfEntryHeight;
-        const exitEnergy = surfExitSpeedSquared + 2 * surfGravity * surfExitHeight;
-        surf.downLoss = (entryEnergy - surfLowEnergy) / scale;
-        surf.upLoss = (surfLowEnergy - exitEnergy) / scale;
+        // Keep potential energy relative to entry height: a map's arbitrary
+        // vertical origin must not erase small phase losses by cancellation.
+        surf.downLoss = (surfEntrySpeedSquared - surfLowEnergy) / scale;
+        surf.upLoss = surf.loss - surf.downLoss;
       } else surf.downLoss = surf.upLoss = surf.available ? 0 : null;
       surf.reason = episodeUnknown ? 'replay-gap' : surfSkippedTicks ? 'not-tracked-while-hidden'
         : surfUnsupportedTicks ? 'unsupported-contact-or-endpoint'
@@ -336,6 +352,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     air.available = false;
     air.loss = air.brakingLoss = air.missedGain = air.measuredSeconds = air.sequence = 0;
     air.tick = null;
+    air.from = air.to = air.routePrefix = airFrom = null;
+    airRouteTrusted = !replayGap && !partial;
     airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
     tickAirGated = false;
     clearSurfEpisode();
@@ -408,7 +426,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     if (!tickAvailable) return;
     tickAvailable = false;
     tickReason = 'unsupported-surf';
-    if (tickMixedContact || tickMultiplePlanes || !tickPlane) return;
+    if (tickMixedContact || tickMultiplePlanes || !tickPlane || accelerationCount !== 1) return;
     const n = tickPlane;
     const horizontalNormal = Math.hypot(n.x, n.y);
     const hx = n.x / horizontalNormal;
@@ -488,11 +506,14 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     }
     const resumed = idle;
     idle = false;
-    if (resumed || (previousSession && (session !== previousSession || session.state !== previousState ||
-      session.state.tick !== previousTick))) reset({replayGap: resumed && (unknownAir || unknownRamp)});
-    // Visits counted before the pause are unknown: until the next run start
-    // resets the route, nothing may claim a PB/WR visit match.
-    if (resumed) routePrefix = null;
+    const discontinuity = previousSession && (session !== previousSession || session.state !== previousState ||
+      session.state.tick !== previousTick);
+    if (resumed || discontinuity) reset({replayGap: resumed && (unknownAir || unknownRamp)});
+    // Visits counted before the pause or discontinuity are unknown.
+    if (resumed || discontinuity) {
+      routePrefix = null;
+      airRouteTrusted = false;
+    }
     duration = Number.isFinite(session.config?.dt) && session.config.dt > 0 ? session.config.dt : 0.015;
     tickSpecial = '';
     open = true;
@@ -512,6 +533,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       ? velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z : NaN;
     tickStartHeight = session.state?.position?.z;
     tickGravity = session.config?.gravity;
+    tickStartDucked = session.state?.ducked === true;
+    tickStartGrounded = session.state?.grounded === true;
     tickAirBoundary = tickBoardAmbiguous = false;
     tickBoardSpeedBefore = tickBoardSpeedAfter = 0;
     tickBoardAngleSine = null;
@@ -529,10 +552,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
 
   function acceleration({ before, after, direction, wishSpeed, airborne, config, surfaceFriction }) {
     if (!open) return;
-    // Reference passes still observe this transition: begin() may see the
-    // grounded state immediately before native movement jumps onto a ramp.
+    // begin() may see the grounded state immediately before native movement jumps.
     tickGround = !airborne;
-    if (!airborne || referenceOnly) { tickReason = !airborne ? 'ground' : 'no-analysis'; return; }
+    if (!airborne) { tickReason = 'ground'; return; }
     if (!airWanted() && !(live() && shown('showSurf'))) {
       tickAirGated = true;
       tickReason = 'hidden';
@@ -561,7 +583,9 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     // duck multiplier. Reconstructing it from keys would silently overestimate.
     const budget = round(round(round(config.airAccelerate * config.dt) * wishSpeed) * surfaceFriction);
     if (!Number.isFinite(budget)) { tickReason = 'unsupported-physics'; return; }
-    if (cap <= 0 || budget <= 0) { tickReason = 'no-acceleration'; return; }
+    // A zero cap forbids positive projection, not braking: reverse wishes
+    // still have cap - dot(v, wish) > 0 and execute native acceleration.
+    if (budget <= 0) { tickReason = 'no-acceleration'; return; }
     const available = round(cap - round(before.x * direction.x + before.y * direction.y));
     const amount = available <= 0 ? 0 : Math.min(available, budget);
     const expectedX = amount === 0 ? before.x : round(before.x + direction.x * amount);
@@ -681,6 +705,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       event === 'stage-restarted' || event === 'start-return' || event === 'stage-return' ||
       event === 'restart' || event === 'practice-restore' || event === 'start')) {
       reset();
+      if (events.includes('start')) airFrom = '["start"]';
       status = 'reset';
       return;
     }
@@ -691,6 +716,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       // episode and its live values without inventing a landing.
       clearSurfEpisode();
       airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
+      airFrom = null;
       unknownAir = unknownRamp = false;
       unknownRampGap = 0;
       head = count = 0;
@@ -704,6 +730,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       return;
     }
     elapsed += duration;
+    let tickBrakingLoss = 0;
+    let tickMissedGain = 0;
     const nextMode = tickRampContact || tickMixedContact ? 'surf' : 'air';
     if (nextMode === 'surf') {
       if (live() && shown('showSurf')) surfAcceleration();
@@ -721,15 +749,35 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         const beforeSpeed = Math.hypot(input.before.x, input.before.y);
         const afterSpeed = Math.hypot(input.after.x, input.after.y);
         const round = input.float32 ? Math.fround : identity;
-        tickGain += afterSpeed - beforeSpeed;
-        tickOptimum += optimumSpeed(input.before, input.cap, input.budget, round, afterSpeed) - beforeSpeed;
+        const gain = afterSpeed - beforeSpeed;
+        const optimum = optimumSpeed(input.before, input.cap, input.budget, round, afterSpeed) - beforeSpeed;
+        tickGain += gain;
+        tickOptimum += optimum;
+        // Braking and missed positive gain belong to each acceleration,
+        // not its net sum: a later gain must not erase an earlier brake.
+        tickBrakingLoss += Math.max(0, -gain);
+        tickMissedGain += Math.max(0, optimum - Math.max(0, gain));
       }
     }
     const grounded = tickGround || session.state.grounded || tickGroundContact;
+    // Native airborne duck/unduck moves the hull origin without doing
+    // gravitational work. Duck runs before jumping; grounded crouches do
+    // not shift it. Translate retained endpoints even during contact skips.
+    const ducked = session.state.ducked === true;
+    const originShift = !tickStartGrounded && ducked !== tickStartDucked
+      ? (ducked ? 1 : -1) * (session.config.standHeight - session.config.duckHeight) / 2 : 0;
+    if (episodeActive && originShift !== 0) {
+      surfEntryHeight += originShift;
+      surfExitHeight += originShift;
+      surfLowHeight += originShift;
+    }
     const episodeContact = tickRampContact || tickBoardAmbiguous;
     const surface = tickSurfaceUnknown || tickSurfaceConflict ? null : tickSurface;
     const sameSurface = episodeActive && surface !== null && surface === episodeSurface;
     const ambiguous = tickBoardAmbiguous || tickMixedContact;
+    // Obstacles and unobserved analysis cannot establish a flight endpoint.
+    // Keep arithmetic unchanged, but never match the interrupted path.
+    if (grounded || ambiguous || !airWanted() || tickReason === 'unsupported-physics') airFrom = null;
     if (unknownRamp) {
       if (grounded || (episodeActive && episodeContact && surface !== null && episodeSurface !== null && !sameSurface && !ambiguous))
         unknownRamp = false;
@@ -747,16 +795,17 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         (!sameSurface && !ambiguous && airborneGapSeconds > RAMP_CONTACT_GRACE + TIME_EPSILON))) {
       finishSurf();
     }
-    if (tickAirBoundary || grounded) {
-      if (episodeActive && !grounded && ((sameSurface && tickRampContact) || ambiguous)) {
-        airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
-      } else finishAir(session.state.tick);
-    } else if (nextMode === 'air' && tickAvailable) {
+    const airBoundary = tickAirBoundary || grounded;
+    const mergedAirGap = airBoundary && episodeActive && !grounded &&
+      ((sameSurface && tickRampContact) || ambiguous);
+    if (mergedAirGap) {
+      airBrakingLoss = airMissedGain = airMeasuredSeconds = airSkippedSeconds = 0;
+    } else if (!airBoundary && nextMode === 'air' && tickAvailable) {
       // Only confirmed free air enters the unchanged horizontal comparison.
-      airBrakingLoss += Math.max(0, -tickGain);
-      airMissedGain += Math.max(0, tickOptimum - Math.max(0, tickGain));
+      airBrakingLoss += tickBrakingLoss;
+      airMissedGain += tickMissedGain;
       airMeasuredSeconds += duration;
-    } else if (nextMode === 'air' && tickAirGated) airSkippedSeconds += duration;
+    } else if (!airBoundary && nextMode === 'air' && tickAirGated) airSkippedSeconds += duration;
     // Never mix a free-air optimum with the narrower same-pressure comparison.
     if (nextMode !== mode || !tickAvailable) {
       head = count = 0;
@@ -795,7 +844,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
         episodeSeconds = 0;
         episodeSurface = surface;
         surfEntrySpeedSquared = tickStartSpeedSquared;
-        surfEntryHeight = tickStartHeight;
+        surfEntryHeight = tickStartHeight + originShift;
         surfGravity = tickGravity;
         episodeUnknown = unknownRamp;
         if (surface !== null) surfaceVisits.set(surface, (surfaceVisits.get(surface) ?? 0) + 1);
@@ -818,6 +867,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
             board.surfaceId = surface;
             board.visit = surfaceVisits.get(surface);
             board.checkpoint = session.checkpointSpeeds?.length ?? session.timer?.splits?.length ?? 0;
+            episodeEndpoint = JSON.stringify([surface, board.checkpoint, board.visit]);
             if (routePrefix !== null) {
               // Entry-only, bounded route evidence lets late HUD consumers
               // match the actual route without retaining per-tick history.
@@ -864,7 +914,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
           // board clip even on a ramp that is only ever climbed.
           if (height < surfLowHeight) {
             surfLowHeight = height;
-            surfLowEnergy = surfExitSpeedSquared + 2 * surfGravity * height;
+            surfLowEnergy = surfExitSpeedSquared + 2 * surfGravity * (height - surfEntryHeight);
           }
         } else surfUnsupportedTicks++;
       } else if (episodeActive && tickMixedContact) surfUnsupportedTicks++;
@@ -883,6 +933,14 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       board.crash = true;
       boardVersion++;
     }
+    // Arrival identity is only known after the new Board visit is assigned.
+    // Consume the preceding departure before replacing it with this contact.
+    const endpoint = !grounded && !ambiguous && surface !== null && surface === episodeSurface
+      ? episodeEndpoint : null;
+    if (airBoundary && !mergedAirGap) {
+      finishAir(session.state.tick, endpoint, endpoint === null ? null : board.routePrefix);
+    }
+    if (episodeContact) airFrom = endpoint;
     if (grounded) {
       finishSurf();
     }
@@ -909,7 +967,7 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     }
     if (events.includes('finish') || session.timer?.phase === 'finished') {
       finishSurf();
-      finishAir(session.state.tick);
+      finishAir(session.state.tick, '["finish"]');
     }
     previousSession = session;
     previousState = session.state;
@@ -965,13 +1023,13 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
       rampTimes: rampTimes.slice(), rampLosses: rampLosses.slice(),
       head, count, rampHead, rampCount, mode, rollingGain, rollingOptimum, strafeTotal, rampTotal,
       elapsed, eligible, status, idle, previousSession, previousTick,
-      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
+      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface, episodeEndpoint,
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
       surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks, surfCrash,
       surfLowHeight, surfLowEnergy, surfTick,
       unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
       entryPlane: { ...entryPlane }, surfaceVisits: new Map(surfaceVisits), routePrefix, routeEntries,
-      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
+      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds, airFrom, airRouteTrusted,
       board: { ...board }, boardVersion, air: { ...air }, surf: { ...surf },
       entryLoss, turnLoss, eventLoss, eventKind, eventSimulationAt, eventAge: clock() - eventAt,
     };
@@ -986,12 +1044,12 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
     ({
       head, count, rampHead, rampCount, mode, rollingGain, rollingOptimum, strafeTotal, rampTotal,
       elapsed, eligible, status, idle, previousSession, previousTick,
-      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface,
+      episodeActive, episodeSeconds, airborneGapSeconds, episodeSurface, episodeEndpoint,
       surfEntrySpeedSquared, surfEntryHeight, surfExitSpeedSquared, surfExitHeight, surfGravity,
       surfContactSeconds, surfMeasuredSeconds, surfUnsupportedTicks, surfSkippedTicks, surfCrash,
       surfLowHeight, surfLowEnergy, surfTick, routePrefix, routeEntries,
       unknownAir, unknownRamp, unknownRampGap, episodeUnknown,
-      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds,
+      airBrakingLoss, airMissedGain, airMeasuredSeconds, airSkippedSeconds, airFrom, airRouteTrusted,
       boardVersion, entryLoss, turnLoss, eventLoss, eventKind, eventSimulationAt,
     } = saved);
     Object.assign(entryPlane, saved.entryPlane);
@@ -1010,7 +1068,8 @@ export function createMetrics(settings = {}, {referenceOnly = false} = {}) {
 
   const boardSnapshot = () => ({...board});
   const boardRevision = () => boardVersion;
-  // Reference reconstruction reads completed Surf visits only, not per-tick copies.
+  // Reference reconstruction reads completed summaries only, not per-tick copies.
   const surfSnapshot = sequence => surf.sequence !== sequence ? {...surf} : null;
-  return { begin, acceleration, collision, specialMovement, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, saveState, restoreState };
+  const airSnapshot = sequence => air.sequence !== sequence ? {...air} : null;
+  return { begin, acceleration, collision, specialMovement, end, reset, snapshot, boardSnapshot, boardRevision, surfSnapshot, airSnapshot, saveState, restoreState };
 }

@@ -6,7 +6,7 @@ import {createCheckpointReferences} from '../src/references.js';
 import {createReferenceReplayStore, reconstructReferenceReplay, routeBoards} from '../src/replay-store.js';
 import {selectFeedbackType} from '../src/hud-model.js';
 import {createRampReference} from '../src/ramp-reference.js';
-import {visitKey} from '../src/replay-store.js';
+import {flightKey, visitKey} from '../src/replay-store.js';
 
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
@@ -26,7 +26,7 @@ const startCommands = ({speed = 350, fromHeight = 180, toHeight = 160, grounded 
 
 // This boundary double performs the native method calls used by the observer,
 // rather than mocking the metrics or reproducing its Board-entry formula.
-function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wrSource = 'ksf', commands = [contact(), finish],
+function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', airSource = 'fixed', wrSource = 'ksf', commands = [contact(), finish],
   floorHeight = 100, platformEdge = 100, yieldTask = async () => {}, shared = false, saved = null, ownerKey = 'guest'} = {}) {
   const config = {dt:.015,gravity:800,airAccelerate:150,airCap:30,groundNormal:.7,float32:false,
     standHeight:62,duckHeight:45,stepSize:18,unrestrictedStart:false};
@@ -46,7 +46,18 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
         return {fraction,end:{x:from.x,y:from.y,z:from.z + fraction * (to.z - from.z)},normal:{x:0,y:0,z:1}};
       }};
     }
-    accelerate() {}
+    accelerate(state, direction, wishSpeed, airborne) {
+      const round = this.config.float32 ? Math.fround : value => value;
+      const cap = airborne ? Math.min(wishSpeed, this.config.airCap) : wishSpeed;
+      const available = round(cap - round(state.velocity.x * direction.x + state.velocity.y * direction.y + state.velocity.z * direction.z));
+      const budget = round(round(round((airborne ? this.config.airAccelerate : 5) * this.config.dt) * wishSpeed) * state.surfaceFriction);
+      const amount = available > 0 ? Math.min(available, budget) : 0;
+      if (amount > 0) {
+        state.velocity.x = round(state.velocity.x + direction.x * amount);
+        state.velocity.y = round(state.velocity.y + direction.y * amount);
+        state.velocity.z = round(state.velocity.z + direction.z * amount);
+      }
+    }
     slide(state, result) {
       if (this.command.throw) throw new Error('native step failed');
       if (this.command.brush) result.contacts.push({brushId:this.command.brush,normal});
@@ -82,14 +93,15 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
       this.state.grounded = !!command.ground;
       this.state.velocity = vector(command.speed ?? 100);
       this.movement.command = command;
-      this.movement.accelerate(this.state,vector(0),0,!this.state.grounded);
+      this.movement.accelerate(this.state,command.direction ?? vector(0),command.wishSpeed ?? 0,!this.state.grounded);
       this.movement.slide(this.state,{contacts:[],blocked:false});
       this.state.tick++;
       if (command.finish) this.timer.state = {...this.timer.state,phase:'finished',elapsed:command.elapsed ?? 10,splits:command.splits ?? []};
       return command.events ?? [];
     }
   }
-  const session = new Session(map,config,8), settings = {boardColorReference:source,startColorReference:startSource,surfColorReference:surfSource,wrSource};
+  const session = new Session(map,config,8), settings = {boardColorReference:source,startColorReference:startSource,
+    surfColorReference:surfSource,airColorReference:airSource,wrSource};
   let own = entry, record = {...entry,runId:'rank-one'}, replay = {mapId:map.id,mapVersion:map.version,config,format:7,commands};
   let replayCalls = [], routeCalls = 0;
   const adapter = {Session,Movement,getSession:() => session};
@@ -110,7 +122,7 @@ function fixture({source = 'pb', startSource = 'fixed', surfSource = 'fixed', wr
   return {session,settings,adapter,metrics,controller,observer,originalStep,originalSlide,liveStep,liveSlide,observerErrors,getReferences,replayStore,
     step(command) { session.step(command); return metrics.snapshot().board; },
     update(board = metrics.snapshot().board) { return controller.update(board).board; },
-    references(board = metrics.snapshot().board) { return controller.update(board, metrics.snapshot().surf); },
+    references(board = metrics.snapshot().board) { const m = metrics.snapshot(); return controller.update(board, m.surf, m.air); },
     native:() => ({loads:nativeLoads,steps:nativeSteps}),
     feedbackSteps:() => feedbackSteps,
     replay:() => replay, setReplay(value) { replay = value; }, setOwn(value) { own = value; }, setRecord(value) { record = value; },
@@ -583,6 +595,7 @@ describe('Native run replay references', () => {
     const f = fixture(); let board = f.step(contact()); f.update(board); await flush();
     f.session.state.tick = 0; f.session.checkpointSpeeds = [];
     f.session.timer.state = {...f.session.timer.state,phase:'running',startTick:1};
+    f.session.restart();
     board = f.step(contact());
     expect(f.update(board)).toMatchObject({status:'ready',loss:5});
     expect(f.calls().replay).toEqual(['official-pb']);
@@ -597,7 +610,7 @@ describe('Native run replay references', () => {
     expect(f.update(board)).toMatchObject({loss: null, status: 'unmatched', source});
     const native = f.native(), calls = structuredClone(f.calls());
     for (let i = 0; i < 3; i++) {
-      f.controller.update(board, null, false);
+      f.controller.update(board, null, null, false);
       f.update(board); await flush();
       expect(f.update(board)).toMatchObject({loss: null, status: 'unmatched', source});
     }
@@ -1080,7 +1093,7 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
       const board = f.step(contact());
       checkpoints.update(); f.update(board); await flush();
       if (hidden === 'checkpoint') checkpoints.update(false);
-      else f.controller.update(board,null,false);
+      else f.controller.update(board,null,null,false);
       release(f.replay()); await flush();
       if (hidden === 'checkpoint') {
         expect(checkpoints.update(false).ownStatus).toBe('missing');
@@ -1103,11 +1116,11 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     f.setLoader(() => { loads++; return new Promise(resolve => { release = resolve; }); });
     const board = f.step(contact());
     checkpoints.update(); f.update(board); await flush();
-    checkpoints.update(false); f.controller.update(board,null,false);
+    checkpoints.update(false); f.controller.update(board,null,null,false);
     release(f.replay()); await flush();
     expect(f.native()).toEqual({loads:0,steps:0});
     expect(checkpoints.update(false).ownStatus).toBe('missing');
-    f.controller.update(board,null,false); await flush();
+    f.controller.update(board,null,null,false); await flush();
     expect(loads).toBe(1);
     checkpoints.update(); f.update(board); await flush();
     expect(loads).toBe(1);
@@ -1126,7 +1139,7 @@ describe('Shared checkpoint and feedback replay lifecycle', () => {
     const paused = f.native().steps;
     expect(paused).toBeGreaterThan(0);
     expect(paused).toBeLessThan(commands.length);
-    f.controller.update(board,null,false);
+    f.controller.update(board,null,null,false);
     resume(); await flush();
     expect(f.native().steps).toBe(paused);
     expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
@@ -1568,4 +1581,266 @@ test('pre-exit development summaries are reanalysed rather than reused without e
   expect(next.native().loads).toBe(1);
   const updated = [...saved.data].find(([key]) => key !== `dev-touch-angle${id.slice(id.indexOf('|'))}`)[1];
   expect(updated.result.feedback.route.boards[0]).toMatchObject({speedBefore: 100, speedAfter: 95, exitSpeed: 95, angle: 0});
+});
+
+const airTicks = (count = 4, direction = -1) => Array.from({length:count}, () => ({
+  speed:1000, direction:vector(direction), wishSpeed:260
+}));
+const airCommands = (count = 4, direction = -1) => [
+  contact('a'), ...airTicks(count,direction), contact('b'), {...finish,events:['finish']}
+];
+const finishLiveAir = (f, commands = airCommands()) => {
+  for (const command of commands) f.step(command);
+  return f.metrics.snapshot().air;
+};
+
+describe('Matched completed Air references', () => {
+  test.each(['pb','ksf','leaderboard'])('%s reconstructs all Air components in one native feedback pass', async selected => {
+    const source = selected === 'pb' ? 'pb' : 'wr', commands = airCommands();
+    const f = fixture({source:'fixed',airSource:source,wrSource:selected === 'leaderboard' ? selected : 'ksf',commands});
+    const actual = finishLiveAir(f,airCommands(5));
+    expect(actual).toMatchObject({available:true,measuredSeconds:.075});
+    expect(f.references().air).toEqual({loss:null,status:'loading',source});
+    await flush();
+    const combined = f.references().air;
+    expect(combined).toMatchObject({status:'ready',source});
+    f.settings.airMetric = 'braking';
+    expect(f.references().air).toEqual({loss:2340,status:'ready',source});
+    f.settings.airMetric = 'missed';
+    const missed = f.references().air;
+    expect(missed.status).toBe('ready');
+    expect(missed.loss).toBeCloseTo(4 * (Math.hypot(1000,30) - 1000),9);
+    expect(combined.loss).toBeCloseTo(2340 + missed.loss,9);
+    expect(f.metrics.snapshot().air).toEqual(actual);
+    expect(f.native()).toEqual({loads:1,steps:commands.length});
+    expect(f.calls()).toEqual(selected === 'ksf' ? {replay:[],route:1} :
+      {replay:[selected === 'pb' ? 'official-pb' : 'rank-one'],route:0});
+  });
+
+  test('matches endpoint visits despite earlier unrelated flights, never global flight sequence or elapsed time', async () => {
+    const f = fixture({source:'fixed',airSource:'pb',commands:airCommands()});
+    const actual = finishLiveAir(f,[contact('c'),...airTicks(6),...airCommands(5)]);
+    expect(actual.sequence).toBe(2);
+    f.references(); await flush();
+    expect(f.references().air).toMatchObject({status:'ready',source:'pb'});
+    const result = await reconstructReferenceReplay({adapter:f.adapter,session:f.session,replay:f.replay(),entry,yieldTask:async () => {}});
+    const reference = result.feedback.flights.get(flightKey(actual));
+    expect(reference.routePrefix).not.toBe(actual.routePrefix);
+    expect(f.references().air.loss).toBe(reference.loss);
+    for (const patch of [
+      {from:null},{to:null},{from:''},{to:''},{from:actual.to,to:actual.from},
+      {from:JSON.stringify(['other-ramp',0,1])},{to:JSON.stringify(['other-ramp',0,1])},
+      {routePrefix:null},{available:false},{loss:NaN}
+    ]) expect(f.controller.update(null,null,{...actual,...patch}).air).toMatchObject({status:'unmatched',loss:null});
+  });
+
+  test('supports first, last and zero-ramp flights only with observed run anchors', async () => {
+    const commands = [{events:['start']},...airTicks(),contact('a'),...airTicks(5),{...finish,events:['finish']}];
+    const f = fixture({source:'fixed',airSource:'pb',commands});
+    let first;
+    for (const command of commands) {
+      f.step(command);
+      if (command.brush) first = f.metrics.snapshot().air;
+    }
+    const last = f.metrics.snapshot().air;
+    expect(first.from).toBe(JSON.stringify(['start']));
+    expect(last.to).toBe(JSON.stringify(['finish']));
+    f.references(); await flush();
+    expect(f.controller.update(null,null,first).air).toMatchObject({status:'ready',loss:first.loss});
+    expect(f.references().air).toMatchObject({status:'ready',loss:last.loss});
+    const direct = [{events:['start']},...airTicks(),{...finish,events:['finish']}];
+    const zero = fixture({source:'fixed',airSource:'pb',commands:direct});
+    const actual = finishLiveAir(zero,direct);
+    expect(actual).toMatchObject({from:JSON.stringify(['start']),to:JSON.stringify(['finish']),routePrefix:''});
+    zero.references(); await flush();
+    expect(zero.references().air).toMatchObject({status:'ready',loss:actual.loss});
+  });
+
+  test.each(['ground','wall','cold'])('%s boundaries retain ordinary numeric Air but never supply guessed reference endpoints', async boundary => {
+    const commands = boundary === 'cold' ? [...airTicks(),contact('a'),finish] :
+      [contact('a'),...airTicks(),{[boundary]:true},...airTicks(),contact('b'),finish];
+    const f = fixture({source:'fixed',airSource:'pb',commands});
+    const actual = finishLiveAir(f,commands);
+    expect(actual.available).toBe(true);
+    expect(Number.isFinite(actual.loss)).toBe(true);
+    expect(flightKey(actual)).toBeNull();
+    f.references(); await flush();
+    expect(f.references().air).toMatchObject({status:'unmatched',loss:null});
+  });
+
+  test('short flights cannot collect the previously retained summary as a new endpoint pair', async () => {
+    const commands = [contact('a'),...airTicks(),contact('b'),...airTicks(1),contact('c'),finish];
+    const f = fixture({source:'fixed',airSource:'pb',commands});
+    const actual = finishLiveAir(f,[contact('a'),...airTicks(),contact('b'),...airTicks(),contact('c'),finish]);
+    f.references(); await flush();
+    expect(f.references().air).toMatchObject({status:'unmatched',loss:null});
+    const result = await reconstructReferenceReplay({adapter:f.adapter,session:f.session,replay:f.replay(),entry,yieldTask:async () => {}});
+    expect(result.feedback.flights.size).toBe(1);
+    expect(result.feedback.flights.has(flightKey(actual))).toBe(false);
+  });
+
+  test.each(['pb','ksf','leaderboard'])('%s cached flight Maps survive page reload and structured cloning', async selected => {
+    const saved = savedAnalysis(), options = {saved,source:'fixed',airSource:selected === 'pb' ? 'pb' : 'wr',
+      wrSource:selected === 'leaderboard' ? selected : 'ksf',commands:airCommands()};
+    const first = fixture(options);
+    finishLiveAir(first); first.references(); await flush();
+    const expected = first.references().air;
+    expect(expected.status).toBe('ready');
+    const cached = [...saved.data.values()][0].result.feedback.flights;
+    expect(cached instanceof Map).toBe(true);
+    expect(cached.size).toBe(1);
+    first.controller.destroy();
+    const next = fixture(options);
+    finishLiveAir(next); next.references(); await flush();
+    expect(next.references().air).toEqual(expected);
+    expect(next.native()).toEqual({loads:0,steps:0});
+    expect(next.calls()).toEqual({replay:[],route:selected === 'ksf' ? 1 : 0});
+    next.settings.airMetric = 'braking';
+    expect(next.references().air.loss).toBe(2340);
+  });
+
+  test('switches Air WR sources without disturbing PB consumers or recomputing cached components', async () => {
+    const f = fixture({airSource:'wr',commands:airCommands()});
+    const calls = {replay: [], route: 0};
+    f.setRouteLoader(async () => { calls.route++; return {...f.replay(),commands:airCommands(5)}; });
+    f.setLoader(async id => { calls.replay.push(id); return {...f.replay(),commands:airCommands(id === 'rank-one' ? 6 : 4)}; });
+    finishLiveAir(f); f.settings.airMetric = 'braking'; f.references(); await flush();
+    expect(f.references()).toMatchObject({board:{status:'ready',source:'pb'},air:{status:'ready',source:'wr',loss:2925}});
+    f.settings.wrSource = 'leaderboard';
+    expect(f.references()).toMatchObject({board:{status:'ready'},air:{status:'loading',loss:null}});
+    await flush();
+    expect(f.references().air.loss).toBe(3510);
+    f.settings.airColorReference = 'pb';
+    expect(f.references().air).toEqual({status:'ready',source:'pb',loss:2340});
+    f.settings.airColorReference = 'wr'; f.settings.wrSource = 'ksf';
+    expect(f.references().air.loss).toBe(2925);
+    expect(calls).toEqual({replay:['official-pb','rank-one'],route:1});
+    expect(f.native().loads).toBe(3);
+  });
+
+  test('freezes the Air PB baseline through a finish and adopts a new PB only for the next run', async () => {
+    const f = fixture({source:'fixed',airSource:'pb',commands:airCommands()});
+    const calls = [];
+    f.setLoader(async id => { calls.push(id); return {...f.replay(),commands:airCommands(id === 'new-pb' ? 5 : 4)}; });
+    for (const command of airCommands().slice(0,-1)) f.step(command);
+    f.settings.airMetric = 'braking'; f.references(); await flush();
+    f.setOwn({...entry,runId:'new-pb'});
+    f.step({...finish,events:['finish']});
+    expect(f.references().air.loss).toBe(2340);
+    expect(calls).toEqual(['official-pb']);
+    f.session.timer.state.phase = 'ready';
+    expect(f.references().air.status).toBe('loading'); await flush();
+    expect(f.references().air.loss).toBe(2925);
+    expect(calls).toEqual(['official-pb','new-pb']);
+  });
+
+  test('shares Air with checkpoint, Touch, Surf and identical official WR consumers', async () => {
+    const commands = [...Array(4).fill(contact('a')),...airTicks(),...Array(4).fill(contact('b')),{...finish,events:['finish']}];
+    const f = fixture({shared:true,source:'pb',surfSource:'pb',airSource:'wr',wrSource:'leaderboard',commands});
+    f.setRecord(entry);
+    const checkpoints = checkpointsFor(f,{checkpointReference:'both',wrSource:'leaderboard'});
+    finishLiveAir(f,commands); checkpoints.update(); f.references(); await flush();
+    expect(checkpoints.update()).toMatchObject({ownStatus:'ready',recordStatus:'ready'});
+    expect(f.references()).toMatchObject({board:{status:'ready'},surf:{status:'ready'},air:{status:'ready'}});
+    expect(f.calls()).toEqual({replay:['official-pb'],route:0});
+    expect(f.native()).toEqual({loads:1,steps:commands.length});
+  });
+
+  test('hidden, live and Zen Air consumers stay fixed and reuse cached feedback when restored', async () => {
+    const f = fixture({source:'fixed',airSource:'pb',commands:airCommands()});
+    finishLiveAir(f);
+    for (const patch of [{showAir:false},{continuousFeedback:true},{zen:true},{hud:false}]) {
+      Object.assign(f.settings,{showAir:true,continuousFeedback:false,zen:false,hud:true},patch);
+      expect(f.references().air).toEqual({status:'ready',loss:null,source:'fixed'});
+      await flush();
+      expect(f.native().loads).toBe(0);
+    }
+    Object.assign(f.settings,{showAir:true,continuousFeedback:false,zen:false,hud:true});
+    expect(f.controller.update(null,null,f.metrics.snapshot().air,false).air.source).toBe('fixed');
+    f.references(); await flush();
+    const expected = f.references().air;
+    expect(expected.status).toBe('ready');
+    f.settings.showAir = false; f.references();
+    f.settings.showAir = true;
+    expect(f.references().air).toEqual(expected);
+    expect(f.native().loads).toBe(1);
+  });
+
+  test('hiding pending Air preserves active Touch and resumes the same downloaded Air replay', async () => {
+    const f = fixture({airSource:'wr',commands:airCommands()});
+    let release;
+    f.setRouteLoader(() => new Promise(resolve => { release = resolve; }));
+    finishLiveAir(f); f.references(); await flush();
+    f.settings.showAir = false; f.references();
+    release(f.replay()); await flush();
+    expect(f.references()).toMatchObject({board:{status:'ready'},air:{source:'fixed'}});
+    expect(f.native().loads).toBe(1);
+    f.settings.showAir = true; f.references(); await flush();
+    expect(f.references().air.status).toBe('ready');
+    expect(f.native().loads).toBe(2);
+  });
+
+  test.each(['physics','map','course','missing','no-flight'])('%s references never substitute fixed thresholds or another flight', async scenario => {
+    const f = fixture({source:'fixed',airSource:'wr',commands:airCommands()});
+    if (scenario === 'physics') f.setReplay({...f.replay(),config:{...f.session.config,gravity:600}});
+    if (scenario === 'map') f.setReplay({...f.replay(),mapId:'other'});
+    if (scenario === 'course') f.setReplay({...f.replay(),mapVersion:'map-1/bonus-1'});
+    if (scenario === 'missing') f.setRouteLoader(async () => null);
+    if (scenario === 'no-flight') f.setReplay({...f.replay(),commands:[contact('a'),contact('b'),finish]});
+    finishLiveAir(f); f.references(); await flush();
+    expect(f.references().air).toEqual({status:scenario === 'missing' ? 'missing' : 'unmatched',source:'wr',loss:null});
+  });
+
+  test('checkpoint-only native passes do not construct Air feedback', async () => {
+    const f = fixture({source:'fixed',commands:airCommands()});
+    const result = await reconstructReferenceReplay({adapter:f.adapter,session:f.session,replay:f.replay(),entry,
+      feedback:false,yieldTask:async () => {}});
+    expect(result).toMatchObject({feedback:null,feedbackTried:false,checkpoint:{speeds:[]}});
+    expect(f.feedbackSteps()).toBe(0);
+  });
+
+  test('pre-Air development analysis is invalidated instead of accepting feedback without flight data', async () => {
+    const saved = savedAnalysis(), options = {saved,source:'fixed',airSource:'pb',commands:airCommands()};
+    const first = fixture(options);
+    finishLiveAir(first); first.references(); await flush();
+    const [id,cached] = [...saved.data][0];
+    delete cached.result.feedback.flights;
+    saved.data.clear();
+    saved.data.set(`dev-touch-exit${id.slice(id.indexOf('|'))}`,cached);
+    first.controller.destroy();
+    const next = fixture(options);
+    finishLiveAir(next); next.references(); await flush();
+    expect(next.references().air.status).toBe('ready');
+    expect(next.calls().replay).toEqual(['official-pb']);
+    expect(next.native().loads).toBe(1);
+  });
+});
+
+test('Air releases its pending native pass while hidden and resumes without repeating commands', async () => {
+  let yields = 0, resume;
+  const commands = airCommands(40);
+  const f = fixture({source:'fixed',airSource:'pb',commands,yieldTask:async () => {
+    if (++yields === 2) await new Promise(resolve => { resume = resolve; });
+  }});
+  finishLiveAir(f); f.references(); await flush();
+  const paused = f.native().steps;
+  expect(paused).toBeGreaterThan(0);
+  expect(paused).toBeLessThan(commands.length);
+  f.settings.showAir = false; f.references();
+  resume(); await flush();
+  expect(f.native().steps).toBe(paused);
+  expect(f.adapter.Session.prototype.step).toBe(f.liveStep);
+  expect(f.adapter.Movement.prototype.slide).toBe(f.liveSlide);
+  f.settings.showAir = true; f.references(); await flush();
+  expect(f.references().air.status).toBe('ready');
+  expect(f.native()).toEqual({loads:1,steps:commands.length});
+  expect(f.calls().replay).toEqual(['official-pb']);
+});
+
+test('Air never retains a ready comparison after the live map disappears', async () => {
+  const f = fixture({source:'fixed',airSource:'pb',commands:airCommands()});
+  finishLiveAir(f); f.references(); await flush();
+  expect(f.references().air.status).toBe('ready');
+  f.session.map = null;
+  expect(f.references().air).toEqual({source:'pb',status:'missing',loss:null});
 });

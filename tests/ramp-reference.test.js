@@ -547,3 +547,40 @@ describe('touch reference snapshots', () => {
     expect(f.acquired).toHaveLength(2);
   });
 });
+
+describe('ramp reference movement context changes', () => {
+  test('reconsiders an incompatible summary after the session adopts its movement rules', async () => {
+    const f = rig();
+    f.session.config = {dt: .02};
+    const incompatible = f.consumer.get('utopia:3', 'pb');
+    f.finish();
+    await Promise.resolve();
+    expect(incompatible.status).toBe('missing');
+    expect(f.consumer.get('utopia:3', 'pb')).toBe(incompatible);
+    expect(f.acquired).toHaveLength(1);
+    f.session.config = {dt: .015};
+    const compatible = f.consumer.get('utopia:3', 'pb');
+    expect(compatible).not.toBe(incompatible);
+    expect(compatible.status).toBe('ready');
+    expect(compatible.ramps.get('[7,0,1]').board).toBe(3);
+    expect(f.acquired).toHaveLength(2);
+    f.reference.destroy();
+  });
+
+  test('a pending summary cannot publish under replacement movement rules', async () => {
+    const f = rig();
+    const first = f.consumer.get('utopia:3', 'pb');
+    f.session.config = {dt: .02};
+    expect(f.acquired[0].isCurrent()).toBe(false);
+    const next = f.consumer.get('utopia:3', 'pb');
+    expect(next).not.toBe(first);
+    expect(f.acquired[0].released).toBe(true);
+    f.finish(0);
+    await Promise.resolve();
+    expect(next.status).toBe('loading');
+    f.finish(1, {config: {dt: .02}, feedback: {route: {indices: new Map(), boards: []}}});
+    await Promise.resolve();
+    expect(next.status).toBe('ready');
+    f.reference.destroy();
+  });
+});

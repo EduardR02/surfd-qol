@@ -12,6 +12,7 @@ const MAX_GAP = 0.5;
 
 export function createEnergyTrend() {
   let lastTime = NaN, lastEnergy = NaN, lastX = NaN, lastY = NaN, lastZ = NaN;
+  let lastTick = NaN, lastDucked, lastGrounded, lastGravity = NaN;
   let rate = 0, tone = 'neutral';
   const result = { tone: 'neutral', level: 0, rate: 0 };
   function publish() {
@@ -22,6 +23,8 @@ export function createEnergyTrend() {
   }
   function reset() {
     lastTime = lastEnergy = lastX = lastY = lastZ = NaN;
+    lastTick = lastGravity = NaN;
+    lastDucked = lastGrounded = undefined;
     rate = 0;
     tone = 'neutral';
     return publish();
@@ -31,11 +34,19 @@ export function createEnergyTrend() {
   // baseline, so the trend responds immediately once suppression ends.
   // live: the tone is the gain or loss since the last sample alone, with no
   // averaging or hysteresis, so every costly input shows.
-  function sample({ x, y, z, vx, vy, vz, time }, gravity, suppressed = false, live = false) {
+  function sample({ x, y, z, vx, vy, vz, time, tick, ducked, grounded, duckShift }, gravity, suppressed = false, live = false) {
     if (![x, y, z, vx, vy, vz, time, gravity].every(Number.isFinite)) return reset();
     const speedSquared = vx * vx + vy * vy + vz * vz;
     const energy = speedSquared + 2 * gravity * z;
     const dt = time - lastTime;
+    const hullChanged = typeof ducked === 'boolean' && typeof lastDucked === 'boolean' && ducked !== lastDucked;
+    // Only consecutive native ticks identify whether duck() moved the origin:
+    // airborne transitions shift it; ground transitions don't. Across skipped
+    // ticks the takeoff/landing order is unknown, so start a new baseline.
+    const unknownHullShift = hullChanged && (tick - lastTick !== 1 ||
+      typeof lastGrounded !== 'boolean' || !Number.isFinite(duckShift));
+    const originShift = hullChanged && !unknownHullShift && !lastGrounded ? (ducked ? duckShift : -duckShift) : 0;
+    const energyChange = energy - lastEnergy - 2 * gravity * originShift;
     if (dt === 0) {
       if (suppressed) { rate = 0; tone = 'neutral'; }
       return publish();
@@ -44,14 +55,16 @@ export function createEnergyTrend() {
     // Restarts, seeks and teleports move the player further than its own
     // velocity could; they start a fresh baseline instead of a fake spike.
     const jumped = Math.hypot(x - lastX, y - lastY, z - lastZ) > Math.max(speed, MIN_SPEED) * dt * 2 + 64;
-    if (!(dt > 0) || dt > MAX_GAP || jumped || suppressed) {
+    if (!(dt > 0) || dt > MAX_GAP || jumped || suppressed || unknownHullShift || gravity !== lastGravity) {
       reset();
       lastTime = time; lastEnergy = energy; lastX = x; lastY = y; lastZ = z;
+      lastTick = tick; lastDucked = ducked; lastGrounded = grounded; lastGravity = gravity;
       return publish();
     }
-    const instant = (energy - lastEnergy) / dt / (2 * Math.max(speed, MIN_SPEED));
+    const instant = energyChange / dt / (2 * Math.max(speed, MIN_SPEED));
     rate = live ? instant : rate + (instant - rate) * (1 - Math.exp(-dt / TIME_CONSTANT));
     lastTime = time; lastEnergy = energy; lastX = x; lastY = y; lastZ = z;
+    lastTick = tick; lastDucked = ducked; lastGrounded = grounded; lastGravity = gravity;
     if (live || (tone === 'good' ? rate < EXIT : tone === 'loss' ? rate > -EXIT : true)) {
       tone = rate > ENTER ? 'good' : rate < -ENTER ? 'loss' : 'neutral';
     }
@@ -62,9 +75,10 @@ export function createEnergyTrend() {
 
 // Interpolated network poses do not conserve mechanical energy between frames.
 // Only exact simulated ticks (local play and replays) can measure energy work.
-export function energySample(state, dt, spectator) {
+export function energySample(state, dt, spectator, config = {}) {
   if (spectator) return null;
   const position = state?.position, velocity = state?.velocity;
   if (!position || !velocity || !Number.isFinite(state.tick)) return null;
-  return { x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z, time: state.tick * dt };
+  return { x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z, time: state.tick * dt,
+    tick: state.tick, ducked: state.ducked, grounded: state.grounded, duckShift: (config.standHeight - config.duckHeight) / 2 };
 }

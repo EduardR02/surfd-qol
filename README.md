@@ -39,15 +39,15 @@ The values, all in u/s. Each stays until the next ramp or flight replaces it, so
 
 | Value | What it measures |
 |---|---|
-| **TOUCH** | Speed clipped off when you land on a ramp. Height conversion doesn't count. |
+| **TOUCH** | Full 3D speed clipped off when you land on a ramp. Height conversion doesn't count. |
 | **DOWN** | What the ramp cost on the way down, from the touch (included) to the lowest point. |
 | **UP** | What it cost from the lowest point to where you left the ramp. |
-| **AIR** | Your last flight: speed lost to braking plus gain missed by imperfect strafes. |
+| **AIR** | Your last flight: horizontal speed lost to braking plus gain missed by imperfect strafes. |
 | **SURF** | The whole ramp, touch included: Down + Up. |
 
-Down and Up are measured against perfect gravity-only conversion, so climbing a ramp never counts as a loss. **Net Surf** is the default; choose **Down + Up** under **QoL → Feedback → Show as** to split it.
+Down and Up include vertical speed and account for height, so climbing a ramp never counts as a loss. **Net Surf** is the default; choose **Down + Up** under **QoL → Feedback → Show as** to split it.
 
-Don't chase zero: surfing always bleeds some speed, and even the KSF record loses 34 u/s going down Cannonball's second ramp. That's why the default compares you against a reference run.
+Don't chase zero: surfing usually bleeds some speed, and even the KSF record loses 34 u/s going down Cannonball's second ramp. That's why the default compares you against a reference run.
 
 ### Colors
 
@@ -58,13 +58,13 @@ Touch and the ramp values compare against the same ramp in a reference run, your
 - **red**: worse than that
 - **grey**: no matching data (reference still loading, a different route, or no PB on this map)
 
-"WR" means the current course's published KSF record route by default, including bonuses, or Surfd's leaderboard #1 if selected. An unavailable KSF route leaves comparisons empty; it never falls back to the main course or leaderboard. You can also grade any value against fixed cutoffs. Air always uses fixed cutoffs. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
+"WR" means the current course's published KSF record route by default, including bonuses, or Surfd's leaderboard #1 if selected. An unavailable KSF route leaves comparisons empty; it never falls back to the main course or leaderboard. You can also grade any value against fixed cutoffs. Air defaults to WR and compares the same flight. A worse number is a measurement, not proof of a mistake: a different line or entry speed changes it too.
 
 ### Start and checkpoints
 
-For 1.8 seconds after you leave the start zone you see your exit **speed** (350 is the airborne cap, 325 grounded; current-rule boosted starts are uncapped), your **height** above the start platform (lower is better; crouching doesn't fake it) and your strafe sync. Grade them against fixed targets, your PB or the WR.
+For 1.8 seconds after you leave the start zone you see your exit **horizontal speed** (350 is the airborne cap, 325 grounded; current-rule boosted starts are uncapped), your **height** above the start platform (lower is better) and your strafe sync. Grade them against fixed targets, your PB or the WR.
 
-At each checkpoint you get time and speed deltas against your PB, the WR or both. The reference comes from the full replay, never per-checkpoint bests.
+At each checkpoint you get time and horizontal speed deltas against your PB, the WR or both. The reference comes from the full replay, never per-checkpoint bests.
 
 ![The full HUD on Utopia just after a checkpoint, as replays show it: the split with its PB and KSF deltas, the timer and sync, the speed, and the ramp bar with air, touch and surf written out under it](docs/hud-full.jpg)
 
@@ -143,7 +143,7 @@ Getting back into a map you've played recently is much faster than in the native
 ## Optional extras
 
 - **Live feedback** (off by default): a row of continuously updating values instead of the ramp bar. Meant for watching replays.
-- **Tint speed by energy** (experimental, off by default): the speed number turns red while you lose energy, counting speed and height together, so only strafe gains, braking, clips and friction count. Ramps are excluded unless you turn on **Include ramps**. **Per tick** shows each tick's own loss instead of a short average.
+- **Tint speed by energy** (on by default): the speed number turns red while you lose energy, counting horizontal and vertical speed and height together, so only strafe gains, braking, clips and friction count. Ramps are excluded unless you turn on **Include ramps**. **Instant** is on by default and shows changes between sampled ticks instead of a short average.
 
 ## Is it safe for ranked runs?
 

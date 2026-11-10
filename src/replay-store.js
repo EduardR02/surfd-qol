@@ -20,7 +20,7 @@ const micros = seconds => Math.round(seconds * 1e6);
 const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && speeds.every(speed => Number.isFinite(speed) && speed >= 0 && speed <= 100000);
 // Saved analysis outlives the page. Its key carries a hash of the extension's
 // source (set by build.js), so changed analysis code never reuses old results.
-const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev-touch-exit';
+const ANALYSIS = typeof __QOL_ANALYSIS__ === 'string' ? __QOL_ANALYSIS__ : 'dev-air-flights';
 // The KSF record route has no ID, so a saved analysis of it is matched by
 // a fingerprint of the downloaded route.
 export function routeFingerprint(replay) {
@@ -37,6 +37,12 @@ export function visitKey(measurement) {
     Number.isSafeInteger(measurement.checkpoint) && measurement.checkpoint >= 0 &&
     Number.isSafeInteger(measurement.visit) && measurement.visit > 0
     ? JSON.stringify([measurement.surfaceId, measurement.checkpoint, measurement.visit]) : null;
+}
+
+export function flightKey(measurement) {
+  return measurement && typeof measurement.from === 'string' && measurement.from.length > 0 &&
+    typeof measurement.to === 'string' && measurement.to.length > 0 && typeof measurement.routePrefix === 'string'
+    ? JSON.stringify([measurement.from, measurement.to]) : null;
 }
 
 function routeCollector() {
@@ -145,9 +151,10 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   const metrics = feedbackCompatible ? createMetrics({}, {referenceOnly: true}) : null;
   const collect = metrics ? routeCollector() : null;
   const startFeedback = metrics ? createStartFeedback() : null;
+  const flights = metrics ? new Map() : null, seenFlights = metrics ? new Set() : null;
   // Restoring prototypes is not a run reset. No observer survives an await.
   const observed = metrics ? {...metrics, reset() {}} : null;
-  let active = null, failed = false, dropped = false, fell = false, surfSequence = 0, boardRevision = -1;
+  let active = null, failed = false, dropped = false, fell = false, surfSequence = 0, airSequence = 0, boardRevision = -1;
   const shadowAdapter = {Session: adapter.Session, Movement: adapter.Movement, getSession: () => active};
   for (let index = 0; index < replay.commands.length;) {
     // No observer is installed between slices, so waiting here holds nothing.
@@ -167,6 +174,20 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
               if (revision !== boardRevision) { boardRevision = revision; collect.observe(metrics.boardSnapshot(), index); }
               const surf = metrics.surfSnapshot(surfSequence);
               if (surf) { surfSequence = surf.sequence; collect.observeSurf(surf); }
+              const air = metrics.airSnapshot(airSequence);
+              if (air) {
+                airSequence = air.sequence;
+                const key = flightKey(air);
+                if (key) {
+                  if (seenFlights.has(key)) flights.delete(key);
+                  else if (air.available && [air.loss, air.brakingLoss, air.missedGain, air.measuredSeconds].every(Number.isFinite) &&
+                    air.measuredSeconds > 0) {
+                    flights.set(key, {from: air.from, to: air.to, routePrefix: air.routePrefix,
+                      loss: air.loss, brakingLoss: air.brakingLoss, missedGain: air.missedGain, measuredSeconds: air.measuredSeconds});
+                  }
+                  seenFlights.add(key);
+                }
+              }
             },
             onReset() { if (active) failed = true; }, onError() { failed = true; }
           });
@@ -204,6 +225,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
   return {...tried, feedbackTried: feedbackCompatible && !dropped, checkpoint, feedback: metrics && !failed && !dropped ? {
     dt: replay.config.dt,
     route: collect.finish(),
+    flights,
     start: start.available && Number.isFinite(start.speed) ? {
       speed: start.speed, heightAboveFloor: Number.isFinite(start.heightAboveFloor) ? start.heightAboveFloor : null
     } : null

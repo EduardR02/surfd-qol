@@ -1,4 +1,4 @@
-import { createReferenceReplayStore, feedbackApplies, visitKey } from './replay-store.js';
+import { createReferenceReplayStore, feedbackApplies, flightKey, visitKey } from './replay-store.js';
 import { analysisKey, recordReferenceSource, referenceIdentity } from './references.js';
 import { hasStepped, whenIdle } from './reference-hold.js';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -57,7 +57,8 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const selected = () => visible && settings.hud !== false && (
       settings.continuousFeedback !== true && settings.zen !== true &&
         (settings.showBoard !== false && settings.boardColorReference === source ||
-          settings.showSurf !== false && settings.surfColorReference === source) ||
+          settings.showSurf !== false && settings.surfColorReference === source ||
+          settings.showAir !== false && settings.airColorReference === source) ||
       settings.showStart !== false && settings.startColorReference === source);
     const isCurrent = () => !destroyed && selected() && slots.get(source) === requested &&
       (source !== 'wr' || recordReferenceSource(settings) === wrSource) &&
@@ -96,6 +97,19 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     if (!reference?.valid || !Number.isFinite(reference[field])) return result('unmatched');
     return result('ready', reference[field]);
   }
+  function airResult(measurement, source) {
+    const result = (status, loss = null) => ({loss, status, source});
+    if (destroyed) return result('missing');
+    if (source === 'fixed') return result('ready');
+    const slot = slots.get(source);
+    if (!slot || slot.status !== 'ready') return result(slot?.status ?? 'missing');
+    const key = flightKey(measurement);
+    const field = settings.airMetric === 'braking' ? 'brakingLoss' : settings.airMetric === 'missed' ? 'missedGain' : 'loss';
+    if (!measurement?.available || !Number.isFinite(measurement[field]) || !key) return result('unmatched');
+    const reference = slot.reference.flights?.get(key);
+    if (flightKey(reference) !== key || !Number.isFinite(reference[field])) return result('unmatched');
+    return result('ready', reference[field]);
+  }
   function startResult(source) {
     const result = (status, start = null) => ({
       speed: start?.speed ?? null, heightAboveFloor: start?.heightAboveFloor ?? null, status, source
@@ -107,7 +121,7 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const start = slot.reference.start;
     return start ? result('ready', start) : result('unmatched');
   }
-  function update(board, surf, active = true) {
+  function update(board, surf, air, active = true) {
     visible = active;
     const enabled = active && settings.hud !== false;
     const boardSource = enabled && settings.zen !== true && settings.showBoard !== false && settings.continuousFeedback !== true &&
@@ -117,9 +131,13 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     const surfSource = enabled && settings.zen !== true && settings.showSurf !== false &&
       settings.continuousFeedback !== true && ['pb', 'wr'].includes(settings.surfColorReference)
       ? settings.surfColorReference : 'fixed';
+    const airSource = enabled && settings.zen !== true && settings.showAir !== false &&
+      settings.continuousFeedback !== true && ['pb', 'wr'].includes(settings.airColorReference)
+      ? settings.airColorReference : 'fixed';
     const result = () => ({
       board: visitResult(board, boardSource, 'loss'), start: startResult(startSource),
       surf: visitResult(surf, surfSource, 'surfLoss'),
+      air: airResult(air, airSource),
       down: visitResult(surf, surfSource, 'downLoss'), up: visitResult(surf, surfSource, 'upLoss')
     });
     if (destroyed) return result();
@@ -147,12 +165,13 @@ export function createRunReferences({getSession, getReferences, getAdapter, repl
     }
     if (timer.phase === 'ready') freezePersonal(refs?.own);
     previousTick = session.state.tick; phase = timer.phase;
-    for (const [source, slot] of slots) if (source !== boardSource && source !== startSource && source !== surfSource) {
+    for (const [source, slot] of slots) if (source !== boardSource && source !== startSource && source !== surfSource && source !== airSource) {
       drop(slot); slots.delete(source);
     }
     if (boardSource !== 'fixed') request(session, refs, boardSource);
     if (startSource !== 'fixed' && startSource !== boardSource) request(session, refs, startSource);
     if (surfSource !== 'fixed' && surfSource !== boardSource && surfSource !== startSource) request(session, refs, surfSource);
+    if (airSource !== 'fixed' && airSource !== boardSource && airSource !== startSource && airSource !== surfSource) request(session, refs, airSource);
     if (hasStepped(session)) for (const slot of slots.values()) if (slot.held && !slot.idle) {
       slot.idle = whenIdle(() => {
         const start = slot.held;

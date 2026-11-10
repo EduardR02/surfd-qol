@@ -729,3 +729,52 @@ describe('HUD numeric formatting', () => {
     expect(referenceTone(Infinity, 10)).toBe('muted');
   });
 });
+
+describe('persisted checkpoint reference schema', () => {
+  test.each([[[]], [[700]], [[700, 800, 900]]])('reconstructs cached speeds whose count differs from the official splits: %j', async speeds => {
+    const session = makeSession(), storage = memoryStorage();
+    const key = `${sessionKey(session, 'board')}:${referenceIdentity(entry)}`;
+    storage.setItem('surfd.qol.checkpoints.v1', JSON.stringify({cache: [[key, speeds]]}));
+    let downloads = 0;
+    const refs = createCheckpointReferences({
+      getSession: () => session, getSessionClass: () => ReplaySession,
+      getReferences: () => ({boardId: 'board', own: entry, loadReplay: async () => {
+        downloads++; return replayFor(session);
+      }}),
+      settings: {checkpointReference: 'pb'}, storage, yieldTask: instantYield,
+    });
+    expect(refs.update()).toMatchObject({own: null, ownStatus: 'loading'});
+    await microtasks();
+    expect(refs.update()).toMatchObject({own: [900, 1200], ownStatus: 'ready'});
+    expect(downloads).toBe(1);
+    refs.destroy();
+  });
+
+  test.each([['12'], [[null, 8e6]], [[-1, 8e6]], [[5e6 + .5, 8e6]]])('ignores a local PB with invalid persisted splits: %j', splitsUs => {
+    const session = makeSession(), storage = memoryStorage();
+    const key = JSON.stringify([sessionKey(session, 'board'), 'guest']);
+    storage.setItem('surfd.qol.checkpoints.v1', JSON.stringify({personal: [[key, {
+      ownerKey: 'guest', timeUs: 9e6, splitsUs, speeds: [700, 800], runId: null,
+    }]]}));
+    const refs = createCheckpointReferences({
+      getSession: () => session, getReferences: () => ({boardId: 'board'}),
+      settings: {checkpointReference: 'pb'}, storage,
+    });
+    expect(refs.update()).toMatchObject({own: null, ownEntry: null, ownStatus: 'missing'});
+    refs.destroy();
+  });
+
+  test.each([Infinity, NaN, Number.MAX_SAFE_INTEGER])('never saves a local finish with invalid microsecond time: %s', elapsed => {
+    const session = makeSession(), storage = memoryStorage();
+    const refs = createCheckpointReferences({
+      getSession: () => session, getReferences: () => ({boardId: 'board'}),
+      settings: {checkpointReference: 'pb'}, storage,
+    });
+    refs.update();
+    session.timer.state.phase = 'running'; session.timer.state.startTick = 0; refs.update();
+    finish(session, elapsed, [700, 800]); refs.update();
+    restart(session);
+    expect(refs.update()).toMatchObject({own: null, ownEntry: null, ownStatus: 'missing'});
+    refs.destroy();
+  });
+});

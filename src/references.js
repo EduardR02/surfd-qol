@@ -4,13 +4,15 @@ import { hasStepped, whenIdle } from './reference-hold.js';
 const CACHE_KEY = 'surfd.qol.checkpoints.v1';
 const defer = () => new Promise(resolve => setTimeout(resolve, 0));
 const validSpeeds = speeds => Array.isArray(speeds) && speeds.length <= 64 && speeds.every(speed => Number.isFinite(speed) && speed >= 0 && speed <= 100000);
+const validTiming = entry => Number.isSafeInteger(entry?.timeUs) && entry.timeUs > 0 && Array.isArray(entry.splitsUs) &&
+  entry.splitsUs.length <= 64 && entry.splitsUs.every(value => Number.isSafeInteger(value) && value >= 0);
 const micros = seconds => Math.round(seconds * 1e6);
 const sameSplits = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]);
 
 export const recordReferenceSource = settings => settings.wrSource === 'leaderboard' ? 'leaderboard' : 'ksf';
 
 export function referenceIdentity(entry) {
-  return entry && entry.runId != null && Number.isSafeInteger(entry.timeUs) && entry.timeUs > 0 && Array.isArray(entry.splitsUs) && entry.splitsUs.length <= 64 && entry.splitsUs.every(value => Number.isSafeInteger(value) && value >= 0)
+  return entry && entry.runId != null && validTiming(entry)
     ? JSON.stringify([entry.runId, entry.timeUs, entry.splitsUs]) : null;
 }
 
@@ -58,7 +60,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     const saved = JSON.parse(storage?.getItem(CACHE_KEY) ?? 'null');
     for (const [key, value] of saved?.cache ?? []) if (typeof key === 'string' && validSpeeds(value)) cache.set(key, value);
     for (const [key, value] of saved?.personal ?? []) {
-      if (typeof key === 'string' && typeof value?.ownerKey === 'string' && Number.isSafeInteger(value.timeUs) && value.timeUs > 0 && validSpeeds(value.speeds) && value.speeds.length === value.splitsUs?.length) personal.set(key, value);
+      if (typeof key === 'string' && typeof value?.ownerKey === 'string' && validTiming(value) && validSpeeds(value.speeds) && value.speeds.length === value.splitsUs.length) personal.set(key, value);
     }
   } catch { /* Private browsing or an incompatible cache must not affect play. */ }
   let live = null, adapter = null, context = '', analysis = '', map = null, mapId = null, mapVersion = null, config = null, format = null, board = null;
@@ -106,7 +108,8 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
     clear(slot);
     slot.key = key;
     const cacheKey = identity ? `${context}:${identity}` : '';
-    slot.speeds = exact ?? (cacheKey ? cache.get(cacheKey) : null) ?? null;
+    const cached = cacheKey ? cache.get(cacheKey) : null;
+    slot.speeds = exact ?? (cached?.length === entry?.splitsUs.length ? cached : null) ?? null;
     slot.splitsUs = entry?.splitsUs ?? null;
     slot.timeUs = entry?.timeUs ?? null;
     slot.status = slot.speeds ? 'ready' : key ? 'loading' : 'missing';
@@ -229,7 +232,7 @@ export function createCheckpointReferences({getSession, getReferences, getSessio
       finished = true;
       const timeUs = micros(timer.elapsed), splitsUs = timer.splits.map(micros);
       const old = personal.get(personalContext);
-      if (runOwned && !session.practice && !timer.invalidReason && timeUs > 0 && validSpeeds(session.checkpointSpeeds) && session.checkpointSpeeds.length === splitsUs.length && (!baseline || timeUs < baseline.timeUs) && (!old || timeUs < old.timeUs)) {
+      if (runOwned && !session.practice && !timer.invalidReason && validTiming({timeUs, splitsUs}) && validSpeeds(session.checkpointSpeeds) && session.checkpointSpeeds.length === splitsUs.length && (!baseline || timeUs < baseline.timeUs) && (!old || timeUs < old.timeUs)) {
         completed = {ownerKey, timeUs, splitsUs, speeds: session.checkpointSpeeds.slice(), runId: null};
         personal.set(personalContext, completed);
         save();

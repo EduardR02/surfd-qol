@@ -70,19 +70,22 @@ const MIN_SPAN = 50;
 // what the reference ramp did. When you beat the reference, a track fills
 // the rest up to the tick at the end. Pure, so it is tested without a DOM.
 //
-// Losses can be negative (a booster, a push, a gain in the air): a gain takes
-// no room, and the bar spans exactly what it draws, so nothing runs past it.
+// A gain takes no room. If a phase recovers earlier losses, draw only the
+// net ramp: stacking positive phases would falsely put it past the reference.
 export function meterLayout(meter, full) {
   const width = full ? 260 : 172, x0 = -width / 2, gap = 2;
   const {board, down, up, surf, air} = meter;
   const room = item => Number.isFinite(item?.value) && item.value > 0 ? item.value : 0;
   const flight = room(air);
-  // Where each part of the ramp ends, from the flight's end. DOWN and SURF
-  // include the board, so they never end before it.
   const boardEnd = room(board);
+  const net = room(surf);
+  const phases = meter.split && down && up;
+  const monotonic = Number.isFinite(surf?.value) && net >= boardEnd &&
+    (!phases || down.value >= boardEnd && up.value >= 0 && Math.abs(down.value + up.value - surf.value) < 1e-6);
   const ends = meter.fresh ? [['board', boardEnd, board]]
-    : meter.split && down && up ? [['board', boardEnd, board], ['down', Math.max(boardEnd, room(down)), down], ['up', Math.max(boardEnd, room(down)) + room(up), up]]
-    : surf ? [['board', boardEnd, board], ['down', Math.max(boardEnd, room(surf)), surf]]
+    : surf && !monotonic ? [['down', net, surf]]
+    : phases ? [['board', boardEnd, board], ['down', room(down), down], ['up', net, up]]
+    : surf ? [['board', boardEnd, board], ['down', net, surf]]
     : [['board', boardEnd, board]];
   // A new ramp has cost only its board so far; a finished one, its whole loss.
   const ramp = ends.at(-1)[1];
@@ -176,6 +179,7 @@ export function createHudView(element) {
       number(key, item.text);
       text(`${key}Label`, item.label);
       cls(parts[key], `m-value ${tone(item.tone)}${item.stale ? ' stale' : ''}`);
+      title(parts[key], item.title);
       place(parts[key], `left:${center.toFixed(1)}px`);
     };
     under('meterAir', geometry.airCenter, model.air);
@@ -189,6 +193,7 @@ export function createHudView(element) {
       number(`${name}Value`, item.text);
       cls(nums[`${name}Value`], `val ${tone(item.tone)}`);
       cls(parts[`${name}Slot`], item.stale ? 'slot stale' : 'slot');
+      title(parts[`${name}Slot`], item.title);
     }
   }
 
@@ -233,6 +238,8 @@ export function createHudView(element) {
         cls(texts.startSpeed, `val ${tone(start.speed.tone)}`);
         cls(nums.startHeight, `val ${tone(start.height.tone)}`);
         title(parts.start, start.title);
+        title(texts.startSpeed, start.speed.title);
+        title(nums.startHeight, start.height.title);
         const sync = model.startSync ?? {hidden: true};
         hide(texts.startSync, sync.hidden !== false);
         if (sync.hidden === false) { text('startSync', sync.text); cls(texts.startSync, `start-sync ${tone(sync.tone)}`); }

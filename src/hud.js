@@ -220,9 +220,13 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
       const speed = spectator ? Math.hypot(pose?.vx, pose?.vy) : Math.hypot(state?.velocity?.x, state?.velocity?.y);
       hud.setSpeed(Number.isFinite(speed) ? speed.toFixed(0) : '—');
       if (energyOn) {
-        const sample = energySample(state, session?.config?.dt ?? 0.015, spectator);
+        const sample = energySample(state, session?.config?.dt ?? 0.015, spectator, session?.config);
+        // Match the sampled native tick, not the HUD model's 67 ms cadence.
+        const contacts = session?.lastResult?.contacts;
+        const onRamp = contacts ? contacts.some(({normal}) => normal?.z > 0 && normal.z < session.config.groundNormal)
+          : lastMotion === 'surf';
         const result = sample
-          ? trend.sample(sample, session?.config?.gravity ?? 800, settings.speedEnergyRamps !== true && lastMotion === 'surf', energyLive)
+          ? trend.sample(sample, session?.config?.gravity ?? 800, settings.speedEnergyRamps !== true && onRamp, energyLive)
           : trend.reset();
         hud.setEnergy(result.tone, energyLive);
       }
@@ -253,7 +257,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     const metrics = spectator ? null : getMetrics?.();
     const active = inSurf && !spectator;
     const refs = references.update(active);
-    const runRefs = runReferences.update(metrics?.board, metrics?.surf, active);
+    const runRefs = runReferences.update(metrics?.board, metrics?.surf, metrics?.air, active);
     const model = buildModel({snapshot, session, view, metrics, refs, runRefs, settings, inSurf, bindingStatus: bindings?.status?.()});
     lastMotion = model.motion ?? null;
     if (!overlay.hidden && !liveFrame) {

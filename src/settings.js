@@ -10,12 +10,12 @@ export const defaults = {
   speedFps: 60, timerFps: 30,
   goodColor: '#9ccfd8', warnColor: '#f6c177', badColor: '#eb6f92',
   showSync: true, showBoard: true, showAir: true, showStart: true, showSurf: true,
-  rampResult: 'total', speedEnergyColor: false, speedEnergyRamps: false, speedEnergyLive: false,
+  rampResult: 'total', speedEnergyColor: true, speedEnergyRamps: false, speedEnergyLive: true,
   checkpointReference: 'both', wrSource: 'ksf', continuousFeedback: false, airMetric: 'combined',
-  boardColorReference: 'fixed', startColorReference: 'fixed', surfColorReference: 'wr',
+  boardColorReference: 'fixed', startColorReference: 'fixed', surfColorReference: 'wr', airColorReference: 'wr',
   startHeightAmazing: 7.5, startHeightGood: 15,
   startDeficitAmazing: 10, startDeficitGood: 17.5, strafeLookbackSeconds: 0.2,
-  boardLossAmazing: 5, boardLossGood: 20, airLossAmazing: 5, airLossGood: 20,
+  boardLossAmazing: 5, boardLossGood: 15, airLossAmazing: 5, airLossGood: 20,
   referenceLossTolerance: 2,
   // Binds change what the game receives, so each one is opt-in.
   crouchJump: false, crouchJumpKey: 'Space',
@@ -42,6 +42,7 @@ const choices = {
   boardColorReference: ['fixed', 'pb', 'wr'],
   startColorReference: ['fixed', 'pb', 'wr'],
   surfColorReference: ['fixed', 'pb', 'wr'],
+  airColorReference: ['fixed', 'pb', 'wr'],
   strafePreviewMode: ['ground', 'air'],
   rampMetric: ['surf', 'board', 'angle', 'down', 'up', 'speedIn', 'speedOut'],
 };

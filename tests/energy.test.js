@@ -109,6 +109,40 @@ describe('energy trend', () => {
   });
 });
 
+test('airborne crouch origin shifts are neutral without hiding real work', () => {
+  const config = {standHeight: 62, duckHeight: 45};
+  const trend = createEnergyTrend();
+  const s = {...state(0, {x: 0, y: 0, z: 1000}, {x: 1000, y: 0, z: 200}), grounded: false, ducked: false};
+  const sample = () => trend.sample(energySample(s, dt, false, config), gravity, false, true);
+  sample();
+  for (const ducked of [true, false]) {
+    s.position.z += (ducked ? 1 : -1) * 8.5;
+    s.ducked = ducked;
+    fall(s);
+    expect(sample()).toMatchObject({tone: 'neutral'});
+  }
+  s.position.z += 8.5; s.ducked = true;
+  fall(s); s.velocity.x -= 1;
+  expect(sample().tone).toBe('loss');
+  s.position.z -= 8.5; s.ducked = false;
+  fall(s); s.velocity.x += 2;
+  expect(sample().tone).toBe('good');
+});
+
+test('ground crouches do not shift potential energy; ambiguous skipped hull transitions rebaseline', () => {
+  const config = {standHeight: 62, duckHeight: 45};
+  const trend = createEnergyTrend();
+  const s = {...state(0, {x: 0, y: 0, z: 0}, {x: 1000, y: 0, z: 0}), grounded: true, ducked: false};
+  const sample = () => trend.sample(energySample(s, dt, false, config), gravity, false, true);
+  sample();
+  s.tick++; s.position.x += 15; s.ducked = true;
+  expect(sample()).toMatchObject({tone: 'neutral', rate: 0});
+  s.tick += 2; s.position.x += 30; s.ducked = false; s.grounded = false; s.position.z += 8.5;
+  expect(sample()).toMatchObject({tone: 'neutral', rate: 0});
+  s.tick++; s.position.x += 15; s.velocity.x -= 1;
+  expect(sample().tone).toBe('loss');
+});
+
 test('suppressed samples read neutral but keep the baseline for an immediate response afterwards', () => {
   const trend = createEnergyTrend();
   const s = state(0, { x: 0, y: 0, z: 0 }, { x: 1000, y: 0, z: 0 });

@@ -28,6 +28,7 @@ const runRefs = {
   board: {status: 'ready', loss: 2.4}, surf: {status: 'ready', loss: 44.0},
   down: {status: 'ready', loss: 13.5}, up: {status: 'ready', loss: 30.0}, start: {status: 'ready', speed: 349, heightAboveFloor: 4.0},
 };
+const airReference = {loss: 3.8, brakingLoss: 1.4, missedGain: 2.4};
 const landed = {metrics: {...ramp.metrics, air: {available: true, tick: 30, loss: 4.2, brakingLoss: 1.6, missedGain: 2.6}, board: {available: true, tick: 29, loss: 11.4}}};
 const checkpoint = {
   session: {checkpointSpeeds: [2412, 2950]}, splits: [10.12, 21.233],
@@ -136,7 +137,8 @@ const hud = mountHud({
   services: {
     replayStore: {destroy() {}},
     references: {update: () => scenario.refs ?? null, observeFinish() {}, destroy() {}},
-    runReferences: {update: () => runRefs, destroy() {}},
+    runReferences: {update: () => ({...runRefs, air: {status: 'ready', source: settings.airColorReference,
+      loss: airReference[settings.airMetric === 'braking' ? 'brakingLoss' : settings.airMetric === 'missed' ? 'missedGain' : 'loss']}}), destroy() {}},
     // A frozen clock keeps checkpoint splits on screen for screenshots.
     createModel: () => createHudModel(() => 0),
     // Run dates are shown against a fixed day.

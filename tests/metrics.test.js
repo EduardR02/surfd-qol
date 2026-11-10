@@ -2611,3 +2611,353 @@ test('crash geometry uses the native surf-normal boundaries rather than a loss t
     assert.equal(metrics.boardSnapshot().crash, crash);
   }
 });
+
+test('Air keeps braking and missed gain separate across multiple accelerations in one tick', () => {
+  const metrics = createMetrics(), game = session();
+  const first = sample({ before: vector(1000), direction: vector(-1) });
+  const second = sample({ before: first.after, direction: vector(0, 1) });
+  for (let i = 0; i < 4; i++) {
+    game.state.velocity = {...first.before};
+    metrics.begin(game);
+    metrics.acceleration(first);
+    metrics.acceleration(second);
+    game.state.velocity = {...second.after};
+    game.state.tick++;
+    metrics.end(game);
+  }
+  const result = tick(metrics, game, undefined, clip(second.after, second.after)).air;
+  assert.equal(result.available, true);
+  close(result.brakingLoss, 4 * (1000 - first.after.x));
+  close(result.missedGain, 4 * (Math.hypot(1000, 30) - 1000));
+  close(result.loss, result.brakingLoss + result.missedGain);
+  close(result.measuredSeconds, 4 * config.dt);
+});
+
+test('Air accepts the exact minimum duration despite accumulated time roundoff', () => {
+  for (const hiddenLastTick of [false, true]) {
+    const physics = {...config, dt: 0.005};
+    const settings = {};
+    const metrics = createMetrics(settings), game = session(physics);
+    for (let i = 0; i < 10; i++) {
+      if (hiddenLastTick && i === 9) settings.showAir = false;
+      tick(metrics, game, sample({physics}));
+    }
+    const result = tick(metrics, game, undefined, clip(vector(1000), vector(990))).air;
+    assert.equal(result.sequence, 1);
+    assert.equal(result.available, !hiddenLastTick);
+    close(result.measuredSeconds, hiddenLastTick ? 0.045 : 0.05);
+  }
+});
+
+test('live Surf does not label only the last of multiple accelerations as a complete pressure comparison', () => {
+  const metrics = createMetrics({continuousFeedback: true}), game = session();
+  const first = sample({before: vector(1000, -100), direction: vector(-1)});
+  const second = sample({before: first.after, direction: vector(0, 1)});
+  metrics.begin(game);
+  metrics.acceleration(first);
+  metrics.acceleration(second);
+  const after = nativeTouchClip(second.after, rampNormal);
+  metrics.collision(clip(second.after, after));
+  game.state.velocity = after;
+  game.state.tick++;
+  metrics.end(game);
+  const result = metrics.snapshot();
+  assert.equal(result.strafe.available, false);
+  assert.equal(result.status, 'unsupported-surf');
+  assert.equal(result.board.available, true);
+});
+
+function duckOriginTick(metrics, game, ducked, {contact = true, jump = false} = {}) {
+  metrics.begin(game);
+  // Native duck() executes before jumping or gravity and moves only an
+  // airborne hull origin. Successful unduck reverses the same offset.
+  if (!game.state.grounded && ducked !== game.state.ducked) {
+    game.state.position.z += (ducked ? 1 : -1) * (game.config.standHeight - game.config.duckHeight) / 2;
+  }
+  game.state.ducked = ducked;
+  if (jump) {
+    game.state.grounded = false;
+    metrics.acceleration(sample({before: game.state.velocity, wishSpeed: 0, physics: game.config}));
+  }
+  if (contact) metrics.collision(clip(game.state.velocity, game.state.velocity));
+  game.state.tick++;
+  metrics.end(game);
+}
+
+test('Surf excludes native airborne duck-origin shifts at entry, during contact and across skips', () => {
+  for (const initiallyDucked of [false, true]) {
+    for (const timing of ['entry', 'contact', 'skip', 'after-exit']) {
+      const metrics = createMetrics();
+      const game = mappedSession({...config, standHeight: 62, duckHeight: 45});
+      game.state.ducked = initiallyDucked;
+      game.state.position.z = 100 + (initiallyDucked ? 8.5 : 0);
+      const beforeContacts = timing === 'entry' ? 0 : timing === 'after-exit' ? 4 : 2;
+      for (let i = 0; i < beforeContacts; i++) endpointContact(metrics, game, vector(1000));
+      duckOriginTick(metrics, game, !initiallyDucked, {contact: timing === 'entry' || timing === 'contact'});
+      if (timing === 'skip') metrics.restoreState(metrics.saveState());
+      if (timing !== 'after-exit') {
+        for (let i = 0; i < 4; i++) endpointContact(metrics, game, vector(1000));
+      }
+      const result = leaveRamp(metrics, game).surf;
+      assert.equal(result.available, true, timing);
+      close(result.loss, 0);
+      close(result.downLoss, 0);
+      close(result.upLoss, 0);
+      close(result.heightDelta, 0);
+      close(result.lowHeightDelta, 0);
+    }
+  }
+});
+
+test('Surf does not invent an origin correction for a grounded crouch immediately before a jump', () => {
+  for (const initiallyDucked of [false, true]) {
+    const metrics = createMetrics();
+    const game = mappedSession({...config, standHeight: 62, duckHeight: 45});
+    game.state.grounded = true;
+    game.state.ducked = initiallyDucked;
+    duckOriginTick(metrics, game, !initiallyDucked, {jump: true});
+    for (let i = 0; i < 3; i++) endpointContact(metrics, game, vector(1000));
+    const result = leaveRamp(metrics, game).surf;
+    assert.equal(result.available, true);
+    close(result.loss, 0);
+    close(result.heightDelta, 0);
+    close(result.downLoss + result.upLoss, 0);
+  }
+});
+
+test('Down and Up retain precision independently of the map vertical origin', () => {
+  const results = [];
+  for (const height of [0, 2 ** 48]) {
+    const metrics = createMetrics(), game = mappedSession();
+    game.state.position.z = height;
+    for (const speed of [990, 980, 970, 960]) endpointContact(metrics, game, vector(speed));
+    results.push(leaveRamp(metrics, game).surf);
+  }
+  assert.equal(results[1].available, true);
+  close(results[1].loss, results[0].loss);
+  close(results[1].downLoss, results[0].downLoss);
+  close(results[1].upLoss, results[0].upLoss);
+  close(results[1].downLoss + results[1].upLoss, results[1].loss);
+});
+
+test('zero air cap still measures native braking without inventing missed positive gain', () => {
+  for (const float32 of [false, true]) {
+    const physics = {...config, airCap: 0, float32};
+    const metrics = createMetrics(), game = session(physics);
+    const input = sample({before: vector(100, 0, 500), direction: vector(-1), physics});
+    for (let i = 0; i < 4; i++) {
+      const result = tick(metrics, game, input).strafe;
+      assert.equal(result.available, true);
+      close(result.gain, -100 * (i + 1));
+      close(result.optimalGain, 0);
+      close(result.loss, 100 * (i + 1));
+      assert.equal(result.efficiency, null);
+    }
+    const result = tick(metrics, game, undefined, clip(input.after, input.after)).air;
+    assert.equal(result.available, true);
+    close(result.brakingLoss, 400);
+    close(result.missedGain, 0);
+    close(result.loss, 400);
+  }
+});
+
+function airSteps(metrics, game, steps = 4) {
+  for (let i = 0; i < steps; i++) tick(metrics, game, sample({physics: game.config}));
+}
+
+const rampEndpoint = board => JSON.stringify([board.surfaceId, board.checkpoint, board.visit]);
+
+test('completed Air uses native run anchors and the actual departure and arrival visits', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  tick(metrics, game, undefined, undefined, ['start']);
+  airSteps(metrics, game);
+  const first = coastContact(metrics, game);
+  assert.equal(first.air.available, true);
+  assert.equal(first.air.from, JSON.stringify(['start']));
+  assert.equal(first.air.to, rampEndpoint(first.board));
+  assert.equal(first.air.routePrefix, first.board.routePrefix);
+  game.checkpointSpeeds.push(500);
+  airSteps(metrics, game);
+  const second = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(second.air.from, rampEndpoint(first.board));
+  assert.equal(second.air.to, rampEndpoint(second.board));
+  assert.equal(second.air.routePrefix, second.board.routePrefix);
+  assert.notEqual(second.air.from, second.air.to);
+  airSteps(metrics, game);
+  const returned = coastContact(metrics, game);
+  assert.equal(returned.board.visit, 2);
+  assert.equal(returned.air.from, rampEndpoint(second.board));
+  assert.equal(returned.air.to, rampEndpoint(returned.board));
+  assert.notEqual(returned.air.to, first.air.to);
+  airSteps(metrics, game);
+  const finished = tick(metrics, game, undefined, undefined, ['finish']).air;
+  assert.equal(finished.from, rampEndpoint(returned.board));
+  assert.equal(finished.to, JSON.stringify(['finish']));
+  assert.equal(finished.routePrefix, returned.board.routePrefix);
+  close(finished.loss, first.air.loss);
+});
+
+test('Air never invents a run-start anchor and supports trusted zero-ramp finishes', () => {
+  for (const started of [false, true]) {
+    for (const boundary of ['event', 'timer']) {
+      const metrics = createMetrics(), game = mappedSession();
+      if (started) tick(metrics, game, undefined, undefined, ['start']);
+      airSteps(metrics, game);
+      if (boundary === 'timer') game.timer = {phase: 'finished'};
+      const result = tick(metrics, game, undefined, undefined, boundary === 'event' ? ['finish'] : []).air;
+      assert.equal(result.available, true);
+      assert.equal(result.from, started ? JSON.stringify(['start']) : null);
+      assert.equal(result.to, JSON.stringify(['finish']));
+      assert.equal(result.routePrefix, '');
+    }
+  }
+});
+
+test('reference passes expose the same completed Air even with live feedback disabled', () => {
+  const measurements = [];
+  for (const referenceOnly of [false, true]) {
+    const metrics = createMetrics(referenceOnly
+      ? {hud: false, showAir: false, continuousFeedback: true} : {}, {referenceOnly});
+    const game = mappedSession();
+    assert.equal(metrics.airSnapshot(0), null);
+    tick(metrics, game, undefined, undefined, ['start']);
+    airSteps(metrics, game);
+    const arrived = coastContact(metrics, game).air;
+    assert.equal(arrived.available, true);
+    assert.deepEqual(metrics.airSnapshot(0), arrived);
+    assert.equal(metrics.airSnapshot(arrived.sequence), null);
+    const copy = metrics.airSnapshot(0);
+    copy.from = 'changed';
+    assert.deepEqual(metrics.airSnapshot(0), arrived);
+    measurements.push(arrived);
+  }
+  assert.deepEqual(measurements[1], measurements[0]);
+});
+
+test('short flights and same-surface recontacts cannot relabel a retained Air summary', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  tick(metrics, game, undefined, undefined, ['start']);
+  airSteps(metrics, game);
+  const first = coastContact(metrics, game);
+  airSteps(metrics, game);
+  const recontact = coastContact(metrics, game, {contacts: [curveContact]});
+  assert.deepEqual(recontact.air, first.air);
+  assert.equal(metrics.airSnapshot(first.air.sequence), null);
+  airSteps(metrics, game, 1);
+  const short = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.deepEqual(short.air, first.air);
+  assert.equal(metrics.airSnapshot(first.air.sequence), null);
+  airSteps(metrics, game);
+  const complete = coastContact(metrics, game);
+  assert.equal(complete.air.sequence, first.air.sequence + 1);
+  assert.equal(complete.air.from, rampEndpoint(short.board));
+  assert.equal(complete.air.to, rampEndpoint(complete.board));
+  close(complete.air.measuredSeconds, 4 * config.dt);
+});
+
+test('ground, wall and special movement break Air matching without poisoning later known departures', () => {
+  for (const boundary of ['ground', 'wall', 'mixed', 'ladder', 'water']) {
+    const metrics = createMetrics(), game = mappedSession();
+    const first = coastContact(metrics, game).board;
+    airSteps(metrics, game);
+    if (boundary === 'ground') {
+      game.state.grounded = true;
+      tick(metrics, game);
+      game.state.grounded = false;
+    } else if (boundary === 'wall' || boundary === 'mixed') {
+      const wall = {normal: vector(1), brushId: 'wall'};
+      tick(metrics, game, undefined, clip(vector(1000), vector(900),
+        boundary === 'mixed' ? [rampContact, wall] : [wall]));
+    } else {
+      metrics.begin(game);
+      metrics.specialMovement(boundary);
+      game.state.tick++;
+      metrics.end(game);
+    }
+    airSteps(metrics, game);
+    const second = coastContact(metrics, game, {contacts: [separateContact]});
+    assert.equal(second.air.available, true);
+    assert.equal(second.air.from, null);
+    assert.equal(second.air.to, rampEndpoint(second.board));
+    airSteps(metrics, game);
+    const returned = coastContact(metrics, game);
+    assert.equal(returned.air.from, rampEndpoint(second.board));
+    assert.equal(returned.air.to, rampEndpoint(returned.board));
+    assert.equal(typeof returned.air.routePrefix, 'string');
+    assert.notEqual(returned.air.to, rampEndpoint(first));
+  }
+});
+
+test('unknown ramp endpoints cannot borrow a retained Board identity for Air', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  coastContact(metrics, game);
+  airSteps(metrics, game, 20);
+  const unknown = coastContact(metrics, game, {contacts: [{normal: rampNormal, brushId: 'unknown'}]});
+  assert.equal(unknown.air.available, true);
+  assert.equal(unknown.air.to, null);
+  assert.equal(unknown.air.routePrefix, null);
+  airSteps(metrics, game, 20);
+  const known = coastContact(metrics, game, {contacts: [separateContact]});
+  assert.equal(known.air.from, null);
+  assert.equal(known.air.to, rampEndpoint(known.board));
+  assert.equal(known.air.routePrefix, null);
+});
+
+test('Air identity survives warm checkpoints but not partial replay or discontinuous history', () => {
+  const metrics = createMetrics(), game = mappedSession();
+  tick(metrics, game, undefined, undefined, ['start']);
+  airSteps(metrics, game, 2);
+  const start = metrics.saveState(), startTick = game.state.tick;
+  airSteps(metrics, game, 2);
+  const expectedStart = coastContact(metrics, game).air;
+  game.state.tick = startTick;
+  metrics.restoreState(start);
+  airSteps(metrics, game, 2);
+  assert.deepEqual(coastContact(metrics, game).air, expectedStart);
+  airSteps(metrics, game, 2);
+  const departure = metrics.saveState(), departureTick = game.state.tick;
+  airSteps(metrics, game, 2);
+  const expected = coastContact(metrics, game, {contacts: [separateContact]}).air;
+  game.state.tick = departureTick;
+  metrics.restoreState(departure);
+  airSteps(metrics, game, 2);
+  assert.deepEqual(coastContact(metrics, game, {contacts: [separateContact]}).air, expected);
+  for (const boundary of ['replayGap', 'partial', 'tick']) {
+    if (boundary === 'tick') game.state.tick += 100;
+    else metrics.reset({[boundary]: true});
+    airSteps(metrics, game, 20);
+    coastContact(metrics, game);
+    airSteps(metrics, game, 20);
+    const result = coastContact(metrics, game, {contacts: [separateContact]}).air;
+    assert.equal(result.available, true);
+    assert.equal(result.routePrefix, null);
+    tick(metrics, game, undefined, undefined, ['start']);
+    airSteps(metrics, game);
+    const restarted = coastContact(metrics, game).air;
+    assert.equal(restarted.from, JSON.stringify(['start']));
+    assert.equal(typeof restarted.routePrefix, 'string');
+  }
+});
+
+test('hidden or unsupported Air spans do not match, and the next complete flight recovers', () => {
+  for (const hidden of [false, true]) {
+    const settings = {}, metrics = createMetrics(settings), game = mappedSession();
+    coastContact(metrics, game);
+    airSteps(metrics, game, 2);
+    if (hidden) settings.showAir = false;
+    const input = sample({physics: game.config});
+    if (!hidden) input.after.x++;
+    tick(metrics, game, input);
+    settings.showAir = true;
+    airSteps(metrics, game, 2);
+    const interrupted = coastContact(metrics, game, {contacts: [separateContact]});
+    assert.equal(interrupted.air.from, null);
+    assert.equal(interrupted.air.available, !hidden);
+    airSteps(metrics, game);
+    const complete = coastContact(metrics, game);
+    assert.equal(complete.air.available, true);
+    assert.equal(complete.air.from, rampEndpoint(interrupted.board));
+    assert.equal(complete.air.to, rampEndpoint(complete.board));
+    assert.equal(typeof complete.air.routePrefix, 'string');
+  }
+});

@@ -95,24 +95,24 @@ export const panelMarkup = `
     <section id="page-feedback" role="tabpanel" aria-labelledby="tab-feedback" tabindex="0" hidden>
       <h3>Values</h3>
       <div class="group">
-        ${toggle('showBoard', 'Touch', 'Speed lost as you touch a ramp.')}
-        ${toggle('showSurf', 'Ramp', 'Speed lost on the last ramp, after height is accounted for.')}
+        ${toggle('showBoard', 'Touch', 'Full 3D speed clipped as you touch a ramp, not just horizontal speed.')}
+        ${toggle('showSurf', 'Ramp', 'Full 3D speed deficit against gravity-only height conversion on the last ramp.')}
         ${choice('rampResult', 'Show as', [['split', 'Down + Up'], ['total', 'Net Surf']], 'Split into the way down and the way up, or one net value. Both include the touch.', ' sub')}
-        ${toggle('showAir', 'Air', 'Speed lost over your last flight.')}
+        ${toggle('showAir', 'Air', 'Horizontal input braking and missed strafe gain over your last flight, not net energy loss.')}
         ${choice('airMetric', 'Count', [['missed', 'Missed gain'], ['braking', 'Braking'], ['combined', 'Both']], '<span id="air-explain"></span>', ' sub')}
         ${toggle('showSync', 'Strafe sync')}
         ${toggle('showStart', 'Start speed and height', 'Shown for a moment as you leave the start.')}
+      </div>
+      <h3>Speed tint</h3>
+      <div class="group">
+        ${toggle('speedEnergyColor', 'Tint speed by energy', `${swatch('energy')}while mechanical energy falls: full 3D velocity plus height. Gravity-only conversion and airborne crouch shifts don’t count.`)}
+        ${toggle('speedEnergyRamps', 'Include ramps', `Also count ramp collision and friction losses.`, ' sub')}
+        ${toggle('speedEnergyLive', 'Instant', 'No averaging or fade between sampled ticks. Frame rate can skip ticks; skipped crouch transitions reset the baseline because their height shift is ambiguous.', ' sub')}
       </div>
       <h3>Live mode</h3>
       <div class="group">
         ${toggle('continuousFeedback', 'Live feedback', 'Values update continuously instead of holding each result.')}
         ${range('strafeLookbackSeconds', 'Live window', 0.05, 0.5, 0.05, 'How much recent movement each live value covers.')}
-      </div>
-      <h3>Speed tint <span class="tag">Experimental</span></h3>
-      <div class="group">
-        ${toggle('speedEnergyColor', 'Tint speed by energy', `${swatch('energy')}while you lose units; gaining or holding keeps the speed’s colour. Height changes don’t count.`)}
-        ${toggle('speedEnergyRamps', 'Include ramps', `Ramp surfing always bleeds some energy, so this is mostly ${swatch('energy')}.`, ' sub')}
-        ${toggle('speedEnergyLive', 'Per tick', 'Each tick’s own loss, with no averaging or fade, so every costly input shows. It flickers. Set the Speed refresh rate above 66 fps to see every tick.', ' sub')}
       </div>
     </section>
 
@@ -121,11 +121,13 @@ export const panelMarkup = `
       <div class="group">
         ${choice('checkpointReference', 'Compare with', [['pb', 'PB'], ['wr', 'WR'], ['both', 'Both']])}
         ${choice('wrSource', 'World record', [['ksf', 'KSF route'], ['leaderboard', 'Surfd #1']], 'KSF is the map’s record route; Surfd #1 is the leaderboard’s top run. Also used for WR colors.')}
+        <p class="explain">Checkpoint speed is horizontal only, not an energy comparison. Start speed and platform height are independent targets, not an overall grade.</p>
       </div>
       <h3>Grade colors against</h3>
       <div class="group">
         ${choice('boardColorReference', 'Touch', references)}
         ${choice('surfColorReference', 'Ramp', references, 'Down, Up and Surf.')}
+        ${choice('airColorReference', 'Air', references, 'The same flight, using the Air measurement selected in Feedback.')}
         ${choice('startColorReference', 'Start', references)}
         ${number('referenceLossTolerance', 'Near margin', 0, 0, 0.1, 'u/s', 'How much worse than PB or WR still counts as near. Start has no near band.')}
         <div class="legend" aria-label="Color key">
@@ -133,7 +135,7 @@ export const panelMarkup = `
         </div>
       </div>
       <details class="group">
-        <summary><span class="row-label">Fixed cutoffs</span><span class="hint">Used for Air, and wherever Fixed is picked above.</span></summary>
+        <summary><span class="row-label">Fixed cutoffs</span><span class="hint">Used wherever Fixed is picked above.</span></summary>
         <div class="cutoffs" role="table" aria-label="Fixed cutoffs">
           <span role="columnheader"></span><span role="columnheader">${swatch('good')}below</span><span role="columnheader">${swatch('warn')}below</span>
           <span role="rowheader">Start height</span><span class="num">${cutoff('startHeightAmazing', 'Start height, better below', 0.1, 'u')}</span><span class="num">${cutoff('startHeightGood', 'Start height, near below', 0.1, 'u')}</span>
@@ -202,6 +204,7 @@ const PREVIEW_METRICS = {air: {available: true, loss: 3.2, brakingLoss: 1.4, mis
   board: {available: true, loss: 2.6, tick: 20}, surf: {available: true, loss: 52.7, downLoss: 14.6, upLoss: 38.1, tick: 30}};
 const PREVIEW_REFERENCE = {board: {status: 'ready', loss: 3.1}, surf: {status: 'ready', loss: 46.6},
   down: {status: 'ready', loss: 15.2}, up: {status: 'ready', loss: 31.4}};
+const PREVIEW_AIR_REFERENCE = {loss: 2.8, brakingLoss: 1.2, missedGain: 1.6};
 
 export function previewModel(settings) {
   const live = settings.continuousFeedback === true;
@@ -217,12 +220,14 @@ export function previewModel(settings) {
   const zen = settings.zen === true;
   const layout = zen ? 'zen' : settings.surfHud === 'full' ? 'full' : 'surf';
   const timer = layout !== 'surf' || settings.compactTimer === true;
+  const airField = settings.airMetric === 'braking' ? 'brakingLoss' : settings.airMetric === 'missed' ? 'missedGain' : 'loss';
+  const refs = {...PREVIEW_REFERENCE, air: {status: 'ready', loss: PREVIEW_AIR_REFERENCE[airField]}};
   return {
     zen, layout, compactLabels: settings.compactLabels !== false, clock: {hidden: zen || !timer}, time: {hidden: !timer},
     sync: {hidden: zen || layout === 'surf' || settings.showSync === false, text: '96.4%', tone: 'good'},
     runState: {text: '', title: ''},
     feedback: {hidden: zen || !live || (result.hidden && board.hidden && up.hidden), result, board, up},
-    meter: zen || live ? {hidden: true} : buildMeter(PREVIEW_METRICS, PREVIEW_REFERENCE, {...settings, boardColorReference: 'wr', surfColorReference: 'wr'}),
+    meter: zen || live ? {hidden: true} : buildMeter(PREVIEW_METRICS, refs, settings),
     start: {hidden: true},
     startSync: {hidden: true},
     checkpoint: {hidden: true},

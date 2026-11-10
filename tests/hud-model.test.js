@@ -6,7 +6,7 @@ const surf = { available: true, tick: 40, loss: 30, downLoss: 18, upLoss: 12 };
 const air = { available: true, tick: 20, loss: 9, brakingLoss: 4, missedGain: 5 };
 const board = { available: true, tick: 30, loss: 3 };
 const metrics = { air, surf, board, strafe: { mode: 'air' } };
-const settings = patch => ({ ...defaults, surfColorReference: 'fixed', ...patch });
+const settings = patch => ({ ...defaults, surfColorReference: 'fixed', airColorReference: 'fixed', ...patch });
 
 test('boosted start speed has no misleading fixed cap grade', () => {
   const start = { available: true, speed: 1200, targetSpeed: null, speedDelta: null,
@@ -58,6 +58,32 @@ describe('HUD feedback slots', () => {
     expect(feedback.board.tone).toBe('muted');
     const fixed = buildFeedback(metrics, null, settings({ rampResult: 'split' }));
     expect([fixed.result.tone, fixed.up.tone, fixed.board.tone]).toEqual(['warn', 'warn', 'good']);
+  });
+
+  test('Air grades the selected component against its flight reference in feedback and the meter', () => {
+    const latest = {...metrics, air: {...air, tick: 50}};
+    for (const [airMetric, reference, text, tone] of [
+      ['combined', 10, '−9.0', 'good'],
+      ['braking', 3, '−4.0', 'warn'],
+      ['missed', 2, '−5.0', 'loss'],
+    ]) {
+      const options = settings({airColorReference: 'wr', airMetric, referenceLossTolerance: 2});
+      const refs = {air: {status: 'ready', loss: reference}};
+      expect(buildFeedback(latest, refs, options).result).toMatchObject({text, tone});
+      expect(buildMeter(latest, refs, options).air).toMatchObject({text, tone});
+    }
+  });
+
+  test('an unmatched Air reference stays grey without hiding measured loss or falling back to fixed', () => {
+    const latest = {...metrics, air: {...air, tick: 50, loss: 40}};
+    const options = settings({airColorReference: 'pb'});
+    const refs = {air: {status: 'unmatched', loss: null}};
+    expect(buildFeedback(latest, refs, options).result).toMatchObject({text: '−40.0', tone: 'muted'});
+    expect(buildMeter(latest, refs, options).air).toMatchObject({text: '−40.0', tone: 'muted'});
+    expect(buildMeter(latest, refs, {...options, airColorReference: 'fixed'}).air.tone).toBe('loss');
+    latest.air.available = false;
+    expect(buildFeedback(latest, {air: {status: 'ready', loss: 50}}, options).result)
+      .toMatchObject({text: '—', tone: 'muted'});
   });
 
   test('live mode shows Strafe/Input and Clip, never a held Up', () => {
@@ -115,6 +141,16 @@ describe('HUD model', () => {
     expect(checkpoint.pb).toMatchObject({ label: 'PB', time: { text: '−0.100', tone: 'good' }, speed: { text: '+10', tone: 'good' } });
     expect(checkpoint.wr).toMatchObject({ label: 'KSF', time: { text: '+0.100', tone: 'loss' }, speed: { text: '−20', tone: 'loss' } });
   });
+
+  test('checkpoint speed equality stays neutral at displayed precision', () => {
+    const build = createHudModel(() => 0);
+    const session = {timer: {state: {phase: 'running', splits: [12.5]}}, checkpointSpeeds: [1500], map: {}};
+    for (const [reference, text, tone] of [[1499.6, '±0', 'muted'], [1500.4, '±0', 'muted'],
+      [1499.5, '+1', 'good'], [1500.5, '−1', 'loss']]) {
+      const model = build({snapshot: {}, session, metrics, refs: {own: [reference]}, settings: settings()});
+      expect(model.checkpoint.pb.speed).toMatchObject({text, tone});
+    }
+  });
 });
 
 test('motion reports ramp contact for the speed tint, and unknown while analysis is idle or spectating', () => {
@@ -159,6 +195,12 @@ describe('ramp meter and layouts', () => {
     expect(buildMeter(ramp, runRefs, meterSettings({ showAir: false })).air).toBeNull();
     expect(buildMeter(ramp, runRefs, meterSettings({ showSurf: false }))).toMatchObject({ surf: null, down: null, ramp: { text: '−3.0' } });
     expect(buildMeter(ramp, runRefs, meterSettings({ showBoard: false, showSurf: false, showAir: false })).hidden).toBe(true);
+  });
+
+  test('hiding ramp results never compares a touch-only bar with a whole-ramp reference', () => {
+    const meter = buildMeter(ramp, runRefs, meterSettings({showSurf: false}));
+    expect(meter.reference).toBeNull();
+    expect(meter.ramp).toMatchObject({value: board.loss});
   });
 
   test('the bar is on by default; off keeps the meter and its values', () => {
@@ -228,6 +270,24 @@ describe('ramp meter geometry', () => {
     expect(end(fixed.segments.up)).toBeCloseTo(fixed.left + fixed.width, 6);
     // Only one value under the bar: it centres.
     expect(meterLayout({ ...meter, air: null }, false).rampCenter).toBe(0);
+  });
+
+  test('recovered losses draw the net ramp, not a false excess beyond the reference', async () => {
+    const {meterLayout} = await import('../src/hud-view.js');
+    for (const shape of [
+      {...meter, down: item(20), up: item(-15), surf: item(5), reference: 10},
+      {...meter, split: false, board: item(30), surf: item(5), reference: 10},
+      {...meter, down: item(-12), up: item(9), surf: item(-3), reference: 10},
+    ]) {
+      const layout = meterLayout(shape, false);
+      expect(layout.segments.board).toBeUndefined();
+      expect(layout.segments.up).toBeUndefined();
+      if (shape.surf.value > 0) {
+        expect(end(layout.segments.down)).toBeCloseTo(layout.left + layout.width * 2 / 3, 6);
+        expect(end(layout.segments.down)).toBeLessThan(layout.tick);
+        expect(layout.segments.down.tone).toBe(shape.surf.tone);
+      } else expect(layout.segments.down).toBeUndefined();
+    }
   });
 
   test('gains and odd values take no room: the bar never runs past its width', async () => {

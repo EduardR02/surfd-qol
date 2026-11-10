@@ -136,6 +136,11 @@ describe('runs panel', () => {
     expect(touchCells(null).reach).toMatchObject({text: '—', tone: 'muted'});
     // Reach rounds down so 100% only ever means every run.
     expect([reachText(0.999), reachText(1), reachText(0), reachText(null)]).toEqual(['99%', '100%', '0%', '—']);
+    // A sub-unit deficit must not turn the displayed ±0 comparison red.
+    expect(touchCells({speedIn: {best: 2400}}, 'best', {speedIn: 2400.4}).speedIn)
+      .toMatchObject({diff: '±0', tone: 'good'});
+    expect(touchCells({speedIn: {best: 2400}}, 'best', {speedIn: 2400.5}).speedIn)
+      .toMatchObject({diff: '−1', tone: 'loss'});
   });
 
   test('each ramp is one row: reach and the whole ramp against the reference; the chevron opens the rest', () => {

@@ -29,10 +29,10 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
   }
 
   function createConsumer() {
-    let slot = null, slotAdapter = null, slotOwnerKey = null, pending = null, navigation = null, closed = destroyed;
+    let slot = null, slotAdapter = null, slotOwnerKey = null, slotConfig = null, pending = null, navigation = null, closed = destroyed;
     function release() {
       const work = pending;
-      pending = null; slot = null; slotAdapter = null; slotOwnerKey = null; navigation = null;
+      pending = null; slot = null; slotAdapter = null; slotOwnerKey = null; slotConfig = null; navigation = null;
       work?.handle?.release();
     }
     function peek(key, source) {
@@ -48,17 +48,17 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
       // A summary kept under one session's rules applies to another's only if it moves the same way.
       if (slot?.key === info.key && slot.source === source && slotAdapter === adapter && slotOwnerKey === info.ownerKey &&
         (slot.status !== 'loading' || pending?.session === info.session && pending.owns()) &&
-        (slot.status !== 'ready' || sameMovementConfig(slot.config, info.session.config))) return slot;
+        (slot.status === 'ready' ? sameMovementConfig(slot.config, info.session.config) : slotConfig === info.session.config)) return slot;
       release();
       slot = {key: info.key, source, status: 'loading', label: info.label, ramps: new Map()};
-      slotAdapter = adapter; slotOwnerKey = info.ownerKey;
+      slotAdapter = adapter; slotOwnerKey = info.ownerKey; slotConfig = info.session.config;
       if (typeof adapter?.Session !== 'function' || typeof adapter?.Movement !== 'function') { slot.status = 'missing'; return slot; }
-      const current = slot, {session, refs, identity, ksf, ownerKey} = info;
+      const current = slot, {session, refs, identity, ksf, ownerKey} = info, config = session.config;
       const entry = identity ? {runId: info.entry.runId, timeUs: info.entry.timeUs, splitsUs: info.entry.splitsUs.slice()} : null;
       const work = {session, adapter, ownerKey, owns, handle: null, replay: null, promise: null};
       pending = work;
       const isCurrent = () => {
-        if (!owns() || pending !== work || getSession?.() !== session || getAdapter?.() !== adapter) return false;
+        if (!owns() || pending !== work || getSession?.() !== session || session.config !== config || getAdapter?.() !== adapter) return false;
         const next = describe(key, source);
         return next?.key === current.key && next.ownerKey === ownerKey;
       };

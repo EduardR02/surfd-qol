@@ -59,7 +59,7 @@ export function buildFeedback(metrics, runRefs, settings) {
   const sourceName = source => source === 'pb' ? 'PB' : settings.wrSource === 'leaderboard' ? 'site WR' : 'KSF WR';
   const referenceNote = (field, source) => {
     const ref = runRefs?.[field];
-    return ref?.status === 'ready' ? ` ${sourceName(source)} on this ramp: ${formatDelta(-ref.loss, 1)}.` : ` ${sourceName(source)} ${ref?.status ?? 'missing'}.`;
+    return ref?.status === 'ready' ? ` ${sourceName(source)} on this ${field === 'air' ? 'flight' : 'ramp'}: ${formatDelta(-ref.loss, 1)}.` : ` ${sourceName(source)} ${ref?.status ?? 'missing'}.`;
   };
   if (continuous) {
     const strafe = metrics?.strafe?.mode === type ? metrics.strafe : null;
@@ -78,9 +78,11 @@ export function buildFeedback(metrics, runRefs, settings) {
   let result;
   if (type === 'air') {
     const value = !air?.available ? null : airMetric === 'missed' ? air.missedGain : airMetric === 'braking' ? air.brakingLoss : air.loss;
+    const source = settings.airColorReference;
     result = slot(false, airMetric === 'missed' ? 'MISSED' : airMetric === 'braking' ? 'BRAKE' : 'AIR', Number.isFinite(value) ? value : null,
-      startTone(value, settings.airLossAmazing, settings.airLossGood),
-      `Last flight: ${formatNumber(air?.brakingLoss, 1)} air braking + ${formatNumber(air?.missedGain, 1)} missed strafe gain.`);
+      relative(source) ? reference('air', value) : startTone(value, settings.airLossAmazing, settings.airLossGood),
+      `Last flight: ${formatNumber(air?.brakingLoss, 1)} air braking + ${formatNumber(air?.missedGain, 1)} missed strafe gain.` +
+        (relative(source) ? referenceNote('air', source) : ''));
   } else if (type === 'surf') {
     const field = split ? 'down' : 'surf';
     const value = surf?.available && Number.isFinite(split ? surf.downLoss : surf.loss) ? (split ? surf.downLoss : surf.loss) : null;
@@ -131,18 +133,25 @@ export function buildMeter(metrics, runRefs, settings) {
     : startTone(boardLoss, settings.boardLossAmazing, settings.boardLossGood);
   const rampTone = (field, value) => relative(settings.surfColorReference) ? referenceTone(value, reference(field), margin)
     : startTone(value, settings.airLossAmazing, settings.airLossGood);
-  const item = (value, tone, label, stale = false) => value === null ? null : {value, text: formatDelta(-value, 1), tone, label, stale};
+  const item = (value, tone, label, stale = false, title = '') => value === null ? null : {value, text: formatDelta(-value, 1), tone, label, stale, title};
   const boardItem = item(boardLoss, boardTone, 'touch'), surfItem = item(total, rampTone('surf', total), 'surf', fresh);
+  const airSource = settings.airColorReference;
+  const airReference = reference('air');
+  const airTone = relative(airSource) ? referenceTone(airValue, airReference, margin)
+    : startTone(airValue, settings.airLossAmazing, settings.airLossGood);
+  const airTitle = relative(airSource)
+    ? `${airSource === 'pb' ? 'PB' : settings.wrSource === 'leaderboard' ? 'Site WR' : 'KSF WR'} on this flight: ${
+      airReference === null ? runRefs?.air?.status ?? 'missing' : formatDelta(-airReference, 1)}.`
+    : 'Last flight, graded against fixed cutoffs.';
   return {
     hidden: boardItem === null && surfItem === null && airValue === null,
     bar: settings.rampBar !== false,
     fresh, split: settings.rampResult !== 'total',
-    air: item(airValue, startTone(airValue, settings.airLossAmazing, settings.airLossGood),
-      airMetric === 'missed' ? 'missed' : airMetric === 'braking' ? 'brake' : 'air'),
+    air: item(airValue, airTone, airMetric === 'missed' ? 'missed' : airMetric === 'braking' ? 'brake' : 'air', false, airTitle),
     board: boardItem,
     down: item(down, rampTone('down', down), 'down', fresh), up: item(up, rampTone('up', up), 'up', fresh), surf: surfItem,
     // The reference ramp's loss spans the speed's width; null grades on fixed cutoffs.
-    reference: relative(settings.surfColorReference) ? reference('surf') : null,
+    reference: rampShown && relative(settings.surfColorReference) ? reference('surf') : null,
     // What the ramp you're on has cost so far: its board, then the whole ramp.
     ramp: fresh ? boardItem : surfItem ?? boardItem,
   };
@@ -164,14 +173,14 @@ export function buildStart(start, startReference, settings, spectator) {
       tone: relativeStart
         ? referenceTone(ready ? startReference.speed : null, available ? start.speed : null)
         : startTone(available && Number.isFinite(start.speedDelta) ? Math.max(0, -start.speedDelta) : null, settings.startDeficitAmazing, settings.startDeficitGood),
-      title: available ? `${formatNumber(start.speed, 1)} u/s at exit; ${start.label === 'Unrestricted start' || start.label === 'Boosted start' ? 'uncapped start' : `${formatDelta(start.speedDelta, 1)} versus the ${formatNumber(start.targetSpeed)} cap`}.` : '',
+      title: available ? `Horizontal speed: ${formatNumber(start.speed, 1)} u/s at exit; ${start.label === 'Unrestricted start' || start.label === 'Boosted start' ? 'uncapped start' : `${formatDelta(start.speedDelta, 1)} versus the ${formatNumber(start.targetSpeed)} cap`}. Not a vertical-velocity or energy comparison.` : '',
     },
     height: {
       text: Number.isFinite(start?.heightAboveFloor) ? formatDelta(start.heightAboveFloor, 1) : '—',
       tone: relativeStart
         ? referenceTone(start?.heightAboveFloor, ready ? startReference.heightAboveFloor : null)
         : startTone(Number.isFinite(start?.heightAboveFloor) ? Math.max(0, start.heightAboveFloor) : null, settings.startHeightAmazing, settings.startHeightGood),
-      title: 'Feet height above the start platform; lower is better.',
+      title: 'Feet height above the start platform; lower exit is the timing target, not a measure of retained energy.',
     },
   };
 }
@@ -212,10 +221,10 @@ export function createHudModel(clock = () => performance.now()) {
         label: id === 'pb' ? 'PB' : recordSource === 'leaderboard' ? 'SITE' : 'KSF',
         time: { text: time?.text ?? '—', tone: time?.tone ?? 'muted', title: '' },
         speed: {
-          text: delta === null ? '—' : formatDelta(delta), tone: delta === null ? 'muted' : delta < 0 ? 'loss' : 'good',
+          text: delta === null ? '—' : formatDelta(delta), tone: delta === null || Number(delta.toFixed(0)) === 0 ? 'muted' : delta < 0 ? 'loss' : 'good',
           title: delta === null
             ? status === 'loading' ? id === 'wr' ? `Loading ${recordSource === 'leaderboard' ? 'Surfd leaderboard #1' : 'KSF record route'}…` : 'Reconstructing your PB replay…' : 'No matching checkpoint reference.'
-            : `Reference: ${formatNumber(values[index], 1)} u/s`,
+            : `Horizontal speed reference: ${formatNumber(values[index], 1)} u/s. Excludes vertical velocity and height; not an energy or time-advantage grade.`,
         },
       };
     };

@@ -131,8 +131,9 @@ export function touchCells(touch, mode = 'best', reference = null, tolerance = 0
   const plain = value => value === null ? 'muted' : 'plain';
   const speed = (value, other) => {
     const compared = value !== null && Number.isFinite(other);
+    const deficit = compared ? Number((other - value).toFixed(0)) : null;
     return {value, text: value === null ? '—' : value.toFixed(0), diff: compared ? formatDelta(value - other, 0) : '',
-      tone: compared ? referenceTone(-value, -other, tolerance) : plain(value)};
+      tone: compared ? referenceTone(deficit, 0, tolerance) : plain(value)};
   };
   const reach = Number.isFinite(touch?.reach) ? touch.reach : null;
   const other = reference?.angle, compared = angle !== null && Number.isFinite(other);
@@ -167,7 +168,7 @@ export const ANGLE_HELP = 'Angle: how far your landing was from parallel to the 
 // What the Ramps view's one column can show for every ramp: [key, label, what it is].
 export const RAMP_METRICS = [['surf', 'Surf', 'The whole ramp, touch included'], ['board', 'Touch', 'Speed lost as you touched the ramp'],
   ['angle', 'Angle', 'How far your landing was from parallel to the ramp. 0° loses no speed on touch'], ['down', 'Down', 'The way down, touch included'],
-  ['up', 'Up', 'The way up'], ['speedIn', 'In', 'Speed as you touched the ramp'], ['speedOut', 'Out', 'Speed as you left the ramp']];
+  ['up', 'Up', 'The way up'], ['speedIn', 'In', 'Full 3D speed as you touched the ramp'], ['speedOut', 'Out', 'Full 3D speed as you left the ramp']];
 const TOUCH_METRICS = new Set(['angle', 'speedIn', 'speedOut']);
 
 // One ramp's value for a metric: its difference from the reference when the
@@ -205,7 +206,8 @@ export function detailRows({ramp, reference = null, touch = null, touchReference
     ...cells ? [measured('angle', cells.angle, Number.isFinite(touchReference?.angle) ? `${touchReference.angle.toFixed(1)}°` : '—', true, ANGLE_HELP)] : [],
     loss('Surf', 'surf'),
     ...split ? [loss('down', 'down', true), loss('up', 'up', true)] : [],
-    ...cells ? [measured('Speed in', cells.speedIn, fixed(touchReference?.speedIn, 0)), measured('Speed out', cells.speedOut, fixed(touchReference?.speedOut, 0))] : [],
+    ...cells ? [measured('Speed in', cells.speedIn, fixed(touchReference?.speedIn, 0), false, 'Full 3D speed, not horizontal speed.'),
+      measured('Speed out', cells.speedOut, fixed(touchReference?.speedOut, 0), false, 'Full 3D speed, not horizontal speed.')] : [],
   ];
 }
 
