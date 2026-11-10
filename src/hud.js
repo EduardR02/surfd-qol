@@ -29,7 +29,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   root.innerHTML = `<style>${hudStyles}${panelStyles}${runsStyles}${replayBarStyles}${nativeExtrasStyles}${strafePreviewStyles}${cinemaStyles}</style>
     <section id="overlay" class="hud" aria-label="Surf HUD" hidden>${hudMarkup}</section>${strafePreviewMarkup}
     ${replayBarMarkup}${nativeExtrasMarkup}${cinemaMarkup}
-    <div class="launchers"><a id="release-notice" class="update-notice" href="https://github.com/EduardR02/surfd-qol/releases/latest" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
+    <div class="launchers"><a id="release-notice" class="update-notice" href="https://eduardr02.github.io/surfd-qol/" target="_blank" rel="noopener noreferrer" hidden></a>${zenMarkup}${runsLauncherMarkup}${launcherMarkup}</div>
     ${panelMarkup}${runsMarkup}`;
   document.documentElement.append(host);
   const overlay = root.getElementById('overlay');
@@ -296,7 +296,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     setUpdate(update) {
       releaseVersion = typeof update?.version === 'string' && /^\d{1,5}(?:\.\d{1,5}){2,3}$/.test(update.version) ? update.version : null;
       releaseNotice.textContent = releaseVersion ? `Surfd QoL ${releaseVersion} available ↗` : '';
-      releaseNotice.title = 'Open the GitHub release. Download and replace your extension folder, then reload the extension and Surfd.';
+      releaseNotice.title = 'Open the download page for installation and update instructions.';
       refreshMenu();
     },
     observeFinish() { references.observeFinish(); },

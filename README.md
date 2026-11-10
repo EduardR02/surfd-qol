@@ -19,7 +19,7 @@ You need a desktop Chromium browser: Chrome 118 or newer, Edge, Brave or Opera (
 3. Click **Load unpacked** and pick the unzipped folder (the one containing `manifest.json`).
 4. Open [surfd.net](https://surfd.net/). The tab reloads once while the extension hooks in. Settings are under **QoL**, bottom right of the game menu, next to the notification bell. Changes save automatically.
 
-**Updating:** when a new version is out, a link appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, click the reload icon on the extension in your browser's extensions page, then reload Surfd. Your settings stay.
+**Updating:** checks run when you open Surfd and hourly while it stays open. When a new version is out, a link to the download page appears above **QoL** in the game menu. Download the new zip, replace the folder's contents, click the reload icon on the extension in your browser's extensions page, then reload Surfd. Your settings stay.
 
 ### About the "started debugging this browser" bar
 

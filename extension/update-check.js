@@ -1,7 +1,7 @@
 const CACHE_KEY = 'surfd-qol-release';
-const CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+const CHECK_INTERVAL = 60 * 60 * 1000;
 const API = 'https://api.github.com/repos/EduardR02/surfd-qol/releases/latest';
-export const RELEASE_URL = 'https://github.com/EduardR02/surfd-qol/releases/latest';
+export const RELEASE_URL = 'https://eduardr02.github.io/surfd-qol/';
 const versionParts = value => typeof value === 'string' && /^v?\d{1,5}(?:\.\d{1,5}){2,3}$/.test(value)
   ? value.replace(/^v/, '').split('.').map(Number) : null;
 
@@ -21,12 +21,12 @@ export function createUpdateChecker({storage, version, fetcher = fetch, clock = 
   let cached, pending = null;
   const result = () => newerVersion(cached?.version, version)
     ? {version: cached.version.replace(/^v/, ''), url: RELEASE_URL} : null;
-  async function check() {
+  async function check(force) {
     if (cached === undefined) {
       try { cached = (await storage.get(CACHE_KEY))[CACHE_KEY] ?? null; } catch { cached = null; }
     }
     const now = clock();
-    if (Number.isFinite(cached?.checkedAt) && now >= cached.checkedAt && now - cached.checkedAt < CHECK_INTERVAL) return result();
+    if (!force && Number.isFinite(cached?.checkedAt) && now >= cached.checkedAt && now - cached.checkedAt < CHECK_INTERVAL) return result();
     let latest = cached?.version ?? null;
     try {
       const response = await fetcher(API, {credentials: 'omit', signal: AbortSignal.timeout(10000), headers: {Accept: 'application/vnd.github+json'}});
@@ -39,8 +39,8 @@ export function createUpdateChecker({storage, version, fetcher = fetch, clock = 
     try { await storage.set({[CACHE_KEY]: cached}); } catch { /* in-memory cache still applies */ }
     return result();
   }
-  return () => {
-    if (!pending) pending = check().finally(() => { pending = null; });
+  return ({force = false} = {}) => {
+    if (!pending) pending = check(force).finally(() => { pending = null; });
     return pending;
   };
 }

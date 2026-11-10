@@ -32,6 +32,14 @@ async function status(tabId, message, error = false) {
   await chrome.action.setTitle({tabId, title: `Surfd QoL — ${message}`}).catch(() => {});
 }
 
+async function reloadForInterception(tabId) {
+  // Blink's memory cache bypasses Fetch interception. Evict it, then restore
+  // normal caching before navigation; the browser's disk cache stays intact.
+  await command(tabId, 'Network.setCacheDisabled', {cacheDisabled: true});
+  await command(tabId, 'Network.setCacheDisabled', {cacheDisabled: false});
+  await chrome.tabs.reload(tabId);
+}
+
 async function attach(tabId) {
   if (sessions.has(tabId)) return sessions.get(tabId);
   const pending = (async () => {
@@ -46,8 +54,7 @@ async function attach(tabId) {
           urlPattern: `https://surfd.net/assets/${name}.worker-*.js`, requestStage: 'Response'
         }))
       ] });
-      // The game module may have been requested before attach completed; reload so it passes through Fetch.
-      await chrome.tabs.reload(tabId);
+      await reloadForInterception(tabId);
     } catch (error) {
       await chrome.debugger.detach({ tabId }).catch(() => {});
       throw error;
@@ -60,7 +67,7 @@ async function attach(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === 'surfd-qol-check-update' && sender.tab && isSurfd(sender.url)) {
-    checkForUpdate().then(update => respond({update}), () => respond({update: null}));
+    checkForUpdate({force: message.force === true}).then(update => respond({update}), () => respond({update: null}));
     return true;
   }
   if (message?.type !== 'surfd-qol-connect' || !sender.tab || !isSurfd(sender.url)) return;
@@ -131,7 +138,7 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
 chrome.action.onClicked.addListener(async tab => {
   if (!isSurfd(tab.url)) return;
   try {
-    if (sessions.has(tab.id)) await chrome.tabs.reload(tab.id);
+    if (sessions.has(tab.id)) await reloadForInterception(tab.id);
     else await attach(tab.id);
   } catch (error) { await status(tab.id, error.message, true); }
 });
