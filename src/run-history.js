@@ -4,14 +4,12 @@
 // ending a run writes only that run and its map's bests.
 import {visitKey} from './replay-store.js';
 import {courseOfVersion} from './courses.js';
+import {cleanTouchRun, touchValue, MAX_TOUCH_MAPS, MAX_TOUCH_RUNS} from '../extension/touch-history.js';
 
 // Maps whose recent runs are kept; bests are kept for every map.
 const MAX_MAPS = 50;
 const MAX_RUNS = 2000;
 const MAX_RAMPS = 120;
-const MAX_TOUCH_RUNS = 200;
-export const TOUCH_STORAGE_KEY = 'surfd-qol-touch-attempts-v1';
-const TOUCH_STORE_VERSION = 2;
 const RAMP_AVERAGES_VERSION = 2;
 const RAMP_FIELDS = ['board', 'down', 'up', 'surf'];
 const RECENT_BEST_MS = 24 * 60 * 60 * 1000;
@@ -42,62 +40,102 @@ const validBests = record => record && typeof record.id === 'string' && Array.is
   record.ramps && typeof record.ramps === 'object' && record.start && typeof record.start === 'object';
 const lower = (value, best) => Number.isFinite(value) && (best == null || value < best);
 
-const touchValue = (value, angle = false) => Number.isFinite(value) && value >= 0 && (!angle || value <= 90) ? value : null;
-
-function cleanTouchRun(run) {
-  if (!run || typeof run.id !== 'string' || typeof run.map !== 'string' || !run.map ||
-    !Number.isFinite(run.at) || !Number.isFinite(run.time) || run.time < 0 ||
-    !Number.isSafeInteger(run.checkpoints) || run.checkpoints < 0 || run.checkpoints > 64 ||
-    (run.outcome !== 'finished' && run.outcome !== 'reset') || !Array.isArray(run.touches)) return null;
-  const touches = [], keys = new Set();
-  for (const touch of run.touches.slice(0, MAX_RAMPS)) {
-    if (!touch || typeof touch.key !== 'string') continue;
-    let parts;
-    try { parts = JSON.parse(touch.key); } catch { continue; }
-    if (!Array.isArray(parts) || parts.length !== 3 ||
-      visitKey({surfaceId: parts[0], checkpoint: parts[1], visit: parts[2]}) !== touch.key ||
-      touch.checkpoint !== parts[1] || keys.has(touch.key)) continue;
-    keys.add(touch.key);
-    touches.push({key: touch.key, checkpoint: touch.checkpoint, speedBefore: touchValue(touch.speedBefore),
-      speedAfter: touchValue(touch.speedAfter), angle: touchValue(touch.angle, true), crash: touch.crash === true});
+// The page keeps a bounded, lazily loaded view for the Runs panel. Persistence
+// is asynchronous and worker-owned; no complete history is serialized here.
+export function createTouchStore({store = null} = {}) {
+  const maps = new Map(), listeners = new Set();
+  let draining = null, closing = null, destroyed = false;
+  const notify = () => { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } };
+  function slot(map) {
+    let entry = maps.get(map);
+    if (!entry) {
+      entry = {records: [], dirty: new Map(), loaded: !store, loading: null};
+      maps.set(map, entry);
+      if (maps.size > MAX_TOUCH_MAPS) maps.delete(maps.keys().next().value);
+    }
+    return entry;
   }
-  return {id: run.id, map: run.map, at: run.at, time: run.time, outcome: run.outcome, checkpoints: run.checkpoints, touches};
-}
-
-// Loading is synchronous, so an attempt ending before history.ready cannot
-// overwrite older touch records. This store never reads or changes history's keys.
-export function createTouchStore({storage, key = TOUCH_STORAGE_KEY} = {}) {
-  if (storage === undefined) {
-    try { storage = globalThis.localStorage; } catch { storage = null; }
+  function retain(entry, run) {
+    const duplicate = entry.records.findIndex(record => record.id === run.id);
+    if (duplicate >= 0) entry.records.splice(duplicate, 1);
+    entry.records.push(run);
+    if (entry.records.length > MAX_TOUCH_RUNS) {
+      const removed = entry.records.shift();
+      entry.dirty.delete(removed.id);
+    }
   }
-  const maps = new Map();
-  function retain(run) {
-    let records = maps.get(run.map);
-    if (!records) records = [];
-    const duplicate = records.findIndex(record => record.id === run.id);
-    if (duplicate >= 0) records.splice(duplicate, 1);
-    records.push(run);
-    if (records.length > MAX_TOUCH_RUNS) records.splice(0, records.length - MAX_TOUCH_RUNS);
-    maps.delete(run.map);
-    maps.set(run.map, records);
-    if (maps.size > MAX_MAPS) maps.delete(maps.keys().next().value);
+  function load(map) {
+    if (destroyed || closing) return Promise.resolve();
+    const entry = slot(map);
+    if (entry.loaded) return Promise.resolve();
+    return entry.loading ??= Promise.resolve().then(() => store.load(map)).then(saved => {
+      if (destroyed || closing || maps.get(map) !== entry) return;
+      // Attempts ending while the read was in flight win duplicate IDs.
+      const merged = {records: [], dirty: new Map()};
+      for (const value of saved ?? []) {
+        const run = cleanTouchRun(value);
+        if (run) retain(merged, run);
+      }
+      for (const run of entry.records) retain(merged, run);
+      entry.records = merged.records;
+      const kept = new Set(entry.records.map(run => run.id));
+      for (const id of entry.dirty.keys()) if (!kept.has(id)) entry.dirty.delete(id);
+      entry.loaded = true;
+    }).catch(error => {
+      if (!destroyed) console.warn('[Surfd QoL] Could not load touch history:', error);
+    }).finally(() => {
+      entry.loading = null;
+      if (entry.loaded && !destroyed && !closing && maps.get(map) === entry) notify();
+    });
   }
-  try {
-    const saved = JSON.parse(storage?.getItem(key) ?? 'null');
-    if (saved?.version === TOUCH_STORE_VERSION && Array.isArray(saved.runs)) {
-      const runs = saved.runs.map(cleanTouchRun).filter(Boolean).sort((a, b) => a.at - b.at);
-      for (const run of runs) retain(run);
-    } else if (saved?.version === 1) storage?.setItem(key, JSON.stringify({version: TOUCH_STORE_VERSION, runs: []}));
-  } catch { /* Private storage and damaged records must not interrupt a run. */ }
+  function nextWrite() {
+    for (const entry of maps.values()) if (entry.dirty.size) return [entry, entry.dirty.values().next().value];
+    return null;
+  }
+  function flush() {
+    if (!store || destroyed) return Promise.resolve(true);
+    if (draining) return draining;
+    let failed = false;
+    draining = Promise.resolve().then(async () => {
+      let next;
+      while (!destroyed && (next = nextWrite())) {
+        const [entry, run] = next;
+        await store.append(run);
+        if (entry.dirty.get(run.id) === run) entry.dirty.delete(run.id);
+      }
+      return true;
+    }).catch(error => {
+      failed = true;
+      if (!destroyed) console.warn('[Surfd QoL] Could not save touch history:', error);
+      return false;
+    }).finally(() => {
+      draining = null;
+      // A later append retries retained unsaved attempts after a write failure.
+      if (!failed && !destroyed && nextWrite()) void flush();
+    });
+    return draining;
+  }
   return {
-    records(map) { return maps.get(map) ?? []; },
-    append(record) {
-      const run = cleanTouchRun(record);
+    load, flush,
+    records(map) { if (!destroyed) void load(map); return maps.get(map)?.records ?? []; },
+    append(value) {
+      if (destroyed || closing) return;
+      const run = cleanTouchRun(value);
       if (!run) return;
-      retain(run);
-      try {
-        storage?.setItem(key, JSON.stringify({version: TOUCH_STORE_VERSION, runs: [...maps.values()].flat()}));
-      } catch { /* Keep this session's measurements when storage is unavailable or full. */ }
+      const entry = slot(run.map);
+      retain(entry, run);
+      maps.delete(run.map);
+      maps.set(run.map, entry);
+      if (store) { entry.dirty.set(run.id, run); void flush(); }
+    },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    destroy() {
+      listeners.clear();
+      return closing ??= flush().finally(() => {
+        destroyed = true;
+        maps.clear();
+        store?.destroy?.();
+      });
     },
   };
 }
@@ -344,6 +382,7 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     try { onPrune?.(kept); } catch { /* optional */ }
   }
   function notify() { for (const listener of listeners) { try { listener(); } catch { /* UI only */ } } }
+  touchStore?.subscribe?.(notify);
   function addRun(run, ramps) {
     let record = bests.get(run.map);
     if (!record) bests.set(run.map, record = emptyBests(run.map, run));
@@ -378,6 +417,9 @@ export function createRunHistory({metrics, start, getState = () => null, getMap 
     // Bests from runs that ended while loading apply on top of the saved ones.
     const touched = new Set(migrated);
     for (const [run, ramps] of pending.splice(0)) touched.add(addRun(run, ramps));
+    let initialMap = null;
+    try { initialMap = getMap?.(); } catch { /* not loaded yet */ }
+    if (initialMap) await touchStore?.load?.(mapKey(initialMap));
     commit([], loaded ? [...touched] : []);
     if (migrated.size) await writeTail;
     notify();

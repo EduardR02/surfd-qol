@@ -1,15 +1,15 @@
 import {describe, expect, test} from 'bun:test';
-import {createRunHistory, createTouchStore, TOUCH_STORAGE_KEY} from '../src/run-history.js';
+import {createRunHistory, createTouchStore} from '../src/run-history.js';
 
 const KEY = '[1,0,1]';
 const SECOND = '[2,1,1]';
 const emptyMetric = {best: null, last10: null, avg: null};
 
 function storageRig() {
-  const values = new Map(), writes = [];
-  return {values, writes,
-    getItem: key => values.get(key) ?? null,
-    setItem(key, value) { writes.push(key); values.set(key, value); },
+  const values = new Map();
+  return {values,
+    async load(map) { return structuredClone([...values.values()].filter(run => run.map === map)); },
+    async append(run) { values.set(run.id, structuredClone(run)); },
   };
 }
 
@@ -17,7 +17,7 @@ function record(index, map = 'utopia:3', touches = []) {
   return {id: `run-${index}`, map, at: index, time: 1, outcome: 'reset', checkpoints: 0, touches};
 }
 
-function rig({storage = storageRig(), touchStore = createTouchStore({storage}), store = null,
+function rig({storage = storageRig(), touchStore = createTouchStore({store: storage}), store = null,
   getTouchReferences = () => null} = {}) {
   let now = 1000, revision = 0;
   const state = {playback: false, spectator: {target: null}};
@@ -69,30 +69,25 @@ function rig({storage = storageRig(), touchStore = createTouchStore({storage}), 
 const stats = r => r.history.touchStats('utopia:3');
 
 describe('touch attempt store', () => {
-  test('uses a separate durable key, writes only ended attempts and preserves legacy data', async () => {
+  test('only ended attempts survive a reload, with final exit measurements', async () => {
     const r = rig();
-    r.storage.values.set('legacy-history', 'untouched');
     await r.history.ready;
-    expect(r.storage.writes).toEqual([]);
     r.go();
     r.touch();
     r.revise({speedAfter: 980});
     r.exit({exitSpeed: 700});
     r.tick();
-    expect(r.storage.writes).toEqual([]);
     expect(stats(r).runs).toBe(0);
     r.reset();
-    expect(r.storage.writes).toEqual([TOUCH_STORAGE_KEY]);
-    expect(r.storage.values.get('legacy-history')).toBe('untouched');
     expect(r.touchStore.records('utopia:3')).toEqual([{
       id: expect.any(String), map: 'utopia:3', at: expect.any(Number), time: 0.075,
       outcome: 'reset', checkpoints: 0,
       touches: [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 700, angle: 8, crash: false}],
     }]);
+    await r.touchStore.flush();
     const next = rig({storage: r.storage});
     await next.history.ready;
     expect(stats(next)).toEqual(stats(r));
-    expect(r.storage.writes).toHaveLength(1);
   });
 
   test('retains the newest 200 attempts per map including short resets', async () => {
@@ -107,27 +102,13 @@ describe('touch attempt store', () => {
     expect(r.touchStore.records('utopia:3')).toHaveLength(200);
     expect(stats(r)).toMatchObject({runs: 200, touches: [{reach: 1 / 200,
       speedIn: {best: 500, last10: 500, avg: 500}, angle: {best: 20, last10: 20, avg: 20}}]});
+    await r.touchStore.flush();
     const next = rig({storage: r.storage});
     await next.history.ready;
     expect(stats(next)).toEqual(stats(r));
   });
 
-  test('keeps only 50 recently played maps, including on reload, and supports a custom key', () => {
-    const storage = storageRig(), store = createTouchStore({storage, key: 'own-touch-key'});
-    for (let index = 0; index < 50; index++) store.append(record(index, `map-${index}`));
-    store.append(record(50, 'map-0'));
-    store.append(record(51, 'map-50'));
-    expect(store.records('map-0')).toHaveLength(2);
-    expect(store.records('map-1')).toEqual([]);
-    expect(storage.values.has(TOUCH_STORAGE_KEY)).toBe(false);
-    const next = createTouchStore({storage, key: 'own-touch-key'});
-    expect(next.records('map-0')).toHaveLength(2);
-    expect(next.records('map-1')).toEqual([]);
-    expect(new Set(JSON.parse(storage.values.get('own-touch-key')).runs.map(run => run.map)).size).toBe(50);
-  });
-
-  test('bounds loaded records and rejects malformed records and touch identities', () => {
-    const storage = storageRig();
+  test('bounds loaded records and rejects malformed records and touch identities', async () => {
     const runs = Array.from({length: 201}, (_, index) => record(index));
     runs.push({...record(202), time: -1}, {...record(203), outcome: 'practice'});
     runs[200].touches = [
@@ -136,32 +117,82 @@ describe('touch attempt store', () => {
       {key: 'invalid', checkpoint: 0},
       {key: '[2,1,1]', checkpoint: 0},
     ];
-    storage.values.set(TOUCH_STORAGE_KEY, JSON.stringify({version: 2, runs}));
-    const store = createTouchStore({storage});
+    const store = createTouchStore({store: {load: async () => runs}});
+    await store.load('utopia:3');
     expect(store.records('utopia:3')).toHaveLength(200);
     expect(store.records('utopia:3')[0].id).toBe('run-1');
     expect(store.records('utopia:3').at(-1).touches).toEqual([
       {key: KEY, checkpoint: 0, speedBefore: null, speedAfter: 0, angle: null, crash: false},
     ]);
-    expect(storage.writes).toEqual([]);
   });
 
-  test('corrupt or unavailable storage keeps observation usable and failed writes can recover', async () => {
-    const storage = storageRig();
-    storage.values.set(TOUCH_STORAGE_KEY, '{');
+  test('failed writes keep measurements usable and retry with the next attempt', async () => {
+    const storage = storageRig(), append = storage.append;
     let failed = true;
-    const save = storage.setItem.bind(storage);
-    storage.setItem = (key, value) => { if (failed) throw new Error('Quota'); save(key, value); };
+    storage.append = async run => { if (failed) throw new Error('Quota'); await append(run); };
     const r = rig({storage});
     await r.history.ready;
     r.go(); r.touch(); r.reset();
+    expect(await r.touchStore.flush()).toBe(false);
     expect(stats(r).runs).toBe(1);
     failed = false;
     r.go(); r.reset();
-    expect(createTouchStore({storage}).records('utopia:3')).toHaveLength(2);
-    const unavailable = createTouchStore({storage: {getItem() { throw new Error('Blocked'); }, setItem() { throw new Error('Blocked'); }}});
-    unavailable.append(record(1));
-    expect(unavailable.records('utopia:3')).toHaveLength(1);
+    expect(await r.touchStore.flush()).toBe(true);
+    const next = rig({storage});
+    await next.history.ready;
+    expect(stats(next)).toEqual(stats(r));
+  });
+
+  test('attempts recorded during loading win duplicates without losing saved history', async () => {
+    let complete;
+    const storage = storageRig();
+    storage.load = () => new Promise(resolve => { complete = resolve; });
+    const store = createTouchStore({store: storage});
+    const loading = store.load('utopia:3');
+    await Promise.resolve();
+    store.append(record(2, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 800}]));
+    complete([record(1), record(2)]);
+    await loading;
+    await store.flush();
+    expect(store.records('utopia:3').map(run => run.id)).toEqual(['run-1', 'run-2']);
+    expect(store.records('utopia:3')[1].touches[0].speedBefore).toBe(800);
+  });
+
+  test('teardown drains queued attempts including the final observer reset before closing storage', async () => {
+    const storage = storageRig(), save = storage.append;
+    let release, closed = false;
+    const gate = new Promise(resolve => { release = resolve; });
+    storage.append = async run => { await gate; await save(run); };
+    storage.destroy = () => { closed = true; };
+    const r = rig({storage});
+    await r.history.ready;
+    r.go(); r.touch({speedBefore: 500}); r.reset();
+    await Promise.resolve();
+    r.go(); r.touch({speedBefore: 1000});
+    r.history.reset();
+    const closing = r.touchStore.destroy();
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(closed).toBe(true);
+    const next = rig({storage});
+    await next.history.ready;
+    expect(stats(next)).toMatchObject({runs: 2, touches: [{speedIn: {avg: 750}}]});
+  });
+
+  test('a transient load failure does not permanently hide saved statistics', async () => {
+    const storage = storageRig();
+    await storage.append(record(1));
+    const load = storage.load;
+    let failed = false;
+    storage.load = async map => {
+      if (!failed) { failed = true; throw new Error('Worker temporarily unavailable'); }
+      return load(map);
+    };
+    const store = createTouchStore({store: storage});
+    await store.load('utopia:3');
+    await store.load('utopia:3');
+    expect(store.records('utopia:3').map(run => run.id)).toEqual(['run-1']);
   });
 });
 
@@ -243,6 +274,7 @@ describe('per-touch statistics', () => {
       speedIn: {best: 9999, avg: 650, last10: 750},
       speedOut: {best: 9998, avg: 585, last10: 675},
       angle: {best: 0, avg: 20, last10: 20}}]});
+    await r.touchStore.flush();
     const next = rig({storage: r.storage});
     await next.history.ready;
     expect(stats(next)).toEqual(stats(r));
@@ -278,6 +310,7 @@ describe('per-touch statistics', () => {
     expect(stats(r).touches.map(touch => touch.key)).toEqual([KEY, SECOND]);
     r.go(); r.touch({surfaceId: 4}); r.finish();
     expect(stats(r).touches.map(touch => touch.key)).toEqual(['[4,0,1]']);
+    await r.touchStore.flush();
     const next = rig({storage: r.storage});
     await next.history.ready;
     expect(stats(next)).toEqual(stats(r));
@@ -300,7 +333,7 @@ describe('per-touch statistics', () => {
   });
 
   test('normal attempts survive legacy load races and explicit history deletion', async () => {
-    const storage = storageRig(), touchStore = createTouchStore({storage});
+    const storage = storageRig(), touchStore = createTouchStore({store: storage});
     touchStore.append(record(1));
     let finishLoad;
     const store = {load: () => new Promise(resolve => { finishLoad = resolve; }),
@@ -314,7 +347,10 @@ describe('per-touch statistics', () => {
     await r.history.clear();
     expect(r.history.runs()).toEqual([]);
     expect(stats(r)).toMatchObject({runs: 2, touches: [{reach: 0.5}]});
-    expect(createTouchStore({storage}).records('utopia:3')).toHaveLength(2);
+    await touchStore.flush();
+    const reload = createTouchStore({store: storage});
+    await reload.load('utopia:3');
+    expect(reload.records('utopia:3')).toHaveLength(2);
   });
 
   test('a failed legacy load cannot erase independent touch records', async () => {
@@ -322,7 +358,10 @@ describe('per-touch statistics', () => {
     r.go(); r.reset();
     await r.history.ready;
     expect(stats(r).runs).toBe(1);
-    expect(createTouchStore({storage: r.storage}).records('utopia:3')).toHaveLength(1);
+    await r.touchStore.flush();
+    const reload = createTouchStore({store: r.storage});
+    await reload.load('utopia:3');
+    expect(reload.records('utopia:3')).toHaveLength(1);
   });
 });
 
@@ -347,7 +386,6 @@ describe('normal timed attempt eligibility', () => {
     r.go(); r.touch(); r.finish();
     r.live.config.autoBhop = true;
     expect(stats(r).runs).toBe(0);
-    expect(r.storage.writes).toEqual([]);
     r.go(); r.reset();
     expect(stats(r).runs).toBe(1);
   });
@@ -390,7 +428,7 @@ describe('normal timed attempt eligibility', () => {
 });
 
 test('known route touches have zero reach after attempts that end before touching', async () => {
-  const storage = storageRig(), touchStore = createTouchStore({storage});
+  const storage = storageRig(), touchStore = createTouchStore({store: storage});
   const key = 'utopia:3';
   const history = createRunHistory({touchStore, store: {
     load: async () => ({runs: [], bests: [{id: key, splits: [], start: {}, route: [KEY],
@@ -403,27 +441,15 @@ test('known route touches have zero reach after attempts that end before touchin
   }]});
 });
 
-test('a repeated persisted attempt ID replaces rather than inflates its reach denominator', () => {
-  const storage = storageRig(), store = createTouchStore({storage});
+test('a repeated persisted attempt ID replaces rather than inflates its reach denominator', async () => {
+  const storage = storageRig(), store = createTouchStore({store: storage});
+  await store.load('utopia:3');
   store.append(record(1));
   store.append(record(1, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 100, speedAfter: 90, angle: 10}]));
   expect(store.records('utopia:3')).toHaveLength(1);
-  expect(createTouchStore({storage}).records('utopia:3')).toEqual(store.records('utopia:3'));
+  await store.flush();
+  const reload = createTouchStore({store: storage});
+  await reload.load('utopia:3');
+  expect(reload.records('utopia:3')).toEqual(store.records('utopia:3'));
 });
 
-test('upgrading touch statistics discards polluted attempts once and preserves the rebuilt store', () => {
-  const storage = storageRig();
-  storage.values.set('unrelated', 'keep');
-  storage.values.set(TOUCH_STORAGE_KEY, JSON.stringify({version: 1, runs: [
-    record(1, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 50, angle: 80}]),
-    record(2, 'other:1'),
-  ]}));
-  const store = createTouchStore({storage});
-  expect(store.records('utopia:3')).toEqual([]);
-  expect(store.records('other:1')).toEqual([]);
-  store.append(record(3, 'utopia:3', [{key: KEY, checkpoint: 0, speedBefore: 1000, speedAfter: 900, angle: 5}]));
-  const reload = createTouchStore({storage});
-  expect(reload.records('utopia:3')).toEqual(store.records('utopia:3'));
-  expect(reload.records('utopia:3').map(run => run.id)).toEqual(['run-3']);
-  expect(storage.values.get('unrelated')).toBe('keep');
-});

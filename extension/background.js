@@ -1,12 +1,14 @@
 import { instrumentGame, instrumentPhysicsWorker } from './instrument.js';
 import { loadGameSource } from './source-loader.js';
 import { createUpdateChecker } from './update-check.js';
+import {createTouchHistoryStorage} from './touch-history.js';
 
 const sessions = new Map();
 const origin = 'https://surfd.net';
 const isSurfd = url => { try { const parsed = new URL(url); return parsed.origin === origin && parsed.pathname === '/'; } catch { return false; } };
 const command = (tabId, method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
 const checkForUpdate = createUpdateChecker({storage: chrome.storage.local, version: chrome.runtime.getManifest().version});
+const touchHistory = createTouchHistoryStorage();
 // Read our own packaged source once; it is inserted into the intercepted
 // native worker response, so CSP needs neither eval nor another worker origin.
 let cinemaRuntime;
@@ -66,6 +68,17 @@ async function attach(tabId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message?.type === 'surfd-qol-touch-storage' && sender.tab && isSurfd(sender.url)) {
+    let operation;
+    switch (message.action) {
+      case 'load': operation = touchHistory.load(message.map); break;
+      case 'append': operation = touchHistory.append(message.run); break;
+      case 'migrate': operation = touchHistory.migrate(message.legacy); break;
+      default: respond({error: 'Invalid touch-history operation'}); return;
+    }
+    operation.then(value => respond({value}), error => respond({error: error.message ?? String(error)}));
+    return true;
+  }
   if (message?.type === 'surfd-qol-check-update' && sender.tab && isSurfd(sender.url)) {
     checkForUpdate({force: message.force === true}).then(update => respond({update}), () => respond({update: null}));
     return true;

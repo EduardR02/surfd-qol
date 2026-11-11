@@ -1,7 +1,7 @@
 import { createMetrics } from './metrics.js';
 import { getRampSurfaces } from './surfaces.js';
 import { createStartFeedback } from './start.js';
-import { createRunHistory } from './run-history.js';
+import { createRunHistory, createTouchStore } from './run-history.js';
 import { createReplayArchive, createHistoryStore, createAnalysisStore, openSiteDatabase } from './replay-archive.js';
 import { trimReplay } from './replay-trim.js';
 import { createReplayControl } from './replay-control.js';
@@ -17,6 +17,7 @@ import { createStrafePreview } from './strafe-preview.js';
 import { createCinema } from './cinema.js';
 import {createMapPreparation} from './map-preparation.js';
 import {createEntryTiming} from './entry-timing.js';
+import {createTouchStorageClient} from './touch-storage.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -26,8 +27,10 @@ const metrics = createMetrics(settings);
 const start = createStartFeedback();
 const database = openSiteDatabase();
 const replays = createReplayArchive({ database });
+const touches = createTouchStore({store: createTouchStorageClient()});
 const history = createRunHistory({
   metrics, start, archive: replays,
+  touchStore: touches,
   getState: () => window.__SURF__?.snapshot?.() ?? null,
   getMap: () => api.adapter?.getSession()?.map ?? null,
   getMapName: () => api.adapter?.getReferences?.()?.mapName ?? null,
@@ -200,6 +203,7 @@ const api = {
     // wrapper, which only unwraps while it is still outermost.
     replayControl.destroy();
     observer?.destroy();
+    void touches.destroy();
     hud?.destroy();
     rampReference.destroy();
     document.removeEventListener('DOMContentLoaded', mount);

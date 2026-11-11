@@ -1,7 +1,6 @@
-// Everything this extension keeps beyond settings lives in one IndexedDB
-// database on surfd.net: replay metadata, the replays themselves, runs, each
-// map's bests and the analysis of PB/WR replays. Nothing goes in the game's localStorage, whose small
-// quota it shares with the game's own saves.
+// Run history, replays, map bests and replay analysis use the site's IndexedDB.
+// Touch attempts have a separate extension-owned database, accessed through
+// the background worker; small settings and checkpoint caches still use localStorage.
 const DB_NAME = 'surfd-qol';
 const VERSION = 4;
 

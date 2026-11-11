@@ -94,6 +94,8 @@ Runs that crash into a ramp's edge or a wall are left out of its averages, and a
 
 Under **QoL → History** you can turn recording off, choose how many recent runs to keep per map and set the minimum reset length. Your best finish, splits and ramp bests stay when older runs are removed. Everything is stored in this browser; the same page shows storage use and has **Clear all**.
 
+Touch statistics save asynchronously in the extension's background worker. Legacy `localStorage` statistics migrate once and are deleted only after the IndexedDB import commits; clearing surfd.net site data no longer removes them.
+
 When a run is removed by history limits or a successful clear, its pending replay trimming and compression stop at the next processing boundary.
 
 ## Replays
