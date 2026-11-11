@@ -450,7 +450,6 @@ function roomBrowserHooks(source, hook) {
     m => `open(${m[1]}){${hook}?.browserVisibility?.(!${view}.el.hidden);typeof ${m[1]}=="string"`, 'browser open lifecycle');
   replace(new RegExp(`close\\(\\)\\{clearInterval\\((${identifier})\\)\\}`, 'g'),
     m => `close(){clearInterval(${m[1]});queueMicrotask(()=>${hook}?.browserVisibility?.(!${view}.el.hidden))}`, 'browser close lifecycle');
-  body = body.replaceAll(`${start[2]}.refresh()`, () => `(${hook}?.refreshDirectory({open:!${view}.el.hidden}),${start[2]}.refresh())`);
   const roster = roomRosterHooks(body, start[2]);
   body = roster.body.replace(start[0], () => start[0].replace('{let ', () => '{const __qolCommunity=row=>/^p-[a-z0-9]{12}$/.test(row.id),__qolRegion=row=>__qolCommunity(row)?"Community":row.region;' + roster.helpers + 'let '));
   source = source.slice(0, start.index) + body + source.slice(start.index + end.index + end[0].length);
@@ -508,6 +507,7 @@ function roomHooks(source, client, state) {
     if (tickets.length !== 2) throw new Error(`Unsupported Surfd build: room tickets (${tickets.length} matches)`);
     const bind = unique(source, new RegExp(`bindServers\\((${identifier}),(${identifier})\\)\\{(${identifier})=\\1,(${identifier})=\\2,\\2\\(\\)\\}`, 'g'), 'room join callback');
     const lobby = unique(source, new RegExp(`(${identifier})\\.bindServers\\(`, 'g'), 'room lobby')[1];
+    const listUpdate = unique(source, new RegExp(`list:\\((${identifier}),(${identifier}),(${identifier})\\)=>${literal(lobby)}\\.updateServers\\(\\1,\\2,\\3\\)`, 'g'), 'room list update');
     const maps = unique(source, new RegExp(`refreshTop10\\(\\)\\{${identifier}\\.refresh\\((${identifier})\\.find\\((${identifier})=>\\2\\.id===${identifier}\\.currentMap\\(\\)\\)\\?\\?null(?:,${identifier}\\.currentCourse\\(\\))?\\)\\}`, 'g'), 'room maps')[1];
     const countdown = unique(source, new RegExp(`function (${identifier})\\((${identifier}),(${identifier})\\)\\{const (${identifier})=(${identifier})\\(\\2,\\3\\);return \\4===0\\?"Changing map…":`, 'g'), 'room countdown')[1];
     const clocks = new RegExp(`${literal(countdown)}\\((${identifier}(?:\\.state)?)\\.endsAt,Date\\.now\\(\\)(?:\\+${identifier})?\\)`, 'g');
@@ -532,7 +532,8 @@ function roomHooks(source, client, state) {
     const disconnect = unique(source, /disconnect\(\)\{this\.watchTarget=null/g, 'room disconnect');
     source = source.replace(disconnect[0], () => 'disconnect(){this.__qolChunks=null;this.watchTarget=null');
     const listBody = list[0].slice('async list(){'.length, -1).replace(`return ${list[2]}.servers`, () => `return ${hook}?.mergeRooms(${list[2]}.servers)??${list[2]}.servers`);
-    source = source.replace(list[0], () => `async list(){${hook}?.refreshDirectory?.();try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
+    source = source.replace(list[0], () => `async list(){try{${listBody}}catch(error){const rows=${hook}?.mergeRooms([]);if(rows?.length)return rows;throw error}}`);
+    source = source.replace(listUpdate[0], () => `list:(${listUpdate[1]},${listUpdate[2]},${listUpdate[3]})=>${lobby}.updateServers(${hook}?.mergeRooms(${listUpdate[1]})??${listUpdate[1]},${listUpdate[2]},${listUpdate[3]})`);
     source = source.replace(measure[0], () => measure[0].replace('{const ', () => `{const privatePing=${hook}?.measure(${measure[1]});if(privatePing!=null)return privatePing;const `));
     source = source.replace(socket[0], () => `(this.__qolChunks=null,${hook}?.roomSocket(this.roomId)??${socket[0]})`);
     source = source.replace(/await this\.ticket\(\)/g, () => `(${hook}?.ticket(this.roomId)??await this.ticket())`);
@@ -563,7 +564,7 @@ function roomHooks(source, client, state) {
       status: () => ${lobby}.servers.status(),
       browserOpen: () => !${lobby}.servers.view.el.hidden,${native.adapter}
       root: () => ${lobby}.servers.view.el,
-      refresh: () => {${hook}?.refreshDirectory({open:!${lobby}.servers.view.el.hidden});return ${lobby}.refreshServers()},
+      refresh: () => ${lobby}.refreshServers(),
       select: id => ${lobby}.servers.selectRoom(id),
       selected: () => ${lobby}.servers.selected(),
       displayName: () => ${client}.session ? ${client}.profile?.username ?? ${hook}?.guestName?.() ?? "Guest" : ${hook}?.guestName?.() ?? "Guest",

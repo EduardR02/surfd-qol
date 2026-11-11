@@ -4,8 +4,9 @@ import {estimateBandwidth} from '../src/private-rooms/bandwidth.js';
 import {parseRoomCode} from '../src/private-rooms/ids.js';
 import {MAX_ROOM_PLAYERS, roomNameProblem} from '../src/private-rooms/protocol.js';
 
-class Element {
+class Element extends EventTarget {
   constructor(tag = 'div') {
+    super();
     this.tag = tag; this.children = []; this.dataset = {}; this.attributes = {};
     this.hidden = false; this.disabled = false; this.className = ''; this.id = ''; this.value = '';
     this.parentNode = null; this.content = '';
@@ -40,6 +41,7 @@ class Element {
       return form?.onsubmit?.({preventDefault() {}});
     }
     await this.onclick?.();
+    this.dispatchEvent(new Event('click'));
   }
   matches(selector) {
     const attr = selector.match(/\[([^=\]]+)(?:="([^"]*)")?\]$/);
@@ -82,7 +84,7 @@ const ROOM = 'p-aaaaaaaaaaaa';
 const VALID = "Night_owls's room";
 const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
 
-function fixture({guest = false, roster = null} = {}) {
+function fixture({guest = false, roster = null, nativeRefreshHidden = false, nativeRefreshDisabled = false} = {}) {
   const document = new Element('document');
   document.documentElement = document;
   document.createElement = tag => new Element(tag);
@@ -108,6 +110,7 @@ function fixture({guest = false, roster = null} = {}) {
   const status = add(foot, 'span', 'servers-status', 'foot-note');
   const group = add(foot, 'div', '', 'foot-group');
   const refresh = add(group, 'button', 'servers-refresh', 'btn', 'Refresh');
+  refresh.hidden = nativeRefreshHidden; refresh.disabled = nativeRefreshDisabled;
   const join = add(group, 'button', 'servers-join', 'btn btn-primary', 'Join');
   let visibility = 'private', hosting = null, current = null, selected = 'eu', failure = null, nativeJoins = 0, signIns = 0;
   let name = "Surfer's room", remembered = 16, copiedText = [], clipboardFails = false, refusePublic = false;
@@ -199,29 +202,89 @@ const groupTitles = view => view.querySelectorAll('.group-title').filter(shown)
   .map(node => node.textContent.slice(0, node.textContent.length - (node.querySelector('small')?.textContent.length ?? 0)));
 const type = (input, value) => { input.value = value; input.oninput(); };
 
-test('directory feedback stays in the list and does not replace explicit action feedback', async () => {
-  const f = fixture();
-  let error = 'Directory unavailable';
-  f.rooms.directoryError = () => error;
+test('community controls report progress and failures without replacing native feedback', async () => {
+  const f = fixture(), lastSuccess = Date.UTC(2025, 2, 4, 15, 22, 10), recoveredAt = lastSuccess + 120000;
+  const time = value => new Date(value).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  const listed = {id: ROOM, visibility: 'public', players: 2, online: true};
+  const row = new Element('tr'); row.dataset.id = ROOM;
+  f.rows.push(listed); f.rowsBody.append(row);
+  let state = {lastSuccess: null, pending: false, error: ''}, requests = 0;
+  const visibility = [];
+  f.rooms.directoryState = () => state;
+  f.rooms.directoryListVisibility = visible => visibility.push(visible);
+  f.rooms.refreshDirectory = () => {
+    requests++;
+    state = {...state, pending: true};
+    f.ui.refresh();
+  };
   try {
     f.status.textContent = 'Native status';
     f.ui.refresh();
-    const note = f.root.querySelector('.qol-directory-note');
-    expect(shown(note)).toBe(true);
-    expect(note.textContent).toBe(error);
+    const bar = f.root.querySelector('.qol-directory');
+    const note = bar.querySelector('.qol-directory-note'), refresh = bar.querySelector('button');
+    expect(shown(bar)).toBe(true);
+    expect(note.getAttribute('role')).toBe('status');
+    expect(note.textContent).toMatch(/never/i);
+    expect(refresh.textContent).toMatch(/community/i);
+    await refresh.click();
+    expect(requests).toBe(1);
+    expect(refresh.disabled).toBe(true);
+    expect(note.textContent).toMatch(/refreshing/i);
+    await refresh.click();
+    expect(requests).toBe(1);
+    expect(f.refresh.disabled).toBe(false);
+    state = {lastSuccess, pending: false, error: ''};
+    f.ui.refresh();
+    expect(refresh.disabled).toBe(false);
+    expect(note.textContent).toContain(time(lastSuccess));
+    expect(note.getAttribute('title')).toContain(new Date(lastSuccess).toLocaleString());
+    state = {...state, error: 'Directory unavailable'};
+    f.ui.refresh();
+    expect(note.textContent).toMatch(/fail/i);
+    expect(note.textContent).toContain(time(lastSuccess));
+    expect(note.getAttribute('aria-label')).toContain(state.error);
+    expect(refresh.textContent).toMatch(/retry.*community/i);
+    expect(row.parentNode).toBe(f.rowsBody);
     expect(f.status.textContent).toBe('Native status');
+    await refresh.click();
+    expect(requests).toBe(2);
+    expect(refresh.disabled).toBe(true);
+    expect(note.textContent).toMatch(/refreshing/i);
+    expect(note.textContent).toContain(time(lastSuccess));
+    state = {lastSuccess: recoveredAt, pending: false, error: ''};
+    f.ui.refresh();
+    expect(refresh.disabled).toBe(false);
+    expect(note.textContent).toContain(time(recoveredAt));
+    expect(note.textContent).not.toMatch(/fail|refreshing/i);
+    expect(note.getAttribute('aria-label')).not.toContain('Directory unavailable');
     await f.host().click();
-    expect(shown(note)).toBe(false);
+    expect(shown(bar)).toBe(false);
+    expect(visibility.at(-1)).toBe(false);
     f.fail(new Error('Host failed'));
     await f.footButton('Start room').click();
     expect(f.status.textContent).toBe('Host failed');
     await f.footButton('Back').click();
-    expect(shown(note)).toBe(true);
-    error = '';
-    f.ui.refresh();
-    expect(shown(note)).toBe(false);
+    expect(shown(bar)).toBe(true);
+    expect(visibility.at(-1)).toBe(true);
+    expect(note.textContent).toContain(time(recoveredAt));
     expect(f.status.textContent).toBe('Host failed');
   } finally { f.ui.destroy(); }
+});
+
+test('destroy removes community controls and restores the native refresh button', async () => {
+  const f = fixture({nativeRefreshHidden: true, nativeRefreshDisabled: true});
+  const handler = () => {};
+  f.refresh.onclick = handler;
+  const label = f.refresh.textContent;
+  const button = f.root.querySelector('.qol-directory button');
+  await f.host().click();
+  f.ui.destroy();
+  expect(f.root.querySelector('.qol-directory')).toBeNull();
+  expect(button.onclick).toBeNull();
+  expect(f.refresh.hidden).toBe(true);
+  expect(f.refresh.disabled).toBe(true);
+  expect(f.refresh.onclick).toBe(handler);
+  expect(f.refresh.textContent).toBe(label);
 });
 
 describe('Host a room', () => {
@@ -397,6 +460,7 @@ describe('Your room', () => {
     expect(f.host().textContent).toBe('Your room');
     await f.host().click();
     const view = f.view();
+    expect(shown(f.root.querySelector('.qol-directory'))).toBe(false);
     expect(f.title.textContent).toBe('Your room');
     expect(groupTitles(view)).toEqual(['Room', 'Map', 'Invite', 'Players']);
     expect(view.querySelector('.qol-room-code').textContent).toBe('AAAA-AAAA-AAAA');
@@ -593,7 +657,7 @@ describe('server browser', () => {
   test('the room code field joins from the toolbar and explains refusals in the status line', async () => {
     const f = fixture();
     const form = f.toolbar.querySelector('.qol-code-join');
-    expect(f.toolbar.children.map(node => node.className)).toEqual(['chips', 'qol-code-join', 'grow']);
+    expect(form.parentNode).toBe(f.toolbar);
     const input = form.querySelector('input'), submit = form.querySelector('button');
     expect(input.placeholder).toBe('Room code');
     expect([submit.textContent, submit.className, submit.type]).toEqual(['Join', 'btn small', 'submit']);

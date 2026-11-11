@@ -135,7 +135,7 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
     replay.commands.length > MAX_COMMANDS || replay.mapId !== session.map.id || replay.mapVersion !== session.map.version ||
     !Number.isInteger(replay.format)) return null;
   let deadline = await yieldTask();
-  if (!isCurrent()) return null;
+  while (!isCurrent()) if (!paused || !await paused()) return null;
   // Shared consumers can join during the initial yield, before any native
   // state or movement observers are constructed.
   const asked = () => wants ? wants(replay.config) : {
@@ -237,15 +237,53 @@ export async function reconstructReferenceReplay({adapter, session, replay, entr
 // share the download and request the highest active capability.
 // Deterministic unmatched results are cached for this page/context as well.
 // Missing downloads, exceptions and cancellation remain retryable on reacquire.
+// Each pending handle owns its promise: release (or detected stale ownership)
+// settles it to null without retaining callbacks on the shared job.
 // saved: {get(id), put(id, {result, feedback})} keeps summaries across page
 // loads (replay-archive.js): an official PB/WR replay is named by its run, so
 // a saved one needs no download; the KSF route is fingerprinted once fetched.
 export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved = null}) {
   const pending = new Map(), cache = new Map();
   let adapter = null, destroyed = false;
+  // The external promise keeps only native resolvers, not a closure over the
+  // job. Retiring a job can release its await even if that I/O never settles.
+  function waitFor(job, operation) {
+    let stop;
+    const promise = new Promise((resolve, reject) => {
+      stop = resolve;
+      Promise.resolve(operation).then(resolve, reject);
+    });
+    if (job.retired) stop(null);
+    else job.stop = stop;
+    return promise.finally(() => { if (job.stop === stop) job.stop = null; });
+  }
+  function retire(job) {
+    job.retired = true;
+    clearTimeout(job.timer);
+    job.timer = null;
+    if (pending.get(job.key) === job) pending.delete(job.key);
+    job.wake?.(false);
+    job.stop?.(null);
+    job.stop = null;
+  }
+  function settle(job, consumer, result = null) {
+    if (!job.consumers.delete(consumer)) return;
+    consumer.resolve(result);
+    if (!job.retired && !job.consumers.size && job.timer === null) {
+      job.timer = setTimeout(() => cancel(job), GRACE_MS);
+    }
+  }
+  function cancel(job) {
+    retire(job);
+    for (const consumer of job.consumers) settle(job, consumer);
+  }
   function clearPending() {
-    for (const job of pending.values()) { job.consumers.clear(); job.wake?.(false); }
+    for (const job of pending.values()) cancel(job);
     pending.clear();
+  }
+  async function stored(id) {
+    if (!saved || !id) return null;
+    try { return (await saved.get(id))?.result ?? null; } catch { return null; }
   }
   // key names the replay (see analysisKey in references.js), never the asking
   // session's rules: a replay watched under other rules reuses the summary,
@@ -259,27 +297,24 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
       cache.delete(key); cache.set(key, cached);
       return {result: cached.result, promise: Promise.resolve(cached.result), release() {}};
     }
-    const consumer = {isCurrent, feedback, session, entry};
     let job = pending.get(key);
     // A job outlives its last consumer until its next slice, so a consumer
     // handing over to another session's in the same tick keeps its progress.
-    if (job && !job.valid()) { pending.delete(key); job = null; }
+    if (job && !job.valid()) { cancel(job); pending.delete(key); job = null; }
     if (!job && !destroyed) {
       const expectedAdapter = adapter, map = session.map, mapId = map.id, mapVersion = map.version;
-      job = {consumers: new Set(), promise: null,
-        valid() { return !destroyed && getAdapter() === expectedAdapter && session.map === map && map.id === mapId && map.version === mapVersion; },
+      job = {key, consumers: new Set(), retired: false, timer: null, stop: null,
+        valid() { return !this.retired && !destroyed && getAdapter() === expectedAdapter && session.map === map && map.id === mapId && map.version === mapVersion; },
         current() {
           if (!this.valid()) return false;
-          for (const member of this.consumers) if (!member.isCurrent()) this.consumers.delete(member);
+          for (const member of this.consumers) if (!member.isCurrent()) settle(this, member);
           return this.consumers.size > 0;
         },
         // Waits for a consumer to come back (true), or gives up (false).
         pause() {
           if (!this.valid()) return Promise.resolve(false);
           return new Promise(resolve => {
-            const timer = setTimeout(() => wake(false), GRACE_MS);
-            const wake = resumed => { clearTimeout(timer); if (this.wake === wake) this.wake = null; resolve(resumed); };
-            this.wake = wake;
+            this.wake = resumed => { this.wake = null; resolve(resumed); };
           });
         },
         // What the current consumers can use from a replay with this config.
@@ -308,22 +343,19 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
         const asked = work.wants(result.config);
         return asked.checkpoint && !result.checkpointTried || asked.feedback && !result.feedbackTried;
       };
-      const stored = async id => {
-        if (!saved || !id) return null;
-        try { return (await saved.get(id))?.result ?? null; } catch { return null; }
-      };
-      work.promise = Promise.resolve().then(async () => {
+      Promise.resolve().then(async () => {
         try {
           // Official runs and watched replays are named by their key; the KSF
           // route only once its download is fingerprinted.
           let id = key.includes(':official:') || key.includes(':route:') ? `${ANALYSIS}|${key}` : null, fingerprint = null;
-          let found = work.current() ? await stored(id) : null;
+          while (!work.current()) if (!await work.pause()) return null;
+          let found = await waitFor(work, stored(id));
+          while (!work.current()) if (!await work.pause()) return null;
           if (found) {
-            if (!work.current()) return null;
             found = keep(found);
             if (!owed(found)) return found;
           }
-          const replay = work.current() ? await load?.() : null;
+          const replay = await waitFor(work, load?.());
           while (!work.current()) if (!await work.pause()) return null;
           if (!replay) return {checkpoint: null, feedback: null, status: 'missing'};
           if (!Array.isArray(replay.commands) || replay.commands.length > MAX_COMMANDS) {
@@ -332,15 +364,16 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
           if (key.endsWith(':ksf')) {
             fingerprint = routeFingerprint(replay);
             id = `${ANALYSIS}|${key}|${fingerprint}`;
-            found = await stored(id);
+            found = await waitFor(work, stored(id));
+            while (!work.current()) if (!await work.pause()) return null;
             if (found) {
-              if (!work.current()) return null;
               found = keep(found);
               if (!owed(found)) return found;
             }
           }
           const reconstruct = () => reconstructReferenceReplay({
-            adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(), yieldTask,
+            adapter: expectedAdapter, session, replay, entry, isCurrent: () => work.current(),
+            yieldTask: () => waitFor(work, yieldTask()),
             wants: config => work.wants(config), paused: () => work.pause()
           });
           let data = merge(found, await reconstruct());
@@ -356,14 +389,21 @@ export function createReferenceReplayStore({getAdapter, yieldTask = defer, saved
         } catch {
           return work.current() ? {checkpoint: null, feedback: null, status: 'missing'} : null;
         } finally {
-          if (pending.get(key) === work) pending.delete(key);
+          retire(work);
         }
+      }).then(result => {
+        for (const member of work.consumers) settle(work, member, result);
       });
     }
     if (!job) return {result: null, promise: Promise.resolve(null), release() {}};
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    const consumer = {isCurrent, feedback, session, entry, resolve};
+    clearTimeout(job.timer);
+    job.timer = null;
     job.consumers.add(consumer);
     job.wake?.(true);
-    return {result: null, promise: job.promise, release() { job.consumers.delete(consumer); }};
+    return {result: null, promise, release() { settle(job, consumer); }};
   }
   return {acquire, destroy() { destroyed = true; clearPending(); cache.clear(); }};
 }

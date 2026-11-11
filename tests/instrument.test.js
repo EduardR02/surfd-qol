@@ -991,19 +991,21 @@ function nativeBrowser(options){let entries=[],status="Checking servers…",sele
   function detail(row,connecting=null){const full=row.players>=row.capacity;joinButton.textContent=connecting===row.id?"Connecting…":full?"Server full":row.preview?"Preview only":\`Join \${roomCode(row.id)}\`;return joinButton}
   function render(){const regions=[...new Set(entries.map(row=>row.region))];regionNodes.hidden=regions.length<2,regionNodes.innerHTML=regions.length<2?"":"tabs";for(const node of nodes("[data-region]",regionNodes))node.onclick=()=>{region=node.dataset.region,render()}}
   let browserTimer;
-  const view={el:{hidden:true},open(value){typeof value=="string"&&(selection=value);options.refresh()},close(){clearInterval(browserTimer)}};
+  const view={el:{hidden:true},open(value){typeof value=="string"&&(selection=value);options.refresh(),clearInterval(browserTimer),browserTimer=setInterval(()=>options.refresh(),1e4)},close(){clearInterval(browserTimer)}};
   return{view:view,update(rows,note){const now=Date.now();entries=rows.map(row=>({...row,...row.endsAt===undefined?{}:{endsAt:row.endsAt+(row.serverTime===undefined?0:now-row.serverTime)}}));status=note},
     rows:()=>entries,best:recommended,visible,groups,detail,rosterView,setOpenHandler(fn){this.requestOpen=fn},filters(full,empty){hideFull=full;hideEmpty=empty},region(value){region=value},mapTitle:mapTitle}}
 const rankSteps=[{points:0,title:"Unranked"},{points:100,title:"Rookie"}];
 let ownProfile={kind:"member",userId:"account-a",name:"Fixture player",rank:"Rookie",points:150};
-function lobbyFactory(){const windows={opened:[],open(view,value){this.opened.push({view,value})}},servers=nativeBrowser({refresh:()=>{}});servers.setOpenHandler(()=>windows.open("servers"));return {
+let nativeBrowserRefreshes=0,nativeLobbyRefreshes=0;
+function lobbyFactory(){const windows={opened:[],open(view,value){this.opened.push({view,value})}},servers=nativeBrowser({refresh:()=>{nativeBrowserRefreshes++}});servers.setOpenHandler(()=>windows.open("servers"));return {
   servers,windows,sync:nativeSync,me:{get:()=>ownProfile},selected:()=>catalog[0],tab(value){this.tabbed=value},
-  updateServers(rows,status){servers.update(rows,status);listed=servers.rows()},
+  updateServers(rows,status,pings){servers.update(rows,status,pings);listed=servers.rows()},
   bindServers(connect,refresh){joinCallback=connect,refreshCallback=refresh,refresh()},
   refreshTop10(){ranking.refresh(catalog.find(entry=>entry.id===options.currentMap())??null)}
 }}
 const lobby=lobbyFactory();
-lobby.bindServers(id=>{joined={id,row:listed.find(row=>row.id===id)}},()=>{});
+lobby.bindServers(id=>{joined={id,row:listed.find(row=>row.id===id)}},()=>{nativeLobbyRefreshes++});
+const nativeServerUpdates={list:(rows,status,pings)=>lobby.updateServers(rows,status,pings)};
 class NativeRoom {
   baseUrl='https://public.example';roomId=null;
   ticket(){return fetch('/room-ticket',{method:'POST'}).then(response=>response.json()).then(data=>data.token)}
@@ -1038,7 +1040,11 @@ function legacyPlayerActions(player){
 function roomFixture(privateRooms, source = roomSource) {
   let adapter;
   const requests = [], sockets = [], warnings = [];
-  let failList = false, listResponse = null;
+  const intervals = new Map();
+  let nextInterval = 0;
+  const setInterval = (callback, delay) => { const id = ++nextInterval; intervals.set(id, {callback, delay}); return id; };
+  const clearInterval = id => intervals.delete(id);
+  let failList = false, listResponse = null, pingResponse = null;
   const fetch = async (url, options) => {
     requests.push({url, options});
     if (String(url).endsWith('/servers')) {
@@ -1046,6 +1052,7 @@ function roomFixture(privateRooms, source = roomSource) {
       if (listResponse) return listResponse;
       return {ok: true, json: async () => ({servers: [{id: 'public', mapId: 'map', online: true}]})};
     }
+    if (String(url).endsWith('/ping') && pingResponse) return pingResponse;
     return {ok: true, json: async () => ({token: 'native-ticket'})};
   };
   function WebSocket(url, protocols) { sockets.push({url: String(url), protocols}); }
@@ -1055,9 +1062,10 @@ function roomFixture(privateRooms, source = roomSource) {
     console.warn = (...args) => warnings.push(args);
     instrumented = instrumentGame(source);
   } finally { console.warn = warn; }
-  const runtime = new Function('globalThis', 'fetch', 'WebSocket', instrumented + `
+  const runtime = new Function('globalThis', 'fetch', 'WebSocket', 'setInterval', 'clearInterval', instrumented + `
     return {room:new NativeRoom(),clocks,joined:()=>joined,profile:value=>{client.profile=value},me:value=>{ownProfile=value},
-      guest:()=>{client.session=null},browser:lobby.servers,leave:room=>{connection=room;leaveRoom()},
+      guest:()=>{client.session=null},browser:lobby.servers,serverUpdates:nativeServerUpdates,leave:room=>{connection=room;leaveRoom()},
+      refreshCounts:()=>({browser:nativeBrowserRefreshes,lobby:nativeLobbyRefreshes}),
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
         notes:new NativeNotifications(),friendStore,socialPanel,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
@@ -1066,9 +1074,9 @@ function roomFixture(privateRooms, source = roomSource) {
         menu:open=>{nativeMenu.hidden=!open;nativeFrame()},frame:nativeFrame,label:roomLabel},
       ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
       playerMenu,playerAction,menuActions,account,signOut:()=>{client.session=null;for(const listener of client.listeners)listener()}};
-  `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket);
-  return {adapter, runtime, requests, sockets, warnings, instrumented,
-    failList: () => { failList = true; }, listResponse: value => { listResponse = value; }};
+  `)({__SURFD_QOL__: {privateRooms, attach: value => { adapter = value; }}}, fetch, WebSocket, setInterval, clearInterval);
+  return {adapter, runtime, requests, sockets, warnings, instrumented, intervals,
+    failList: () => { failList = true; }, listResponse: value => { listResponse = value; }, pingResponse: value => { pingResponse = value; }};
 }
 
 function privateFixtureHooks() {
@@ -1094,6 +1102,8 @@ describe('optional native private room instrumentation', () => {
     try {
       fixture = roomFixture(rooms);
       fixture.runtime.browser.view.el.hidden = false;
+      fixture.runtime.browser.view.open();
+      const communityPending = rooms.refreshDirectory();
       if (offline) fixture.failList();
       let outcome;
       const pending = fixture.runtime.room.list().then(rows => {
@@ -1106,7 +1116,7 @@ describe('optional native private room instrumentation', () => {
       await pending;
       const community = {id: 'p-abcdefghjkmn', name: 'Fresh room', mapId: 'map', players: 2, capacity: 16};
       finishDirectory({ok: true, json: async () => ({rooms: [community]})});
-      await rooms.refreshDirectory();
+      await communityPending;
       expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(offline ? [community.id] : ['public', community.id]);
       expect((await fixture.runtime.room.list()).map(row => row.id)).toEqual(offline ? [community.id] : ['public', community.id]);
     } finally { rooms.destroy(); }
@@ -1123,6 +1133,7 @@ describe('optional native private room instrumentation', () => {
     try {
       fixture = roomFixture(rooms);
       fixture.runtime.browser.view.el.hidden = false;
+      fixture.runtime.browser.view.open();
       let finishOfficial;
       fixture.listResponse(new Promise(resolve => { finishOfficial = resolve; }));
       const pending = fixture.runtime.room.list();
@@ -1132,6 +1143,37 @@ describe('optional native private room instrumentation', () => {
       fixture.adapter.rooms.update(await pending);
       expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(['public', community.id]);
     } finally { rooms.destroy(); }
+  });
+
+  test('a late native ping result cannot overwrite a newer community directory', async () => {
+    let fixture, finishPing;
+    const earlier = {id: 'p-abcdefghjkmn', name: 'Earlier room', mapId: 'map', players: 2, capacity: 16};
+    const current = {id: 'p-nmkjhgfedcba', name: 'Current room', mapId: 'map', players: 3, capacity: 16};
+    let directory = [earlier];
+    const rooms = createPrivateRooms({
+      getAdapter: () => fixture?.adapter, events: new EventTarget(),
+      storage: {getItem: () => null, setItem() {}},
+      fetch: async () => ({ok: true, json: async () => ({rooms: directory})})
+    });
+    try {
+      fixture = roomFixture(rooms);
+      fixture.runtime.browser.view.el.hidden = false;
+      fixture.runtime.browser.view.open();
+      await rooms.refreshDirectory();
+      const snapshot = await fixture.runtime.room.list();
+      fixture.runtime.serverUpdates.list(snapshot, 'Measuring official pings.');
+      fixture.pingResponse(new Promise(resolve => { finishPing = resolve; }));
+      const pending = fixture.runtime.room.measure('public').then(ping => {
+        fixture.runtime.serverUpdates.list(snapshot, 'Official pings ready.', {public: ping});
+      });
+      directory = [current];
+      await rooms.refreshDirectory();
+      expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(['public', current.id]);
+      finishPing({ok: true});
+      await pending;
+      expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(['public', current.id]);
+      expect(fixture.adapter.rooms.status()).toBe('Official pings ready.');
+    } finally { finishPing?.({ok: true}); rooms.destroy(); }
   });
 
   test('public tickets, refresh, ping and WebSockets keep the native flow', async () => {
@@ -1526,19 +1568,28 @@ describe('optional native private room instrumentation', () => {
     }
   });
 
-  test('community measurements never refresh the directory or call native endpoints', async () => {
+  test('official refreshes and the native ten-second browser interval never refresh community rooms', async () => {
     const refreshes = [], hooks = privateFixtureHooks();
     hooks.row.id = 'p-aaaaaaaaaaaa';
     hooks.refreshDirectory = options => refreshes.push(options);
     const fixture = roomFixture(hooks);
     expect(await fixture.runtime.room.measure(hooks.row.id)).toBe(0);
-    expect(refreshes).toEqual([]);
     expect(fixture.requests).toEqual([]);
+    const initial = fixture.runtime.refreshCounts();
     fixture.adapter.rooms.refresh();
-    expect(refreshes).toEqual([{open: false}]);
+    expect(fixture.runtime.refreshCounts().lobby).toBe(initial.lobby + 1);
     fixture.runtime.browser.view.el.hidden = false;
     fixture.runtime.browser.view.open(hooks.row.id);
-    expect(refreshes).toEqual([{open: false}, {open: true}]);
+    expect(fixture.runtime.refreshCounts().browser).toBe(initial.browser + 1);
+    const [interval] = fixture.intervals.values();
+    expect(interval.delay).toBe(10000);
+    interval.callback(); interval.callback();
+    expect(fixture.runtime.refreshCounts().browser).toBe(initial.browser + 3);
+    await fixture.runtime.room.list();
+    expect(fixture.requests.some(request => request.url.endsWith('/servers'))).toBe(true);
+    expect(refreshes).toEqual([]);
+    fixture.runtime.browser.view.close();
+    expect(fixture.intervals.size).toBe(0);
   });
 
   test('an unknown community ping remains unknown without a native fallback request', async () => {
@@ -1756,7 +1807,7 @@ describe('native community behavior integration', () => {
     expect(fixture.adapter.rooms.menuOpen()).toBe(true);
     expect(fixture.adapter.rooms.browserOpen()).toBe(false);
     await fixture.runtime.room.list();
-    expect(refreshes).toEqual([undefined]);
+    expect(refreshes).toEqual([]);
     fixture.runtime.native.frame();
     fixture.runtime.native.frame();
     fixture.runtime.native.menu(false);

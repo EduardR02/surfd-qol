@@ -67,6 +67,10 @@ The harness does not measure replay simulation or GPU compilation. The cinematic
 - The camera can reuse the native collision BVH when the expected public arrays and query interface are present. Its filtered view preserves candidate order and collision flags and shares native triangle convexes, whose vertices, bounds and SAT planes do not depend on camera visibility or the probe hull. Incompatible implementations use the constructor path. Compare hit fractions, normals and solid-state results, not generated triangle-brush object identity.
 - Camera planning consumes available idle time between bounded trace batches and still checks cancellation. Segment travel windows are scanned linearly; shot-independent blurs are reused during safe-shot replanning. Matching retains Float32 costs and the existing DTW tie-breaking.
 
+## Reference lifetime checks
+
+PB/WR analysis is shared across HUD consumers. Releasing a pending handle settles it to `null` without cancelling other consumers; abandoned jobs expire after 30 seconds, including during stalled I/O. Check repeated finish-screen hide/show with a held replay download and with an already-cached reference.
+
 ## Map preparation checks
 
 - Measure input-ready map entry separately from `view.__qolAssetsReady` and `view.__qolGpuReady`, where `view` is the native map-renderer adapter. GPU readiness reports `uploadsComplete`, `shadersComplete` and `completion`; only supported shader-completion and fence APIs can produce `completion: 'gpu-complete'`. Background preparation must not delay entry.

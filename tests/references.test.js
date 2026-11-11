@@ -26,7 +26,7 @@ function memoryStorage() {
   const values = new Map();
   return {getItem:key => values.get(key) ?? null,setItem:(key,value) => values.set(key,value)};
 }
-const microtasks = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const microtasks = () => new Promise(resolve => setTimeout(resolve, 0));
 const instantYield = async () => {};
 function finish(session, time, speeds) {
   session.state.tick += 20;

@@ -96,7 +96,7 @@ function fixture({storage = new Map(), displayName = 'Surfer', getState = () => 
   const signals = [], peers = [], listeners = [], notices = [], requests = [], requestOptions = [];
   const events = new EventTarget(), timers = clock();
   events.document = Object.assign(new EventTarget(), {hidden: false});
-  let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false, menu = false;
+  let rows = [{id: 'official', name: 'Official', mapId: 'map', serverTime: 123}], open = false, menu = true;
   let response = {ok: true, json: async () => ({rooms: []})};
   let updates = 0;
   const joined = [], ui = {refreshes: 0, destroyed: false, refresh() { this.refreshes++; }, destroy() { this.destroyed = true; }};
@@ -928,58 +928,152 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('passive directory failures recover without sending shared notices', async () => {
-    const f = fixture();
-    try {
-      f.response({ok: false});
-      f.open(true); f.runtime.browserVisibility(true);
-      await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryError()).toBeTruthy();
-      expect(f.notices).toEqual([]);
-      expect(f.rows().map(value => value.id)).toEqual(['official']);
-      f.response({ok: true, json: async () => ({rooms: []})});
-      f.timers.advance(10000);
-      await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryError()).toBe('');
-      expect(f.rows().map(value => value.id)).toEqual(['official']);
-      f.response({ok: false});
-      f.timers.advance(10000);
-      await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryError()).toBeTruthy();
-      f.open(false); f.runtime.browserVisibility(false);
-      expect(f.runtime.directoryError()).toBe('');
-      expect(f.notices).toEqual([]);
-    } finally { f.runtime.destroy(); }
-  });
-
-  test('cancelled passive directory work does not report an error', async () => {
-    const f = fixture();
-    try {
-      f.response(new Promise(() => {}));
-      f.open(true); f.runtime.browserVisibility(true);
-      const pending = f.runtime.refreshDirectory();
-      f.open(false); f.runtime.browserVisibility(false);
-      await pending;
-      expect(f.runtime.directoryError()).toBe('');
-      expect(f.notices).toEqual([]);
-    } finally { f.runtime.destroy(); }
-  });
-
-  test('directory refresh is menu-gated and throttled', async () => {
+  test('failed refreshes retain the last successful rows and timestamp until a success', async () => {
     const f = fixture();
     try {
       f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      const lastSuccess = f.runtime.directoryState().lastSuccess;
+      expect(lastSuccess).toBe(f.timers.now());
+      f.response({ok: false});
+      f.timers.advance(1000);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryState()).toEqual({lastSuccess, pending: false, error: SERVICE});
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      f.open(false); f.runtime.browserVisibility(false);
+      expect(f.runtime.directoryState().error).toBe(SERVICE);
+      f.open(true); f.runtime.browserVisibility(true);
+      expect(f.requests).toHaveLength(2);
+      f.response({ok: true, json: async () => ({rooms: []})});
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: f.timers.now(), pending: false, error: ''});
+      expect(f.rows().map(value => value.id)).toEqual(['official']);
+      expect(f.notices).toEqual([]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('leaving a listed room invalidates its cached listing without clearing the last successful refresh', async () => {
+    const f = fixture();
+    try {
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      const lastSuccess = f.runtime.directoryState().lastSuccess;
+      f.open(false); f.runtime.browserVisibility(false);
+      await f.join();
+      const socket = f.runtime.roomSocket(ROOM);
+      socket.open();
+      f.runtime.leave(ROOM);
+      expect(f.runtime.directoryState().lastSuccess).toBe(lastSuccess);
+      f.open(true); f.runtime.browserVisibility(true);
+      f.timers.advance(1000);
+      expect(f.requests).toHaveLength(2);
+      await f.runtime.refreshDirectory();
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: f.timers.now(), pending: false, error: ''});
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('an initial failure is not retried by repeated visibility callbacks or idle time', async () => {
+    const f = fixture();
+    try {
+      f.response({ok: false});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
+      f.timers.advance(120000);
+      f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
+      expect(f.requests).toHaveLength(1);
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.open(false); f.runtime.browserVisibility(false);
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      expect(f.runtime.directoryState().error).toBe('');
+    } finally { f.runtime.destroy(); }
+  });
+
+  test.each(['automatic', 'manual'])('rapid failed-entry switches are coalesced; %s refresh stays available', async method => {
+    const f = fixture();
+    try {
+      f.response({ok: false});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      for (let i = 0; i < 8; i++) {
+        f.open(false); f.runtime.browserVisibility(false);
+        f.open(true); f.runtime.browserVisibility(true);
+      }
+      expect(f.requests).toHaveLength(1);
+      expect(f.timers.pending()).toBe(1);
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.timers.advance(999);
+      expect(f.requests).toHaveLength(1);
+      if (method === 'automatic') f.timers.advance(1);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
+      expect(f.runtime.directoryState().error).toBe('');
+      expect(f.timers.pending()).toBe(0);
+      f.timers.advance(120000);
+      f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
+      expect(f.requests).toHaveLength(2);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('closing or destroying the list cancels a deferred entry refresh', async () => {
+    const f = fixture();
+    f.response({ok: false});
+    f.open(true); f.runtime.browserVisibility(true);
+    await f.runtime.refreshDirectory();
+    f.open(false); f.runtime.browserVisibility(false);
+    f.open(true); f.runtime.browserVisibility(true);
+    expect(f.timers.pending()).toBe(1);
+    f.open(false); f.runtime.browserVisibility(false);
+    expect(f.timers.pending()).toBe(0);
+    f.open(true); f.runtime.browserVisibility(true);
+    expect(f.timers.pending()).toBe(1);
+    f.runtime.destroy();
+    expect(f.timers.pending()).toBe(0);
+    f.timers.advance(1000);
+    expect(f.requests).toHaveLength(1);
+  });
+
+  test('refreshes once on stale list entry, reuses fresh cache and coalesces manual requests', async () => {
+    const f = fixture();
+    let resolve;
+    try {
+      f.response(new Promise(yes => { resolve = yes; }));
       await f.runtime.refreshDirectory();
       expect(f.requests).toEqual([]);
-      f.open(true);
-      await Promise.all([f.runtime.refreshDirectory(), f.runtime.refreshDirectory()]);
+      f.open(true); f.runtime.browserVisibility(true);
+      const first = f.runtime.refreshDirectory(), shared = f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(1);
-      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: true, error: ''});
+      f.timers.advance(1500);
+      resolve({ok: true, json: async () => ({rooms: [row()]})});
+      await Promise.all([first, shared]);
+      expect(f.runtime.directoryState().lastSuccess).toBe(f.timers.now());
       expect(f.rows()[1]).toMatchObject({visibility: 'public', ping: null});
-      f.timers.advance(9999); await f.runtime.refreshDirectory();
+      f.timers.advance(59999);
+      f.open(false); f.runtime.browserVisibility(false);
+      f.open(true); f.runtime.browserVisibility(true);
       expect(f.requests).toHaveLength(1);
-      f.timers.advance(1); await f.runtime.refreshDirectory();
+      f.timers.advance(1);
+      f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
+      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      f.open(false); f.runtime.browserVisibility(false);
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(2);
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER]);
+      f.timers.advance(120000);
+      f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
+      expect(f.requests).toHaveLength(2);
+      f.response({ok: true, json: async () => ({rooms: []})});
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(3);
+      expect(f.rows().map(value => value.id)).toEqual(['official']);
     } finally { f.runtime.destroy(); }
   });
 
@@ -991,12 +1085,11 @@ describe('private room runtime', () => {
       signal.message('room-info', row(OTHER));
       expect(f.runtime.mergeRooms([]).map(value => value.id)).toEqual([ROOM]);
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
-      await f.runtime.refreshDirectory({open: true});
+      await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
       expect(f.rows().slice(1).map(value => value.capacity)).toEqual([16, 16]);
-      f.timers.advance(10000);
       f.response({ok: true, json: async () => ({rooms: []})});
-      await f.runtime.refreshDirectory({open: true});
+      await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
     } finally { f.runtime.destroy(); }
   });
@@ -1102,16 +1195,15 @@ describe('private room runtime', () => {
       expect(f.requestOptions[0].signal.aborted).toBe(true);
       expect(f.runtime.mergeRooms([{id: 'available-official'}]).map(value => value.id)).toEqual(['available-official']);
       expect(f.notices).toEqual([]);
-      expect(f.runtime.directoryError()).toBe(SERVICE);
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
       await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(1);
-      f.timers.advance(5000); await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
       resolve(stage === 'headers' ? {ok: true, json: async () => ({rooms: [row()]})} : {rooms: [row()]});
       await flush();
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER]);
       expect(f.notices).toEqual([]);
-      expect(f.runtime.directoryError()).toBe('');
+      expect(f.runtime.directoryState().error).toBe('');
     } finally { f.runtime.destroy(); }
   });
 
@@ -1125,11 +1217,10 @@ describe('private room runtime', () => {
         {ok: true, json: async () => { throw new SyntaxError('Unexpected token'); }},
       ]) {
         f.response(response);
-        await f.runtime.refreshDirectory({open: true});
+        await f.runtime.refreshDirectory();
         expect(f.notices).toEqual([]);
-        expect(f.runtime.directoryError()).toBe(SERVICE);
+        expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
         expect(f.rows().map(value => value.id)).toEqual(['official']);
-        f.timers.advance(10000);
       }
     } finally { f.runtime.destroy(); }
   });
@@ -1752,84 +1843,108 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test('the main menu discovers public rooms without polling during play', async () => {
+  test('idle menus and gameplay do not refresh a hidden community list', async () => {
     const f = fixture();
     try {
       f.response({ok: true, json: async () => ({rooms: [row()]})});
       f.runtime.attach();
-      f.menu(true); f.runtime.menuVisibility(true);
-      await f.runtime.refreshDirectory();
-      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
-      f.response({ok: true, json: async () => ({rooms: [{...row(), players: 1,
-        roster: [{name: 'Visitor', guest: false}]}]})});
-      f.timers.advance(10000); await f.runtime.refreshDirectory();
-      expect(f.rows()[1]).toMatchObject({players: 1, roster: [{name: 'Visitor', guest: false}]});
-      f.response({ok: true, json: async () => ({rooms: []})});
-      f.timers.advance(10000); await f.runtime.refreshDirectory();
-      expect(f.rows().map(value => value.id)).toEqual(['official']);
-      f.open(true); f.runtime.browserVisibility(true);
-      f.menu(false); f.runtime.menuVisibility(false);
-      await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(3);
-      f.open(false); f.runtime.browserVisibility(false);
-      f.timers.advance(60000);
-      await f.runtime.refreshDirectory({open: true});
-      expect(f.requests).toHaveLength(3);
-      expect(f.timers.pending()).toBe(0);
-      f.menu(true); f.runtime.menuVisibility(true);
-      await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(4);
-    } finally { f.runtime.destroy(); }
-  });
-
-  test('hidden tabs do not poll an empty directory and foreground returns refresh immediately', async () => {
-    const f = fixture();
-    try {
-      f.background(true); f.menu(true); f.runtime.attach();
-      f.timers.advance(60000); await f.runtime.refreshDirectory();
+      f.runtime.menuVisibility(true);
+      f.timers.advance(120000);
       expect(f.requests).toEqual([]);
       expect(f.timers.pending()).toBe(0);
-      f.background(false); await f.runtime.refreshDirectory();
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(1);
-      expect(f.rows().map(value => value.id)).toEqual(['official']);
-      f.response({ok: true, json: async () => ({rooms: [row()]})});
-      f.timers.advance(10000); await f.runtime.refreshDirectory();
-      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
-      f.background(true);
-      f.timers.advance(1000);
-      f.response({ok: true, json: async () => ({rooms: []})});
-      f.background(false); await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(3);
-      expect(f.rows().map(value => value.id)).toEqual(['official']);
       f.menu(false); f.runtime.menuVisibility(false);
-      f.background(true); f.background(false);
-      f.timers.advance(60000); await f.runtime.refreshDirectory();
-      expect(f.requests).toHaveLength(3);
-      expect(f.timers.pending()).toBe(0);
+      f.timers.advance(120000);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      f.menu(true); f.runtime.menuVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
     } finally { f.runtime.destroy(); }
   });
 
-  test('backgrounding aborts directory work without closing a room or applying a late response', async () => {
+  test('replacing the browser list with the host view aborts pending work until the list returns', async () => {
     const f = fixture();
     let resolve;
     try {
       f.response(new Promise(yes => { resolve = yes; }));
-      f.menu(true); f.runtime.attach();
-      const pending = f.runtime.refreshDirectory();
+      f.open(true); f.runtime.browserVisibility(true);
+      const first = f.runtime.refreshDirectory();
+      f.runtime.directoryListVisibility(false);
+      expect(f.requestOptions[0].signal.aborted).toBe(true);
+      await first;
+      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: ''});
+      f.timers.advance(120000);
+      f.runtime.menuVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      f.runtime.directoryListVisibility(true);
+      await f.runtime.refreshDirectory();
+      resolve({ok: true, json: async () => ({rooms: [row()]})});
+      await flush();
+      expect(f.requests).toHaveLength(2);
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('hidden tabs wait for a visible list and reuse fresh results on return', async () => {
+    const f = fixture();
+    try {
+      f.background(true); f.open(true); f.runtime.attach();
+      f.timers.advance(60000);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toEqual([]);
+      expect(f.timers.pending()).toBe(0);
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.background(false);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      f.background(true);
+      f.timers.advance(1000);
+      f.background(false);
+      expect(f.requests).toHaveLength(1);
+      expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
+      f.background(true);
+      f.timers.advance(60000);
+      f.response({ok: true, json: async () => ({rooms: []})});
+      f.background(false);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
+      expect(f.rows().map(value => value.id)).toEqual(['official']);
+      expect(f.timers.pending()).toBe(0);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('background abort preserves the last result and an active room, ignoring late responses', async () => {
+    const f = fixture();
+    let resolve;
+    try {
+      f.open(true); f.runtime.attach();
+      await f.runtime.refreshDirectory();
+      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      await f.runtime.refreshDirectory();
+      const lastSuccess = f.runtime.directoryState().lastSuccess;
       await f.join();
       const socket = f.runtime.roomSocket(ROOM); socket.open();
+      f.response(new Promise(yes => { resolve = yes; }));
+      const pending = f.runtime.refreshDirectory();
       f.background(true);
-      expect(f.requestOptions[0].signal.aborted).toBe(true);
+      expect(f.requestOptions.at(-1).signal.aborted).toBe(true);
+      await pending;
+      expect(f.runtime.directoryState()).toEqual({lastSuccess, pending: false, error: ''});
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
       expect(socket.readyState).toBe(1);
       expect(f.runtime.currentRoom()).toBe(ROOM);
-      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
       f.background(false);
-      const foreground = f.runtime.refreshDirectory();
       resolve({ok: true, json: async () => ({rooms: [row('p-aaaaaaaaaaaa')]})});
-      await pending; await foreground;
+      await flush();
+      expect(f.requests).toHaveLength(3);
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
+      expect(f.runtime.directoryState().lastSuccess).toBe(lastSuccess);
       expect(f.notices).toEqual([]);
-      expect(socket.readyState).toBe(1);
     } finally { f.runtime.destroy(); }
   });
 

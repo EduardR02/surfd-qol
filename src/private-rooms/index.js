@@ -16,6 +16,8 @@ const BAD_CODE = 'Check the room code.';
 const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
 const DIRECTORY_TIMEOUT = 5000;
+const DIRECTORY_FRESH_MS = 60000;
+const DIRECTORY_ENTRY_COOLDOWN_MS = 1000;
 // Relay credentials: time to get an answer, lead time before expiry to renew, retry delay after a failed renewal.
 const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
@@ -38,8 +40,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   let sharedSaves = null;
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
-  let lastDirectory = -Infinity, directoryRequest = null, directoryTimer = null, sampling = false;
-  let directoryError = '';
+  let lastDirectory = null, lastDirectoryStart = -Infinity, directoryRequest = null, directoryStartTimer = null, sampling = false;
+  let directoryError = '', directoryActive = false, directoryListVisible = true, directoryInvalidated = false;
   let browserVisible = null, menuVisible = null, directoryAbort = null, chosenName = null;
   let pendingJoin = null;
   // Finishes sent for verification, waiting on the site's verdict, by attempt id.
@@ -77,7 +79,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   function directoryVisible() {
     if (document?.hidden) return false;
     const adapter = getAdapter()?.rooms;
-    return !!(adapter?.browserOpen?.() || adapter?.menuOpen?.());
+    // The main menu has no community list; its server recommendation is official-only.
+    return !!adapter?.browserOpen?.() && (adapter.menuOpen?.() ?? true) && directoryListVisible;
   }
   function mergeRooms(rows) {
     const community = new Map(directory);
@@ -554,15 +557,12 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       if (pendingJoin === attempt) pendingJoin = null;
     }
   }
-  async function refreshDirectory() {
-    if (destroyed || !directoryVisible()) return;
-    if (directoryRequest) {
-      if (!directoryAbort?.signal.aborted) return directoryRequest;
-      await directoryRequest;
-      return refreshDirectory();
-    }
-    if (now() - lastDirectory < 10000) return;
-    lastDirectory = now();
+  function requestDirectory() {
+    if (destroyed || !directoryVisible()) return Promise.resolve();
+    if (directoryRequest && !directoryAbort?.signal.aborted) return directoryRequest;
+    timers.clearTimeout(directoryStartTimer);
+    directoryStartTimer = null;
+    lastDirectoryStart = now();
     directoryRequest = (async () => {
       const controller = directoryAbort = new AbortController();
       let timedOut = false, stop;
@@ -592,56 +592,74 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         }
         directory.clear();
         for (const [id, row] of next) directory.set(id, row);
+        lastDirectory = now();
+        directoryInvalidated = false;
         directoryError = '';
         updateLobby();
       } catch {
-        if (!destroyed && (timedOut || !controller.signal.aborted)) {
+        if (!destroyed && directoryAbort === controller && (timedOut || !controller.signal.aborted)) {
           directoryError = SERVICE;
-          ui?.refresh();
         }
       } finally {
         timers.clearTimeout(deadline);
         controller.signal.removeEventListener('abort', stop);
         if (directoryAbort === controller) {
-          if (controller.signal.aborted && !timedOut) lastDirectory = -Infinity;
           directoryRequest = null; directoryAbort = null;
+          if (!destroyed) ui?.refresh();
         }
       }
     })();
+    ui?.refresh();
     return directoryRequest;
   }
+  function refreshDirectory() {
+    if (destroyed || !directoryVisible()) return Promise.resolve();
+    timers.clearTimeout(directoryStartTimer);
+    directoryStartTimer = null;
+    directoryActive = true;
+    return requestDirectory();
+  }
   function updateDirectoryActivity() {
-    if (directoryVisible()) {
-      directoryTimer ??= timers.setInterval(() => void refreshDirectory(), 10000);
-      void refreshDirectory();
-    } else {
-      timers.clearInterval(directoryTimer);
-      directoryTimer = null;
+    if (!directoryVisible()) {
+      directoryActive = false;
+      timers.clearTimeout(directoryStartTimer);
+      directoryStartTimer = null;
       directoryAbort?.abort();
+    } else if (!directoryActive) {
+      directoryActive = true;
+      // Coalesce rapid close/reopen cycles, without delaying an explicit refresh.
+      if (directoryInvalidated || lastDirectory === null || now() - lastDirectory >= DIRECTORY_FRESH_MS) {
+        const delay = DIRECTORY_ENTRY_COOLDOWN_MS - (now() - lastDirectoryStart);
+        if (delay > 0) {
+          directoryStartTimer = timers.setTimeout(() => {
+            directoryStartTimer = null;
+            if (directoryActive && directoryVisible() && (directoryInvalidated || lastDirectory === null || now() - lastDirectory >= DIRECTORY_FRESH_MS)) void requestDirectory();
+          }, delay);
+        } else void requestDirectory();
+      }
     }
   }
   function pageVisibility() {
     if (destroyed) return;
-    if (!document.hidden) {
-      lastDirectory = -Infinity;
-      updateLobby();
-    }
+    if (!document.hidden) updateLobby();
     updateDirectoryActivity();
   }
   function browserVisibility(open) {
     if (destroyed || browserVisible === open) return;
     browserVisible = open;
     if (open) updateLobby();
-    else {
-      directoryError = '';
-      ui?.refresh();
-    }
+    else ui?.refresh();
     updateDirectoryActivity();
   }
   function menuVisibility(open) {
     if (destroyed || menuVisible === open) return;
     menuVisible = open;
     if (directoryVisible()) updateLobby();
+    updateDirectoryActivity();
+  }
+  function directoryListVisibility(visible) {
+    if (destroyed || directoryListVisible === visible) return;
+    directoryListVisible = visible;
     updateDirectoryActivity();
   }
   function joinInvite(id) {
@@ -652,7 +670,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     });
   }
   const api = {
-    directoryError: () => directoryError,
+    directoryState: () => ({lastSuccess: lastDirectory, pending: !!directoryRequest && !directoryAbort?.signal.aborted, error: directoryError}),
     // Called by the game as it handles each finish: the attempt id it sends for verification, or null.
     finishQueued(id) { queuedRun = typeof id === 'string' ? id : null; },
     async observeFinish(live, history) {
@@ -771,7 +789,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         throw error;
       }
     },
-    join, guestName, mergeRooms, refreshDirectory, browserVisibility, menuVisibility, commandReply,
+    join, guestName, mergeRooms, refreshDirectory, browserVisibility, menuVisibility, directoryListVisibility, commandReply,
     joinCode(value) {
       const id = parseRoomCode(value);
       return id ? join(id) : Promise.reject(new Error(BAD_CODE));
@@ -884,18 +902,17 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       for (const [roomId, session] of guests) if (id == null || id === roomId) closeGuest(session);
       // A departed connection's snapshot is no longer authoritative, even if
       // the directory still has a cached copy from before the departure.
-      for (const roomId of known.keys()) if (id == null || id === roomId) {
+      for (const [roomId, row] of known) if (id == null || id === roomId) {
         known.delete(roomId);
-        directory.delete(roomId);
+        if (directory.delete(roomId) || row.visibility === 'public') directoryInvalidated = true;
       }
       // The directory can contain a public row even when no peer snapshot was received.
-      if (id != null) directory.delete(id);
+      if (id != null && directory.delete(id)) directoryInvalidated = true;
       for (const [socket, roomId] of sockets) if (id == null || id === roomId) {
         sockets.delete(socket);
         if (latestSockets.get(roomId) === socket) latestSockets.delete(roomId);
         socket.close(1000, '');
       }
-      lastDirectory = -Infinity;
       directoryAbort?.abort();
       updateLobby();
       ui?.refresh();
@@ -920,8 +937,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       forgetRuns();
       destroyed = true;
       directoryAbort?.abort();
-      timers.clearInterval(directoryTimer);
-      directoryTimer = null;
+      timers.clearTimeout(directoryStartTimer);
       timers.clearInterval(heartbeat);
       events.removeEventListener?.('pagehide', pagehide);
       document?.removeEventListener?.('visibilitychange', pageVisibility);

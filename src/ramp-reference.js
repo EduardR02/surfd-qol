@@ -6,6 +6,13 @@ import {mapKey} from './run-history.js';
 import {referenceTone, startTone} from './hud-model.js';
 import {feedbackApplies, routeFingerprint, sameMovementConfig} from './replay-store.js';
 
+// A stalled download must retain only its replay holder, not consumer/session
+// ownership. Watch can reuse these commands if analysis requested them first.
+async function loadHeldReplay(holder, refs, ksf, runId) {
+  holder.replay = await (ksf ? refs.loadRecordRoute() : refs.loadReplay(runId));
+  return holder.replay;
+}
+
 export function createRampReference({getSession, getReferences, getAdapter, replayStore, settings = {}}) {
   const consumers = new Set(), listeners = new Set();
   let loads = 0, destroyed = false, adapterVersion = 0, lastAdapter = null;
@@ -55,7 +62,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
       if (typeof adapter?.Session !== 'function' || typeof adapter?.Movement !== 'function') { slot.status = 'missing'; return slot; }
       const current = slot, {session, refs, identity, ksf, ownerKey} = info, config = session.config;
       const entry = identity ? {runId: info.entry.runId, timeUs: info.entry.timeUs, splitsUs: info.entry.splitsUs.slice()} : null;
-      const work = {session, adapter, ownerKey, owns, handle: null, replay: null, promise: null};
+      const holder = {replay: null}, work = {session, adapter, ownerKey, owns, handle: null, holder, promise: null};
       pending = work;
       const isCurrent = () => {
         if (!owns() || pending !== work || getSession?.() !== session || session.config !== config || getAdapter?.() !== adapter) return false;
@@ -63,7 +70,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
         return next?.key === current.key && next.ownerKey === ownerKey;
       };
       work.handle = replayStore.acquire({key: info.key, session, entry,
-        load: async () => work.replay = await (ksf ? refs.loadRecordRoute() : refs.loadReplay(entry.runId)), feedback: true, isCurrent});
+        load: () => loadHeldReplay(holder, refs, ksf, entry?.runId), feedback: true, isCurrent});
       const publish = result => {
         if (!isCurrent()) {
           if (pending === work) release();
@@ -119,7 +126,7 @@ export function createRampReference({getSession, getReferences, getAdapter, repl
           destination = {tick: ramp.tick, leadSeconds, paused};
           // A newly indexed route already downloaded these commands. Completed
           // summaries deliberately retain no replays: fetch only on Watch intent.
-          const data = work?.replay ?? await (info.ksf ? info.refs.loadRecordRoute() : info.refs.loadReplay(entry.runId));
+          const data = work?.holder.replay ?? await (info.ksf ? info.refs.loadRecordRoute() : info.refs.loadReplay(entry.runId));
           if (!context() || !owns() || navigation !== intent || !data ||
             data.mapId !== info.session.map.id || data.mapVersion !== info.session.map.version ||
             !Number.isInteger(data.format) || !Array.isArray(data.commands) || data.commands.length > 40000 ||

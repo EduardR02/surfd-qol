@@ -2,7 +2,7 @@ import {afterEach, describe, expect, test} from 'bun:test';
 import {createRunReferences} from '../src/run-references.js';
 import {createMetrics} from '../src/metrics.js';
 import {observePhysics} from '../src/observer.js';
-import {createCheckpointReferences} from '../src/references.js';
+import {analysisKey, createCheckpointReferences, referenceIdentity} from '../src/references.js';
 import {createReferenceReplayStore, reconstructReferenceReplay, routeBoards} from '../src/replay-store.js';
 import {selectFeedbackType} from '../src/hud-model.js';
 import {createRampReference} from '../src/ramp-reference.js';
@@ -11,6 +11,30 @@ import {flightKey, visitKey} from '../src/replay-store.js';
 const cleanups = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()(); });
 const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+function referenceClock() {
+  const originalTimeout = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  const callbacks = new Map();
+  let next = 0;
+  globalThis.setTimeout = (callback, _delay, ...args) => {
+    const id = --next;
+    callbacks.set(id, () => callback(...args));
+    return id;
+  };
+  globalThis.clearTimeout = id => {
+    if (typeof id === 'number' && id < 0) callbacks.delete(id);
+    else originalClear(id);
+  };
+  cleanups.push(() => {
+    globalThis.setTimeout = originalTimeout;
+    globalThis.clearTimeout = originalClear;
+  });
+  return {expire() {
+    const due = [...callbacks.values()];
+    callbacks.clear();
+    for (const callback of due) callback();
+  }};
+}
+
 const normal = {x:0,y:.8,z:.6};
 const vector = x => ({x,y:0,z:0});
 const entry = {runId:'official-pb',timeUs:10000000,splitsUs:[]};
@@ -1013,6 +1037,228 @@ function checkpointsFor(f, settings = {checkpointReference:'pb'}) {
 }
 
 describe('Shared checkpoint and feedback replay lifecycle', () => {
+  test('repeated finish-screen hide/show settles released consumers while one pending download stays shared', async () => {
+    const f = fixture({shared: true}), checkpoints = checkpointsFor(f);
+    f.session.practice = true;
+    let releaseDownload, downloads = 0, outstanding = 0;
+    f.setLoader(() => {
+      downloads++;
+      return new Promise(resolve => { releaseDownload = resolve; });
+    });
+    const acquire = f.replayStore.acquire;
+    f.replayStore.acquire = request => {
+      const handle = acquire(request);
+      outstanding++;
+      handle.promise.then(() => { outstanding--; });
+      return handle;
+    };
+    const keeper = f.replayStore.acquire({
+      key: `${analysisKey(f.session, 'board')}:official:${referenceIdentity(entry)}`,
+      session: f.session, entry, load: () => f.getReferences().loadReplay(entry.runId), feedback: true
+    });
+    let board;
+    for (let cycle = 0; cycle < 20; cycle++) {
+      f.session.restorePractice();
+      f.session.state.tick = 333;
+      f.session.checkpointSpeeds = [];
+      f.session.timer.state = {phase: 'running', startTick: 0, elapsed: 5, splits: [], invalidReason: 'Practice restore'};
+      board = f.step(contact('a', 20));
+      checkpoints.update(); f.update(board);
+      await flush();
+      f.step(finish);
+      checkpoints.observeFinish();
+      checkpoints.update(false); f.controller.update(board, null, null, false);
+      await flush();
+      // Only the consumer still waiting for the replay owns an unsettled promise.
+      expect(outstanding).toBe(1);
+    }
+    expect(downloads).toBe(1);
+    expect(f.native()).toEqual({loads: 0, steps: 0});
+    checkpoints.update(); f.update(board);
+    releaseDownload(f.replay());
+    await flush();
+    // The active consumer receives the reference even when restored live
+    // measurements lack the trusted route prefix required for matching.
+    expect((await keeper.promise).feedback.route.boards[0].loss).toBe(5);
+    expect(outstanding).toBe(0);
+    expect(checkpoints.update()).toMatchObject({ownStatus: 'ready', own: []});
+    expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+    keeper.release();
+  });
+
+  test('invalidating or destroying a store settles pending consumers before their downloads finish', async () => {
+    const f = fixture({shared: true});
+    let releaseDownload;
+    const request = {
+      key: 'pending-reference', session: f.session, entry,
+      load: () => new Promise(resolve => { releaseDownload = resolve; })
+    };
+    const first = f.replayStore.acquire(request);
+    let firstResult = 'pending', secondResult = 'pending';
+    first.promise.then(result => { firstResult = result; });
+    await flush();
+    const oldDownload = releaseDownload;
+    f.session.map = {...f.session.map, version: 'map-2'};
+    const second = f.replayStore.acquire(request);
+    second.promise.then(result => { secondResult = result; });
+    await flush();
+    expect(firstResult).toBeNull();
+    expect(secondResult).toBe('pending');
+    f.replayStore.destroy();
+    await flush();
+    expect(secondResult).toBeNull();
+    oldDownload(f.replay()); releaseDownload(f.replay());
+    await flush();
+    expect(f.native()).toEqual({loads: 0, steps: 0});
+  });
+
+  test('stale consumers settle without waiting for another consumer to finish native analysis', async () => {
+    let resume, current = true;
+    const f = fixture({shared: true, yieldTask: () => new Promise(resolve => { resume = resolve; })});
+    const request = {key: 'shared-reference', session: f.session, entry, load: async () => f.replay()};
+    const stale = f.replayStore.acquire({...request, isCurrent: () => current});
+    const active = f.replayStore.acquire(request);
+    let staleResult = 'pending', activeResult = 'pending';
+    stale.promise.then(result => { staleResult = result; });
+    active.promise.then(result => { activeResult = result; });
+    current = false;
+    await flush();
+    expect(staleResult).toBeNull();
+    expect(activeResult).toBe('pending');
+    expect(f.native()).toEqual({loads: 0, steps: 0});
+    resume();
+    await flush();
+    expect(activeResult.checkpoint).toMatchObject({speeds: [], timeUs: entry.timeUs});
+    expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+    active.release();
+  });
+
+  for (const held of ['storage', 'download', 'yield']) {
+    test(`abandoned reference work expires during a stalled ${held} without blocking or overwriting its replacement`, async () => {
+      const clock = referenceClock(), saved = savedAnalysis(), get = saved.get;
+      let resume, reads = 0, downloads = 0, yields = 0;
+      const stalled = () => new Promise(resolve => { resume = resolve; });
+      saved.get = id => held === 'storage' && ++reads === 1 ? stalled() : get(id);
+      const f = fixture({shared: true, saved, yieldTask: () =>
+        held === 'yield' && ++yields === 1 ? stalled() : Promise.resolve()});
+      const request = {
+        key: 'test:official:pending', session: f.session, entry, feedback: true,
+        load: () => held === 'download' && ++downloads === 1 ? stalled() : Promise.resolve(f.replay())
+      };
+      const first = f.replayStore.acquire(request);
+      await flush();
+      first.release();
+      expect(await first.promise).toBeNull();
+      clock.expire();
+      await flush();
+      const replacement = f.replayStore.acquire(request);
+      let result = 'pending';
+      replacement.promise.then(value => { result = value; });
+      await flush();
+      expect(result).toMatchObject({checkpoint: {timeUs: entry.timeUs}});
+      expect(result.feedback.route.boards[0].loss).toBe(5);
+      if (held === 'storage') expect(reads).toBe(2);
+      if (held === 'download') expect(downloads).toBe(2);
+      resume(held === 'storage' ? null : held === 'download' ? f.replay() : undefined);
+      await flush();
+      expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+      expect(f.replayStore.acquire(request).result.feedback.route.boards[0].loss).toBe(5);
+    });
+  }
+
+  test('returning before abandonment expires keeps the pending download and cancels its cleanup deadline', async () => {
+    const clock = referenceClock(), f = fixture({shared: true});
+    let resume, downloads = 0;
+    const request = {
+      key: 'pending-reference', session: f.session, entry, feedback: true,
+      load: () => { downloads++; return new Promise(resolve => { resume = resolve; }); }
+    };
+    const first = f.replayStore.acquire(request);
+    await flush();
+    first.release();
+    const returning = f.replayStore.acquire(request);
+    clock.expire();
+    resume(f.replay());
+    const result = await returning.promise;
+    expect(result.feedback.route.boards[0].loss).toBe(5);
+    expect(downloads).toBe(1);
+    expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+  });
+
+  test('returning after a hidden saved-reference miss still downloads and analyses the shared reference', async () => {
+    const clock = referenceClock();
+    let finishRead, reads = 0, downloads = 0;
+    const saved = {get: () => { reads++; return new Promise(resolve => { finishRead = resolve; }); }};
+    const f = fixture({shared: true, saved});
+    const request = {
+      key: 'test:official:handoff', session: f.session, entry, feedback: true,
+      load: async () => { downloads++; return f.replay(); }
+    };
+    const first = f.replayStore.acquire(request);
+    await flush();
+    first.release();
+    finishRead(null);
+    await flush();
+    expect(downloads).toBe(0);
+    const returning = f.replayStore.acquire(request);
+    clock.expire();
+    const result = await returning.promise;
+    expect(result).toMatchObject({checkpoint: {timeUs: entry.timeUs}});
+    expect(result.feedback.route.boards[0].loss).toBe(5);
+    expect(reads).toBe(1);
+    expect(downloads).toBe(1);
+    expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+  });
+
+  test('returning after the initial analysis yield finishes hidden reuses its downloaded replay', async () => {
+    const clock = referenceClock();
+    let resume, downloads = 0, yields = 0;
+    const f = fixture({shared: true, yieldTask: () => ++yields === 1
+      ? new Promise(resolve => { resume = resolve; }) : Promise.resolve()});
+    const request = {
+      key: 'pending-reference', session: f.session, entry, feedback: true,
+      load: async () => { downloads++; return f.replay(); }
+    };
+    const first = f.replayStore.acquire(request);
+    await flush();
+    first.release();
+    resume();
+    await flush();
+    expect(f.native()).toEqual({loads: 0, steps: 0});
+    const returning = f.replayStore.acquire(request);
+    clock.expire();
+    const result = await returning.promise;
+    expect(result).toMatchObject({checkpoint: {timeUs: entry.timeUs}});
+    expect(result.feedback.route.boards[0].loss).toBe(5);
+    expect(downloads).toBe(1);
+    expect(f.native()).toEqual({loads: 1, steps: f.replay().commands.length});
+  });
+
+  test('a consumer released before work starts can return to its saved summary without downloading', async () => {
+    const clock = referenceClock();
+    let reads = 0, downloads = 0;
+    const checkpoint = {speeds: [], timeUs: entry.timeUs, splitsUs: []};
+    const saved = {get: async () => {
+      reads++;
+      return {result: {config: f.session.config, checkpointTried: true, checkpoint}};
+    }};
+    const f = fixture({shared: true, saved});
+    const request = {
+      key: 'test:official:prestart', session: f.session, entry,
+      load: async () => { downloads++; return f.replay(); }
+    };
+    const first = f.replayStore.acquire(request);
+    first.release();
+    await flush();
+    expect(reads).toBe(0);
+    const returning = f.replayStore.acquire(request);
+    clock.expire();
+    expect((await returning.promise).checkpoint).toEqual(checkpoint);
+    expect(reads).toBe(1);
+    expect(downloads).toBe(0);
+    expect(f.native()).toEqual({loads: 0, steps: 0});
+  });
+
   test('checkpoint-only passes skip feedback observation and later feedback upgrades stay cached', async () => {
     const f = fixture({shared:true,source:'fixed',commands:startCommands()});
     const checkpoints = checkpointsFor(f);

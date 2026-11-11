@@ -129,6 +129,7 @@ Surf with friends in a room of your own: no time limit, no map votes, and the ho
 
 - **Host:** open **Find a server** and click **Host a room**. Pick a map, a name, a player limit, and **Public** (listed under **Community** for everyone with the extension) or **Private** (room code or invite link only). Hosting needs a surfd.net account. Your browser runs the room, so keep the tab open.
 - **Join:** pick a room under **Community**, type its code above the list, or open an invite link.
+- **Refresh:** community listings refresh when you open the server list if they are at least a minute old. **Refresh community** updates them on demand, with the last successful refresh time beside it. **Refresh** at the bottom updates both lists. Surfd’s own servers still refresh automatically.
 - **In the room:** chat, spectating, map changes and finished runs work like on Surfd's servers, and runs count for the leaderboard as in solo play, since Surfd checks each replay itself. As on Surfd's servers, everyone can play the map's bonuses (**/b**), the player list shows who is on which bonus, and each bonus keeps its own room record. Savelocs are shared: everyone sees everyone's, and each player keeps up to 20 per map, as in the game.
 - **Differences from Surfd's servers:** Surfd's **Invite** button and friend status don't work for rooms yet, so share the code or link. Reports, votes and official moderation are hidden; the host can kick, ban for an hour and change the map.
 

@@ -23,8 +23,9 @@ html.${ROOM_CLASS} :is(
   .room-menu-actions :is(.room-nominate, .room-extend, .room-rtv, .room-reports)
 ) { display: none !important; }
 html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
-.qol-code-join { display: inline-flex; align-items: center; gap: 6px; }
-.qol-code-join .field input { width: 150px; }
+.qol-code-join { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; max-width: 100%; }
+.qol-code-join .field { min-width: 0; }
+.qol-code-join .field input { width: 150px; max-width: 100%; }
 .qol-host-view { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(500px, 1.6fr) minmax(220px, 1fr); grid-template-rows: minmax(0, 1fr); gap: 0 18px; }
 .qol-host-view .qol-room-players { display: flex; flex-direction: column; min-height: 0; margin: 0; }
 .qol-host-view .qol-room-players .table-wrap { flex: 1; }
@@ -35,6 +36,9 @@ html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-f
 .qol-host-view .input-error { color: var(--m-behind); }
 .qol-host-view input[aria-invalid="true"] { border-color: var(--m-behind); }
 #servers-window .qol-end-room + .foot-note { margin-right: auto; }
+.qol-directory { display: inline-flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
+.qol-directory-note { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.qol-directory-note.qol-directory-error { color: var(--m-behind); }
 .server-detail .qol-room-note { margin: 10px 0 0; color: var(--m-muted); font-size: 12px; }
 `;
 
@@ -65,6 +69,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     else text(root?.querySelector('#servers-status'), message);
   }
   const failure = error => error?.message ?? String(error);
+  const refreshDirectory = () => { void rooms.refreshDirectory?.(); };
 
   function buildView() {
     const view = buildRoomView(doc);
@@ -110,28 +115,41 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     form.onsubmit = event => { event.preventDefault(); joinCode(); };
     const toolbar = root.querySelector('.toolbar'), grow = toolbar?.querySelector('.grow');
     if (grow) grow.before(form); else toolbar?.append(form);
-    const directoryNote = element('p', 'foot-note qol-directory-note');
+    const directoryBar = element('div', 'qol-directory');
+    const directoryNote = element('span', 'foot-note qol-directory-note');
+    const directoryRefresh = button('Refresh community', 'btn small qol-directory-refresh');
+    directoryNote.id = 'qol-directory-status';
     directoryNote.setAttribute('role', 'status');
-    toolbar?.after(directoryNote);
+    directoryRefresh.setAttribute('aria-describedby', directoryNote.id);
+    directoryRefresh.onclick = refreshDirectory;
+    refreshButton.addEventListener('click', refreshDirectory);
+    directoryBar.append(directoryRefresh, directoryNote);
+    if (grow) grow.after(directoryBar); else toolbar?.append(directoryBar);
 
     const view = buildView();
     root.querySelector('.window-body')?.append(view.view);
     const title = root.querySelector('.titlebar h2');
+    const layout = root.querySelector('.servers-layout');
     nodes = {hostButton, back, start, endButton, refreshButton, join, form, code, submit, view, title, titleText: title?.textContent ?? '',
-      layout: root.querySelector('.servers-layout'), note: element('p', 'qol-room-note'), directoryNote};
+      layout, note: element('p', 'qol-room-note'), directoryBar, directoryNote, directoryRefresh,
+      refreshHidden: refreshButton.hidden, joinHidden: join.hidden, layoutHidden: layout?.hidden ?? false};
     rosterKey = '';
   }
   function unmount() {
     if (!nodes) return;
-    const {hostButton, back, start, endButton, refreshButton, join, form, view, title, titleText, layout, note, directoryNote} = nodes;
-    for (const node of [hostButton, back, start, endButton, form, view.view, note, directoryNote]) node.remove();
-    hidden(refreshButton, false); hidden(join, false); hidden(layout, false);
+    const {hostButton, back, start, endButton, refreshButton, join, form, view, title, titleText, layout, note,
+      directoryBar, directoryRefresh, refreshHidden, joinHidden, layoutHidden} = nodes;
+    refreshButton.removeEventListener('click', refreshDirectory);
+    directoryRefresh.onclick = null;
+    for (const node of [hostButton, back, start, endButton, form, view.view, note, directoryBar]) node.remove();
+    hidden(refreshButton, refreshHidden); hidden(join, joinHidden); hidden(layout, layoutHidden);
     text(title, titleText);
     nodes = null;
   }
 
   function reset() {
     mode = 'host'; copied = null; nameEdit = null; nameError = ''; limitEdit = null;
+    rooms.directoryListVisibility?.(false);
   }
   function openView() {
     const adapter = getAdapter()?.rooms;
@@ -349,8 +367,18 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   function render(adapter, hosting) {
     const host = mode === 'host';
     const {hostButton, back, start, endButton, refreshButton, join, submit, view, title, titleText, layout} = nodes;
-    text(nodes.directoryNote, rooms.directoryError?.() ?? '');
-    hidden(nodes.directoryNote, host || !rooms.directoryError?.());
+    const {lastSuccess = null, pending = false, error = ''} = rooms.directoryState?.() ?? {};
+    const date = lastSuccess === null ? null : new Date(lastSuccess);
+    const updated = date ? `Last updated ${date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` : 'Never updated';
+    const message = pending ? `Refreshing… · ${updated}` : error ? `Refresh failed · ${updated}` : updated;
+    const detail = [!pending && error, date ? `Last successful refresh: ${date.toLocaleString()}` : 'No successful refresh yet.'].filter(Boolean).join(' ');
+    text(nodes.directoryNote, message);
+    classes(nodes.directoryNote, `foot-note qol-directory-note${error && !pending ? ' qol-directory-error' : ''}`);
+    attribute(nodes.directoryNote, 'title', detail);
+    attribute(nodes.directoryNote, 'aria-label', `Community rooms: ${message}. ${detail}`);
+    text(nodes.directoryRefresh, error && !pending ? 'Retry community refresh' : 'Refresh community');
+    nodes.directoryRefresh.disabled = pending;
+    hidden(nodes.directoryBar, host);
     hidden(layout, host); hidden(view.view, !host);
     text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);
     text(hostButton, hosting ? 'Your room' : 'Host a room');
@@ -372,9 +400,10 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     if (next !== root) mount(next);
     const open = !!root && (adapter?.browserOpen?.() ?? !root.hidden);
     observe(open);
-    rooms.browserVisibility?.(open);
     // The window opens on the server list again after it closes, as when the game joins a room.
     if (wasOpen && !open) mode = 'list';
+    rooms.directoryListVisibility?.(mode === 'list');
+    rooms.browserVisibility?.(open);
     wasOpen = open;
     const hosting = rooms.hosting();
     rooms.showHostDetails?.(open && mode === 'host' && !!hosting);
