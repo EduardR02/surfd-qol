@@ -937,17 +937,18 @@ describe('private room runtime', () => {
       const lastSuccess = f.runtime.directoryState().lastSuccess;
       expect(lastSuccess).toBe(f.timers.now());
       f.response({ok: false});
-      f.timers.advance(1000);
+      f.timers.advance(10000);
       await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryState()).toEqual({lastSuccess, pending: false, error: SERVICE});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess, pending: false, error: SERVICE});
       expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
       f.open(false); f.runtime.browserVisibility(false);
       expect(f.runtime.directoryState().error).toBe(SERVICE);
       f.open(true); f.runtime.browserVisibility(true);
       expect(f.requests).toHaveLength(2);
       f.response({ok: true, json: async () => ({rooms: []})});
+      f.timers.advance(10000);
       await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: f.timers.now(), pending: false, error: ''});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: f.timers.now(), pending: false, error: ''});
       expect(f.rows().map(value => value.id)).toEqual(['official']);
       expect(f.notices).toEqual([]);
     } finally { f.runtime.destroy(); }
@@ -967,11 +968,11 @@ describe('private room runtime', () => {
       f.runtime.leave(ROOM);
       expect(f.runtime.directoryState().lastSuccess).toBe(lastSuccess);
       f.open(true); f.runtime.browserVisibility(true);
-      f.timers.advance(1000);
+      f.timers.advance(10000);
       expect(f.requests).toHaveLength(2);
       await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: f.timers.now(), pending: false, error: ''});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: f.timers.now(), pending: false, error: ''});
     } finally { f.runtime.destroy(); }
   });
 
@@ -981,7 +982,7 @@ describe('private room runtime', () => {
       f.response({ok: false});
       f.open(true); f.runtime.browserVisibility(true);
       await f.runtime.refreshDirectory();
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: null, pending: false, error: SERVICE});
       f.timers.advance(120000);
       f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
       expect(f.requests).toHaveLength(1);
@@ -995,7 +996,29 @@ describe('private room runtime', () => {
     } finally { f.runtime.destroy(); }
   });
 
-  test.each(['automatic', 'manual'])('rapid failed-entry switches are coalesced; %s refresh stays available', async method => {
+  test('manual refresh attempts cannot bypass or extend the ten-second community cooldown', async () => {
+    const f = fixture();
+    try {
+      f.response({ok: true, json: async () => ({rooms: [row()]})});
+      f.open(true); f.runtime.browserVisibility(true);
+      await f.runtime.refreshDirectory();
+      expect(f.runtime.directoryState().cooldownMs).toBe(10000);
+      for (let i = 0; i < 8; i++) await f.runtime.refreshDirectory();
+      f.timers.advance(9999);
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      expect(f.runtime.directoryState().cooldownMs).toBe(1);
+      f.timers.advance(1);
+      expect(f.runtime.directoryState().cooldownMs).toBe(0);
+      expect(f.requests).toHaveLength(1);
+      f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(2);
+      expect(f.rows().map(value => value.id)).toEqual(['official', OTHER]);
+    } finally { f.runtime.destroy(); }
+  });
+
+  test('failed-entry switches and manual attempts share the same cooldown without cancelling a deferred entry refresh', async () => {
     const f = fixture();
     try {
       f.response({ok: false});
@@ -1004,17 +1027,16 @@ describe('private room runtime', () => {
       for (let i = 0; i < 8; i++) {
         f.open(false); f.runtime.browserVisibility(false);
         f.open(true); f.runtime.browserVisibility(true);
+        await f.runtime.refreshDirectory();
       }
-      expect(f.requests).toHaveLength(1);
-      expect(f.timers.pending()).toBe(1);
       f.response({ok: true, json: async () => ({rooms: [row()]})});
-      f.timers.advance(999);
-      expect(f.requests).toHaveLength(1);
-      if (method === 'automatic') f.timers.advance(1);
+      f.timers.advance(9999);
       await f.runtime.refreshDirectory();
+      expect(f.requests).toHaveLength(1);
+      f.timers.advance(1);
       expect(f.requests).toHaveLength(2);
+      await f.runtime.refreshDirectory();
       expect(f.runtime.directoryState().error).toBe('');
-      expect(f.timers.pending()).toBe(0);
       f.timers.advance(120000);
       f.runtime.browserVisibility(true); f.runtime.menuVisibility(true);
       expect(f.requests).toHaveLength(2);
@@ -1035,7 +1057,7 @@ describe('private room runtime', () => {
     expect(f.timers.pending()).toBe(1);
     f.runtime.destroy();
     expect(f.timers.pending()).toBe(0);
-    f.timers.advance(1000);
+    f.timers.advance(10000);
     expect(f.requests).toHaveLength(1);
   });
 
@@ -1048,8 +1070,9 @@ describe('private room runtime', () => {
       expect(f.requests).toEqual([]);
       f.open(true); f.runtime.browserVisibility(true);
       const first = f.runtime.refreshDirectory(), shared = f.runtime.refreshDirectory();
+      expect(shared).toBe(first);
       expect(f.requests).toHaveLength(1);
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: true, error: ''});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: null, pending: true, error: ''});
       f.timers.advance(1500);
       resolve({ok: true, json: async () => ({rooms: [row()]})});
       await Promise.all([first, shared]);
@@ -1089,6 +1112,7 @@ describe('private room runtime', () => {
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
       expect(f.rows().slice(1).map(value => value.capacity)).toEqual([16, 16]);
       f.response({ok: true, json: async () => ({rooms: []})});
+      f.timers.advance(10000);
       await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official', ROOM]);
     } finally { f.runtime.destroy(); }
@@ -1124,6 +1148,7 @@ describe('private room runtime', () => {
       expect(f.runtime.roomInfo(ROOM)).toBeNull();
       expect(f.rows().map(value => value.id)).toEqual(['official']);
       f.response({ok: true, json: async () => ({rooms: []})});
+      f.timers.advance(10000);
       await f.runtime.refreshDirectory();
       expect(f.rows().map(value => value.id)).toEqual(['official']);
       expect(f.requestOptions.at(-1).cache).toBe('no-store');
@@ -1162,6 +1187,7 @@ describe('private room runtime', () => {
       let resolveNext;
       f.response(new Promise(yes => { resolveNext = yes; }));
       f.open(true); f.runtime.browserVisibility(true);
+      f.timers.advance(10000);
       const reopened = f.runtime.refreshDirectory();
       await flush();
       expect(f.requests).toHaveLength(2);
@@ -1195,8 +1221,9 @@ describe('private room runtime', () => {
       expect(f.requestOptions[0].signal.aborted).toBe(true);
       expect(f.runtime.mergeRooms([{id: 'available-official'}]).map(value => value.id)).toEqual(['available-official']);
       expect(f.notices).toEqual([]);
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: null, pending: false, error: SERVICE});
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      f.timers.advance(5000);
       await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(2);
       resolve(stage === 'headers' ? {ok: true, json: async () => ({rooms: [row()]})} : {rooms: [row()]});
@@ -1217,9 +1244,10 @@ describe('private room runtime', () => {
         {ok: true, json: async () => { throw new SyntaxError('Unexpected token'); }},
       ]) {
         f.response(response);
+        f.timers.advance(10000);
         await f.runtime.refreshDirectory();
         expect(f.notices).toEqual([]);
-        expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: SERVICE});
+        expect(f.runtime.directoryState()).toMatchObject({lastSuccess: null, pending: false, error: SERVICE});
         expect(f.rows().map(value => value.id)).toEqual(['official']);
       }
     } finally { f.runtime.destroy(); }
@@ -1875,7 +1903,7 @@ describe('private room runtime', () => {
       f.runtime.directoryListVisibility(false);
       expect(f.requestOptions[0].signal.aborted).toBe(true);
       await first;
-      expect(f.runtime.directoryState()).toEqual({lastSuccess: null, pending: false, error: ''});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess: null, pending: false, error: ''});
       f.timers.advance(120000);
       f.runtime.menuVisibility(true);
       await f.runtime.refreshDirectory();
@@ -1914,7 +1942,8 @@ describe('private room runtime', () => {
       await f.runtime.refreshDirectory();
       expect(f.requests).toHaveLength(2);
       expect(f.rows().map(value => value.id)).toEqual(['official']);
-      expect(f.timers.pending()).toBe(0);
+      f.timers.advance(120000);
+      expect(f.requests).toHaveLength(2);
     } finally { f.runtime.destroy(); }
   });
 
@@ -1925,16 +1954,18 @@ describe('private room runtime', () => {
       f.open(true); f.runtime.attach();
       await f.runtime.refreshDirectory();
       f.response({ok: true, json: async () => ({rooms: [row(OTHER)]})});
+      f.timers.advance(10000);
       await f.runtime.refreshDirectory();
       const lastSuccess = f.runtime.directoryState().lastSuccess;
       await f.join();
       const socket = f.runtime.roomSocket(ROOM); socket.open();
       f.response(new Promise(yes => { resolve = yes; }));
+      f.timers.advance(10000);
       const pending = f.runtime.refreshDirectory();
       f.background(true);
       expect(f.requestOptions.at(-1).signal.aborted).toBe(true);
       await pending;
-      expect(f.runtime.directoryState()).toEqual({lastSuccess, pending: false, error: ''});
+      expect(f.runtime.directoryState()).toMatchObject({lastSuccess, pending: false, error: ''});
       expect(f.rows().map(value => value.id)).toEqual(['official', OTHER, ROOM]);
       expect(socket.readyState).toBe(1);
       expect(f.runtime.currentRoom()).toBe(ROOM);

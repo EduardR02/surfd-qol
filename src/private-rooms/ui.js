@@ -37,7 +37,7 @@ html.${ROOM_CLASS} #menu .menu-server { grid-template-columns: none; grid-auto-f
 .qol-host-view input[aria-invalid="true"] { border-color: var(--m-behind); }
 #servers-window .qol-end-room + .foot-note { margin-right: auto; }
 .qol-directory { display: inline-flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
-.qol-directory-note { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.qol-directory-note { margin: 0; flex: none; width: 21ch; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .qol-directory-note.qol-directory-error { color: var(--m-behind); }
 .server-detail .qol-room-note { margin: 10px 0 0; color: var(--m-muted); font-size: 12px; }
 `;
@@ -121,6 +121,7 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
     directoryNote.id = 'qol-directory-status';
     directoryNote.setAttribute('role', 'status');
     directoryRefresh.setAttribute('aria-describedby', directoryNote.id);
+    directoryRefresh.title = 'Community listings can be refreshed every 10 seconds.';
     directoryRefresh.onclick = refreshDirectory;
     refreshButton.addEventListener('click', refreshDirectory);
     directoryBar.append(directoryRefresh, directoryNote);
@@ -367,17 +368,16 @@ export function createRoomUi({rooms, getAdapter, document: doc = globalThis.docu
   function render(adapter, hosting) {
     const host = mode === 'host';
     const {hostButton, back, start, endButton, refreshButton, join, submit, view, title, titleText, layout} = nodes;
-    const {lastSuccess = null, pending = false, error = ''} = rooms.directoryState?.() ?? {};
+    const {lastSuccess = null, pending = false, error = '', cooldownMs = 0} = rooms.directoryState?.() ?? {};
     const date = lastSuccess === null ? null : new Date(lastSuccess);
     const updated = date ? `Last updated ${date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` : 'Never updated';
     const message = pending ? `Refreshing… · ${updated}` : error ? `Refresh failed · ${updated}` : updated;
     const detail = [!pending && error, date ? `Last successful refresh: ${date.toLocaleString()}` : 'No successful refresh yet.'].filter(Boolean).join(' ');
-    text(nodes.directoryNote, message);
+    text(nodes.directoryNote, pending ? 'Refreshing…' : error ? 'Refresh failed' : updated);
     classes(nodes.directoryNote, `foot-note qol-directory-note${error && !pending ? ' qol-directory-error' : ''}`);
     attribute(nodes.directoryNote, 'title', detail);
     attribute(nodes.directoryNote, 'aria-label', `Community rooms: ${message}. ${detail}`);
-    text(nodes.directoryRefresh, error && !pending ? 'Retry community refresh' : 'Refresh community');
-    nodes.directoryRefresh.disabled = pending;
+    nodes.directoryRefresh.disabled = pending || cooldownMs > 0;
     hidden(nodes.directoryBar, host);
     hidden(layout, host); hidden(view.view, !host);
     text(title, host ? (hosting ? 'Your room' : 'Host a room') : titleText);

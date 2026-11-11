@@ -17,7 +17,7 @@ const DISCOVERY_TIMEOUT = 15000;
 const DIRECTORY_SIZE = 200;
 const DIRECTORY_TIMEOUT = 5000;
 const DIRECTORY_FRESH_MS = 60000;
-const DIRECTORY_ENTRY_COOLDOWN_MS = 1000;
+const DIRECTORY_COOLDOWN_MS = 10000;
 // Relay credentials: time to get an answer, lead time before expiry to renew, retry delay after a failed renewal.
 const RELAY_TIMEOUT = 10000, RELAY_RENEW_MS = 15 * 60 * 1000, RELAY_RETRY_MS = 60000;
 const DROP_WINDOW = 30000, MAX_DROPS = 3;
@@ -557,12 +557,23 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       if (pendingJoin === attempt) pendingJoin = null;
     }
   }
+  const directoryCooldown = () => Math.max(0, DIRECTORY_COOLDOWN_MS - (now() - lastDirectoryStart));
+  const directoryStale = () => directoryInvalidated || lastDirectory === null || now() - lastDirectory >= DIRECTORY_FRESH_MS;
+  function scheduleDirectoryReady(refresh = false) {
+    timers.clearTimeout(directoryStartTimer);
+    directoryStartTimer = timers.setTimeout(() => {
+      directoryStartTimer = null;
+      if (destroyed || !directoryVisible()) return;
+      if (refresh && directoryStale()) void requestDirectory();
+      else ui?.refresh();
+    }, directoryCooldown());
+  }
   function requestDirectory() {
     if (destroyed || !directoryVisible()) return Promise.resolve();
     if (directoryRequest && !directoryAbort?.signal.aborted) return directoryRequest;
-    timers.clearTimeout(directoryStartTimer);
-    directoryStartTimer = null;
+    if (directoryCooldown() > 0) return Promise.resolve();
     lastDirectoryStart = now();
+    scheduleDirectoryReady();
     directoryRequest = (async () => {
       const controller = directoryAbort = new AbortController();
       let timedOut = false, stop;
@@ -614,8 +625,6 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   }
   function refreshDirectory() {
     if (destroyed || !directoryVisible()) return Promise.resolve();
-    timers.clearTimeout(directoryStartTimer);
-    directoryStartTimer = null;
     directoryActive = true;
     return requestDirectory();
   }
@@ -627,16 +636,9 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       directoryAbort?.abort();
     } else if (!directoryActive) {
       directoryActive = true;
-      // Coalesce rapid close/reopen cycles, without delaying an explicit refresh.
-      if (directoryInvalidated || lastDirectory === null || now() - lastDirectory >= DIRECTORY_FRESH_MS) {
-        const delay = DIRECTORY_ENTRY_COOLDOWN_MS - (now() - lastDirectoryStart);
-        if (delay > 0) {
-          directoryStartTimer = timers.setTimeout(() => {
-            directoryStartTimer = null;
-            if (directoryActive && directoryVisible() && (directoryInvalidated || lastDirectory === null || now() - lastDirectory >= DIRECTORY_FRESH_MS)) void requestDirectory();
-          }, delay);
-        } else void requestDirectory();
-      }
+      const stale = directoryStale();
+      if (directoryCooldown() > 0) scheduleDirectoryReady(stale);
+      else if (stale) void requestDirectory();
     }
   }
   function pageVisibility() {
@@ -670,7 +672,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
     });
   }
   const api = {
-    directoryState: () => ({lastSuccess: lastDirectory, pending: !!directoryRequest && !directoryAbort?.signal.aborted, error: directoryError}),
+    directoryState: () => ({lastSuccess: lastDirectory, pending: !!directoryRequest && !directoryAbort?.signal.aborted, error: directoryError, cooldownMs: directoryCooldown()}),
     // Called by the game as it handles each finish: the attempt id it sends for verification, or null.
     finishQueued(id) { queuedRun = typeof id === 'string' ? id : null; },
     async observeFinish(live, history) {

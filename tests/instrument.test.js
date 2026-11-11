@@ -1149,8 +1149,9 @@ describe('optional native private room instrumentation', () => {
     let fixture, finishPing;
     const earlier = {id: 'p-abcdefghjkmn', name: 'Earlier room', mapId: 'map', players: 2, capacity: 16};
     const current = {id: 'p-nmkjhgfedcba', name: 'Current room', mapId: 'map', players: 3, capacity: 16};
-    let directory = [earlier];
+    let directory = [earlier], now = 0;
     const rooms = createPrivateRooms({
+      now: () => now,
       getAdapter: () => fixture?.adapter, events: new EventTarget(),
       storage: {getItem: () => null, setItem() {}},
       fetch: async () => ({ok: true, json: async () => ({rooms: directory})})
@@ -1167,6 +1168,7 @@ describe('optional native private room instrumentation', () => {
         fixture.runtime.serverUpdates.list(snapshot, 'Official pings ready.', {public: ping});
       });
       directory = [current];
+      now = 10000;
       await rooms.refreshDirectory();
       expect(fixture.adapter.rooms.rows().map(row => row.id)).toEqual(['public', current.id]);
       finishPing({ok: true});
