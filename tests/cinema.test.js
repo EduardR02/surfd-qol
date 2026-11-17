@@ -3,6 +3,7 @@ import {createTrack, recordTrack, trackPoint, trackYaw} from '../src/cinema-trac
 import {alignByPlace, alignByTime, gapAt} from '../src/cinema-sync.js';
 import {adjust, blur, planCamera, shotAt, viewAngles} from '../src/cinema-camera.js';
 import {createCinema} from '../src/cinema.js';
+import {cameraTrace, cameraWorld} from '../src/cinema-world.js';
 import {createCinemaScene} from '../src/cinema-scene.js';
 import {createReplayIndexJobs} from '../extension/replay-index-worker.js';
 import {gapText} from '../src/cinema-ui.js';
@@ -277,13 +278,6 @@ describe('the planned camera', () => {
   };
   const at = (result, tick) => shotAt(result.plan, tick);
   for (const style of ['cinematic', 'steady']) describe(style, () => {
-    test('sits behind and above the ghosts between ramps', async () => {
-      const result = await plan(null, null, style);
-      const {eye, target} = at(result, 200);
-      expect(eye.x).toBeLessThan(target.x - 100);
-      expect(Math.abs(eye.y - target.y)).toBeLessThan(30);
-      expect(eye.z).toBeGreaterThan(target.z + 40);
-    });
     test('looks onto the open side of the ramp they surf', async () => {
       // Travelling +x, a face whose normal points -y faces the runners' right.
       const result = await plan([0, -0.8, 0.6], null, style);
@@ -291,13 +285,6 @@ describe('the planned camera', () => {
       expect(eye.y).toBeLessThan(target.y - 60);
       const other = at(await plan([0, 0.8, 0.6], null, style), 200);
       expect(other.eye.y).toBeGreaterThan(other.target.y + 60);
-    });
-    test('keeps out of walls: blocked spots turn or pull the camera in before it gets there', async () => {
-      // Everything further than 90 units from the ghosts is solid.
-      const trace = (from, to) => Math.min(1, 90 / Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z));
-      const result = await plan(null, trace, style);
-      const {eye, target} = at(result, 200);
-      expect(Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z)).toBeLessThan(260);
     });
     test('with a wall between the two lines, the camera stays on the played run’s side', async () => {
       const a = straight(), b = straight({y: 600});
@@ -317,6 +304,33 @@ describe('the planned camera', () => {
       const planned = await planCamera({a, others: [], style});
       expect(shotAt(planned, 2.9).target.x).toBeLessThan(1000);
       expect(shotAt(planned, 3).target.x).toBeGreaterThan(4000);
+    });
+  });
+  describe('steady', () => {
+    const style = 'steady';
+    test('keeps a blocked shot on the visible side of a wall', async () => {
+      const a = straight({count: 60, speed: 0, lead: 0}), body = {...trackPoint(a, 30), z: 40};
+      const open = shotAt(await planCamera({a, style}), 30).eye;
+      const dx = open.x - body.x, dy = open.y - body.y, dz = open.z - body.z, distance = Math.hypot(dx, dy, dz);
+      const normal = {x: dx / distance, y: dy / distance, z: dz / distance}, wall = distance / 2;
+      // A solid half-space across the unobstructed eye, not a moving
+      // radius around whichever point the planner happens to trace from.
+      const side = point => (point.x - body.x) * normal.x + (point.y - body.y) * normal.y + (point.z - body.z) * normal.z - wall;
+      const trace = (from, to) => {
+        const start = side(from), end = side(to);
+        if (start >= 0) return end >= 0 ? 0 : 1;
+        return end < 0 ? 1 : -start / (end - start);
+      };
+      expect(trace(body, open)).toBeLessThan(1);
+      const blocked = await planCamera({a, trace, style});
+      for (const tick of [0, 14, 30, 44, 58]) expect(trace(body, shotAt(blocked, tick).eye)).toBe(1);
+    });
+    test('sits behind and above the ghosts between ramps', async () => {
+      const result = await plan(null, null, style);
+      const {eye, target} = at(result, 200);
+      expect(eye.x).toBeLessThan(target.x - 100);
+      expect(Math.abs(eye.y - target.y)).toBeLessThan(30);
+      expect(eye.z).toBeGreaterThan(target.z + 40);
     });
     test('frames several runs at once, each counting while it stays near', async () => {
       const a = straight(), near = straight({y: 120}), far = straight({y: 9000});
@@ -342,13 +356,9 @@ describe('the planned camera', () => {
       expect(Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)).toBeLessThan(80);
     });
   });
-  test('cinematic gives long ramps shots of their own in turn; steady keeps one', async () => {
+  test('steady keeps one shot across long ramps', async () => {
     const a = surfing([[100, 300], [380, 580], [660, 860]]);
-    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
-    const first = angles(cinematic, 200), second = angles(cinematic, 480);
-    expect(Math.abs(first.swing - second.swing) + Math.abs(first.elevation - second.elevation)).toBeGreaterThan(20);
-    // Every shot is still from the open side.
-    for (const tick of [200, 480, 760]) expect(angles(cinematic, tick).swing).toBeGreaterThan(20);
+    const steady = await planCamera({a, style: 'steady'});
     const held = [200, 480, 760].map(tick => angles(steady, tick));
     for (const shot of held) {
       expect(shot.swing).toBeGreaterThan(20);
@@ -356,29 +366,22 @@ describe('the planned camera', () => {
       expect(Math.abs(shot.elevation - held[0].elevation)).toBeLessThan(3);
     }
   });
-  test('cinematic drifts round the prestrafe to behind them as they leave; steady waits behind', async () => {
+  test('steady waits behind through the prestrafe', async () => {
     const a = straight({lead: 200});
-    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
-    expect(Math.abs(angles(cinematic, 10).swing)).toBeGreaterThan(25);
-    expect(Math.abs(angles(cinematic, 195).swing)).toBeLessThan(10);
+    const steady = await planCamera({a, style: 'steady'});
     expect(Math.abs(angles(steady, 10).swing)).toBeLessThan(5);
   });
-  test('after a teleport the cinematic camera opens higher and wider, then settles; steady cuts straight to its shot', async () => {
+  test('after a teleport steady cuts straight to its shot', async () => {
     const a = straight({count: 700});
     for (let i = 300; i < a.count; i++) a.position[i * 3 + 1] += 20000;
     a.cut[300] = 1;
-    const distance = (planned, tick) => { const {eye, target} = shotAt(planned, tick); return Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z); };
-    const cinematic = await planCamera({a, style: 'cinematic'}), steady = await planCamera({a, style: 'steady'});
-    expect(angles(cinematic, 304).elevation).toBeGreaterThan(angles(cinematic, 500).elevation + 8);
-    expect(distance(cinematic, 304)).toBeGreaterThan(distance(cinematic, 500) * 1.3);
+    const steady = await planCamera({a, style: 'steady'});
     expect(Math.abs(angles(steady, 304).elevation - angles(steady, 500).elevation)).toBeLessThan(3);
   });
-  test('the view widens with speed, more in the cinematic style', async () => {
-    const fov = async (speed, style) => shotAt(await planCamera({a: straight({speed}), style}), 200).fov;
-    expect(await fov(5, 'cinematic')).toBeCloseTo(74);
-    expect(await fov(60, 'cinematic')).toBeGreaterThan(82);
-    expect(await fov(60, 'steady')).toBeGreaterThan(77);
-    expect(await fov(60, 'steady')).toBeLessThan(await fov(60, 'cinematic'));
+  test('the steady view widens with speed', async () => {
+    const fov = async speed => shotAt(await planCamera({a: straight({speed}), style: 'steady'}), 200).fov;
+    expect(await fov(5)).toBeCloseTo(74);
+    expect(await fov(60)).toBeGreaterThan(77);
   });
   test('never blends across a teleport', () => {
     const values = Float32Array.from([0, 0, 0, 100, 100, 100]), segment = Uint32Array.from([0, 0, 0, 1, 1, 1]);
@@ -438,7 +441,7 @@ describe('cinematic replay lifecycle', () => {
     globalThis.document = {querySelector: () => canvas};
     globalThis.innerWidth = 1280; globalThis.innerHeight = 720;
     globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {};
-    const native = function (view) { this.drawn = view; };
+    const native = function (view) { this.drawn = view; options.onRender?.(this, view); };
     const renderer = options.renderer ?? {qolScene: {}, qolCamera: {position: {set() {}}}};
     renderer.render = native;
     const played = {mapId: 'm', mapVersion: 1, commands: new Array(59).fill({}), initialState: {tick: 0}};
@@ -607,14 +610,266 @@ describe('cinematic replay lifecycle', () => {
     expect(Math.abs(across) / depth).toBeLessThanOrEqual(tall * innerWidth / innerHeight);
     expect(Math.abs(up) / depth).toBeLessThanOrEqual(tall);
   }
-  function expectNearbyCamera(view, body) {
+  function expectNearbyCamera(view, body, awayFrom = null) {
     const eye = view.eyePosition;
     for (const value of [eye.x, eye.y, eye.z, view.yaw, view.pitch, view.fov]) expect(Number.isFinite(value)).toBe(true);
     const distance = Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z);
     expect(distance).toBeGreaterThan(1);
-    expect(distance).toBeLessThan(2000);
+    // A nearby preview must actually follow this part of the replay, rather
+    // than a stale distant window; lens choice does not impose a fixed radius.
+    if (awayFrom) expect(distance).toBeLessThan(Math.hypot(eye.x - awayFrom.x, eye.y - awayFrom.y, eye.z - awayFrom.z));
     expectInCameraFrame(view, body);
   }
+
+  // The native renderer calls lookAt on every draw; model its reset of the
+  // orientation and exercise the installed method, not merely its presence.
+  class PlaybackCamera {
+    constructor() { this.position = {set() {}}; this.tilt = 0; this.looks = []; this.rotations = []; }
+    lookAt(...at) { this.looks.push(at); this.tilt = 0; return this; }
+    rotateZ(angle) { this.rotations.push(angle); this.tilt += angle; return this; }
+  }
+  function bankingRig({kind = 'inherited', count = 300, blockFull = null} = {}) {
+    const track = straight({count, lead: 0}), camera = new PlaybackCamera(), time = {now: 0};
+    for (let i = 0, x = 0, y = 0; i < count; i++) {
+      x += 20 * Math.cos(i * 0.02); y += 20 * Math.sin(i * 0.02);
+      track.position.set([x, y, 0], i * 3);
+    }
+    const original = camera.lookAt;
+    if (kind === 'readonly') Object.defineProperty(camera, 'lookAt', {value: original, writable: false, enumerable: true, configurable: true});
+    if (kind === 'accessor') Object.defineProperty(camera, 'lookAt', {get() { return original; }, enumerable: true, configurable: true});
+    if (kind === 'nonconfigurable') Object.defineProperty(camera, 'lookAt', {value: original, writable: true, enumerable: true, configurable: false});
+    const descriptor = Object.getOwnPropertyDescriptor(camera, 'lookAt'), renderer = {qolScene: {}, qolCamera: camera};
+    let planned = null;
+    const worker = {live: true, async plan(options) {
+      if (blockFull && !options.nearby) { blockFull.entered.resolve(); return blockFull.gate.promise; }
+      const plan = await planCamera(options);
+      if (options.style === 'cinematic') planned = {plan, clock: options.a};
+      return plan;
+    }, release() {}};
+    const fixture = rig({renderer, now: () => time.now, record: () => track, worker: () => worker,
+      onRender: (shown, view) => { shown.aimed = shown.qolCamera.lookAt(view.yaw ?? 0, view.pitch ?? 0); }});
+    const sample = () => {
+      const {plan, clock} = planned;
+      let best = 0;
+      for (let i = 1; i < plan.roll.length; i++) if (Math.abs(plan.roll[i]) > Math.abs(plan.roll[best])) best = i;
+      const tick = Math.min(clock.count - 1, best * 2 + 1);
+      return {tick, roll: shotAt(plan, tick).roll};
+    };
+    const frame = tick => ({state: {tick}, eyePosition: {...trackPoint(track, tick), z: 64}, yaw: 0, pitch: 0, fov: 90});
+    return {...fixture, camera, descriptor, time, track, sample, frame};
+  }
+  for (const kind of ['inherited', 'readonly', 'accessor', 'nonconfigurable']) {
+    test(`playback applies and removes bank while preserving the ${kind} lookAt descriptor`, async () => {
+      const {cinema, renderer, camera, descriptor, time, sample, frame} = bankingRig({kind});
+      expect(await cinema.setView('cinematic')).toBe(true);
+      const {tick, roll} = sample(), view = frame(tick);
+      expect(Math.abs(roll)).toBeGreaterThan(0.00001);
+      renderer.render(view);
+      expect(camera.tilt).toBe(0);
+      time.now = 500; renderer.render(view);
+      expect(camera.tilt).toBeCloseTo(-roll / 2, 6);
+      expect(renderer.aimed).toBe(camera);
+      expect(camera.looks.at(-1)).toEqual([renderer.drawn.yaw, renderer.drawn.pitch]);
+      time.now = 1000; renderer.render(view);
+      expect(camera.tilt).toBeCloseTo(-roll, 6);
+      renderer.render(view);
+      expect(camera.tilt).toBeCloseTo(-roll, 6);
+      cinema.close();
+      expect(camera.tilt).toBeCloseTo(0, 7);
+      expect(Object.getOwnPropertyDescriptor(camera, 'lookAt')).toEqual(descriptor);
+      renderer.render(view);
+      expect(camera.tilt).toBe(0);
+    });
+  }
+  test('bank eases away into Steady and POV, and returns with Cinematic', async () => {
+    const {cinema, renderer, camera, descriptor, time, sample, frame} = bankingRig({kind: 'accessor'});
+    expect(await cinema.add(run('comparison'))).toBe(true);
+    const {tick, roll} = sample(), view = frame(tick);
+    expect(Math.abs(roll)).toBeGreaterThan(0.00001);
+    renderer.render(view); time.now = 2000; renderer.render(view);
+    expect(camera.tilt).toBeCloseTo(-roll, 6);
+    await cinema.setView('steady');
+    time.now = 2500; renderer.render(view);
+    expect(camera.tilt).toBeCloseTo(-roll / 2, 6);
+    time.now = 3000; renderer.render(view);
+    expect(camera.tilt).toBeCloseTo(0, 7);
+    expect(Object.getOwnPropertyDescriptor(camera, 'lookAt')).toEqual(descriptor);
+    await cinema.setView('cinematic');
+    time.now = 4000; renderer.render(view);
+    expect(camera.tilt).toBeCloseTo(-roll, 6);
+    await cinema.setView('pov');
+    time.now = 4500; renderer.render(view);
+    expect(camera.tilt).toBeCloseTo(-roll / 2, 6);
+    time.now = 5000; renderer.render(view);
+    expect(renderer.drawn).toBe(view);
+    expect(camera.tilt).toBeCloseTo(0, 7);
+    expect(Object.getOwnPropertyDescriptor(camera, 'lookAt')).toEqual(descriptor);
+    cinema.close();
+  });
+  test('bank leaves the old camera level when the renderer or its camera changes', async () => {
+    const fixture = bankingRig({kind: 'readonly'}), {cinema, renderer, camera, descriptor, control, native, time, sample, frame} = fixture;
+    const frames = [];
+    globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+    await cinema.setView('cinematic');
+    const {tick, roll} = sample(), view = frame(tick);
+    expect(Math.abs(roll)).toBeGreaterThan(0.00001);
+    renderer.render(view); time.now = 1000; renderer.render(view);
+    const next = new PlaybackCamera(), replacement = {qolScene: {}, qolCamera: next, render: native};
+    control.renderer = replacement;
+    frames.shift()();
+    expect(renderer.render).toBe(native);
+    expect(camera.tilt).toBeCloseTo(0, 7);
+    expect(Object.getOwnPropertyDescriptor(camera, 'lookAt')).toEqual(descriptor);
+    replacement.render(view);
+    expect(next.tilt).toBeCloseTo(-roll, 6);
+    const final = new PlaybackCamera();
+    replacement.qolCamera = final;
+    replacement.render(view);
+    expect(next.tilt).toBeCloseTo(0, 7);
+    expect(Object.hasOwn(next, 'lookAt')).toBe(false);
+    expect(final.tilt).toBeCloseTo(-roll, 6);
+    cinema.close();
+    expect(final.tilt).toBeCloseTo(0, 7);
+    expect(Object.hasOwn(final, 'lookAt')).toBe(false);
+  });
+  test('an out-of-window POV frame immediately removes the last bank', async () => {
+    const blockFull = {entered: deferred(), gate: deferred()};
+    const {cinema, renderer, camera, descriptor, control, time, sample, frame} = bankingRig({count: 900, blockFull});
+    control.playback.index = 300;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    await blockFull.entered.promise;
+    const {tick, roll} = sample(), near = frame(tick), far = frame(850);
+    expect(Math.abs(roll)).toBeGreaterThan(0.00001);
+    renderer.render(near); time.now = 1000; renderer.render(near);
+    expect(camera.tilt).toBeCloseTo(-roll, 6);
+    renderer.render(far);
+    expect(renderer.drawn).toBe(far);
+    expect(camera.tilt).toBeCloseTo(0, 7);
+    expect(Object.getOwnPropertyDescriptor(camera, 'lookAt')).toEqual(descriptor);
+    cinema.close();
+    blockFull.gate.resolve(null);
+  });
+  for (const redraw of [false, true]) test(`bank cleanup preserves a newer camera lookAt${redraw ? ' after another draw' : ''}`, async () => {
+    const {cinema, renderer, camera, time, sample, frame} = bankingRig();
+    await cinema.setView('cinematic');
+    const {tick, roll} = sample(), view = frame(tick);
+    expect(Math.abs(roll)).toBeGreaterThan(0.00001);
+    renderer.render(view); time.now = 1000; renderer.render(view);
+    const replacement = function (...at) { return PlaybackCamera.prototype.lookAt.apply(this, at); };
+    camera.lookAt = replacement;
+    if (redraw) {
+      renderer.render(view);
+      expect(camera.tilt).toBeCloseTo(-roll, 6);
+    }
+    cinema.close();
+    expect(camera.lookAt).toBe(replacement);
+    expect(camera.tilt).toBeCloseTo(0, 7);
+  });
+
+  // Valid clear endpoint samples whose midpoint sightline crosses a wall.
+  const cornerBody = {x: 0, y: 0, z: 40};
+  const cornerA = {x: 1000, y: -1000, z: 40}, cornerB = {x: 1000, y: 1000, z: 40};
+  function playbackPlan(eyeAt) {
+    const count = 31, eye = new Float32Array(count * 3), target = new Float32Array(count * 3);
+    for (let sample = 0; sample < count; sample++) {
+      const point = typeof eyeAt === 'function' ? eyeAt(sample) : eyeAt;
+      eye.set([point.x, point.y, point.z], sample * 3);
+      target.set([cornerBody.x, cornerBody.y, cornerBody.z], sample * 3);
+    }
+    return {count, eye, target, fov: new Float32Array(count).fill(60), roll: new Float32Array(count),
+      segment: new Uint8Array(count), cutTick: new Uint32Array(count)};
+  }
+  function cornerRig(choose) {
+    const track = straight({count: 60, speed: 0, lead: 0}), time = {now: 0};
+    const collision = cameraBoxes([cameraBox({x: 500, y: 0, z: 40}, 30)]);
+    const worker = {live: true, async plan(options) { return choose(options); }, release() {}};
+    const fixture = rig({record: () => track, worker: () => worker, now: () => time.now});
+    Object.assign(fixture.control.session.map, collision.map);
+    fixture.control.session.movement = {world: collision.world};
+    const trace = cameraTrace(cameraWorld(fixture.control.session));
+    const frame = tick => ({state: {tick}, eyePosition: cornerA, ...viewAngles(cornerA, cornerBody), fov: 60});
+    return {...fixture, collision, trace, time, frame};
+  }
+  function expectCornerClear(trace, eye) {
+    expect(trace.view({x: 1000, y: 0, z: 40}, cornerBody)).toBeLessThan(1);
+    expect(trace.view(eye, cornerBody)).toBe(1);
+    expect(eye.x).toBeLessThan(1000);
+  }
+  test('Cinematic checks the drawn sightline through the flights out of and back into POV', async () => {
+    const plan = playbackPlan(cornerB);
+    const {cinema, renderer, trace, time, frame} = cornerRig(() => plan);
+    expect(trace.view(cornerA, cornerBody)).toBe(1);
+    expect(trace.view(cornerB, cornerBody)).toBe(1);
+    expect(await cinema.add(run('comparison'))).toBe(true);
+    const view = frame(30);
+    renderer.render(view);
+    time.now = 500; renderer.render(view);
+    expectCornerClear(trace, renderer.drawn.eyePosition);
+    time.now = 1000; renderer.render(view);
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(cornerB[axis], 6);
+    await cinema.setView('pov');
+    time.now = 1500; renderer.render(view);
+    expectCornerClear(trace, renderer.drawn.eyePosition);
+    time.now = 2000; renderer.render(view);
+    expect(renderer.drawn).toBe(view);
+    cinema.close();
+  });
+  for (const change of ['style', 'replan']) test(`Cinematic checks the drawn sightline through a ${change} blend`, async () => {
+    const first = playbackPlan(cornerA), second = playbackPlan(cornerB);
+    const {cinema, renderer, trace, time, frame} = cornerRig(options => change === 'style'
+      ? options.style === 'steady' ? first : second
+      : options.others?.length ? second : first);
+    expect(await cinema.setView(change === 'style' ? 'steady' : 'cinematic')).toBe(true);
+    const view = frame(30);
+    renderer.render(view); time.now = 1000; renderer.render(view);
+    time.now = 2000; renderer.render(view);
+    if (change === 'style') await cinema.setView('cinematic');
+    else expect(await cinema.add(run('comparison'))).toBe(true);
+    time.now = 2500; renderer.render(view);
+    expectCornerClear(trace, renderer.drawn.eyePosition);
+    time.now = 3000; renderer.render(view);
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(cornerB[axis], 6);
+    cinema.close();
+  });
+  test('Cinematic checks a fractional shot between clear plan samples', async () => {
+    const plan = playbackPlan(sample => sample <= 15 ? cornerA : cornerB);
+    const {cinema, renderer, trace, time, frame} = cornerRig(() => plan);
+    await cinema.setView('cinematic');
+    const first = frame(30);
+    renderer.render(first); time.now = 1000; renderer.render(first);
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(cornerA[axis], 6);
+    renderer.render(frame(31));
+    expectCornerClear(trace, renderer.drawn.eyePosition);
+    renderer.render(frame(32));
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(cornerB[axis], 6);
+    cinema.close();
+  });
+  test('Cinematic leaves a clear view through an undrawn terrain backface untouched', async () => {
+    const triangle = {faces: [[0, 1, 2]], vertices: [{x: 0, y: 0, z: 0}, {x: 1, y: 0, z: 0}, {x: 0, y: 1, z: 0}]};
+    class TerrainWorld {
+      trace(from, to) {
+        const fraction = -from.z / (to.z - from.z);
+        if (Number.isFinite(fraction) && fraction >= 0 && fraction < 1)
+          return {fraction, startSolid: false, allSolid: false, brush: triangle};
+        return {fraction: 1, startSolid: false, allSolid: false};
+      }
+    }
+    const track = straight({count: 60, speed: 0, lead: 0}), below = {x: 0, y: 0, z: -100};
+    const plan = playbackPlan(below), time = {now: 0};
+    const worker = {live: true, async plan() { return plan; }, release() {}};
+    const {cinema, renderer, control} = rig({record: () => track, worker: () => worker, now: () => time.now});
+    control.session.map.brushes = [];
+    control.session.map.displacementTriangles = [];
+    control.session.movement = {world: new TerrainWorld()};
+    const trace = cameraTrace(cameraWorld(control.session));
+    expect(trace(cornerBody, below)).toBeLessThan(1);
+    expect(trace.view(below, cornerBody)).toBe(1);
+    await cinema.setView('cinematic');
+    const view = {state: {tick: 30}, eyePosition: below, ...viewAngles(below, cornerBody), fov: 60};
+    renderer.render(view); time.now = 1000; renderer.render(view);
+    expect(renderer.drawn.eyePosition.z).toBeCloseTo(below.z, 6);
+    cinema.close();
+  });
 
   for (const focus of [false, true]) test(`the final fractional frame stays visible through a corner-cut blend${focus ? ' from a focused run' : ''}`, async () => {
     const played = straight({count: 60, speed: 0, lead: 0}), focused = straight({count: 60, speed: 0, lead: 0, y: 600});
@@ -663,6 +918,35 @@ describe('cinematic replay lifecycle', () => {
     }
     cinema.close();
   });
+  for (const style of ['cinematic', 'steady']) test(`a planned ${style} eye inside a solid is ${style === 'steady' ? 'pulled out to its face' : 'drawn where the plan put it'}`, async () => {
+    const track = straight({count: 60, speed: 0, lead: 0}), body = trackPoint(track, 30.5), hollow = 40;
+    body.z += 40;
+    const collision = cameraBoxes([]);
+    const time = {now: 0};
+    const {cinema, renderer, control} = rig({now: () => time.now, record: () => track});
+    Object.assign(control.session.map, collision.map);
+    control.session.movement = {world: collision.world};
+    await cinema.setView(style);
+    const frame = {state: {tick: 31}, qolAlpha: 0.5, eyePosition: {...body}, yaw: 0, pitch: 0};
+    renderer.render(frame);
+    time.now = 1000; renderer.render(frame);
+    const planned = {...renderer.drawn.eyePosition};
+    // The solid arrives after planning: everything but a small room round the run.
+    for (const axis of ['x', 'y', 'z']) for (const sign of [1, -1]) {
+      const min = {x: body.x - 20000, y: body.y - 20000, z: body.z - 20000}, max = {x: body.x + 20000, y: body.y + 20000, z: body.z + 20000};
+      if (sign > 0) min[axis] = body[axis] + hollow; else max[axis] = body[axis] - hollow;
+      collision.map.brushes.push({contents: 1, min, max});
+    }
+    expect(collision.world.trace(planned, planned, cameraProbe).startSolid).toBe(true);
+    time.now = 1500; renderer.render(frame);
+    const eye = renderer.drawn.eyePosition, distance = Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z);
+    if (style === 'steady') {
+      expect(distance).toBeLessThan(hollow);
+      expect(collision.world.trace(body, eye, cameraProbe).fraction).toBe(1);
+    } else expect(eye).toEqual(planned);
+    expectInCameraFrame(renderer.drawn, body);
+    cinema.close();
+  });
   test('flying out of POV preserves the initial first-person orientation', async () => {
     const {cinema, renderer} = rig({now: () => 0});
     await cinema.setView('steady');
@@ -687,6 +971,119 @@ describe('cinematic replay lifecycle', () => {
     renderer.render(frame); time.now = 500; renderer.render(frame);
     const towardBody = viewAngles(renderer.drawn.eyePosition, {x: 0, y: 0, z: 40});
     expect(Math.abs(renderer.drawn.yaw - towardBody.yaw)).toBeGreaterThan(20);
+    cinema.close();
+  });
+  async function manuallyAdjusted(style, suppliedPlan = null) {
+    const track = straight({count: 60, speed: 0, lead: 0}), collision = cameraBoxes([]), time = {now: 0};
+    const nativeTrace = collision.world.trace;
+    let planned, traces = 0;
+    collision.world.trace = function (...args) { traces++; return nativeTrace.apply(this, args); };
+    const worker = {live: true, async plan(options) { return planned = suppliedPlan ?? await planCamera(options); }, release() {}};
+    const fixture = rig({record: () => track, now: () => time.now, worker: () => worker});
+    const {cinema, renderer, control, listeners, canvas} = fixture;
+    Object.assign(control.session.map, collision.map);
+    control.session.movement = {world: collision.world};
+    await cinema.setView(style);
+    const view = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(view);
+    const event = {button: 0, target: canvas, pointerId: 1, clientX: 0, clientY: 0, preventDefault() {}, stopImmediatePropagation() {}};
+    listeners.get('pointerdown')(event);
+    listeners.get('pointermove')({...event, clientX: 100});
+    time.now = 1000; renderer.render(view);
+    const shot = adjust(shotAt(planned, 30), {yaw: -0.5});
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(shot.eye[axis], 5);
+    return {...fixture, collision, time, view, shot, trace: cameraTrace(cameraWorld(control.session)), traceCalls: () => traces};
+  }
+  for (const style of ['cinematic', 'steady']) test(`manual ${style} movement stays visible when the wall is closer than the old minimum`, async () => {
+    const {cinema, renderer, collision, time, view, shot, trace} = await manuallyAdjusted(style);
+    const {eye, target} = shot, distance = Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z);
+    const direction = {x: (eye.x - target.x) / distance, y: (eye.y - target.y) / distance, z: (eye.z - target.z) / distance};
+    const wall = {x: target.x + direction.x * 25, y: target.y + direction.y * 25, z: target.z + direction.z * 25};
+    collision.map.brushes.push(cameraBox(wall, 4));
+    expect(style === 'cinematic' ? trace.view(eye, target) : trace(target, eye)).toBeLessThan(1);
+    time.now += 16; renderer.render(view);
+    const clipped = {...renderer.drawn.eyePosition}, clippedDistance = Math.hypot(clipped.x - target.x, clipped.y - target.y, clipped.z - target.z);
+    expect(clippedDistance).toBeLessThan(40);
+    expect(style === 'cinematic' ? trace.view(clipped, target) : trace(target, clipped)).toBe(1);
+    collision.map.brushes.pop();
+    time.now += 16; renderer.render(view);
+    const recovered = renderer.drawn.eyePosition, recoveredDistance = Math.hypot(recovered.x - target.x, recovered.y - target.y, recovered.z - target.z);
+    expect(recoveredDistance).toBeGreaterThan(clippedDistance);
+    expect(recoveredDistance).toBeLessThan(distance);
+    cinema.close();
+  });
+  test('manual Cinematic treats a drawn hit at fraction zero as an obstruction', async () => {
+    const {cinema, renderer, collision, time, view, shot, trace} = await manuallyAdjusted('cinematic');
+    const {eye, target} = shot, distance = Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z);
+    const direction = {x: (eye.x - target.x) / distance, y: (eye.y - target.y) / distance, z: (eye.z - target.z) / distance};
+    const step = 3 / Math.max(Math.abs(direction.x), Math.abs(direction.y), Math.abs(direction.z)) + 0.01;
+    collision.map.brushes.push(cameraBox({x: eye.x - direction.x * step, y: eye.y - direction.y * step, z: eye.z - direction.z * step}, 2));
+    expect(trace.view(eye, target)).toBe(0);
+    expect(trace.view.inside).toBe(false);
+    time.now += 16; renderer.render(view);
+    expect(trace.view(renderer.drawn.eyePosition, target)).toBe(1);
+    expect(Math.hypot(renderer.drawn.eyePosition.x - eye.x, renderer.drawn.eyePosition.y - eye.y, renderer.drawn.eyePosition.z - eye.z)).toBeGreaterThan(0);
+    cinema.close();
+  });
+  test('manual Cinematic keeps an eye inside a brush when the view out is clear', async () => {
+    const {cinema, renderer, collision, time, view, shot, trace} = await manuallyAdjusted('cinematic');
+    collision.map.brushes.push(cameraBox(shot.eye, 10));
+    expect(trace.view(shot.eye, shot.target)).toBe(1);
+    expect(trace.view.inside).toBe(true);
+    time.now += 16; renderer.render(view);
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(shot.eye[axis], 5);
+    cinema.close();
+  });
+  test('manual Cinematic checks through thick separated walls and eases out only after they clear', async () => {
+    const {cinema, renderer, collision, time, view, shot, trace} = await manuallyAdjusted('cinematic', playbackPlan({x: 2000, y: 0, z: 40}));
+    const {eye, target} = shot, distance = Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z);
+    const direction = {x: (eye.x - target.x) / distance, y: (eye.y - target.y) / distance, z: (eye.z - target.z) / distance};
+    const at = fraction => ({x: target.x + direction.x * distance * fraction,
+      y: target.y + direction.y * distance * fraction, z: target.z + direction.z * distance * fraction});
+    collision.map.brushes.push(cameraBox(at(0.3), 20), cameraBox(at(0.7), 20));
+    expect(trace.view(eye, target)).toBeLessThan(1);
+    time.now += 16; renderer.render(view);
+    const first = {...renderer.drawn.eyePosition}, firstDistance = Math.hypot(first.x - target.x, first.y - target.y, first.z - target.z);
+    expect(trace.view(first, target)).toBe(1);
+    expect(firstDistance).toBeLessThan(distance * 0.35);
+    // If only the outer wall were accounted for in aim(), removing the inner
+    // one would jump straight back to the outer wall instead of easing out.
+    collision.map.brushes.shift();
+    time.now += 16; renderer.render(view);
+    const next = renderer.drawn.eyePosition, nextDistance = Math.hypot(next.x - target.x, next.y - target.y, next.z - target.z);
+    expect(nextDistance).toBeGreaterThan(firstDistance);
+    expect(nextDistance).toBeLessThan(firstDistance * 1.1 + 10);
+    expect(trace.view(next, target)).toBe(1);
+    cinema.close();
+  });
+  test('manual Cinematic keeps its aim and a nonzero sightline at a wall next to the target', async () => {
+    const {cinema, renderer, collision, time, view, shot, trace} = await manuallyAdjusted('cinematic', playbackPlan({x: 2000, y: 0, z: 40}));
+    const {eye, target} = shot, distance = Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z);
+    const direction = {x: (eye.x - target.x) / distance, y: (eye.y - target.y) / distance, z: (eye.z - target.z) / distance};
+    collision.map.brushes.push(cameraBox({x: target.x + direction.x * 6, y: target.y + direction.y * 6, z: target.z + direction.z * 6}, 1));
+    expect(trace.view(eye, target)).toBeLessThan(1);
+    const angles = viewAngles(eye, target);
+    time.now += 16; renderer.render(view);
+    const clipped = renderer.drawn.eyePosition;
+    expect(Math.hypot(clipped.x - target.x, clipped.y - target.y, clipped.z - target.z)).toBeGreaterThan(0);
+    expect(trace.view(clipped, target)).toBe(1);
+    expect(renderer.drawn.yaw).toBeCloseTo(angles.yaw, 6);
+    expect(renderer.drawn.pitch).toBeCloseTo(angles.pitch, 6);
+    cinema.close();
+  });
+  test('many drawn obstacles fall back to a clear sightline with bounded trace work', async () => {
+    const {cinema, renderer, collision, time, view, shot, trace, traceCalls} = await manuallyAdjusted('cinematic', playbackPlan({x: 2000, y: 0, z: 40}));
+    const {eye, target} = shot, distance = Math.hypot(eye.x - target.x, eye.y - target.y, eye.z - target.z);
+    const direction = {x: (eye.x - target.x) / distance, y: (eye.y - target.y) / distance, z: (eye.z - target.z) / distance};
+    for (let index = 1; index <= 20; index++) {
+      const along = distance * index / 21;
+      collision.map.brushes.push(cameraBox({x: target.x + direction.x * along, y: target.y + direction.y * along, z: target.z + direction.z * along}, 1));
+    }
+    expect(trace.view(eye, target)).toBeLessThan(1);
+    const before = traceCalls();
+    time.now += 16; renderer.render(view);
+    expect(traceCalls() - before).toBeLessThan(1000);
+    expect(trace.view(renderer.drawn.eyePosition, target)).toBe(1);
     cinema.close();
   });
   test('an all-solid final view cannot treat an opaque hull as a clear escape', async () => {
@@ -795,7 +1192,149 @@ describe('cinematic replay lifecycle', () => {
     cinema.close();
     expect(releases).toEqual([2, undefined]);
   });
-  for (const failure of ['null plan', 'unsupported worker', 'startup throws', 'rejected plan']) {
+  test('a live worker with no safe camera fails activation without a main-thread replan', async () => {
+    let plans = 0, idleCalls = 0;
+    const worker = {live: true, async plan() { plans++; return null; }, release() {}};
+    const {cinema, renderer, native} = rig({worker: () => worker, record: () => straight({count: 60}),
+      loadIdle: async () => { idleCalls++; return null; }});
+    await expect(cinema.setView('cinematic')).rejects.toThrow('No safe camera path');
+    expect(plans).toBe(1);
+    expect(idleCalls).toBe(0);
+    expect(worker.live).toBe(true);
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    const pov = {state: {tick: 30}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+  });
+  test('an enclosed replay with no safe cinematic path reports failure and restores POV', async () => {
+    const track = straight({count: 12, speed: 0, lead: 0});
+    const collision = cameraBoxes([cameraBox({x: 0, y: 0, z: 40}, 100000)]);
+    const {cinema, renderer, native, control} = rig({record: () => track});
+    Object.assign(control.session.map, collision.map);
+    control.session.movement = {world: collision.world};
+    await expect(cinema.setView('cinematic')).rejects.toThrow('No safe camera path');
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    const pov = {state: {tick: 6}, eyePosition: {x: 0, y: 0, z: 64}};
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+  });
+  test('a no-safe-plan preview settles activation while recording is still suspended', async () => {
+    const gate = deferred(), track = straight({count: 2000});
+    let plans = 0, idleCalls = 0;
+    const worker = {live: true, async plan() { plans++; return null; }, release() {}};
+    const {cinema, renderer, native} = rig({worker: () => worker,
+      loadIdle: async () => { idleCalls++; return null; },
+      record: async ({onProgress}) => { onProgress(track, 512); await gate.promise; return track; }});
+    await expect(cinema.setView('cinematic')).rejects.toThrow('No safe camera path');
+    expect(plans).toBe(1);
+    expect(idleCalls).toBe(0);
+    expect(cinema.status()).toBeNull();
+    expect(renderer.render).toBe(native);
+    gate.resolve();
+  });
+  test('an unavailable camera plan preserves the prior view and POV ghosts, and can be retried', async () => {
+    const track = straight({count: 60}), time = {now: 0};
+    let blocked = true, attempts = 0;
+    const worker = {live: true, async plan(options) {
+      if (options.style === 'cinematic') { attempts++; if (blocked) return null; }
+      return planCamera(options);
+    }, release() {}};
+    const {cinema, renderer, counts} = rig({worker: () => worker, record: () => track, now: () => time.now});
+    await cinema.setView('steady');
+    await cinema.add(run('comparison'));
+    const pov = {state: {tick: 30}, eyePosition: {x: track.position[90], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(pov); time.now = 2000; renderer.render(pov);
+    const previous = {...renderer.drawn.eyePosition};
+    await expect(cinema.setView('cinematic')).rejects.toThrow('No safe camera path');
+    expect(cinema.status()).toMatchObject({view: 'steady', pending: null, planError: 'No safe camera path is available for this view.'});
+    renderer.render(pov);
+    expect(renderer.drawn.eyePosition).toEqual(previous);
+    await cinema.setView('pov');
+    time.now = 3000; renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+    await expect(cinema.setView('cinematic')).rejects.toThrow('No safe camera path');
+    renderer.render(pov);
+    expect(renderer.drawn).toBe(pov);
+    expect(counts().made.at(-1).shown).toEqual([false, true]);
+    expect(cinema.status()).toMatchObject({view: 'pov', pending: null, runs: [{id: 'comparison'}],
+      planError: 'No safe camera path is available for this view.'});
+    blocked = false;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(cinema.status()).toMatchObject({view: 'cinematic', pending: null, planError: null});
+    expect(attempts).toBe(3);
+    expect(worker.live).toBe(true);
+    cinema.close();
+  });
+  test('a failed whole plan keeps the valid preview, but an out-of-window seek returns to POV', async () => {
+    const track = straight({count: 900}), failed = deferred(), time = {now: 0};
+    let fullPlans = 0, idleCalls = 0, fixture;
+    const worker = {live: true, async plan(options) {
+      if (!options.nearby) { fullPlans++; return null; }
+      return planCamera(options);
+    }, release() {}};
+    fixture = rig({worker: () => worker, record: () => track, now: () => time.now,
+      loadIdle: async () => { idleCalls++; return null; },
+      onChange: () => { if (fixture.cinema.status()?.planError) failed.resolve(); }});
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.index = 300;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    await failed.promise;
+    expect(fullPlans).toBe(1);
+    expect(idleCalls).toBe(0);
+    expect(cinema.status()).toMatchObject({view: 'cinematic', pending: null, planError: 'No safe camera path is available for this view.'});
+    const near = {state: {tick: 300}, eyePosition: {x: track.position[900], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(near); time.now = 2000; renderer.render(near);
+    expectNearbyCamera(renderer.drawn, {...trackPoint(track, 300), z: 40}, trackPoint(track, 850));
+    const far = {state: {tick: 850}, eyePosition: {x: track.position[2550], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(far);
+    expect(renderer.drawn).toBe(far);
+    expect(counts().made.at(-1).shown.every(shown => !shown)).toBe(true);
+    cinema.close();
+  });
+  test('an unsafe seek window is not replanned every frame and an explicit retry can recover', async () => {
+    const track = straight({count: 1200}), fullFailed = deferred(), windowFailed = deferred(), time = {now: 0};
+    let blocked = true, farPlans = 0, farEntered = false, fixture;
+    const worker = {live: true, async plan(options) {
+      if (!options.nearby) return null;
+      if (options.a.position[0] > 6000) {
+        farPlans++;
+        if (blocked) { farEntered = true; return null; }
+      }
+      return planCamera(options);
+    }, release() {}};
+    fixture = rig({worker: () => worker, record: () => track, now: () => time.now,
+      onChange: () => {
+        if (!fixture.cinema.status()?.planError) return;
+        if (farEntered) windowFailed.resolve(); else fullFailed.resolve();
+      }});
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.index = 100;
+    await cinema.setView('cinematic');
+    await fullFailed.promise;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const far = {state: {tick: 900}, eyePosition: {x: track.position[2700], y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    control.playback.index = 900;
+    renderer.render(far);
+    await windowFailed.promise;
+    expect(farPlans).toBe(1);
+    for (let frame = 0; frame < 10; frame++) {
+      renderer.render(far);
+      expect(renderer.drawn).toBe(far);
+      expect(counts().made.at(-1).shown.every(shown => !shown)).toBe(true);
+    }
+    expect(farPlans).toBe(1);
+    expect(cinema.status()).toMatchObject({pending: null, planError: 'No safe camera path is available for this view.'});
+    blocked = false;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(farPlans).toBe(2);
+    time.now = 2000; renderer.render(far);
+    expect(renderer.drawn).not.toBe(far);
+    expectNearbyCamera(renderer.drawn, {...trackPoint(track, 900), z: 40}, trackPoint(track, 100));
+    cinema.close();
+  });
+  for (const failure of ['worker shutdown', 'unsupported worker', 'startup throws', 'rejected plan']) {
     test(`worker planning fallback records and shows a seek after ${failure}`, async () => {
       let attempts = 0, recordings = 0, plans = 0;
       const worker = {
@@ -805,6 +1344,7 @@ describe('cinematic replay lifecycle', () => {
           expect(a._cinemaWorker).toBeUndefined();
           expect(a.position[3]).toBe(15);
           if (failure === 'rejected plan') throw new Error('Worker plan failed');
+          this.live = false;
           return null;
         }, release() {},
       };
@@ -832,7 +1372,7 @@ describe('cinematic replay lifecycle', () => {
       expect(path.material.uniforms.head.value).toBe(900);
       expect(path.geometry.getAttribute('tick').array.at(-1)).toBe(1200);
       expectNearbyCamera(renderer.drawn, {x: 13500, y: 0, z: 40});
-      if (failure === 'null plan' || failure === 'startup throws') {
+      if (failure === 'worker shutdown' || failure === 'startup throws') {
         const played = control.playback.replay;
         const other = {...played, initialState: {...played.initialState, position: {x: 0, y: 300, z: 0}}};
         expect(await cinema.add({id: 'other', label: 'other', load: async () => other})).toBe(true);
@@ -842,8 +1382,8 @@ describe('cinematic replay lifecycle', () => {
         for (const y of [0, 300]) expectInCameraFrame(renderer.drawn, {x: 13500, y, z: 40});
       }
       expect(attempts).toBe(1);
-      expect(recordings).toBe(failure === 'null plan' || failure === 'rejected plan' ? 1 : 0);
-      expect(plans).toBe(failure === 'null plan' || failure === 'rejected plan' ? 1 : 0);
+      expect(recordings).toBe(failure === 'worker shutdown' || failure === 'rejected plan' ? 1 : 0);
+      expect(plans).toBe(failure === 'worker shutdown' || failure === 'rejected plan' ? 1 : 0);
       cinema.close();
     });
   }
@@ -966,7 +1506,7 @@ describe('cinematic replay lifecycle', () => {
     let plans = 0, focusPlans = 0, time = 0;
     const worker = {live: true, async plan(options) {
       plans++;
-      if (Number.isInteger(options.focusIndex)) { focusPlans++; return null; }
+      if (Number.isInteger(options.focusIndex)) { focusPlans++; throw new Error('Worker planning failed'); }
       return planCamera(options);
     }, release() {}};
     watched._cinemaWorker = worker;
@@ -1100,7 +1640,7 @@ describe('cinematic replay lifecycle', () => {
     const entered = deferred(), resume = deferred();
     let planning = false, plans = 0;
     const worker = {live: true, async record() { return null; },
-      async plan() { plans++; planning = true; return null; }, release() {}};
+      async plan() { plans++; planning = true; throw new Error('Worker planning failed'); }, release() {}};
     const {cinema, renderer, native, scene} = nativeCinema(() => worker, () => {
       if (!planning) return Promise.resolve(null);
       entered.resolve();
@@ -1164,7 +1704,7 @@ describe('cinematic replay lifecycle', () => {
     await entered.promise;
     const near = {state: {tick: 700}, eyePosition: {x: track.position[2100], y: 0, z: 64}};
     renderer.render(near); time = 2000; renderer.render(near);
-    expectNearbyCamera(renderer.drawn, near.eyePosition);
+    expectNearbyCamera(renderer.drawn, near.eyePosition, trackPoint(track, 1800));
     const far = {state: {tick: 1800}, eyePosition: {x: track.position[5400], y: 0, z: 64}};
     renderer.render(far);
     expect(renderer.drawn).toBe(far);
@@ -1173,7 +1713,7 @@ describe('cinematic replay lifecycle', () => {
     expect(await cinema.setView('steady')).toBe(true);
     expect(counts().recorded).toBe(1);
     renderer.render(near); time = 4000; renderer.render(near);
-    expectNearbyCamera(renderer.drawn, near.eyePosition);
+    expectNearbyCamera(renderer.drawn, near.eyePosition, trackPoint(track, 1800));
     hold = false; gate.resolve();
     await Promise.resolve();
     expect(cinema.status().style).toBe('steady');
@@ -1638,7 +2178,7 @@ describe('cinematic replay lifecycle', () => {
     expect({ghost: {x: ghost.frame.x, y: ghost.frame.y, z: ghost.frame.z}, head: path.material.uniforms.head.value,
       end: path.geometry.getAttribute('tick').array.at(-1), endX: path.geometry.getAttribute('position').array.at(-6)})
       .toEqual({ghost: body, head: 600, end: 2047, endX: track.position[2047 * 3]});
-    expectNearbyCamera(renderer.drawn, {...body, z: body.z + 40});
+    expectNearbyCamera(renderer.drawn, {...body, z: body.z + 40}, trackPoint(track, 30));
     expect(compilations).toBe(1);
     expect(scene.ghosts).toHaveLength(2);
     cinema.close();
@@ -1999,6 +2539,192 @@ describe('cinematic replay lifecycle', () => {
     expect(await cinema.add(run('valid'))).toBe(true);
     cinema.close();
   });
+  test('an unsafe completed addition rolls back its scene and handle and permits the same run to be retried', async () => {
+    const releases = [], time = {now: 0};
+    let blocked = true, next = 0, watched;
+    const worker = {live: true, async plan(options) {
+      if (blocked && options.others?.length) return null;
+      return planCamera(options);
+    }, align: (a, b) => alignByPlace(a, b), release: id => releases.push(id)};
+    const {cinema, renderer, counts} = rig({worker: () => worker, now: () => time.now, record: () => {
+      const id = ++next, track = straight({count: 60, y: id === 1 ? 0 : 150});
+      track._cinemaWorker = worker; track._cinemaHandle = {id, from: 0};
+      if (id === 1) watched = track;
+      return track;
+    }});
+    await cinema.setView('cinematic');
+    const view = {state: {tick: 30}, eyePosition: {...trackPoint(watched, 30), z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(view); time.now = 2000; renderer.render(view);
+    const prior = {...renderer.drawn.eyePosition};
+    await expect(cinema.add(run('other'))).rejects.toThrow('No safe camera path');
+    expect(cinema.status()).toMatchObject({view: 'cinematic', runs: [], loading: [], pending: null,
+      planError: 'No safe camera path is available for this view.'});
+    expect(releases).toEqual([2]);
+    renderer.render(view);
+    expect(renderer.drawn.eyePosition).toEqual(prior);
+    expect(counts().scenes).toBe(1);
+    expect(counts().made.at(-1).shown).toEqual([true]);
+    blocked = false;
+    expect(await cinema.add(run('other'))).toBe(true);
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['other']);
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    cinema.close();
+  });
+  test('an unsafe progressive join rolls back before rejection and releases its late recording only once', async () => {
+    const gate = deferred(), late = deferred(), releases = [];
+    let blocked = true, next = 0;
+    const worker = {live: true, async plan(options) {
+      if (blocked && options.others?.length) return null;
+      return planCamera(options);
+    }, align: (a, b) => alignByPlace(a, b), release: id => releases.push(id)};
+    const fixture = rig({worker: () => worker, record: async ({onProgress}) => {
+      const id = ++next, track = straight({count: 900, y: id === 1 ? 0 : 150});
+      track._cinemaWorker = worker; track._cinemaHandle = {id, from: 0};
+      if (id === 2) { onProgress(track, 600); await gate.promise; late.resolve(); }
+      return track;
+    }});
+    const {cinema, control, counts} = fixture;
+    control.playback.replay.commands = new Array(899).fill({});
+    await cinema.setView('cinematic');
+    await expect(cinema.add(run('other'))).rejects.toThrow('No safe camera path');
+    expect(cinema.status()).toMatchObject({view: 'cinematic', runs: [], loading: [], pending: null});
+    expect(counts().scenes).toBe(1);
+    expect(releases).toEqual([2]);
+    gate.resolve();
+    await late.promise;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(releases).toEqual([2]);
+    blocked = false;
+    expect(await cinema.add(run('other'))).toBe(true);
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['other']);
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    cinema.close();
+  });
+  test('a successful progressive join remains a successful addition when its completed replan is unsafe', async () => {
+    const gate = deferred(), failed = deferred(), releases = [], time = {now: 0};
+    let blocked = false, next = 0, fixture;
+    const worker = {live: true, async plan(options) {
+      if (blocked && options.others?.length) return null;
+      return planCamera(options);
+    }, align: (a, b) => alignByPlace(a, b), release: id => releases.push(id)};
+    fixture = rig({worker: () => worker, now: () => time.now,
+      onChange: () => { if (fixture.cinema.status()?.planError) failed.resolve(); },
+      record: async ({onProgress}) => {
+        const id = ++next, track = straight({count: 900, y: id === 1 ? 0 : 150});
+        track._cinemaWorker = worker; track._cinemaHandle = {id, from: 0};
+        if (id === 2) { onProgress(track, 600); await gate.promise; }
+        return track;
+      }});
+    const {cinema, renderer, control, counts} = fixture;
+    control.playback.replay.commands = new Array(899).fill({});
+    await cinema.setView('cinematic');
+    expect(await cinema.add(run('other'))).toBe(true);
+    expect(cinema.status().runs.map(item => item.id)).toEqual(['other']);
+    blocked = true;
+    gate.resolve();
+    await failed.promise;
+    expect(cinema.status()).toMatchObject({view: 'cinematic', pending: null, runs: [{id: 'other'}],
+      planError: 'No safe camera path is available for this view.'});
+    const view = {state: {tick: 30}, eyePosition: {x: 200, y: 0, z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(view); time.now = 2000; renderer.render(view);
+    expect(counts().made.at(-1).shown[1]).toBe(true);
+    expect(releases).not.toContain(2);
+    await cinema.remove('other');
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    cinema.close();
+  });
+  test('removing the focused run with no safe replacement returns to POV and can retry', async () => {
+    const releases = [], time = {now: 0};
+    let blocked = false, next = 0, watched;
+    const worker = {live: true, async plan(options) {
+      if (blocked && !options.others?.length) return null;
+      if (Number.isInteger(options.focusIndex))
+        return planCamera({a: options.others[options.focusIndex].track, style: options.style, group: false});
+      return planCamera(options);
+    }, align: (a, b) => alignByPlace(a, b), release: id => releases.push(id)};
+    const {cinema, renderer, counts} = rig({worker: () => worker, now: () => time.now, record: () => {
+      const id = ++next, track = straight({count: 60, y: id === 1 ? 0 : 1500});
+      track._cinemaWorker = worker; track._cinemaHandle = {id, from: 0};
+      if (id === 1) watched = track;
+      return track;
+    }});
+    await cinema.setView('cinematic');
+    await cinema.add(run('other'));
+    await cinema.setFocus('other');
+    const view = {state: {tick: 30}, eyePosition: {...trackPoint(watched, 30), z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(view); time.now = 2000; renderer.render(view);
+    expect(cinema.status().focus).toBe('other');
+    blocked = true;
+    await expect(cinema.remove('other')).rejects.toThrow('No safe camera path');
+    expect(cinema.status()).toMatchObject({view: 'pov', focus: null, runs: [], pending: null,
+      planError: 'No safe camera path is available for this view.'});
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    renderer.render(view);
+    expect(renderer.drawn).toBe(view);
+    expect(counts().made.at(-1).shown).toEqual([false]);
+    blocked = false;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    time.now = 4000; renderer.render(view);
+    expect(cinema.status()).toMatchObject({view: 'cinematic', focus: null, planError: null});
+    expectInCameraFrame(renderer.drawn, {...trackPoint(watched, 30), z: 40});
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    cinema.close();
+  });
+  test('cancelling a focused-run removal into POV cannot reuse its stale plan on reactivation', async () => {
+    const entered = deferred(), gate = deferred(), releases = [], time = {now: 0};
+    let watchingReplacement = false, hold = false, replacementPlans = 0, replacement, next = 0, watched, remaining;
+    const worker = {live: true, async plan(options) {
+      const group = watchingReplacement && !Number.isInteger(options.focusIndex) && options.others?.length === 1;
+      if (group) {
+        replacementPlans++;
+        if (hold) { entered.resolve(); return gate.promise; }
+      }
+      const plan = Number.isInteger(options.focusIndex)
+        ? await planCamera({a: options.others[options.focusIndex].track, style: options.style, group: false})
+        : await planCamera(options);
+      if (group) replacement = plan;
+      return plan;
+    }, align: (a, b) => alignByPlace(a, b), release: id => releases.push(id)};
+    const {cinema, renderer, counts} = rig({worker: () => worker, now: () => time.now, record: () => {
+      const id = ++next, track = straight({count: 60, y: id === 1 ? 0 : id === 2 ? 1600 : 150});
+      track._cinemaWorker = worker; track._cinemaHandle = {id, from: 0};
+      if (id === 1) watched = track;
+      if (id === 3) remaining = track;
+      return track;
+    }});
+    await cinema.setView('cinematic');
+    await cinema.add(run('focused'));
+    await cinema.add(run('remaining'));
+    await cinema.setFocus('focused');
+    const view = {state: {tick: 30}, eyePosition: {...trackPoint(watched, 30), z: 64}, yaw: 0, pitch: 0, fov: 90};
+    renderer.render(view); time.now = 2000; renderer.render(view);
+    const outgoing = {...renderer.drawn.eyePosition};
+    watchingReplacement = hold = true;
+    const removing = cinema.remove('focused');
+    await entered.promise;
+    expect(cinema.status()).toMatchObject({view: 'cinematic', focus: null, runs: [{id: 'remaining'}]});
+    renderer.render(view);
+    expect(renderer.drawn.eyePosition).toEqual(outgoing);
+    expect(releases.filter(id => id === 2)).toHaveLength(1);
+    await cinema.setView('pov');
+    time.now = 3000; renderer.render(view);
+    expect(renderer.drawn).toBe(view);
+    expect(counts().made.at(-1).shown).toEqual([false, true]);
+    hold = false;
+    gate.resolve(null);
+    await removing;
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(replacementPlans).toBe(2);
+    time.now = 5000; renderer.render(view);
+    const expected = adjust(shotAt(replacement, 30)).eye;
+    for (const axis of ['x', 'y', 'z']) expect(renderer.drawn.eyePosition[axis]).toBeCloseTo(expected[axis], 5);
+    expectInCameraFrame(renderer.drawn, {...trackPoint(watched, 30), z: 40});
+    expectInCameraFrame(renderer.drawn, {...trackPoint(remaining, 30), z: 40});
+    expect(cinema.status()).toMatchObject({view: 'cinematic', focus: null, runs: [{id: 'remaining'}]});
+    expect(await cinema.setView('cinematic')).toBe(true);
+    expect(replacementPlans).toBe(2);
+    cinema.close();
+  });
   test('disabling cancels an in-flight solo recording without attaching later', async () => {
     const entered = deferred(), release = deferred();
     const {cinema, renderer, native} = rig({record: async () => { entered.resolve(); await release.promise; return straight({count: 60}); }});
@@ -2163,7 +2889,9 @@ describe('cinematic replay lifecycle', () => {
     // Past the flight out of first person first.
     eye(); time.now += 2000;
     const start = eye(), moved = point => Math.hypot(point.x - start.x, point.y - start.y, point.z - start.z);
-    expect(renderer.drawn.fov).toBeGreaterThanOrEqual(74);
+    // The plan's own lens: its widest view down to its longest zoom, not the game's 90.
+    expect(renderer.drawn.fov).toBeGreaterThanOrEqual(26);
+    expect(renderer.drawn.fov).toBeLessThan(90);
     wheel(100);
     time.now += 16;
     const early = moved(eye());

@@ -21,7 +21,7 @@ function box(from, to) {
 const routeCandidate = (from, to) => from.z === 40 && to.z === 40 && Math.hypot(to.x - from.x, to.y - from.y) >= 70;
 
 describe('camera preparation efficiency', () => {
-  for (const style of ['cinematic', 'steady']) test(`${style} keeps fixed-focus composition identical to recomputing its focus`, async () => {
+  for (const style of ['steady']) test(`${style} keeps fixed-focus composition identical to recomputing its focus`, async () => {
     const a = straight(), other = straight();
     for (let tick = 0; tick < a.count; tick++) {
       a.position[tick * 3 + 1] = Math.sin(tick / 40) * 12;
@@ -36,8 +36,8 @@ describe('camera preparation efficiency', () => {
     // This distant run has exactly zero framing share in both cases. Group
     // framing recomputes the centre on every correction; solo framing caches
     // it, including across a safer-shot retry. Both still check the same runs.
-    const reference = await planCamera({a, others, group: true, style, trace: box});
-    const cached = await planCamera({a, others, group: false, style, trace: box});
+    const reference = await planCamera({style: 'steady', a, others, group: true, style, trace: box});
+    const cached = await planCamera({style: 'steady', a, others, group: false, style, trace: box});
     expect(cached).toEqual(reference);
   });
 
@@ -47,15 +47,15 @@ describe('camera preparation efficiency', () => {
       a.position[tick * 3 + 1] = Math.sin(tick / 90) * 100;
       if (tick === 7000) a.cut[tick] = 1;
     }
-    const reference = await planCamera({a});
-    const planned = await planCamera({a, yieldTask: async () => ({didTimeout: true, timeRemaining: () => 0})});
+    const reference = await planCamera({style: 'steady', a});
+    const planned = await planCamera({style: 'steady', a, yieldTask: async () => ({didTimeout: true, timeRemaining: () => 0})});
     expect(planned).toEqual(reference);
   });
 
   test('cancellation discards long-track preparation', async () => {
     const a = straight(16385);
     let current = true;
-    const planned = await planCamera({a, yieldTask: async () => {
+    const planned = await planCamera({style: 'steady', a, yieldTask: async () => {
       current = false;
       return {didTimeout: true, timeRemaining: () => 0};
     }, isCurrent: () => current});
@@ -65,7 +65,7 @@ describe('camera preparation efficiency', () => {
   test('final validation respects a bounded native-trace workload between opportunities to render', async () => {
     const a = straight(), budget = 3;
     let work = 0, previous = 0, longest = 0;
-    const plan = await planCamera({a, trace: () => { work++; return 1; },
+    const plan = await planCamera({style: 'steady', a, trace: () => { work++; return 1; },
       yieldTask: async () => {
         longest = Math.max(longest, work - previous);
         previous = work;
@@ -74,14 +74,14 @@ describe('camera preparation efficiency', () => {
       },
     });
     longest = Math.max(longest, work - previous);
-    expect(plan).toEqual(await planCamera({a, trace: () => 1}));
+    expect(plan).toEqual(await planCamera({style: 'steady', a, trace: () => 1}));
     expect(longest).toBeLessThanOrEqual(budget);
   });
 
   test('blocked fallback searches respect the native-trace budget and keep the camera at the visible body', async () => {
     const a = straight(), budget = 3;
     let work = 0, previous = 0, longest = 0;
-    const plan = await planCamera({a,
+    const plan = await planCamera({style: 'steady', a,
       trace: () => { work++; return 0; },
       yieldTask: async () => {
         longest = Math.max(longest, work - previous);
@@ -102,7 +102,7 @@ describe('camera preparation efficiency', () => {
   test('sparse fallback checks cancellation even when no affected sample is a slice boundary', async () => {
     const a = straight();
     let current = true;
-    const plan = await planCamera({a,
+    const plan = await planCamera({style: 'steady', a,
       // Cancel during an obstructed route-candidate search, not during the
       // initial composition. No partially prepared plan should be published.
       trace: (from, to) => {

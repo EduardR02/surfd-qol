@@ -1,6 +1,11 @@
 // Camera and physics share the native collision tree, but not brush visibility.
 const SOLID = 0x1, SEE_THROUGH = 0x10000000 | 0x8;
 export const PROBE = {min: {x: -6, y: -6, z: -6}, max: {x: 6, y: 6, z: 6}};
+// A sightline is a thin ray. Looking through solid it crosses at most LAYERS
+// touching brushes, each entered SKIN units past its face.
+const RAY = {min: {x: -1, y: -1, z: -1}, max: {x: 1, y: 1, z: 1}}, LAYERS = 12, SKIN = 2;
+// How far overhead terrain is looked for above a camera position.
+const OVERHEAD = 8192;
 const cameraWorlds = new WeakMap();
 
 export function cameraWorld(session) {
@@ -13,6 +18,76 @@ export function cameraWorld(session) {
   cameraWorlds.set(world, {map, brushes: map.brushes, triangles: map.displacementTriangles, tree: world.tree,
     feature: world.vphysicsFeatureFix, corner: world.bspCornerFix, value});
   return value;
+}
+
+// What the camera planners trace with. trace(from, to) is the probe's clear
+// fraction of the way, 0 from inside a solid, as physics has it.
+// trace.view(eye, to) is the fraction of the way from the eye to the first
+// surface it would be shown. The game draws map faces from their front only,
+// so an eye inside a brush looks straight out of it and terrain is not there
+// from below: neither is in the way. view.inside tells whether the last eye
+// was within a brush.
+export function cameraTrace(world) {
+  if (!world) return null;
+  const trace = (from, to) => {
+    const hit = world.trace(from, to, PROBE);
+    // Escaping an initial overlap can still hit a different brush later.
+    // Native fractions already preserve that hit and allow a clear escape.
+    return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
+  };
+  const start = {x: 0, y: 0, z: 0}, near = {x: 0, y: 0, z: 0};
+  const view = (eye, to) => {
+    let done = 0;
+    start.x = eye.x; start.y = eye.y; start.z = eye.z;
+    view.inside = false;
+    for (let pass = 0; pass < LAYERS; pass++) {
+      const hit = world.trace(start, to, RAY);
+      if (!pass) view.inside = !!hit.startSolid;
+      // Both ends within one brush: none of it is drawn between them.
+      if (hit.allSolid || hit.fraction >= 1) return 1;
+      const dx = to.x - start.x, dy = to.y - start.y, dz = to.z - start.z, length = Math.hypot(dx, dy, dz) || 1;
+      const fraction = Math.max(0, hit.fraction), reached = fraction * length;
+      let through = false;
+      // A terrain triangle met from behind is not drawn.
+      const corners = hit.brush?.faces?.length === 1 && hit.brush.vertices?.length === 3 ? hit.brush.vertices : null;
+      if (corners) {
+        const [a, b, c] = corners, ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+        through = dx * (uy * vz - uz * vy) + dy * (uz * vx - ux * vz) + dz * (ux * vy - uy * vx) > 0;
+      }
+      // Nor is the face between two solids that touch: walls are built of
+      // many brushes, and from inside one the next is the same mass.
+      if (!through) {
+        if (reached <= SKIN) through = !!hit.startSolid;
+        else {
+          const k = (reached - SKIN) / length;
+          near.x = start.x + dx * k; near.y = start.y + dy * k; near.z = start.z + dz * k;
+          through = !!world.trace(near, near, RAY).startSolid;
+        }
+      }
+      if (!through) return done + (1 - done) * fraction;
+      const step = Math.min(1, fraction + SKIN / length);
+      start.x += dx * step; start.y += dy * step; start.z += dz * step;
+      done += (1 - done) * step;
+      if (done >= 1) return 1;
+    }
+    return done;
+  };
+  trace.view = view;
+  // Whether a camera can be at a point: nothing solid within `room` units of
+  // it, and no terrain overhead that it would be looking at from underneath.
+  const hulls = new Map(), above = {x: 0, y: 0, z: 0};
+  trace.free = (point, room) => {
+    let hull = hulls.get(room);
+    if (!hull) hulls.set(room, hull = {min: {x: -room, y: -room, z: -room}, max: {x: room, y: room, z: room}});
+    if (world.trace(point, point, hull).startSolid) return false;
+    above.x = point.x; above.y = point.y; above.z = point.z + OVERHEAD;
+    const hit = world.trace(point, above, RAY), corners = hit.fraction < 1 && hit.brush?.faces?.length === 1 && hit.brush.vertices?.length === 3 ? hit.brush.vertices : null;
+    if (!corners) return true;
+    const [a, b, c] = corners;
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) <= 0;
+  };
+  if (world.cameraMayHit) trace.mayHit = world.cameraMayHit;
+  return trace;
 }
 
 // The game's collision world without what the camera sees through.

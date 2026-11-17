@@ -1,17 +1,15 @@
-// Camera shots planned from a recorded route or a window around the playhead.
-// Each choice is smoothed both ways in time, so moves can begin before the
-// ramp or landing that calls for them. A complete route uses the same math
-// and can replace its initial window while playback continues.
+// The planned camera's two styles. Cinematic is directed in
+// cinema-director.js; this file plans Steady and holds what both share
+// (reading a plan at a tick, your own adjustment on top of it).
 //
-// The shots follow the played run's route. On a ramp the camera is out on its
-// open side (the side its face looks to), so the ramp never hides the ghosts,
-// and low, so the dip and climb read as down and up; in flight it follows
-// behind and leads towards where they'll land. Two styles (STYLES): steady
-// keeps one three-quarter chase throughout; cinematic varies the shot from
-// ramp to ramp and flight to flight (alongside, ahead as they come towards it,
-// low along the face, beside a long flight's arc), drifts round the
-// prestrafe, opens wider after a teleport and pulls back at the finish. The
-// view widens a little with speed.
+// Steady follows the played run's route with one three-quarter chase. Each
+// choice is smoothed both ways in time, so moves can begin before the ramp or
+// landing that calls for them; a complete route uses the same math and can
+// replace its initial window while playback continues. On a ramp the camera
+// is out on its open side (the side its face looks to), so the ramp never
+// hides the ghosts, and low, so the dip and climb read as down and up; in
+// flight it follows behind and leads towards where they'll land. The view
+// widens a little with speed.
 // Obstructed shots first get conservative turning/pull-in corrections, then a
 // bounded local trajectory search tries to recover a wide connected view of
 // the group. A fixed orbit/radius/lift with moving endpoint tangents is tried
@@ -23,18 +21,12 @@
 // The final eye is still clipped against the played run's sightline where no
 // connected shot fits, even below the preferred minimum distance.
 import {trackPoint, trackYaw} from './cinema-track.js';
+import {planCinematic, STEP, FOV} from './cinema-director.js';
 
-export const STEP = 2;               // ticks per planned sample
+export {STEP, FOV};
 // A shot: swing from behind towards the open side and elevation in degrees
 // (to: the swing a shot they pass ends on), distance as a multiple of the
 // speed-based one, and room ahead as a share of the distance.
-const CHASE = {swing: 36, elevation: 9, distance: 1, lead: 0.16};
-const FACE = {swing: 72, elevation: 14, distance: 1.45, lead: 0.32};                // from the open side onto the face, a little ahead: the clearest view of the lines
-const TRACK = {swing: 65, elevation: 4, distance: 1.5, lead: 0.26};                 // three-quarter alongside, at body height
-const LOW = {swing: 40, elevation: -6, distance: 1.1, lead: 0.2};                   // near the face, along and up it
-const FRONT = {swing: 155, to: 105, elevation: 5, distance: 1.4, lead: 0};          // ahead; they come towards it and pass
-const FLIGHT = {swing: 0, elevation: 11, distance: 1.25, lead: 0.16};               // behind, the landing ahead
-const ARC = {swing: 72, elevation: 3, distance: 1.5, lead: 0.24};                   // beside a long flight's rise and fall
 const STEADY = {swing: 62, elevation: 12, distance: 1.3, lead: 0.26};
 // Per style: the shots ramps take in turn by length (under MEDIUM_RAMP,
 // under LONG_RAMP, longer), and those for a ramp with one on the other side
@@ -47,11 +39,6 @@ const STEADY = {swing: 62, elevation: 12, distance: 1.3, lead: 0.26};
 // long shots take to ease into each other (seconds either side). Shots never
 // cut into each other, only teleports cut.
 const STYLES = {
-  cinematic: {
-    ramps: [[CHASE], [FACE, LOW], [FACE, TRACK, FACE, LOW]], front: FRONT, gentle: [LOW, CHASE], flights: [ARC, FLIGHT],
-    flight: FLIGHT, start: {swing: 0, elevation: 10, distance: 1.45, lead: 0.1},
-    orbit: 70, establish: {rise: 16, widen: 0.8}, finish: {rise: 12, widen: 1.2, swing: 30}, landing: 0.3, fov: 10, transition: 0.5,
-  },
   steady: {
     ramps: [[STEADY], [STEADY], [STEADY]], gentle: [STEADY], flights: [],
     flight: {swing: 0, elevation: 11, distance: 1.2, lead: 0.16}, start: {swing: 0, elevation: 10, distance: 1.15, lead: 0.12},
@@ -110,7 +97,6 @@ const BASE_DISTANCE = 300, MAX_DISTANCE = 2400, MIN_DISTANCE = 70, SPEED_DISTANC
 // (fading out between the two), so the camera only leaves one far behind.
 const GROUP_NEAR = 2500, GROUP_FAR = 6000;
 // The view in the game's horizontal (4:3) degrees, widening (by the style's fov) between these speeds.
-export const FOV = 74;
 const FOV_SLOW = 1200, FOV_FAST = 3500;
 const EYE_HEIGHT = 40;               // aim at the body, not the feet
 const LEAD_MAX = 320;
@@ -308,12 +294,13 @@ function planStretches(ramps, segment, count, first, look, samples, spread, safe
 // others: [{track, map}], each run and where it is for each of a's ticks
 // ({b, map} for a single one). group frames every run together; without it
 // the camera is on run a alone, the others passing through its shot.
-// style is 'cinematic' or 'steady' (see STYLES).
-// Returns {count, eye, target, fov, segment, cutTick}: one entry every STEP ticks of run a.
-export async function planCamera({a, b = null, map = null, others = b ? [{track: b, map}] : [], group = true, style = 'cinematic', trace = null, yieldTask = null, isCurrent = () => true}) {
+// style is 'cinematic' (see cinema-director.js) or 'steady'.
+// Returns {count, eye, target, fov, segment, cutTick}, and for Cinematic roll: one entry every STEP ticks of run a.
+export async function planCamera({a, b = null, map = null, others = b ? [{track: b, map}] : [], group = true, style = 'cinematic', trace = null, yieldTask = null, isCurrent = () => true, debug = false}) {
+  if (style !== 'steady') return planCinematic({a, others, group, trace, yieldTask, isCurrent, debug});
   const cancelled = Symbol();
   try {
-  const look = STYLES[style] ?? STYLES.cinematic;
+  const look = STYLES.steady;
   const count = Math.ceil(a.count / STEP) + 1;
   const sampleTick = s => Math.min(a.count - 1, s * STEP);
   const seconds = value => value / (a.dt * STEP);
@@ -1568,13 +1555,14 @@ function unwrap(angles, segment) {
   }
 }
 
-// The planned eye, target and fov at a fractional tick of run a, into out.
-export function shotAt(plan, tick, out = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, fov: FOV}) {
+// The planned eye, target, fov and roll (radians, banking right) at a fractional tick of run a, into out.
+export function shotAt(plan, tick, out = {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, fov: FOV, roll: 0}) {
   const at = clamp(tick / STEP, 0, plan.count - 1), low = Math.floor(at), high = Math.min(plan.count - 1, low + 1);
   const t = plan.segment[high] === plan.segment[low] ? at - low : tick >= (plan.cutTick?.[high] ?? high * STEP) ? 1 : 0;
   interpolatePoint(plan.eye, low, high, t, out.eye);
   interpolatePoint(plan.target, low, high, t, out.target);
   out.fov = plan.fov ? plan.fov[low] + (plan.fov[high] - plan.fov[low]) * t : FOV;
+  out.roll = plan.roll ? plan.roll[low] + (plan.roll[high] - plan.roll[low]) * t : 0;
   return out;
 }
 
@@ -1590,7 +1578,9 @@ export function adjust(shot, {yaw = 0, pitch = 0, zoom = 1} = {}) {
   const {eye, target} = shot;
   const dx = eye.x - target.x, dy = eye.y - target.y, dz = eye.z - target.z;
   const d = Math.hypot(dx, dy, dz) || 1;
-  const az = Math.atan2(dy, dx) + yaw, el = clamp(Math.asin(clamp(dz / d, -1, 1)) + pitch, -0.35, 1.45);
+  // The limits are for the player's own turn; a planned angle beyond them stands.
+  const planned = Math.asin(clamp(dz / d, -1, 1));
+  const az = Math.atan2(dy, dx) + yaw, el = clamp(planned + pitch, Math.min(-0.35, planned), Math.max(1.45, planned));
   const far = clamp(d * zoom, MIN_DISTANCE * 0.6, MAX_DISTANCE * 1.6);
   eye.x = target.x + Math.cos(az) * Math.cos(el) * far;
   eye.y = target.y + Math.sin(az) * Math.cos(el) * far;

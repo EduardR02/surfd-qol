@@ -9,6 +9,33 @@ function route(xs, dt) {
   return track;
 }
 
+// Direction probes use free/view; viewpoint construction alone starts with a
+// contiguous run of clear traces before search asks free/view again.
+function tracedPlanner() {
+  const work = {phase: 'direction', probes: 0, clears: 0, direction: [], graph: []};
+  const trace = (from, to) => {
+    if (work.phase !== 'search') {
+      work.phase = 'graph'; work.clears++;
+      work.graph.push([from.x, from.y, from.z, to.x, to.y, to.z]);
+    }
+    return 1;
+  };
+  trace.free = (point, room) => {
+    if (work.phase === 'graph') work.phase = 'search';
+    if (work.phase === 'direction') {
+      work.probes++;
+      work.direction.push(['free', point.x, point.y, point.z, room]);
+    }
+    return true;
+  };
+  trace.view = (from, to) => {
+    if (work.phase === 'graph') work.phase = 'search';
+    if (work.phase === 'direction') work.direction.push(['view', from.x, from.y, from.z, to.x, to.y, to.z]);
+    return 1;
+  };
+  return {trace, work};
+}
+
 describe('cinematic preparation boundaries', () => {
   test('place matching retains the mean of repeated positions, including asymmetric matches', async () => {
     const a = route([0, 10, 20], 0.35), b = route([0, 0, 10, 10, 20], 0.35);
@@ -70,6 +97,109 @@ describe('cinematic preparation boundaries', () => {
     expect(actual).toEqual(expected);
   });
 
+  test('direction probes and viewpoint construction honor budgets without changing the take', async () => {
+    const a = route(Array.from({length: 1000}, (_, tick) => tick * 20), 0.015);
+    const baseline = tracedPlanner();
+    const expected = await planCamera({a, trace: baseline.trace, debug: true});
+    const sliced = tracedPlanner(), directionYields = [], graphYields = [];
+    let probes = 0, clears = 0;
+    const yieldTask = async () => {
+      const {phase, probes: nowProbes, clears: nowClears} = sliced.work;
+      if (phase === 'direction' && nowProbes) directionYields.push(nowProbes);
+      if (phase === 'graph') graphYields.push(nowClears);
+      probes = nowProbes; clears = nowClears;
+      return {didTimeout: false, timeRemaining: () => {
+        const {phase, probes: nowProbes, clears: nowClears} = sliced.work;
+        const expired = phase === 'direction' ? nowProbes - probes >= 4 : phase === 'graph' && nowClears - clears >= 10;
+        return expired ? 0 : 50;
+      }};
+    };
+    const actual = await planCamera({a, trace: sliced.trace, yieldTask, debug: true});
+    expect(actual).toEqual(expected);
+    expect(sliced.work.direction).toEqual(baseline.work.direction);
+    expect(sliced.work.graph).toEqual(baseline.work.graph);
+    expect(directionYields.length).toBeGreaterThan(0);
+    expect(directionYields[0]).toBeGreaterThanOrEqual(4);
+    expect(directionYields[0]).toBeLessThan(sliced.work.probes);
+    expect(graphYields.length).toBeGreaterThan(1);
+    expect(graphYields[0]).toBeGreaterThanOrEqual(10);
+    expect(graphYields[0]).toBeLessThan(sliced.work.clears);
+    const points = [0, ...graphYields, sliced.work.clears];
+    for (let i = 1; i < points.length; i++) expect(points[i] - points[i - 1]).toBeLessThanOrEqual(19);
+  });
+
+  test('cancellation interrupts direction probes even with idle time remaining', async () => {
+    const a = route(Array.from({length: 1000}, (_, tick) => tick * 20), 0.015);
+    const scene = tracedPlanner(), free = scene.trace.free;
+    let current = true;
+    scene.trace.free = (...args) => {
+      const result = free(...args);
+      if (scene.work.phase === 'direction' && scene.work.probes >= 4) current = false;
+      return result;
+    };
+    const plan = await planCamera({
+      a, trace: scene.trace, isCurrent: () => current,
+      yieldTask: async () => ({didTimeout: false, timeRemaining: () => 50}),
+    });
+    expect(plan).toBeNull();
+    expect(scene.work.probes).toBeGreaterThanOrEqual(4);
+    expect(scene.work.probes).toBeLessThanOrEqual(30);
+    expect(scene.work.clears).toBe(0);
+
+    const interrupted = tracedPlanner();
+    current = true;
+    let cancelledAt = 0;
+    const stopped = await planCamera({
+      a, trace: interrupted.trace, isCurrent: () => current,
+      yieldTask: async () => {
+        if (interrupted.work.phase === 'direction' && interrupted.work.probes >= 4) {
+          cancelledAt = interrupted.work.probes; current = false;
+        }
+        return null;
+      },
+    });
+    expect(stopped).toBeNull();
+    expect(cancelledAt).toBeGreaterThanOrEqual(4);
+    expect(cancelledAt).toBeLessThanOrEqual(16);
+    expect(interrupted.work.probes).toBe(cancelledAt);
+    expect(interrupted.work.clears).toBe(0);
+  });
+
+  test('cancellation interrupts viewpoint construction even with idle time remaining', async () => {
+    const a = route(Array.from({length: 1000}, (_, tick) => tick * 20), 0.015);
+    const scene = tracedPlanner(), clear = scene.trace;
+    let current = true;
+    const trace = (...args) => {
+      const result = clear(...args);
+      if (scene.work.phase === 'graph' && scene.work.clears >= 12) current = false;
+      return result;
+    };
+    trace.free = scene.trace.free; trace.view = scene.trace.view;
+    const plan = await planCamera({
+      a, trace, isCurrent: () => current,
+      yieldTask: async () => ({didTimeout: false, timeRemaining: () => 50}),
+    });
+    expect(plan).toBeNull();
+    expect(scene.work.clears).toBeGreaterThanOrEqual(12);
+    expect(scene.work.clears).toBeLessThanOrEqual(60);
+
+    const interrupted = tracedPlanner();
+    current = true;
+    let cancelledAt = 0;
+    const stopped = await planCamera({
+      a, trace: interrupted.trace, isCurrent: () => current,
+      yieldTask: async () => {
+        if (interrupted.work.phase === 'graph' && interrupted.work.clears >= 10) {
+          cancelledAt = interrupted.work.clears; current = false;
+        }
+        return null;
+      },
+    });
+    expect(stopped).toBeNull();
+    expect(cancelledAt).toBe(10);
+    expect(interrupted.work.clears).toBe(cancelledAt);
+  });
+
   test('short teleport stretches retain their own speed-based fov, including a one-sample ending', async () => {
     const a = createTrack(30, 0.01);
     let stretch = 0;
@@ -77,11 +207,11 @@ describe('cinematic preparation boundaries', () => {
       if ([5, 11, 17, 23, 29].includes(tick)) { a.cut[tick] = 1; stretch++; }
       a.position[tick * 3] = stretch * 100000 + tick * 24;
     }
-    const plan = await planCamera({a});
+    const plan = await planCamera({a, style: 'steady'});
     // Each non-singleton stretch travels at 2400 units/sec. Neither the
     // travel window nor its speed blur may include a neighbouring teleport.
     const t = (2400 - 1200) / (3500 - 1200);
-    const movingFov = Math.fround(74 + 10 * t * t * (3 - 2 * t));
+    const movingFov = Math.fround(74 + 6 * t * t * (3 - 2 * t));
     expect(Array.from(plan.fov.slice(0, -1))).toEqual(Array(15).fill(movingFov));
     expect(plan.fov.at(-1)).toBe(74);
     expect(Array.from(plan.segment)).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5]);

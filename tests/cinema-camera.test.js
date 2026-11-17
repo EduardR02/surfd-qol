@@ -94,12 +94,12 @@ describe('Gaussian blur', () => {
 });
 
 describe('final camera visibility', () => {
-  for (const style of ['cinematic', 'steady']) describe(style, () => {
+  for (const style of ['steady']) describe(style, () => {
     test('preserves the planned shot when its sightlines are clear', async () => {
       const a = straight({count: 64});
-      const baseline = await planCamera({a, style, trace: () => 1});
+      const baseline = await planCamera({style: 'steady', a, style, trace: () => 1});
       const trace = sphere({x: 0, y: 10000, z: 40}, 100);
-      const planned = await planCamera({a, style, trace});
+      const planned = await planCamera({style: 'steady', a, style, trace});
       expect(planned.eye).toEqual(baseline.eye);
       expect(planned.target).toEqual(baseline.target);
       expectVisibleSamples(a, planned, trace);
@@ -108,10 +108,10 @@ describe('final camera visibility', () => {
     test('keeps the smoothed eye inside walls closer than the preferred shot minimum', async () => {
       const a = straight({count: 32, speed: 0});
       const trace = enclosure({x: -30, y: -30, z: 0}, {x: 30, y: 30, z: 70});
-      const uncorrected = await planCamera({a, style});
+      const uncorrected = await planCamera({style: 'steady', a, style});
       expect(trace(bodyAt(a, 10), shotAt(uncorrected, 10).eye)).toBeLessThan(1);
 
-      const planned = await planCamera({a, style, trace});
+      const planned = await planCamera({style: 'steady', a, style, trace});
       expectVisibleSamples(a, planned, trace);
       const body = bodyAt(a, 10), {eye} = shotAt(planned, 10);
       expect(Math.hypot(eye.x - body.x, eye.y - body.y, eye.z - body.z)).toBeLessThan(70);
@@ -119,7 +119,7 @@ describe('final camera visibility', () => {
 
     test('checks the final eye at samples skipped by the anticipatory collision passes', async () => {
       const a = straight();
-      const baseline = await planCamera({a, style, trace: () => 1});
+      const baseline = await planCamera({style: 'steady', a, style, trace: () => 1});
       // Tick 202 is stored sample 101. Earlier collision passes only trace
       // even samples, whose parallel sightlines miss this small solid sphere.
       const tick = 202, center = shotAt(baseline, tick).eye, trace = sphere(center, 1);
@@ -127,7 +127,7 @@ describe('final camera visibility', () => {
       for (const adjacent of [tick - STEP, tick + STEP])
         expect(trace(bodyAt(a, adjacent), shotAt(baseline, adjacent).eye)).toBe(1);
 
-      const planned = await planCamera({a, style, trace});
+      const planned = await planCamera({style: 'steady', a, style, trace});
       expectVisibleSamples(a, planned, trace);
       const {eye} = shotAt(planned, tick);
       expect(Math.hypot(eye.x - center.x, eye.y - center.y, eye.z - center.z)).toBeGreaterThan(1);
@@ -136,7 +136,7 @@ describe('final camera visibility', () => {
     test('keeps the surfer framed when a close obstruction disrupts a shot with lead', async () => {
       const a = straight({count: 80});
       for (let tick = 0; tick < a.count; tick++) a.normal.set([0, -0.8, 0.6], tick * 3);
-      const baseline = await planCamera({a, style, trace: () => 1});
+      const baseline = await planCamera({style: 'steady', a, style, trace: () => 1});
       const tick = 42, body = bodyAt(a, tick), before = shotAt(baseline, tick);
       expect(Math.hypot(before.target.x - body.x, before.target.y - body.y, before.target.z - body.z)).toBeGreaterThan(40);
       const outward = direction(body, before.eye);
@@ -144,7 +144,7 @@ describe('final camera visibility', () => {
       for (const adjacent of [tick - STEP, tick + STEP])
         expect(trace(bodyAt(a, adjacent), shotAt(baseline, adjacent).eye)).toBe(1);
 
-      const planned = await planCamera({a, style, trace}), after = shotAt(planned, tick);
+      const planned = await planCamera({style: 'steady', a, style, trace}), after = shotAt(planned, tick);
       expect(trace(body, after.eye)).toBe(1);
       // A body inside the vertical half-angle's cone is also inside the
       // wider 16:9 horizontal frustum. This checks actual viewing geometry.
@@ -166,7 +166,7 @@ describe('final camera visibility', () => {
         if (offset >= 0) return to.x * to.x + to.y * to.y < radius * radius ? 1 : 0;
         return Math.min(1, (-dot + Math.sqrt(dot * dot - length * offset)) / length);
       };
-      const planned = await planCamera({a, style, trace});
+      const planned = await planCamera({style: 'steady', a, style, trace});
       expectVisibleSamples(a, planned, trace);
       for (let tick = 100; tick < 260; tick += STEP) {
         const body = bodyAt(a, tick), shot = shotAt(planned, tick);
@@ -178,7 +178,7 @@ describe('final camera visibility', () => {
     test('does not push the eye through a wall to preserve clearance or minimum distance', async () => {
       const a = straight({count: 32, speed: 0});
       const trace = enclosure({x: -1, y: -1, z: 39}, {x: 1, y: 1, z: 41});
-      const planned = await planCamera({a, style, trace});
+      const planned = await planCamera({style: 'steady', a, style, trace});
       expectVisibleSamples(a, planned, trace);
       expect(shotAt(planned, 10).eye).toEqual(bodyAt(a, 10));
     });

@@ -1,6 +1,6 @@
 import {captureTrack, trackSlice, TRACK_ARRAYS} from './cinema-recording.js';
 import {planCamera} from './cinema-camera.js';
-import {cameraWorld, PROBE} from './cinema-world.js';
+import {cameraWorld, cameraTrace} from './cinema-world.js';
 import {onClock} from './cinema-clock.js';
 import {alignByPlace} from './cinema-sync.js';
 
@@ -243,11 +243,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
       const session = records.get(message.world)?.session ?? primarySession;
       if (!session) throw new Error('Camera world is no longer retained');
       const world = cameraWorld(session);
-      const trace = world ? (from, to) => {
-        const hit = world.trace(from, to, PROBE);
-        return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
-      } : null;
-      if (trace && world.cameraMayHit) trace.mayHit = world.cameraMayHit;
+      const trace = cameraTrace(world);
       const result = await planCamera({...options, a, others, trace, yieldTask: yieldPlanner, isCurrent: () => latestPlan === token});
       if (latestPlan !== token) return;
       const transfer = result ? Object.values(result).filter(ArrayBuffer.isView).map(value => value.buffer) : [];

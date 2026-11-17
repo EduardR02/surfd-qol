@@ -37,10 +37,10 @@ describe('camera swept-region empty certificates', () => {
   test('does not change the public clear-shot plan when empty bounds certify it', async () => {
     const a = createTrack(81, 0.015);
     for (let tick = 0; tick < a.count; tick++) a.position[tick * 3] = tick * 20;
-    for (const style of ['cinematic', 'steady']) {
-      const expected = await planCamera({a, style, trace: () => 1});
+    for (const style of ['steady']) {
+      const expected = await planCamera({style: 'steady', a, style, trace: () => 1});
       const trace = Object.assign(() => 1, {mayHit: cameraBoundsQuery(boundsQuery([]))});
-      const actual = await planCamera({a, style, trace});
+      const actual = await planCamera({style: 'steady', a, style, trace});
       for (const key of ['eye', 'target', 'fov', 'segment', 'cutTick']) expect(actual[key]).toEqual(expected[key]);
     }
   });

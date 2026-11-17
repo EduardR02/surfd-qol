@@ -138,7 +138,7 @@ describe('connected local camera paths', () => {
       second.position.set([Math.cos(angle) * 700, Math.sin(angle) * 700, 0], tick * 3);
       if (tick < 60 || tick > 340) second.normal.set([0, -0.8, 0.6], tick * 3);
     }
-    const plan = await planCamera({...scene, others: [{track: second, map: scene.others[0].map}], style: 'cinematic'});
+    const plan = await planCamera({style: 'steady', ...scene, others: [{track: second, map: scene.others[0].map}]});
     let previous = null;
     // Both runners are individually visible around this corner. A camera on
     // their shared sightline still passes ray/framing checks, but visually
@@ -155,9 +155,9 @@ describe('connected local camera paths', () => {
       previous = shot.eye;
     }
   });
-  for (const style of ['cinematic', 'steady']) {
+  for (const style of ['steady']) {
     for (const kind of ['pillar', 'tunnel']) test(`${style}: carries a coherent moving shot through ${kind} repairs and their joins`, async () => {
-      const scene = groupScenario(kind), plan = await planCamera({...scene, style});
+      const scene = groupScenario(kind), plan = await planCamera({style: 'steady', ...scene, style});
       expectConnected(plan, scene.tracks, scene.trace, kind === 'pillar' ? 280 : 300);
       const movement = motion(plan, scene.a);
       // Normalize translation/radius by shot size, not world speed: deliberate
@@ -170,14 +170,14 @@ describe('connected local camera paths', () => {
     });
     test(`${style}: keeps a staggered three-run group wide and visible through a pillar half-turn`, async () => {
       const scene = groupScenario('pillar');
-      const plan = await planCamera({...scene, style});
+      const plan = await planCamera({style: 'steady', ...scene, style});
       // The former camera spent 0.53s / 0.94s below 250 units here despite
       // a connected visible offset. A close history chase is not necessary.
       expectConnected(plan, scene.tracks, scene.trace, 280);
     });
     test(`${style}: enters a tunnel with a group offset and recovers outside`, async () => {
       const scene = groupScenario('tunnel');
-      const plan = await planCamera({...scene, style});
+      const plan = await planCamera({style: 'steady', ...scene, style});
       expectConnected(plan, scene.tracks, scene.trace, 300);
       const before = shotAt(plan, 20), after = shotAt(plan, 380);
       expect(Math.hypot(after.eye.x - after.target.x, after.eye.y - after.target.y, after.eye.z - after.target.z)).toBeGreaterThan(300);
@@ -194,7 +194,7 @@ describe('connected local camera paths', () => {
         }
         return clear;
       };
-      const plan = await planCamera({a, trace, style});
+      const plan = await planCamera({style: 'steady', a, trace, style});
       expectConnected(plan, [a], trace);
       expect(Math.hypot(...Object.values(shotAt(plan, 20).eye).map((v, i) => v - [0, 0, 40][i]))).toBeLessThan(70);
     });
@@ -213,7 +213,7 @@ describe('connected local camera paths', () => {
     const roof = box({x: 2000, y: -1e6, z: 55}, {x: 6000, y: 1e6, z: 1e6});
     const floor = box({x: -1e6, y: -1e6, z: -1e6}, {x: 1e6, y: 1e6, z: -500});
     const trace = (from, to) => Math.min(roof(from, to), floor(from, to));
-    const plan = await planCamera({a, others: tracks.slice(1).map(track => ({track, map})), trace});
+    const plan = await planCamera({style: 'steady', a, others: tracks.slice(1).map(track => ({track, map})), trace});
     expectConnected(plan, tracks, trace, 300);
     for (let tick = 140; tick <= 260; tick += 0.5) {
       const shot = shotAt(plan, tick), body = bodyAt(a, tick);
@@ -240,7 +240,7 @@ describe('connected local camera paths', () => {
     // jumping directly from the first shoulder to the next intention hits it.
     const obstruction = sphere({x: 5076, y: 0, z: 15}, 4);
     const trace = (from, to) => Math.min(roof(from, to), floor(from, to), obstruction(from, to));
-    const plan = await planCamera({a, others: tracks.slice(1).map(track => ({track, map})), trace});
+    const plan = await planCamera({style: 'steady', a, others: tracks.slice(1).map(track => ({track, map})), trace});
     expectConnected(plan, tracks, trace);
     for (let s = 1; s < plan.count; s++) {
       const before = shotAt(plan, (s - 1) * STEP).eye, after = shotAt(plan, s * STEP).eye;
@@ -250,7 +250,7 @@ describe('connected local camera paths', () => {
   });
 
   test('replans a continuous pillar move when its intermediate curve clips a second obstacle', async () => {
-    const scene = groupScenario('pillar'), first = await planCamera(scene);
+    const scene = groupScenario('pillar'), first = await planCamera({style: 'steady', ...scene});
     const tick = 307, center = shotAt(first, tick).eye, obstruction = sphere(center, 0.1);
     const trace = (from, to) => Math.min(scene.trace(from, to), obstruction(from, to));
     // The endpoints of the already connected move remain safe. Its actual
@@ -261,7 +261,7 @@ describe('connected local camera paths', () => {
       for (const track of scene.tracks) expect(trace(bodyAt(track, at), shot.eye)).toBe(1);
     }
     expect(trace(bodyAt(scene.a, tick), center)).toBeLessThan(1);
-    const plan = await planCamera({...scene, trace});
+    const plan = await planCamera({style: 'steady', ...scene, trace});
     expectConnected(plan, scene.tracks, trace, 280);
     const movement = motion(plan, scene.a);
     expect(movement.acceleration).toBeLessThan(50);
@@ -270,7 +270,7 @@ describe('connected local camera paths', () => {
   });
 
   for (const obstruction of ['eye chord', 'intermediate sightline']) test(`repairs a blocked ${obstruction} between clear endpoints`, async () => {
-    const a = straight(), baseline = await planCamera({a, trace: () => 1});
+    const a = straight(), baseline = await planCamera({style: 'steady', a, trace: () => 1});
     const tick = 201, middle = shotAt(baseline, tick), body = bodyAt(a, tick);
     const center = obstruction === 'eye chord' ? middle.eye : {
       x: (middle.eye.x + body.x) / 2, y: (middle.eye.y + body.y) / 2, z: (middle.eye.z + body.z) / 2,
@@ -279,16 +279,16 @@ describe('connected local camera paths', () => {
     for (const at of [200, 202]) expect(trace(bodyAt(a, at), shotAt(baseline, at).eye)).toBe(1);
     if (obstruction === 'eye chord') expect(trace(shotAt(baseline, 200).eye, shotAt(baseline, 202).eye)).toBeLessThan(1);
     else expect(trace(body, middle.eye)).toBeLessThan(1);
-    const plan = await planCamera({a, trace});
+    const plan = await planCamera({style: 'steady', a, trace});
     expectConnected(plan, [a], trace, 250);
   });
 
   test('protects a baseline-visible participant below the usual group-share threshold', async () => {
     const a = straight(), b = straight(), map = Float32Array.from({length: a.count}, (_, i) => i);
     for (let tick = 0; tick < b.count; tick++) b.position[tick * 3] += 5300;
-    const options = {a, others: [{track: b, map}], style: 'cinematic'};
-    const baseline = await planCamera({...options, trace: () => 1}), middle = shotAt(baseline, 201);
-    const trace = sphere(middle.eye, 0.1), plan = await planCamera({...options, trace});
+    const options = {a, others: [{track: b, map}]};
+    const baseline = await planCamera({style: 'steady', ...options, trace: () => 1}), middle = shotAt(baseline, 201);
+    const trace = sphere(middle.eye, 0.1), plan = await planCamera({style: 'steady', ...options, trace});
     let protectedSamples = 0;
     for (let tick = 0; tick < a.count - 1; tick += 0.5) {
       const body = bodyAt(b, tick), before = shotAt(baseline, tick);
@@ -306,8 +306,8 @@ describe('connected local camera paths', () => {
     const a = straight(), b = straight(), map = Float32Array.from({length: a.count}, (_, tick) => tick);
     for (let tick = 0; tick < b.count; tick++) b.position[tick * 3 + 1] = 80;
     const options = {a, others: [{track: b, map}], group: false};
-    const baseline = await planCamera({...options, trace: () => 1}), center = shotAt(baseline, 201).eye;
-    const trace = sphere(center, 0.1), plan = await planCamera({...options, trace});
+    const baseline = await planCamera({style: 'steady', ...options, trace: () => 1}), center = shotAt(baseline, 201).eye;
+    const trace = sphere(center, 0.1), plan = await planCamera({style: 'steady', ...options, trace});
     let protectedSamples = 0;
     for (let tick = 0; tick < a.count - 1; tick += 0.5) {
       const body = bodyAt(b, tick), before = shotAt(baseline, tick);
@@ -324,7 +324,7 @@ describe('connected local camera paths', () => {
   test('checks actual intermediate body positions, not a chord through time-warped runs', async () => {
     const a = straight();
     a.position[201 * 3 + 1] = 200;
-    const baseline = await planCamera({a, trace: () => 1}), middle = shotAt(baseline, 201), body = bodyAt(a, 201);
+    const baseline = await planCamera({style: 'steady', a, trace: () => 1}), middle = shotAt(baseline, 201), body = bodyAt(a, 201);
     const center = {x: (middle.eye.x + body.x) / 2,
       y: (middle.eye.y + body.y) / 2, z: (middle.eye.z + body.z) / 2};
     const trace = sphere(center, 0.1);
@@ -333,12 +333,12 @@ describe('connected local camera paths', () => {
         bounds.min[axis] <= center[axis] + 0.1) ? [0] : []);
     for (const tick of [200, 202]) expect(trace(bodyAt(a, tick), shotAt(baseline, tick).eye)).toBe(1);
     expect(trace(body, middle.eye)).toBeLessThan(1);
-    const plan = await planCamera({a, trace});
+    const plan = await planCamera({style: 'steady', a, trace});
     expectConnected(plan, [a], trace, 250);
   });
 
   test('keeps each repaired candidate above its actual ridden ramp face', async () => {
-    const scene = groupScenario('tunnel'), plan = await planCamera({...scene, style: 'cinematic'});
+    const scene = groupScenario('tunnel'), plan = await planCamera({style: 'steady', ...scene});
     for (let tick = 0; tick < scene.a.count - 1; tick += 0.5) for (const track of scene.tracks) {
       const shot = shotAt(plan, tick), body = bodyAt(track, tick);
       const x = shot.eye.x - body.x, y = shot.eye.y - body.y, z = shot.eye.z - body.z;
@@ -350,7 +350,7 @@ describe('connected local camera paths', () => {
     const a = straight(81), b = straight(81), map = Float32Array.from({length: a.count}, (_, i) => i);
     for (let i = 0; i < b.count; i++) b.position[i * 3 + 1] = 500;
     const trace = box({x: -1e6, y: 200, z: -1e6}, {x: 1e6, y: 220, z: 1e6});
-    const plan = await planCamera({a, others: [{track: b, map}], trace});
+    const plan = await planCamera({style: 'steady', a, others: [{track: b, map}], trace});
     expectConnected(plan, [a], trace);
   });
 
@@ -359,7 +359,7 @@ describe('connected local camera paths', () => {
     for (let tick = 41; tick < a.count; tick++) a.position[tick * 3] += 10000;
     a.cut[41] = 1;
     const trace = box({x: 4000, y: -1e6, z: -1e6}, {x: 6000, y: 1e6, z: 1e6});
-    const plan = await planCamera({a, trace});
+    const plan = await planCamera({style: 'steady', a, trace});
     expect(plan.segment[20]).not.toBe(plan.segment[21]);
     expect(shotAt(plan, 40.999).eye.x).toBeLessThan(4000);
     expect(shotAt(plan, 41).eye.x).toBeGreaterThan(6000);

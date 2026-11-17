@@ -14,7 +14,7 @@ import {alignByPlace, alignByTime, gapAt} from './cinema-sync.js';
 import {planCamera, shotAt, adjust, viewAngles} from './cinema-camera.js';
 import {createCinemaScene, runColors} from './cinema-scene.js';
 import {routeFingerprint} from './replay-store.js';
-import {cameraWorld, PROBE} from './cinema-world.js';
+import {cameraWorld, cameraTrace} from './cinema-world.js';
 import {onClock} from './cinema-clock.js';
 import {trackSlice} from './cinema-recording.js';
 
@@ -26,6 +26,8 @@ const ZOOM_EASE = 100;
 const STYLES = ['steady', 'cinematic'];
 const MOVE = 1000;
 const LOOK_AHEAD = 6, LOOK_BEHIND = 6;
+const VIEW_CLEARANCE = 12, VIEW_STEPS = 12, MIN_SIGHT = 0.001;
+const noSafeCamera = () => Object.assign(new Error('No safe camera path is available for this view.'), {name: 'NoSafeCameraPath'});
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - (2 - 2 * t) ** 3 / 2;
 const idle = () => new Promise(resolve => typeof requestIdleCallback === 'function'
   ? requestIdleCallback(resolve, {timeout: 50}) : setTimeout(resolve, 0));
@@ -45,7 +47,37 @@ function blend(from, to, through, velocity, duration, offset) {
     z: origin.z + (offset?.z ?? to.z - from.z) * weight + (velocity?.z ?? 0) * tangent,
     yaw: origin.yaw + turn * weight + (velocity?.yaw ?? 0) * tangent,
     pitch: origin.pitch + (offset?.pitch ?? to.pitch - from.pitch) * weight + (velocity?.pitch ?? 0) * tangent,
-    fov: origin.fov + (offset?.fov ?? to.fov - from.fov) * weight + (velocity?.fov ?? 0) * tangent};
+    fov: origin.fov + (offset?.fov ?? to.fov - from.fov) * weight + (velocity?.fov ?? 0) * tangent,
+    roll: (from.roll ?? 0) * (1 - k) + (to.roll ?? 0) * k};
+}
+
+// Move only an obscured eye towards its target, past each surface the game
+// actually draws. Starting inside a brush and terrain backfaces remain clear.
+// Bound work on pathological layered geometry, then use an almost coincident
+// eye (or the target itself) so no untested obstacle remains in the sightline.
+function keepVisible(view, eye, target) {
+  const dx = eye.x - target.x, dy = eye.y - target.y, dz = eye.z - target.z;
+  const distance = Math.hypot(dx, dy, dz);
+  if (!distance) return false;
+  let hit = view(eye, target);
+  if (hit >= 1) return false;
+  const ux = dx / distance, uy = dy / distance, uz = dz / distance;
+  let room = distance;
+  for (let pass = 0; pass < VIEW_STEPS; pass++) {
+    const next = Math.max(Math.min(MIN_SIGHT, distance), room * (1 - hit) - VIEW_CLEARANCE);
+    if (next >= room) break;
+    room = next;
+    eye.x = target.x + ux * room; eye.y = target.y + uy * room; eye.z = target.z + uz * room;
+    hit = view(eye, target);
+    if (hit >= 1) return true;
+  }
+  room = Math.min(room, MIN_SIGHT);
+  for (let pass = 0; pass < 8; pass++, room *= 0.5) {
+    eye.x = target.x + ux * room; eye.y = target.y + uy * room; eye.z = target.z + uz * room;
+    if (view(eye, target) >= 1) return true;
+  }
+  eye.x = target.x; eye.y = target.y; eye.z = target.z;
+  return true;
 }
 
 // getAdapter() is the game adapter. A run given to add() is {id, label, load()},
@@ -111,6 +143,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const current = currentState();
     current.cameraRequested = true;
     if (current.enabling?.view === view) return current.enabling.promise;
+    if (current.previewError) {
+      current.previewError = null;
+      current.firstPreview = new Promise(resolve => { current.resolvePreview = resolve; });
+    }
     if (current.planRequest && current.planRequest.style !== view) {
       current.planAbort?.abort();
       current.planRequest = null;
@@ -128,7 +164,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         const ready = prepare(current);
         const first = await Promise.race([ready.then(() => 'ready'), current.firstPreview.then(shown => shown ? 'preview' : 'cancelled')]);
         if (!owns(current) || current.enabling !== enabling) return false;
-        if (first === 'cancelled') return false;
+        if (first === 'cancelled') {
+          if (current.previewError) throw current.previewError;
+          return false;
+        }
         if (first === 'preview' && !current.complete) {
           ready.then(() => {
             if (owns(current) && current.cameraRequested && (current.enabling === null || current.enabling === enabling) && preferred === view && !current.pending)
@@ -140,13 +179,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         if (current.previewError) throw current.previewError;
         if (!owns(current) || current.enabling !== enabling) return false;
         const shown = current.pending ?? current;
-        if (!current.renderer || current.style !== view || current.pending || current.warming || current.partialPlan || current.sceneTrack !== current.track) await show(current, shown.sync, shown.focus, view);
-        if (current.pending || current.style !== view || !current.plan) return false;
+        if (!current.renderer || !current.plan || current.planInvalid || current.style !== view || current.pending || current.warming || current.partialPlan || current.sceneTrack !== current.track) await show(current, shown.sync, shown.focus, view);
+        if (current.pending || current.style !== view || !current.plan || current.planInvalid) return false;
         if (!owns(current) || current.enabling !== enabling) return false;
         if (!current.camera) { current.camera = true; retarget(current); notify(); }
         return !!current.renderer;
       } catch (error) {
-        current.failed = !current.complete || current.partialPlan || !current.plan;
+        current.failed = !(error?.name === 'NoSafeCameraPath' && current.plan) && (!current.complete || current.partialPlan || !current.plan);
         if (state === current && !current.loading.length && current.failed) close();
         throw error;
       }
@@ -168,7 +207,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         pending.controller.abort();
         const track = pending.track;
         pending.track = null;
-        if (state === current) track?._cinemaWorker?.release(track._cinemaHandle.id);
+        if (!pending.released && track?._cinemaWorker && track._cinemaHandle) {
+          pending.released = true;
+          if (state === current) track._cinemaWorker.release(track._cinemaHandle.id);
+        }
       }
       resolve(false);
     }; });
@@ -198,8 +240,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const lifetime = new AbortController();
     return {replay, lifetime, map: session.map, world: session.movement?.world ?? session.map, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, firstPreview, resolvePreview, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, body: {x: 0, y: 0, z: 0}, at: [], tick: 0, pending: null, trace: undefined,
-      camera: false, cameraRequested: false, pose: null, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, motionRate: 0, motionStep: 0, move: null, retired: [], sceneSize: 0,
-      complete: false, partialPlan: false, planBase: 0, planEnd: Infinity, failed: false};
+      camera: false, cameraRequested: false, pose: null, banked: null, roll: 0, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, motionRate: 0, motionStep: 0, move: null, retired: [], sceneSize: 0,
+      complete: false, partialPlan: false, planInvalid: false, planBase: 0, planEnd: Infinity, failed: false};
   }
   function prepare(current) {
     return current.ready ??= (async () => {
@@ -218,13 +260,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         current.workerFailed = true;
       }
       const world = cameraWorld(session);
-      current.trace = world ? (from, to) => {
-        const hit = world.trace(from, to, PROBE);
-        // Escaping an initial overlap can still hit a different brush later.
-        // Native fractions already preserve that hit and allow a clear escape.
-        return hit.allSolid ? 0 : Math.max(0, Math.min(1, hit.fraction));
-      } : null;
-      if (current.trace && world.cameraMayHit) current.trace.mayHit = world.cameraMayHit;
+      current.trace = cameraTrace(world);
       const track = cached?.track ?? await record({adapter, session, replay: current.replay, worker: current.worker, isCurrent: () => owns(current), yieldTask: loadIdle,
         signal: current.lifetime.signal, onProgress: (track, count, range) => progress(current, track, count, range)});
       if (!owns(current)) return;
@@ -288,21 +324,31 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (!slice) return;
     const {window, from, end} = slice;
     const request = current.previewRequest = {};
+    current.previewError = null;
     current.planAbort?.abort();
     current.planAbort = new AbortController();
     const owned = () => owns(current) && current.previewRequest === request && current.cameraRequested && !current.pending && preferred === style;
     const preparing = (async () => {
       if (!current.renderer) start(current);
       const plan = await cameraPlan(current, {a: window, style}, owned, true);
+      if (!owned()) return;
+      if (!plan) throw noSafeCamera();
       while (owned() && current.warming) await current.warming;
-      if (!owned() || !plan) return;
+      if (!owned()) return;
       const at = getAdapter().replay.playback().index ?? 0;
       if (at < from || at >= end) return;
-      Object.assign(current, {plan, planRuns: current.runs, style, planBase: from, planEnd: end - 1, partialPlan: true, camera: true});
+      Object.assign(current, {plan, planRuns: current.runs, style, planBase: from, planEnd: end - 1, partialPlan: true, planInvalid: false, camera: true, planError: null, failedWindow: null});
       retarget(current);
       current.resolvePreview(true);
       notify();
-    })().catch(error => { if (owned()) current.previewError = error; })
+    })().catch(error => {
+      if (owned()) {
+        current.previewError = current.planError = error;
+        if (error?.name === 'NoSafeCameraPath' && !current.camera) current.cameraRequested = false;
+        current.resolvePreview(false);
+        notify();
+      }
+    })
       .finally(() => { if (current.previewing === preparing) current.previewing = null; });
     current.previewing = preparing;
   }
@@ -321,8 +367,38 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       throw new Error('That’s the run you’re watching.');
     if (current.runs.some(entry => entry.fingerprint === fingerprint)) throw new Error('That run is already added.');
     const prepared = prepare(current), adapter = getAdapter(), session = adapter.getSession();
-    let latest = null, joining = null, resolveJoined;
-    const joined = new Promise(resolve => { resolveJoined = resolve; });
+    let latest = null, joining = null, resolveJoined, rejectJoined, committed = false;
+    let savedRuns, savedPlans, stagedRuns;
+    const joined = new Promise((resolve, reject) => { resolveJoined = resolve; rejectJoined = reject; });
+    const stage = next => {
+      savedRuns = current.runs; savedPlans = current.plans;
+      entry = next;
+      pending.adopted = true; pending.track = null;
+      current.runs = stagedRuns = [...savedRuns, entry];
+      current.plans = {};
+    };
+    const rollback = () => {
+      if (committed || !entry) return;
+      const rejected = entry;
+      entry = null;
+      pending.adopted = false;
+      pending.track = rejected.track;
+      if (!owns(current)) return;
+      if (!current.runs.includes(rejected)) {
+        // remove() already released this entry while its plan was pending.
+        pending.released = true;
+        pending.track = null;
+        return;
+      }
+      if (current.runs === stagedRuns) {
+        current.runs = savedRuns; current.plans = savedPlans;
+      } else {
+        current.runs = current.runs.filter(item => item !== rejected);
+        current.plans = {};
+      }
+      if (current.renderer) rebuild(current);
+      notify();
+    };
     const publish = () => {
       if (joining || entry || !latest || latest.done || !current.track || !current.camera || !owned() || (current.pending?.sync ?? current.sync) !== 'time') return;
       const tick = Math.max(0, Math.floor(adapter.replay.playback().index ?? 0));
@@ -333,17 +409,20 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       joining = (async () => {
         await loadIdle();
         if (!owned()) return;
-        pending.adopted = true;
-        entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint,
-          controller: pending.controller, recorded: recording, track: {...latest.track, count: latest.count}, maps: {time: map}, time: latest.track.time, complete: latest.done};
-        current.runs = [...current.runs, entry];
-        current.plans = {};
+        stage({id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint,
+          controller: pending.controller, recorded: recording, track: {...latest.track, count: latest.count}, maps: {time: map}, time: latest.track.time, complete: latest.done});
         if (current.renderer) rebuild(current);
         const request = current.pending;
         await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus, current.camera ? request?.style ?? current.style : preferred);
-        if (owned() && current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
+        if (!owned()) { resolveJoined(false); return; }
+        if (current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
+        committed = true;
         resolveJoined(true);
-      })().catch(error => { resolveJoined(false); throw error; });
+      })().catch(error => {
+        try { rollback(); } catch (cleanup) { error = cleanup; }
+        rejectJoined(error);
+        throw error;
+      });
       void joining.catch(error => { if (owned()) current.planError = error; });
     };
     void activation.then(publish).catch(() => {});
@@ -390,11 +469,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         if (!owned()) return false;
         await loadIdle();
         if (!owned()) return false;
-        pending.adopted = true;
-        pending.track = null;
-        entry = {id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track, complete: true,
-          controller: pending.controller, maps: {time: alignByTime(current.track, track), ...(place ? {place} : {})}, time: track.time};
-        current.runs = [...current.runs, entry];
+        stage({id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint, track, complete: true,
+          controller: pending.controller, maps: {time: alignByTime(current.track, track), ...(place ? {place} : {})}, time: track.time});
       } else {
         entry.track = track; entry.time = track.time; entry.complete = true;
         entry.maps = {time: alignByTime(current.track, track)};
@@ -404,10 +480,15 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       if (current.renderer) rebuild(current);
       const request = current.pending;
       await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus, current.camera ? request?.style ?? current.style : preferred);
-      if (owned() && current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
+      if (!owned()) return false;
+      if (current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
+      committed = true;
       void placeFor(current, entry).catch(error => { if (owned()) { current.planError = error; notify(); } });
-      return owned();
-    })();
+      return true;
+    })().catch(error => {
+      try { rollback(); } catch (cleanup) { error = cleanup; }
+      throw error;
+    });
     void completed.catch(error => { if (owned()) { current.planError = error; notify(); } });
     return Promise.race([joined, completed]);
   }
@@ -429,7 +510,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         if (worker?.live) {
           const plan = await worker.plan({...options, nearby}, signal, retained === worker ? current.track._cinemaHandle.id : undefined);
           if (!owned() || signal?.aborted) return null;
-          if (plan) return plan;
+          // An active worker can complete without a safe plan; retrying that
+          // geometry on the main thread would only block and return the same.
+          if (plan || worker.live) return plan;
         }
         current.workerFailed = true;
       } catch {
@@ -507,6 +590,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       return;
     }
     const removed = current.runs.find(run => run.id === id);
+    const request = current.pending;
+    const focus = request ? request.focus : current.focus;
+    if (current.focus === id) {
+      // Keep the outgoing shot during its normal reframe, but it can no
+      // longer be reused as a destination if the replacement is cancelled.
+      current.focus = null;
+      current.planInvalid = !!current.plan;
+    }
     removed?.controller?.abort();
     if (removed?.track._cinemaHandle) removed.track._cinemaWorker?.release(removed.track._cinemaHandle.id);
     current.runs = current.runs.filter(run => run.id !== id);
@@ -514,9 +605,21 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     // First person with no runs left is everything off; a camera stays.
     if (!current.camera && !current.runs.length && !current.loading.length) { close(); return; }
     rebuild(current);
-    const request = current.pending;
-    const focus = request ? request.focus : current.focus;
-    return show(current, request?.sync ?? current.sync, focus === id ? null : focus).catch(() => { if (owns(current)) close(); });
+    return show(current, request?.sync ?? current.sync, focus === id ? null : focus).catch(error => {
+      if (error?.name === 'NoSafeCameraPath' && owns(current)) {
+        // The old shot may follow the run just released. It is no longer a
+        // valid fallback, so keep the remaining ghosts in the actual POV.
+        current.camera = current.cameraRequested = false;
+        current.plan = current.planRuns = current.move = current.pose = null;
+        current.focus = null;
+        current.partialPlan = current.planInvalid = false;
+        current.failedWindow = null;
+        level(current);
+        notify();
+        throw error;
+      }
+      if (owns(current)) close();
+    });
   }
   // A unique request token prevents an older plan (even for the same choices)
   // from replacing a newer selection after an idle-time yield.
@@ -546,8 +649,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
           if (at < slice.from || at >= slice.end) return false;
         }
         const changed = current.plan !== plan;
-        const promoted = !slice && current.partialPlan && current.camera && current.sync === sync && current.focus === focus && current.style === style;
-        Object.assign(current, {sync, focus, style, plan, planRuns: runs, partialPlan: !!slice,
+        const promoted = !current.planInvalid && !slice && current.partialPlan && current.camera && current.sync === sync && current.focus === focus && current.style === style;
+        Object.assign(current, {sync, focus, style, plan, planRuns: runs, partialPlan: !!slice, planInvalid: false, failedWindow: null,
           planBase: slice?.from ?? 0, planEnd: slice ? slice.end - 1 : current.track.count - 1});
         if (current.pending === request) current.pending = null;
         if (changed && current.camera) retarget(current, promoted);
@@ -565,14 +668,18 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         const slice = trackWindow(current.track, tick);
         bounded = !!slice && (!current.complete || runs.some(run => run.complete === false) || slice.from > 0 || slice.end < current.track.count);
         if (!bounded) break;
-        const matching = current.partialPlan && current.planRuns === runs && current.sync === sync && current.focus === focus && current.style === style &&
+        const matching = !current.planInvalid && current.partialPlan && current.planRuns === runs && current.sync === sync && current.focus === focus && current.style === style &&
           tick >= current.planBase && tick <= current.planEnd;
         if (matching) {
           if (current.pending === request) current.pending = null;
           published = true;
         } else {
           const nearby = await planFor(current, runs, sync, focus, style, owned, slice);
-          if (!owned() || !nearby) return;
+          if (!owned()) return;
+          if (!nearby) {
+            current.failedWindow = {from: slice.from, end: slice.end, track: current.track, runs, sync, focus, style};
+            throw noSafeCamera();
+          }
           published = await publish(nearby, slice);
         }
         if (published) break;
@@ -581,7 +688,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       if (!current.cameraRequested || !current.complete || runs.some(run => run.complete === false)) return;
       const full = async () => {
         const plan = await planFor(current, runs, sync, focus, style, owned);
-        if (!owned() || !plan) return;
+        if (!owned()) return;
+        if (!plan) throw noSafeCamera();
         current.plans[key] = plan;
         if (!runs.length) recordings.get(current.replay).plans = current.plans;
         await publish(plan, null);
@@ -599,7 +707,12 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       }
       else await full();
     } catch (error) {
-      if (owned()) { current.pending = null; notify(); }
+      if (owned()) {
+        current.pending = null;
+        current.planError = error;
+        if (error?.name === 'NoSafeCameraPath' && !current.camera) current.cameraRequested = false;
+        notify();
+      }
       if (owns(current) && !current.plan) close();
       throw error;
     }
@@ -645,7 +758,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const original = current.original = renderer.render;
     renderer.render = current.wrapper = function (view) {
       try {
-        if (current.warming) return original.call(this, view);
+        if (current.warming) { level(current); return original.call(this, view); }
         const drawn = original.call(this, frame(current, view) ?? view);
         // A replaced scene goes once its successor has drawn (see rebuild).
         for (const scene of current.retired.splice(0)) { try { scene.dispose(); } catch { /* already gone */ } }
@@ -672,6 +785,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   function detach(current) {
     current.cancelWarm?.();
+    level(current);
     if (current.renderer && current.renderer.render === current.wrapper) current.renderer.render = current.original;
     for (const scene of [current.scene, ...current.retired.splice(0)]) { try { scene?.dispose(); } catch { /* the map was unloaded with it */ } }
     current.renderer = current.scene = current.warming = current.cancelWarm = null;
@@ -721,9 +835,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
 
   // The played run's fractional index from the frame's state and interpolation.
   function frame(current, view) {
-    if (playing() !== current.replay) { queueMicrotask(() => { if (state === current) close(); }); return null; }
+    if (playing() !== current.replay) { level(current); queueMicrotask(() => { if (state === current) close(); }); return null; }
     const a = current.track, plan = current.plan, sync = current.sync;
-    if (!a || !plan && current.camera) return null;
+    if (!a || !plan && current.camera) { level(current); return null; }
     const eye = view.eyePosition ?? {x: 0, y: 0, z: 0};
     const own = {x: eye.x, y: eye.y, z: eye.z, yaw: view.yaw ?? 0, pitch: view.pitch ?? 0, fov: view.fov ?? 90, eye: true};
     const stateTick = view.state?.tick ?? current.base, previousTick = getAdapter()?.getSession?.()?.previous?.tick;
@@ -745,13 +859,17 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     }
     // An out-of-window seek must never clamp the view to stale geometry.
     if (missing || current.camera && current.partialPlan && (at < current.planBase || at > current.planEnd)) {
+      level(current);
       current.previewRequest = null;
       const worker = current.track?._cinemaWorker;
       const wanted = Math.max(0, Math.floor(at));
+      const failed = current.failedWindow;
+      const failedHere = failed && failed.track === a && failed.runs === current.runs && failed.sync === current.sync &&
+        failed.focus === current.focus && failed.style === current.style && at >= failed.from && at < failed.end;
       if (!current.complete && worker?.live && (!Number.isFinite(current.priorityTick) || Math.abs(current.priorityTick - wanted) > LOOK_AHEAD / a.dt / 2)) {
         current.priorityTick = wanted;
         worker.prioritize(current.track._cinemaHandle.id, wanted);
-      } else if (current.camera && current.complete && !current.pending) {
+      } else if (current.camera && current.complete && !current.pending && !failedHere) {
         void show(current, current.sync, current.focus, current.style, !!worker?.live).catch(() => { if (owns(current) && !current.plan) close(); });
       }
       for (let index = 0; index <= current.runs.length; index++) current.scene.show?.(index, false);
@@ -799,26 +917,43 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       }
       const body = trackPoint(focus < 0 ? a : current.runs[focus].track, current.at[focus + 1], current.body);
       body.z += 40;
-      const clear = current.trace ? current.trace(body, pose) : 1;
-      if (clear < 1) {
-        const dx = pose.x - body.x, dy = pose.y - body.y, dz = pose.z - body.z, distance = Math.hypot(dx, dy, dz);
-        const k = distance > 0 ? Math.max(0, clear * distance - 12) / distance : 0;
-        pose.x = body.x + dx * k; pose.y = body.y + dy * k; pose.z = body.z + dz * k;
-        // Scaling the implicit aim target about the same body by k keeps the
-        // forward direction unchanged, preserving framing even during a blend.
-      }
+      // Steady avoids solid geometry. Cinematic instead tests only the faces
+      // drawn from this actual fractional/blended eye, including for a flight
+      // back to POV; a clear inside-solid or backface view is left untouched.
+      if (current.trace && current.style === 'steady') {
+        const clear = current.trace(body, pose);
+        if (clear < 1) {
+          const dx = pose.x - body.x, dy = pose.y - body.y, dz = pose.z - body.z, distance = Math.hypot(dx, dy, dz);
+          const k = distance > 0 ? Math.max(0, clear * distance - VIEW_CLEARANCE) / distance : 0;
+          pose.x = body.x + dx * k; pose.y = body.y + dy * k; pose.z = body.z + dz * k;
+        }
+      } else if (current.trace?.view) keepVisible(current.trace.view, pose, body);
       if (current.camera && !current.adjusted && (focus >= 0 || !move?.from.eye || revealed > 0.25)) {
         // Interpolated angles and mode flights can lose a subject even when
         // their endpoints frame it. Keep an already visible composition intact.
-        const yaw = pose.yaw * Math.PI / 180, pitch = pose.pitch * Math.PI / 180;
-        const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+        // Turn only as far as brings the subject back inside the edge, so the
+        // view never jumps as it leaves or re-enters the frame. Yaw and pitch
+        // are not the frame's own axes, hence the margin and the second pass.
         const dx = body.x - pose.x, dy = body.y - pose.y, dz = body.z - pose.z;
-        const depth = (dx * cy + dy * sy) * cp - dz * sp;
-        const across = dx * sy - dy * cy, up = (dx * cy + dy * sy) * sp + dz * cp;
         const tall = Math.tan(pose.fov * Math.PI / 360) * 0.75;
-        if (depth < 1 || Math.abs(across) > tall * innerWidth / innerHeight * depth || Math.abs(up) > tall * depth) {
-          const angles = viewAngles(pose, body);
-          pose.yaw = angles.yaw; pose.pitch = angles.pitch;
+        const wide = Math.atan(tall * innerWidth / innerHeight) * 0.96, high = Math.atan(tall) * 0.96;
+        // A banked frame's edges are tilted: the subject is measured against them and the turn made on the view's own axes.
+        const tilt = pose.roll ?? 0, ct = Math.cos(tilt), st = Math.sin(tilt);
+        for (let pass = 0; pass < 3; pass++) {
+          const yaw = pose.yaw * Math.PI / 180, pitch = pose.pitch * Math.PI / 180;
+          const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+          const depth = (dx * cy + dy * sy) * cp - dz * sp;
+          if (depth < 1) {
+            const angles = dx || dy || dz ? viewAngles(pose, body) : pose;
+            pose.yaw = angles.yaw; pose.pitch = angles.pitch;
+            break;
+          }
+          const side = Math.atan2(dx * sy - dy * cy, depth), rise = Math.atan2((dx * cy + dy * sy) * sp + dz * cp, depth);
+          const across = side * ct - rise * st, above = rise * ct + side * st;
+          if (Math.abs(across) <= wide && Math.abs(above) <= high) break;
+          const sideways = Math.abs(across) > wide ? across - Math.sign(across) * wide : 0, upward = Math.abs(above) > high ? above - Math.sign(above) * high : 0;
+          pose.yaw -= (sideways * ct + upward * st) * 180 / Math.PI;
+          pose.pitch -= (upward * ct - sideways * st) * 180 / Math.PI;
         }
       }
     }
@@ -837,6 +972,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.scene.show?.(0, current.camera ? !move?.from.eye || revealed > 0.25 : revealed < 0.8);
     // The camera is placed here too so the ghosts size their outlines for this frame's view.
     current.renderer.qolCamera.position.set(pose.x, pose.z, -pose.y);
+    if (pose.roll) bank(current, pose.roll); else level(current);
     const absolute = current.at[0];
     current.at[0] -= current.sceneBase;
     current.scene.update(current.at, innerWidth, innerHeight);
@@ -853,21 +989,74 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       applied.zoom += (current.view.zoom - applied.zoom) * (1 - Math.exp(-elapsed / ZOOM_EASE));
     }
     const shot = adjust(shotAt(plan, tick, current.shot), applied);
+    // Clipping can put the eye at the target in impossible geometry. Keep the
+    // original line of sight rather than deriving arbitrary zero angles there.
+    const angles = viewAngles(shot.eye, shot.target);
     if (current.adjusted && current.trace) {
-      // Your own angle isn't in the plan: keep it out of walls as it plays.
-      const clear = current.trace(shot.target, shot.eye);
+      // Your own angle isn't in the plan. Steady avoids solid geometry;
+      // Cinematic checks every drawn surface, including after eased recovery.
+      const drawn = current.style !== 'steady' && current.trace.view;
       const dx = shot.eye.x - shot.target.x, dy = shot.eye.y - shot.target.y, dz = shot.eye.z - shot.target.z, d = Math.hypot(dx, dy, dz) || 1;
-      const allowed = clear < 1 ? Math.max(40, clear * d - 12) : Infinity;
-      const room = allowed < current.room ? allowed : advance
-        ? Math.min(allowed, current.room === Infinity ? Infinity : current.room * 1.04 + 4) : current.room;
+      const released = current.room === Infinity ? Infinity : advance ? current.room * 1.04 + 4 : current.room;
+      let allowed;
+      if (drawn) {
+        if (released < d) {
+          const k = released / d;
+          shot.eye.x = shot.target.x + dx * k; shot.eye.y = shot.target.y + dy * k; shot.eye.z = shot.target.z + dz * k;
+        }
+        allowed = keepVisible(drawn, shot.eye, shot.target)
+          ? Math.hypot(shot.eye.x - shot.target.x, shot.eye.y - shot.target.y, shot.eye.z - shot.target.z) : Infinity;
+      } else {
+        const clear = current.trace(shot.target, shot.eye);
+        allowed = clear < 1 ? Math.max(0, clear * d - VIEW_CLEARANCE) : Infinity;
+      }
+      const room = allowed < current.room ? allowed : Math.min(allowed, released);
       if (advance) current.room = room;
-      if (room < d) {
+      if (!drawn && room < d) {
         const k = room / d;
         shot.eye.x = shot.target.x + dx * k; shot.eye.y = shot.target.y + dy * k; shot.eye.z = shot.target.z + dz * k;
       }
     }
-    const angles = viewAngles(shot.eye, shot.target);
-    return {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z, yaw: angles.yaw, pitch: angles.pitch, fov: shot.fov};
+    return {x: shot.eye.x, y: shot.eye.y, z: shot.eye.z, yaw: angles.yaw, pitch: angles.pitch, fov: shot.fov, roll: shot.roll};
+  }
+  // The game aims its camera with lookAt just before it draws. Shadow it
+  // only while banking, and restore the exact own descriptor on exit.
+  function bank(current, roll) {
+    const camera = current.renderer.qolCamera;
+    if (current.banked && (current.banked.camera !== camera || camera.lookAt !== current.banked.wrapper)) level(current);
+    current.roll = roll;
+    if (current.banked) return;
+    const aimAt = camera?.lookAt;
+    if (typeof aimAt !== 'function') return;
+    const descriptor = Object.getOwnPropertyDescriptor(camera, 'lookAt');
+    if (descriptor && !descriptor.configurable && (!('value' in descriptor) || !descriptor.writable) ||
+        !descriptor && !Object.isExtensible(camera)) return;
+    const banked = {camera, descriptor, applied: 0};
+    const wrapper = function (...at) {
+      const result = aimAt.apply(this, at);
+      if (this === camera) banked.applied = 0;
+      if (current.banked === banked && current.roll) {
+        this.rotateZ(-current.roll);
+        if (this === camera) banked.applied = current.roll;
+      }
+      return result;
+    };
+    Object.defineProperty(camera, 'lookAt', {value: wrapper, writable: true,
+      configurable: descriptor?.configurable ?? true, enumerable: descriptor?.enumerable ?? false});
+    banked.wrapper = wrapper;
+    current.banked = banked;
+  }
+  function level(current) {
+    const banked = current.banked;
+    current.banked = null;
+    current.roll = 0;
+    if (!banked) return;
+    // Removing lookAt alone leaves the last drawn quaternion tilted until
+    // another render. Undo only the bank actually applied to this camera.
+    if (banked.applied) banked.camera.rotateZ(banked.applied);
+    if (Object.getOwnPropertyDescriptor(banked.camera, 'lookAt')?.value !== banked.wrapper) return;
+    if (banked.descriptor) Object.defineProperty(banked.camera, 'lookAt', banked.descriptor);
+    else delete banked.camera.lookAt;
   }
 
   function listen(current) {

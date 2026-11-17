@@ -118,12 +118,14 @@ The view menu on the replay bar switches between **POV** (the player's own view)
 
 - **Chips:** each run gets a chip in its color. Click one to follow that run, click it again to frame everyone, × removes it. Its gap shows whether it got to this point sooner (teal) or later (red).
 - **Real time** (the default) starts each run's clock when it leaves the start zone. **Side by side** keeps the runs at the same place on the route instead, to show where the lines differ.
-- **Cameras:** both plan ahead along the route, look onto the face of the ramp being surfed and steer around walls. **Steady** holds one view from the side; **Cinematic** varies it along the route. **Drag** to look around, **scroll** to zoom, double-click to go back to the planned camera.
+- **Cameras:** both plan ahead along the route and keep to the open side of the ramp being surfed. **Steady** holds one view from the side. **Cinematic** plans one continuous flight through terrain-aware viewpoints, varying its angle, distance and lens, banking into turns and waiting beside takeoffs, landings and sharp bends. It cuts only when the run teleports. **Drag** to look around, **scroll** to zoom, double-click to go back to the planned camera.
 - **Trails:** each ghost leaves a fading trail of light, and a thin line marks the route still to come. Pausing freezes them and seeking restores them.
 
 With other runs added in Steady or Cinematic, the watched run's touch marks and Saveloc are hidden. Each added run costs some performance, so remove runs if playback gets slow.
 
 Leaving a replay cancels cinematic preparation and releases its view resources, even before the first camera preview is ready. Removing a pending added run also releases its worker recording, including one that finished before joining the view.
+
+Camera planning normally runs in a worker. If the worker is unavailable, preparation yields between batches on the page so replay controls and rendering can continue.
 
 ## Community rooms
 
