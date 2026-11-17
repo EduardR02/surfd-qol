@@ -37,7 +37,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
     return {didTimeout: false, timeRemaining: () => Math.max(0, until - performance.now())};
   }
   const records = new Map(), requests = new Map();
-  let map = null, primarySession = null, lastRecord = null, latestPlan = null, planning = null, priority = false;
+  let map = null, primarySession = null, lastRecord = null, latestPlan = null, planning = null;
   const send = (type, request, data = {}, transfer = []) => post({__surfdQolIndex: protocol, type, request, ...data}, {transfer});
   function trim() {
     for (const [id, record] of records) {
@@ -87,8 +87,10 @@ export function createCinemaWorkerRuntime({post, createSession}) {
       try {
         if (record.regionTask) { await record.regionTask; await pause(); }
         while (record.capture.count < record.capture.track.count && record.subscribers.size) {
+          // Planning yields cooperatively too. Waiting for an entire nearby
+          // plan here starves its next recorded window (and native indexing)
+          // while playback continues toward the end of the current one.
           if (record.regionTask) { await record.regionTask; await pause(); }
-          if (planning && priority) await planning;
           if (!record.subscribers.size) break;
           const limit = record.catchingUp ? record.position + 1 : record.capture.track.count;
           const end = Math.min(limit, record.capture.count + 64);
@@ -276,7 +278,6 @@ export function createCinemaWorkerRuntime({post, createSession}) {
       if (!record.capture) return;
       if (record.capture.count === record.capture.track.count && !record.done) { record.done = true; record.capture.finish(); }
       publish(record);
-      if (planning && priority) await planning;
     },
     detach(id) {
       const record = records.get(id);
@@ -300,7 +301,7 @@ export function createCinemaWorkerRuntime({post, createSession}) {
           try {
             const result = await alignByPlace(resolveTrack(message.a), resolveTrack(message.b), {
               isCurrent: () => requests.get(message.request)?.alignToken === token,
-              yieldTask: async () => { if (planning && priority) await planning; return yieldPlanner(); },
+              yieldTask: yieldPlanner,
             });
             if (requests.get(message.request)?.alignToken === token)
               send('camera-alignment', message.request, {map: result}, result ? [result.buffer] : []);
@@ -377,7 +378,6 @@ export function createCinemaWorkerRuntime({post, createSession}) {
       if (message.type === 'camera-plan') {
         if (latestPlan) { send('camera-plan', latestPlan.request, {plan: null}); requests.delete(latestPlan.request); }
         const token = latestPlan = {request: message.request};
-        priority = message.options.nearby === true;
         requests.set(message.request, {token});
         const previous = planning;
         const task = (async () => { if (previous) await previous; if (latestPlan === token) await plan(message, token); })();

@@ -72,6 +72,9 @@ export async function fly({route, scene, path, crossing, due, pause, debug = fal
     if (crossing[s]) for (let k = Math.max(0, s - fade); k <= Math.min(count - 1, s + fade); k++) through[k] = 1;
   }
   const stale = new Uint8Array(count), bad = new Uint8Array(count), why = debug ? new Uint8Array(count) : null;
+  // Repairs solve the whole segment, but often leave distant Float32 eyes
+  // unchanged. Reuse their clearance only for the exact same coordinates.
+  const checkedEye = new Float32Array(count * 3), clearance = new Uint8Array(count), pathSight = new Uint8Array(count);
   let longest = 0;
   for (let s = 0; s < count; s = segTo[s] + 1) longest = Math.max(longest, segTo[s] - s + 1);
   const work = Object.fromEntries(['a0', 'a1', 'a2', 'a3', 'd', 'l1', 'l2', 'l3', 'y'].map(name => [name, new Float64Array(longest)]));
@@ -79,14 +82,24 @@ export async function fly({route, scene, path, crossing, due, pause, debug = fal
   // already lost on the searched path, the flown eye must still fit.
   const hard = s => {
     const x = eye[s * 3], y = eye[s * 3 + 1], z = eye[s * 3 + 2];
-    return barred(route, s, x, y, z) || (!through[s] && !scene.free(x, y, z, SKIM) ? 4 : 0);
+    const rule = barred(route, s, x, y, z);
+    if (rule) return rule;
+    if (through[s]) return 0;
+    const o = s * 3;
+    if (!clearance[s] || !Object.is(checkedEye[o], x) || !Object.is(checkedEye[o + 1], y) || !Object.is(checkedEye[o + 2], z)) {
+      checkedEye[o] = x; checkedEye[o + 1] = y; checkedEye[o + 2] = z;
+      clearance[s] = scene.free(x, y, z, SKIM) ? 1 : 2;
+    }
+    return clearance[s] === 1 ? 0 : 4;
   };
   const broken = s => {
     stats.checks++;
     const rule = hard(s);
     if (rule) return rule;
     const x = eye[s * 3], y = eye[s * 3 + 1], z = eye[s * 3 + 2];
-    return !scene.sees(x, y, z, s) && scene.sees(path[s * 3], path[s * 3 + 1], path[s * 3 + 2], s) ? 3 : 0;
+    if (scene.sees(x, y, z, s)) return 0;
+    if (!pathSight[s]) pathSight[s] = scene.sees(path[s * 3], path[s * 3 + 1], path[s * 3 + 2], s) ? 1 : 2;
+    return pathSight[s] === 1 ? 3 : 0;
   };
   for (let lo = 0; lo < count; lo = segTo[lo] + 1) {
     const hi = segTo[lo];

@@ -294,10 +294,13 @@ for (const kind of ['game', 'worker']) describe(`native ${kind} sweep scalar com
 
 // The reviewed collision world and zone floor of each supported game build.
 const bonusWorld = nativeWorldContracts.find(contract => contract.name === 'w0').signature;
+const currentWorld = nativeWorldContracts.find(contract => contract.name === 'M0').signature;
+const currentFloorFixture = 'function vd(n,e,t=e.kind==="start"?n.spawn.position:Cf[n.id]){const i=t?.x??(e.min.x+e.max.x)/2,a=t?.y??(e.min.y+e.max.y)/2,s=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=n.brushes.filter(l=>l.min.x<=i&&l.max.x>=i&&l.min.y<=a&&l.max.y>=a&&l.min.z<s&&l.max.z>r),c=n.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(u=>u.x))<=i&&Math.max(...l.vertices.map(u=>u.x))>=i&&Math.min(...l.vertices.map(u=>u.y))<=a&&Math.max(...l.vertices.map(u=>u.y))>=a&&Math.min(...l.vertices.map(u=>u.z))<s&&Math.max(...l.vertices.map(u=>u.z))>r),d=new M0(o,c).trace({x:i,y:a,z:s},{x:i,y:a,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}';
 const bonusFloorFixture = 'function gd(n,e,t=e.kind==="start"?n.spawn.position:Af[n.id]){const i=t?.x??(e.min.x+e.max.x)/2,a=t?.y??(e.min.y+e.max.y)/2,s=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=n.brushes.filter(l=>l.min.x<=i&&l.max.x>=i&&l.min.y<=a&&l.max.y>=a&&l.min.z<s&&l.max.z>r),c=n.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(u=>u.x))<=i&&Math.max(...l.vertices.map(u=>u.x))>=i&&Math.min(...l.vertices.map(u=>u.y))<=a&&Math.max(...l.vertices.map(u=>u.y))>=a&&Math.min(...l.vertices.map(u=>u.z))<s&&Math.max(...l.vertices.map(u=>u.z))>r),d=new w0(o,c).trace({x:i,y:a,z:s},{x:i,y:a,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}';
 const nativeBuilds = [
   {label: 'before bonuses', collision: nativeCollisionFixture, floor: nativeFloorFixture, prelude: 'const ju={};', World: 'k1', Floor: 'Vb', trace: 'l', dot: 'un'},
   {label: 'bonus update', collision: bonusWorld, floor: bonusFloorFixture, prelude: 'const Af={};', World: 'w0', Floor: 'gd', trace: 'd', dot: 'gn'},
+  {label: 'current game', collision: currentWorld, floor: currentFloorFixture, prelude: 'const Cf={};', World: 'M0', Floor: 'vd', trace: 'd', dot: 'vn'},
 ];
 
 for (const build of nativeBuilds) for (const kind of ['game', 'worker']) describe(`native ${kind} collision world contracts (${build.label})`, () => {

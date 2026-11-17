@@ -332,6 +332,9 @@ export async function direct({route, start, finish, blur, scene, due, pause}) {
   };
   const between = (a, b, i) => haste(a, b) - (a.move.kind !== b.move.kind ? CONTRAST : 0) +
     (a.move.name === b.move.name ? (a.move.name === 'home' ? REPEAT_HOME : REPEAT) * smoothstep(PHRASE[0], PHRASE[1], Math.min(stretches[i - 1].seconds, stretches[i].seconds)) : 0);
+  // The options do not change while cap penalties are adjusted. Reuse each
+  // transition's exact score instead of repeating its angular geometry.
+  const transitions = new Array(stretches.length);
 
   // The take: the sequence worth most, chosen again while any move fills more than its share.
   const dearer = Object.fromEntries(Object.keys(CAPS).map(name => [name, 0])), chosen = new Array(stretches.length), total = count * dt;
@@ -347,7 +350,10 @@ export async function direct({route, start, finish, blur, scene, due, pause}) {
         if (!i || stretches[i].opens) { const top = i ? best[i - 1].indexOf(Math.max(...best[i - 1])) : -1; best[i][m] = own + (i ? best[i - 1][top] : 0); via[i][m] = top; continue; }
         for (let p = 0; p < MOVES.length; p++) {
           if (best[i - 1][p] === -Infinity) continue;
-          const value = best[i - 1][p] + own - between(options[i - 1][p], option, i);
+          const edges = transitions[i] ??= new Float64Array(MOVES.length * MOVES.length).fill(NaN), edge = p * MOVES.length + m;
+          let change = edges[edge];
+          if (Number.isNaN(change)) edges[edge] = change = between(options[i - 1][p], option, i);
+          const value = best[i - 1][p] + own - change;
           if (value > best[i][m]) { best[i][m] = value; via[i][m] = p; }
         }
       }

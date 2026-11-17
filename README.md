@@ -125,7 +125,7 @@ With other runs added in Steady or Cinematic, the watched run's touch marks and 
 
 Leaving a replay cancels cinematic preparation and releases its view resources, even before the first camera preview is ready. Removing a pending added run also releases its worker recording, including one that finished before joining the view.
 
-Camera planning normally runs in a worker. If the worker is unavailable, preparation yields between batches on the page so replay controls and rendering can continue.
+Camera recording, planning and run alignment normally run in a worker. Adding a run keeps the existing camera view until the replacement shot and its matching ghosts are ready, without discarding a pending focus or alignment choice. Nearby camera windows are renewed ahead of playback rather than waiting for the current window to expire. If the worker is unavailable, preparation yields between batches on the page so replay controls and rendering can continue.
 
 ## Community rooms
 

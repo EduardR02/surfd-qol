@@ -2,7 +2,7 @@ import {describe, expect, test} from 'bun:test';
 import {createReplayIndexJobs, createReplayIndexWorker} from '../extension/replay-index-worker.js';
 import {createCinemaWorkerRuntime} from '../src/cinema-worker-runtime.js';
 import {recordTrack} from '../src/cinema-track.js';
-import {TRACK_ARRAYS, trackSlice} from '../src/cinema-recording.js';
+import {createTrack, TRACK_ARRAYS, trackSlice} from '../src/cinema-recording.js';
 import {planCamera} from '../src/cinema-camera.js';
 import {alignByTime} from '../src/cinema-sync.js';
 import {PROBE} from '../src/cinema-world.js';
@@ -575,6 +575,24 @@ describe('retained cinematic worker consumers', () => {
     const expected = await planCamera({a: fallback, style: 'steady'});
     expect(plan).toEqual(expected);
     api.release(); b.lease.terminate(); await b.advance();
+  });
+
+  test('a nearby camera plan cannot block the next recording batch', async () => {
+    const f = physics(), messages = [], replay = f.replay(300);
+    const runtime = createCinemaWorkerRuntime({post: message => messages.push(message), createSession: f.createSession});
+    runtime.attach(f.createSession(f.map, replay), replay, 1);
+    const clock = createTrack(300, 0.01);
+    for (let tick = 0; tick < clock.count; tick++) clock.position[tick * 3] = tick * 10;
+    runtime.receive(protocol({type: 'camera-plan', request: 10, world: 1,
+      options: {a: clock, style: 'cinematic', nearby: true}}));
+    runtime.receive(protocol({type: 'record', request: 11, id: 2, replay: f.replay(300)}));
+    // The planner has yielded but has not finished. Recording must already
+    // have produced its first native batch, rather than waiting for the plan.
+    expect(messages.some(message => message.type === 'camera-plan' && message.request === 10)).toBe(false);
+    expect(messages.some(message => message.type === 'record-chunk' && message.request === 11 && message.end === 65)).toBe(true);
+    runtime.receive(protocol({type: 'camera-cancel', request: 10}));
+    runtime.receive(protocol({type: 'camera-cancel', request: 11}));
+    await turn();
   });
 
   test('newest camera plan drains its predecessor and focus resampling remains worker-side', async () => {

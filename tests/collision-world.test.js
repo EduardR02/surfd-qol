@@ -433,6 +433,34 @@ test('Array proxies preserve indexed reads, length, symbols and iteration', asyn
     expect([...array]).toEqual(array.map(value => value));
   }
 });
+test('packed camera bounds retain mutable array semantics without repeated Proxy reads', async () => {
+  const {map, world} = variedFixture(5);
+  const packet = await packCollisionWorld(map, world);
+  const mutations = [
+    array => { array[0].min.x = -999; },
+    array => { array[0] = box(101, 102, 103, 104, 105, 106); },
+    array => { delete array[0]; },
+    array => { array.length = 0; array.length = 5; },
+    array => { Object.defineProperty(array, 0, {get: () => box(201, 202, 203, 204, 205, 206), configurable: true}); },
+    array => { Object.setPrototypeOf(array, {0: box(301, 302, 303, 304, 305, 306)}); delete array[0]; },
+    array => { Object.preventExtensions(array); },
+  ];
+  for (const mutate of mutations) {
+    const snapshot = unpackCollisionWorld(packet), values = snapshot.triangleBounds;
+    const read = snapshot.tree.cameraTriangleBounds;
+    const first = read(0);
+    expect(first).toBe(values[0]);
+    expectBounds(first, world.triangleBounds[0]);
+    mutate(values);
+    for (let i = 0; i < 5; i++) {
+      let actual, expected, actualError, expectedError;
+      try { actual = read(i); } catch (error) { actualError = error; }
+      try { expected = values[i]; } catch (error) { expectedError = error; }
+      if (expectedError || actualError) expect(actualError?.constructor).toBe(expectedError?.constructor);
+      else expect(actual).toEqual(expected);
+    }
+  }
+});
 
 test('transfer detaches only new snapshot buffers and preserves live geometry and metadata', async () => {
   const {map, world} = variedFixture();

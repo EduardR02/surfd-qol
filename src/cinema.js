@@ -120,11 +120,13 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   // 'pov' keeps any added runs in the game's own view (with none, it's all
   // off); 'steady' or 'cinematic' is the planned camera, remembered for next time.
-  async function setView(view) {
+  function setView(view) { return activateView(view, true); }
+  async function activateView(view, selected) {
     if (view === 'pov') {
       const current = state;
       if (current && !current.runs.length && !current.loading.length) close();
       else if (current) {
+        current.selection++;
         current.cameraRequested = false;
         current.planAbort?.abort();
         current.enabling = null;
@@ -141,6 +143,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     if (!STYLES.includes(view)) return false;
     preferred = view;
     const current = currentState();
+    if (selected) current.selection++;
     current.cameraRequested = true;
     if (current.enabling?.view === view) return current.enabling.promise;
     if (current.previewError) {
@@ -152,7 +155,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.planRequest = null;
       current.pending = null;
     }
-    if (!current.complete && current.track && (!current.camera || current.style !== view)) {
+    if (!current.complete && current.track && !current.runs.length && (!current.camera || current.style !== view)) {
       current.previewRequest = null;
       current.resolvePreview(false);
       current.firstPreview = new Promise(resolve => { current.resolvePreview = resolve; });
@@ -162,6 +165,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const enabling = {view, promise: (async () => {
       try {
         const ready = prepare(current);
+        if (!current.complete && current.track && current.runs.length) {
+          const choice = current.pending ?? current;
+          const published = await show(current, choice.sync, choice.focus, view);
+          if (!published || !owns(current) || current.enabling !== enabling || !current.cameraRequested ||
+              current.pending || current.style !== view || !current.plan || current.planInvalid) return false;
+          if (!current.camera) { current.camera = true; retarget(current); notify(); }
+          return !!current.renderer;
+        }
         const first = await Promise.race([ready.then(() => 'ready'), current.firstPreview.then(shown => shown ? 'preview' : 'cancelled')]);
         if (!owns(current) || current.enabling !== enabling) return false;
         if (first === 'cancelled') {
@@ -216,7 +227,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     }; });
     current.loading.push(pending);
     notify();
-    const activation = setView(preferred);
+    const activation = activateView(preferred, false);
     const loading = current.queue.then(() => Promise.race([load(current, run, pending, activation), cancelled]));
     const step = Promise.race([Promise.all([loading, activation]).then(([added]) => added), cancelled]);
     current.queue = step.catch(() => {});
@@ -241,7 +252,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     return {replay, lifetime, map: session.map, world: session.movement?.world ?? session.map, base: replay.initialState?.tick ?? 0, track: null, runs: [], loading: [], queue: Promise.resolve(), ready: null, firstPreview, resolvePreview, sync: 'time', focus: null, style: preferred, plan: null, plans: {}, view: {yaw: 0, pitch: 0, zoom: 1},
       applied: {yaw: 0, pitch: 0, zoom: 1}, drawnAt: null, room: Infinity, adjusted: false, shot: {eye: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}}, body: {x: 0, y: 0, z: 0}, at: [], tick: 0, pending: null, trace: undefined,
       camera: false, cameraRequested: false, pose: null, banked: null, roll: 0, velocity: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0, fov: 0}, motionRate: 0, motionStep: 0, move: null, retired: [], sceneSize: 0,
-      complete: false, partialPlan: false, planInvalid: false, planBase: 0, planEnd: Infinity, failed: false};
+      complete: false, partialPlan: false, planInvalid: false, planBase: 0, planEnd: Infinity, failed: false, selection: 0};
   }
   function prepare(current) {
     return current.ready ??= (async () => {
@@ -280,34 +291,66 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   function progress(current, track, count, range = null) {
     if (!owns(current) || !current.cameraRequested && !current.runs.length || count === track.count && !range) return;
     const tick = Math.max(0, Math.floor(getAdapter().replay.playback().index ?? 0));
-    if (count <= Math.min(track.count - 1, tick + Math.ceil(LOOK_AHEAD / track.dt))) return;
+    const ahead = Math.ceil(LOOK_AHEAD / track.dt);
+    // Once a shown prefix approaches its end, use any newer real samples
+    // rather than waiting for the next geometric doubling of the path.
+    const nearingEnd = current.track && tick >= current.track.count - 1 - ahead / 2;
+    if (count <= Math.min(track.count - 1, tick + ahead) && (!nearingEnd || count <= tick + 1)) return;
     const regional = current.track?._recordedFrom > 0;
     const retimed = current.track && current.track.startTick !== track.startTick;
-    if (retimed || range || !current.track || regional && (count >= current.track.count || tick < current.track._recordedFrom) || !regional && count >= current.track.count * 2) {
+    if (retimed || range || !current.track || regional && (count >= current.track.count || tick < current.track._recordedFrom) ||
+        !regional && (count >= current.track.count * 2 || nearingEnd && !current.pending && count > current.track.count)) {
       current.track = {...track, count, _recordedFrom: range?.from ?? 0, finish: Math.min(track.finish, count - 1), splits: track.splits.slice()};
+      for (const run of current.runs) run.maps = {time: alignByTime(current.track, run.track)};
+      if (retimed && current.runs.length) current.runs = current.runs.slice();
       // The initial scene already covers the requested planning window.
       // Growing its future prefix while its shaders compile only recreates
       // ghosts, paths and compile waits; publish the latest geometry afterwards.
-      if (current.renderer && (!current.warming || retimed || range)) rebuild(current);
-      for (const run of current.runs) run.maps = {time: alignByTime(current.track, run.track)};
-      if (retimed && current.runs.length) current.runs = current.runs.slice();
+      if (current.renderer && (!current.warming || retimed || range) &&
+          (current.sceneRunSet === current.runs || !current.plan)) rebuild(current);
       current.plans = {};
     }
     if (retimed || range && tick >= range.from && tick < range.end) {
+      const interrupted = current.pending;
       current.previewRequest = null;
       current.planAbort?.abort();
       current.previewing = null;
+      if (interrupted) {
+        current.planRequest = current.pending = null;
+        if (current.cameraRequested)
+          void show(current, interrupted.sync, interrupted.focus, interrupted.style, true)
+            .catch(error => { if (owns(current)) current.planError = error; });
+      }
     }
     if (!current.cameraRequested) return;
-    if (!current.previewing && !current.pending &&
-        (retimed || !current.plan || current.partialPlan && (tick < current.planBase || tick > current.planEnd - LOOK_AHEAD / track.dt / 2))) {
-      if (current.runs.length) void show(current, current.sync, current.focus).catch(error => { if (owns(current)) current.planError = error; });
+    const renewal = current.plan && current.partialPlan && current.track &&
+      (tick < current.planBase || tick > current.planEnd - ahead / 2 &&
+        current.planEnd < recordedEnd(current.track, current.runs, current.sync) - 1);
+    if (!current.previewing && !current.pending && (retimed || !current.plan || renewal)) {
+      if (current.runs.length || current.camera && current.plan && !retimed)
+        void show(current, current.sync, current.focus, current.style, !!renewal).catch(error => { if (owns(current)) current.planError = error; });
       else preview(current, tick);
     }
   }
-  function trackWindow(track, tick) {
-    const from = Math.max(track._recordedFrom ?? 0, Math.floor((tick - Math.ceil(LOOK_BEHIND / track.dt)) / 4) * 4);
-    const end = Math.min(track.count, tick + Math.ceil(LOOK_AHEAD / track.dt) + 1), count = end - from;
+  // End-exclusive clock coverage shared by every unfinished time-aligned run.
+  function recordedEnd(track, runs, sync) {
+    let end = track.count;
+    if (sync === 'time') for (const run of runs) if (run.complete === false) {
+      const other = run.track, start = track.startTick ?? track.start, otherStart = other.startTick ?? other.start;
+      end = Math.min(end, Math.floor(start + (other.count - 1 - otherStart) * (other.dt / track.dt)) + 1);
+    }
+    return end;
+  }
+  function trackWindow(track, tick, runs = [], sync = 'time') {
+    let from = Math.max(track._recordedFrom ?? 0, Math.floor((tick - Math.ceil(LOOK_BEHIND / track.dt)) / 4) * 4);
+    const end = Math.min(recordedEnd(track, runs, sync), tick + Math.ceil(LOOK_AHEAD / track.dt) + 1);
+    // Time maps clamp to the last sample. That is correct for a finished run,
+    // but an unfinished run has no positions outside its recorded range.
+    if (sync === 'time') for (const run of runs) if (run.complete === false && (run.track._recordedFrom ?? 0) > 0) {
+      const other = run.track, start = track.startTick ?? track.start, otherStart = other.startTick ?? other.start;
+      from = Math.max(from, Math.ceil(start + (other._recordedFrom - otherStart) * (other.dt / track.dt)));
+    }
+    const count = end - from;
     if (count < 2) return null;
     const window = {...track, count,
       start: Math.max(0, Math.min(count - 1, track.start - from)), startTick: track.startTick === null ? null : track.startTick - from,
@@ -396,25 +439,50 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         current.runs = current.runs.filter(item => item !== rejected);
         current.plans = {};
       }
-      if (current.renderer) rebuild(current);
+      if (current.renderer && current.sceneRunSet !== savedRuns &&
+          (current.sceneRunSet !== current.runs || current.sceneTrack !== current.track)) rebuild(current);
       notify();
     };
-    const publish = () => {
-      if (joining || entry || !latest || latest.done || !current.track || !current.camera || !owned() || (current.pending?.sync ?? current.sync) !== 'time') return;
+    const showEntry = async () => {
+      while (owned() && entry && current.runs.includes(entry) && current.cameraRequested) {
+        const choice = current.pending;
+        const planning = show(current, choice?.sync ?? current.sync, choice ? choice.focus : current.focus,
+          current.camera ? choice?.style ?? current.style : preferred);
+        const issued = current.planRequest;
+        if (await planning) return true;
+        if (!owned() || !current.cameraRequested || !current.runs.includes(entry)) return false;
+        if (current.planRequest === issued) return false;
+      }
+      return false;
+    };
+    const joinReady = () => {
+      if (!latest || latest.done || !current.track || !current.camera || !owned() || (current.pending?.sync ?? current.sync) !== 'time') return null;
       const tick = Math.max(0, Math.floor(adapter.replay.playback().index ?? 0));
-      const through = tick + Math.ceil(LOOK_AHEAD / current.track.dt);
-      if (current.track.count <= Math.min(current.replay.commands.length, through)) return;
-      const map = alignByTime(current.track, latest.track);
-      if (!latest.done && map[Math.min(map.length - 1, through)] >= latest.count - 1) return;
+      const through = Math.min(current.replay.commands.length, tick + Math.ceil(LOOK_AHEAD / current.track.dt));
+      if (current.track.count <= through) return null;
+      const other = latest.track, mapped = (other.startTick ?? other.start) +
+        (through - (current.track.startTick ?? current.track.start)) * current.track.dt / other.dt;
+      if (mapped >= latest.count - 1) return null;
+      const track = {...other, count: latest.count, finish: Math.min(other.finish, latest.count - 1), splits: other.splits.slice()};
+      return track;
+    };
+    const publish = () => {
+      if (joining || entry || !joinReady()) return;
       joining = (async () => {
         await loadIdle();
         if (!owned()) return;
+        const ready = joinReady();
+        if (!ready) { joining = null; return; }
         stage({id: run.id, label: run.label, colorIndex: pending.colorIndex, fingerprint,
-          controller: pending.controller, recorded: recording, track: {...latest.track, count: latest.count}, maps: {time: map}, time: latest.track.time, complete: latest.done});
-        if (current.renderer) rebuild(current);
-        const request = current.pending;
-        await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus, current.camera ? request?.style ?? current.style : preferred);
+          controller: pending.controller, recorded: recording, track: ready, maps: {time: alignByTime(current.track, ready)}, time: ready.time, complete: false});
+        const shown = await showEntry();
         if (!owned()) { resolveJoined(false); return; }
+        if (!shown && current.cameraRequested) {
+          // Playback overtook this prefix while it was planned. Leave the
+          // existing scene in place and retry when more positions arrive.
+          rollback(); joining = null; return;
+        }
+        if (!current.cameraRequested && current.renderer && current.sceneRunSet !== current.runs) rebuild(current);
         if (current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
         committed = true;
         resolveJoined(true);
@@ -444,13 +512,18 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       signal: AbortSignal.any([current.lifetime.signal, pending.controller.signal]),
       onProgress: (track, count) => {
         latest = {track, count, done: count === track.count};
-        if (entry && (entry.track.startTick !== track.startTick || count >= entry.track.count * 2)) {
+        const tick = Math.max(0, Math.floor(adapter.replay.playback().index ?? 0));
+        const old = entry?.track;
+        const mappedAhead = old && (old.startTick ?? old.start) +
+          (tick + Math.ceil(LOOK_AHEAD / current.track.dt) - (current.track.startTick ?? current.track.start)) * current.track.dt / old.dt;
+        if (entry && committed && !current.pending && (old.startTick !== track.startTick || count >= old.count * 2 ||
+            count > old.count && mappedAhead >= old.count - 1)) {
           entry.track = {...track, count, finish: Math.min(track.finish, count - 1), splits: track.splits.slice()};
           entry.maps = {time: alignByTime(current.track, entry.track)};
           current.runs = current.runs.slice();
           current.plans = {};
-          if (current.renderer) rebuild(current);
-          if (!current.pending) void show(current, current.sync, current.focus).catch(error => { if (owned()) current.planError = error; });
+          if (current.renderer && !current.cameraRequested) rebuild(current);
+          if (current.cameraRequested && !current.pending) void show(current, current.sync, current.focus).catch(error => { if (owned()) current.planError = error; });
         }
         publish();
       }});
@@ -477,10 +550,14 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
         current.runs = current.runs.slice();
       }
       current.plans = {};
-      if (current.renderer) rebuild(current);
-      const request = current.pending;
-      await show(current, request?.sync ?? current.sync, request ? request.focus : current.focus, current.camera ? request?.style ?? current.style : preferred);
+      if (!current.cameraRequested) {
+        if (!current.renderer) start(current);
+        else rebuild(current);
+      }
+      const shown = await showEntry();
       if (!owned()) return false;
+      if (!shown && current.cameraRequested) throw new Error('The recorded camera window is no longer available.');
+      if (!current.cameraRequested && current.renderer && current.sceneRunSet !== current.runs) rebuild(current);
       if (current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
       committed = true;
       void placeFor(current, entry).catch(error => { if (owned()) { current.planError = error; notify(); } });
@@ -551,26 +628,29 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     })().finally(() => { if (run.placing === job) run.placing = null; });
     return job.promise;
   }
-  async function planFor(current, runs, sync, focus, style, owned, slice = null) {
+  async function preparePlanRuns(current, runs, sync, owned) {
     for (const run of runs) {
       if (!run.maps[sync]) {
         if (sync === 'place' && (!current.complete || run.complete === false)) {
           await current.ready;
           const track = await run.recorded;
           if (track) { run.track = track; run.complete = true; run.time = track.time; }
-          if (!owned()) return null;
+          if (!owned()) return false;
         }
         const map = sync === 'place' ? await placeFor(current, run) : alignByTime(current.track, run.track);
-        if (!owned() || !map) return null;
+        if (!owned() || !map) return false;
         run.maps[sync] = map;
       }
     }
+    return true;
+  }
+  async function planFor(current, track, runs, sync, focus, style, owned, slice = null) {
     const options = {style};
-    const clock = slice?.window ?? current.track;
+    const clock = slice?.window ?? track;
     const mapped = runs.map(run => ({track: run.track, map: slice ? run.maps[sync].subarray(slice.from, slice.end) : run.maps[sync]}));
     const chosen = runs.findIndex(run => run.id === focus);
     if (chosen < 0) return cameraPlan(current, {a: clock, others: mapped, group: focus !== 'played', ...options}, owned, !!slice);
-    if (current.track._cinemaWorker?.live && !current.workerFailed)
+    if (track._cinemaWorker?.live && !current.workerFailed)
       return cameraPlan(current, {a: clock, others: mapped, focusIndex: chosen, group: false, ...options}, owned, !!slice);
     // An added run is planned on the watched run's clock, so the plan's ticks stay the replay's.
     const identity = slice ? Float32Array.from({length: clock.count}, (_, tick) => tick) :
@@ -604,7 +684,8 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     current.plans = {};
     // First person with no runs left is everything off; a camera stays.
     if (!current.camera && !current.runs.length && !current.loading.length) { close(); return; }
-    rebuild(current);
+    const visible = current.sceneRunSet.filter(run => run.id !== id);
+    rebuild(current, visible, current.sceneTrack, current.sceneRuns.filter(run => run.id !== id));
     return show(current, request?.sync ?? current.sync, focus === id ? null : focus).catch(error => {
       if (error?.name === 'NoSafeCameraPath' && owns(current)) {
         // The old shot may follow the run just released. It is no longer a
@@ -623,76 +704,128 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   }
   // A unique request token prevents an older plan (even for the same choices)
   // from replacing a newer selection after an idle-time yield.
-  async function show(current, sync, focus, style = current.pending?.style ?? current.style, forceNearby = false) {
-    if (!current.cameraRequested) return;
+  async function show(current, sync, focus, style = current.pending?.style ?? current.style, forceNearby = false, runs = current.runs) {
+    if (!current.cameraRequested) return false;
+    const selection = current.selection;
+    if (!forceNearby && current.renewing) {
+      await current.renewing.promise;
+      if (!owns(current) || !current.cameraRequested || current.selection !== selection ||
+          runs.some(run => !current.runs.includes(run))) return false;
+    }
+    const pending = current.pending;
+    if (!forceNearby && pending?.sync === sync && pending.focus === focus && pending.style === style &&
+        pending.runs.length === runs.length && pending.runs.every((run, index) => run === runs[index])) {
+      await pending.done;
+      if (!owns(current) || !current.cameraRequested || current.selection !== selection ||
+          runs.some(run => !current.runs.includes(run))) return false;
+      const tick = getAdapter().replay.playback().index ?? 0;
+      if (!current.pending && current.plan && !current.planInvalid && current.sync === sync && current.focus === focus && current.style === style &&
+          (!current.partialPlan || tick >= current.planBase && tick <= current.planEnd) &&
+          current.sceneRunSet.length === runs.length && current.sceneRunSet.every((run, index) => run === runs[index]) &&
+          tick >= (current.sceneTrack._recordedFrom ?? 0) && tick < recordedEnd(current.sceneTrack, current.sceneRuns, sync)) return true;
+      if (current.planError) throw current.planError;
+      const latest = current.pending ?? current.planRequest;
+      if (latest && (latest.sync !== sync || latest.focus !== focus || latest.style !== style)) return false;
+      return show(current, sync, focus, style, forceNearby);
+    }
     const cameraRequested = current.cameraRequested;
-    const key = planKey(sync, focus, style), runs = current.runs;
+    const key = planKey(sync, focus, style), visibleOnly = runs !== current.runs;
+    const at = getAdapter().replay.playback().index ?? 0;
     if (!forceNearby && current.fullPlanning?.request === current.planRequest && current.planRequest?.sync === sync &&
-        current.planRequest.focus === focus && current.planRequest.style === style && runs === current.planRequest.runs) return;
-    const request = current.planRequest = {sync, focus, style, runs};
+        current.planRequest.focus === focus && current.planRequest.style === style && runs === current.planRequest.runs &&
+        current.plan && !current.planInvalid && (!current.partialPlan || at >= current.planBase && at <= current.planEnd) &&
+        at >= (current.sceneTrack?._recordedFrom ?? 0) && at < recordedEnd(current.sceneTrack, current.sceneRuns, current.sync)) return true;
+    let resolveDone;
+    const done = new Promise(resolve => { resolveDone = resolve; });
+    const request = current.planRequest = {sync, focus, style, runs, done};
     current.planAbort?.abort();
     current.planAbort = new AbortController();
     current.pending = request;
     current.planError = null;
     current.previewRequest = null;
-    const owned = () => owns(current) && current.cameraRequested === cameraRequested && current.runs === runs && current.planRequest === request;
+    const retained = () => current.runs === runs || (visibleOnly
+      ? current.sceneRunSet === runs && runs.every(run => current.runs.includes(run))
+      : current.runs.length === runs.length && runs.every((run, index) => current.runs[index] === run));
+    const intentOwned = () => owns(current) && current.cameraRequested === cameraRequested && current.planRequest === request && retained();
+    let track = null, plannedRuns = null, complete = false;
+    const sameClock = () => !track || (current.track.startTick ?? current.track.start) === (track.startTick ?? track.start) &&
+      current.track.dt === track.dt && runs.every((run, index) =>
+        (run.track.startTick ?? run.track.start) === (plannedRuns[index].track.startTick ?? plannedRuns[index].track.start));
+    const owned = () => intentOwned() && sameClock();
     notify();
     try {
-      // Plan alongside compilation; deferred track growth is applied when it finishes.
       if (!current.renderer) start(current);
-      else if (!current.warming && current.sceneTrack !== current.track) rebuild(current);
+      if (!await preparePlanRuns(current, runs, sync, intentOwned) || !intentOwned()) return false;
+      track = current.track;
+      complete = current.complete;
+      plannedRuns = runs.map(run => ({...run}));
       const publish = async (plan, slice) => {
         while (owned() && current.warming) await current.warming;
         if (!owned()) return false;
         if (slice) {
-          const at = getAdapter().replay.playback().index ?? 0;
-          if (at < slice.from || at >= slice.end) return false;
+          const tick = getAdapter().replay.playback().index ?? 0;
+          if (tick < slice.from || tick >= slice.end) return false;
         }
+        const published = visibleOnly ? runs : current.runs;
+        if (current.sceneRunSet !== published || current.sceneTrack !== track ||
+            current.sceneRuns.some((shown, index) => shown.track !== plannedRuns[index].track ||
+              shown.maps !== plannedRuns[index].maps || shown.complete !== plannedRuns[index].complete))
+          rebuild(current, published, track, plannedRuns);
         const changed = current.plan !== plan;
         const promoted = !current.planInvalid && !slice && current.partialPlan && current.camera && current.sync === sync && current.focus === focus && current.style === style;
-        Object.assign(current, {sync, focus, style, plan, planRuns: runs, partialPlan: !!slice, planInvalid: false, failedWindow: null,
-          planBase: slice?.from ?? 0, planEnd: slice ? slice.end - 1 : current.track.count - 1});
+        Object.assign(current, {sync, focus, style, plan, planRuns: published, partialPlan: !!slice, planInvalid: false, failedWindow: null,
+          planBase: slice?.from ?? 0, planEnd: slice ? slice.end - 1 : track.count - 1});
+        request.runs = published;
         if (current.pending === request) current.pending = null;
         if (changed && current.camera) retarget(current, promoted);
         notify();
         return true;
       };
-      const cached = current.plans[key];
-      if (cached) { await publish(cached, null); return; }
+      const cached = !visibleOnly && current.plans[key];
+      if (cached) return await publish(cached, null);
       let bounded = false, published = false;
-      // A seek can overtake an idle-time window. Recenter once on the latest
-      // playhead; under sustained seeking, finish the full plan instead of
-      // endlessly discarding windows.
       for (let attempt = 0; attempt < 2 && owned(); attempt++) {
-        const tick = Math.max(0, Math.min(current.track.count - 1, Math.floor(getAdapter().replay.playback().index ?? 0)));
-        const slice = trackWindow(current.track, tick);
-        bounded = !!slice && (!current.complete || runs.some(run => run.complete === false) || slice.from > 0 || slice.end < current.track.count);
+        const tick = Math.max(0, Math.min(track.count - 1, Math.floor(getAdapter().replay.playback().index ?? 0)));
+        const center = forceNearby ? Math.min(track.count - 1, tick + Math.ceil(LOOK_AHEAD / track.dt / 2)) : tick;
+        let slice = trackWindow(track, center, plannedRuns, sync);
+        if (!slice || tick < slice.from || tick >= slice.end) slice = trackWindow(track, tick, plannedRuns, sync);
+        if (!slice || tick < slice.from || tick >= slice.end) break;
+        bounded = visibleOnly || !complete || plannedRuns.some(run => run.complete === false) || slice.from > 0 || slice.end < track.count;
         if (!bounded) break;
-        const matching = !current.planInvalid && current.partialPlan && current.planRuns === runs && current.sync === sync && current.focus === focus && current.style === style &&
-          tick >= current.planBase && tick <= current.planEnd;
+        const shown = current.sceneTrack;
+        const compatiblePrefix = shown === track || shown && shown.count <= track.count && shown.position === track.position &&
+          shown.normal === track.normal && shown.cut === track.cut && shown.dt === track.dt &&
+          (shown.startTick ?? shown.start) === (track.startTick ?? track.start);
+        const matching = !forceNearby && !current.planInvalid && current.partialPlan && current.planRuns === runs &&
+          current.sync === sync && current.focus === focus && current.style === style && current.sceneRunSet === runs && compatiblePrefix &&
+          current.sceneRuns.every((run, index) => run.track === plannedRuns[index].track && run.maps === plannedRuns[index].maps &&
+            run.complete === plannedRuns[index].complete) && tick >= current.planBase && tick <= current.planEnd;
         if (matching) {
           if (current.pending === request) current.pending = null;
           published = true;
         } else {
-          const nearby = await planFor(current, runs, sync, focus, style, owned, slice);
-          if (!owned()) return;
+          const nearby = await planFor(current, track, plannedRuns, sync, focus, style, owned, slice);
+          if (!owned()) return false;
           if (!nearby) {
-            current.failedWindow = {from: slice.from, end: slice.end, track: current.track, runs, sync, focus, style};
+            current.failedWindow = {from: slice.from, end: slice.end, track, runs, sync, focus, style};
             throw noSafeCamera();
           }
           published = await publish(nearby, slice);
         }
         if (published) break;
       }
-      if (!owned()) return;
-      if (!current.cameraRequested || !current.complete || runs.some(run => run.complete === false)) return;
+      if (!owned()) return false;
+      if (visibleOnly || !complete || plannedRuns.some(run => run.complete === false)) {
+        if (current.pending === request) current.pending = null;
+        return published;
+      }
       const full = async () => {
-        const plan = await planFor(current, runs, sync, focus, style, owned);
-        if (!owned()) return;
+        const plan = await planFor(current, track, plannedRuns, sync, focus, style, owned);
+        if (!owned()) return false;
         if (!plan) throw noSafeCamera();
         current.plans[key] = plan;
         if (!runs.length) recordings.get(current.replay).plans = current.plans;
-        await publish(plan, null);
+        return publish(plan, null);
       };
       if (bounded && published) {
         const job = {request};
@@ -704,8 +837,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
           current.planError = error;
           notify();
         }).finally(() => { if (current.fullPlanning === job) current.fullPlanning = null; });
+        return true;
       }
-      else await full();
+      return await full();
     } catch (error) {
       if (owned()) {
         current.pending = null;
@@ -715,7 +849,29 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       }
       if (owns(current) && !current.plan) close();
       throw error;
+    } finally {
+      if (current.pending === request) current.pending = null;
+      try {
+        const renewal = request.renewal;
+        if (renewal) await renewal.promise;
+        const resumed = renewal && current.planRequest === renewal.request;
+        if (owns(current) && current.cameraRequested === cameraRequested && retained() &&
+            (resumed || !visibleOnly && intentOwned() && !sameClock()))
+          return await show(current, sync, focus, style, forceNearby, visibleOnly ? current.sceneRunSet : current.runs);
+      } finally { resolveDone(); }
     }
+  }
+  // A staged addition must yield the worker to a deadline on the view that
+  // is actually on screen. Its caller resumes the same choice afterwards.
+  function renewVisible(current) {
+    const job = {request: null, promise: null};
+    if (current.pending) current.pending.renewal = job;
+    current.renewing = job;
+    const planning = show(current, current.sync, current.focus, current.style, true, current.sceneRunSet);
+    job.request = current.planRequest;
+    job.promise = planning.catch(() => false).finally(() => {
+      if (current.renewing === job) current.renewing = null;
+    });
   }
 
   // Monitor ownership from activation, including before recording has produced
@@ -728,9 +884,10 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       // The game makes a new renderer when it reloads the map, as Watch from the menu can.
       const renderer = adapter.cinema?.renderer?.();
       if (current.renderer && renderer !== current.renderer) {
+        const published = current.plan && {track: current.sceneTrack, runs: current.sceneRunSet, entries: current.sceneRuns};
         detach(current);
         if (!renderer?.qolScene) { close(); return; }
-        try { attach(current, renderer); } catch { close(); return; }
+        try { attach(current, renderer, published); } catch { close(); return; }
       }
       current.checking = requestAnimationFrame(check);
     };
@@ -740,19 +897,24 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     attach(current, getAdapter().cinema.renderer());
     listen(current);
   }
-  function sceneFor(current, renderer) {
-    current.sceneSize = current.runs.length + 1;
-    current.sceneTrack = current.track;
-    current.sceneBase = current.track._recordedFrom ?? 0;
-    const played = current.sceneBase ? trackSlice(current.track, current.sceneBase, current.track.count) : current.track;
-    const scene = createScene(renderer, [{track: played, colorIndex: 0}, ...current.runs.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
+  function sceneFor(current, renderer, runs = current.runs, track = current.track, entries = null) {
+    current.sceneSize = runs.length + 1;
+    current.sceneTrack = track;
+    current.sceneRunSet = runs;
+    // Keep the shown scene's tracks and maps stable while a replacement plans.
+    current.sceneRuns = entries ?? runs.map(run => ({...run}));
+    current.sceneBase = track._recordedFrom ?? 0;
+    const played = current.sceneBase ? trackSlice(track, current.sceneBase, track.count) : track;
+    const scene = createScene(renderer, [{track: played, colorIndex: 0}, ...current.sceneRuns.map(run => ({track: run.track, colorIndex: run.colorIndex}))]);
     // Preparation may finish before the first plan. Nothing is visible until
     // frame() has a valid shot and has positioned each ghost and path.
     for (let index = 0; index < current.sceneSize; index++) scene.show?.(index, false);
     return scene;
   }
-  function attach(current, renderer) {
-    current.scene = sceneFor(current, renderer);
+  function attach(current, renderer, published = null) {
+    current.scene = published
+      ? sceneFor(current, renderer, published.runs, published.track, published.entries)
+      : sceneFor(current, renderer);
     current.renderer = renderer;
     warm(current);
     const original = current.original = renderer.render;
@@ -776,7 +938,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       current.warming = current.cancelWarm = null;
       // Reuse the shaders just prepared, and catch up once to the latest
       // recorded prefix before a preview or frame can expose its geometry.
-      if (current.sceneTrack !== current.track) rebuild(current);
+      if (current.sceneTrack !== current.track && (current.sceneRunSet === current.runs || !current.plan)) rebuild(current);
     }).finally(() => {
       if (current.warming === warming) current.warming = current.cancelWarm = null;
     }) : null;
@@ -794,9 +956,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   // The new one comes first and the old one stays, hidden, until the new one
   // has drawn: disposing it first would free the shared shader programs and
   // the new scene would compile them all again, a stall of a second or more.
-  function rebuild(current) {
+  function rebuild(current, runs = current.runs, track = current.track, entries = null) {
     const old = current.scene, size = current.sceneSize;
-    try { current.scene = sceneFor(current, current.renderer); } catch (error) { if (state === current) close(); throw error; }
+    try { current.scene = sceneFor(current, current.renderer, runs, track, entries); } catch (error) { if (state === current) close(); throw error; }
     for (let index = 0; index < size; index++) old?.show?.(index, false);
     if (current.warming) warm(current);
     if (old) current.retired.push(old);
@@ -836,7 +998,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   // The played run's fractional index from the frame's state and interpolation.
   function frame(current, view) {
     if (playing() !== current.replay) { level(current); queueMicrotask(() => { if (state === current) close(); }); return null; }
-    const a = current.track, plan = current.plan, sync = current.sync;
+    const a = current.sceneTrack, runs = current.sceneRuns, plan = current.plan, sync = current.sync;
     if (!a || !plan && current.camera) { level(current); return null; }
     const eye = view.eyePosition ?? {x: 0, y: 0, z: 0};
     const own = {x: eye.x, y: eye.y, z: eye.z, yaw: view.yaw ?? 0, pitch: view.pitch ?? 0, fov: view.fov ?? 90, eye: true};
@@ -847,7 +1009,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     const alpha = Number.isFinite(view.qolAlpha) ? Math.max(0, Math.min(1, view.qolAlpha)) : 1;
     const at = from - current.base + (stateTick - from) * alpha;
     let missing = at < (a._recordedFrom ?? 0) || at > a.count - 1;
-    if (!missing) for (const run of current.runs) {
+    if (!missing) for (const run of runs) {
       if (run.complete) continue;
       const mapped = sync === 'place' && run.maps.place
         ? run.maps.place[Math.ceil(at)]
@@ -864,28 +1026,40 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const worker = current.track?._cinemaWorker;
       const wanted = Math.max(0, Math.floor(at));
       const failed = current.failedWindow;
-      const failedHere = failed && failed.track === a && failed.runs === current.runs && failed.sync === current.sync &&
+      const failedHere = failed && failed.track === current.track && failed.runs === current.runs && failed.sync === current.sync &&
         failed.focus === current.focus && failed.style === current.style && at >= failed.from && at < failed.end;
       if (!current.complete && worker?.live && (!Number.isFinite(current.priorityTick) || Math.abs(current.priorityTick - wanted) > LOOK_AHEAD / a.dt / 2)) {
         current.priorityTick = wanted;
         worker.prioritize(current.track._cinemaHandle.id, wanted);
-      } else if (current.camera && current.complete && !current.pending && !failedHere) {
+      } else if (current.camera && current.complete && !current.pending && !failedHere &&
+          at >= (current.track._recordedFrom ?? 0) && at <= recordedEnd(current.track, current.runs, current.sync) - 1) {
         void show(current, current.sync, current.focus, current.style, !!worker?.live).catch(() => { if (owns(current) && !current.plan) close(); });
       }
-      for (let index = 0; index <= current.runs.length; index++) current.scene.show?.(index, false);
+      for (let index = 0; index < current.sceneSize; index++) current.scene.show?.(index, false);
       current.pose = own;
       current.move = null;
       return null;
+    }
+    // Pending group preparation cannot monopolize the worker past the
+    // visible camera's deadline. A renewal itself is never restarted here.
+    if (current.camera && current.partialPlan && !current.renewing &&
+        at >= current.planEnd - LOOK_AHEAD / a.dt / 2 &&
+        current.planEnd < recordedEnd(current.track, current.sceneRunSet, sync) - 1) {
+      const failed = current.failedWindow;
+      const failedHere = failed && failed.track === current.track && failed.runs === current.sceneRunSet &&
+        failed.sync === sync && failed.focus === current.focus && failed.style === current.style &&
+        at >= failed.from && at < failed.end;
+      if (!failedHere) renewVisible(current);
     }
     let tick = Math.max(0, Math.min(a.count - 1, at));
     const discontinuity = a.cut[Math.ceil(tick)] || previousTick === stateTick && tick !== current.tick;
     // Native teleports set previous=current, so they bypass interpolation.
     if (a.cut[Math.ceil(tick)]) tick = Math.ceil(tick);
     const low = Math.floor(tick), high = Math.min(a.count - 1, low + 1);
-    current.at.length = current.runs.length + 1;
+    current.at.length = runs.length + 1;
     current.at[0] = tick;
-    for (let index = 0; index < current.runs.length; index++) {
-      const run = current.runs[index];
+    for (let index = 0; index < runs.length; index++) {
+      const run = runs[index];
       const map = run.maps[sync] ?? run.maps.time;
       current.at[index + 1] = map[low] + (map[high] - map[low]) * (tick - low);
       current.scene.show?.(index + 1, true);
@@ -911,11 +1085,11 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       // actual frame from the subject, not the smoothed/led camera target.
       let focus = -1;
       if (current.focus && current.focus !== 'played') {
-        for (let index = 0; index < current.runs.length; index++) {
-          if (current.runs[index].id === current.focus) { focus = index; break; }
+        for (let index = 0; index < runs.length; index++) {
+          if (runs[index].id === current.focus) { focus = index; break; }
         }
       }
-      const body = trackPoint(focus < 0 ? a : current.runs[focus].track, current.at[focus + 1], current.body);
+      const body = trackPoint(focus < 0 ? a : runs[focus].track, current.at[focus + 1], current.body);
       body.z += 40;
       // Steady avoids solid geometry. Cinematic instead tests only the faces
       // drawn from this actual fractional/blended eye, including for a flight
@@ -1108,7 +1282,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   async function setSync(sync) {
     const current = state;
     if (!current?.renderer || !['place', 'time'].includes(sync) || current.sync === sync && !current.pending) return;
+    const selection = ++current.selection;
     if (!current.complete) { await prepare(current); if (!owns(current)) return; }
+    if (current.selection !== selection || !current.cameraRequested) return;
     await show(current, sync, current.pending ? current.pending.focus : current.focus);
   }
   // 'cinematic' or 'steady'.
@@ -1124,12 +1300,18 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
   async function setFocus(focus) {
     const current = state;
     if (!current?.renderer || focus !== null && focus !== 'played' && !current.runs.some(run => run.id === focus)) return;
+    const selected = focus !== null && focus !== 'played' ? current.runs.find(run => run.id === focus) : null;
+    const selection = ++current.selection;
     current.cameraRequested = true;
     if (!current.complete) { await prepare(current); if (!owns(current)) return; }
+    if (current.selection !== selection || !current.cameraRequested || selected && !current.runs.includes(selected)) return;
     const shown = current.pending ? current.pending.focus : current.focus, sync = current.pending?.sync ?? current.sync;
     if (current.camera) { await show(current, sync, focus !== null && focus === shown ? null : focus); return; }
-    await show(current, sync, focus, preferred);
-    if (owns(current) && current.cameraRequested && !current.camera) { current.camera = true; retarget(current); notify(); }
+    const published = await show(current, sync, focus, preferred);
+    if (published && owns(current) && current.selection === selection && current.cameraRequested &&
+        current.plan && !current.planInvalid && !current.pending && !current.camera) {
+      current.camera = true; retarget(current); notify();
+    }
   }
 
   function close() {
@@ -1164,7 +1346,7 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
     get preferred() { return preferred; },
     // Camera activity is independent of whether extra comparison runs exist.
     get active() { return !!state?.renderer; },
-    get comparing() { return !!state?.renderer && state.runs.length > 0; },
+    get comparing() { return !!state?.renderer && state.sceneRuns.length > 0; },
     // For the dev console: the watched track, then each added run's.
     get tracks() { return state?.track ? [state.track, ...state.runs.map(run => run.track)] : null; },
     // What the UI shows, null while cinematic viewing is disabled: the watched run first, then each
@@ -1175,9 +1357,9 @@ export function createCinema({getAdapter, onChange = () => {}, loadIdle = idle, 
       const current = state;
       if (!current) return null;
       const tick = current.tick ?? 0;
-      const runs = current.runs.map(run => ({
+      const runs = (current.sceneRuns ?? current.runs).map(run => ({
         id: run.id, label: run.label, colorIndex: run.colorIndex, color: colorOf(run.colorIndex),
-        time: run.time, gap: run.maps.place ? gapAt(current.track, run.track, run.maps.place, tick) : null,
+        time: run.time, gap: run.maps.place ? gapAt(current.sceneTrack ?? current.track, run.track, run.maps.place, tick) : null,
       }));
       let labels = [];
       try { labels = current.scene?.labels(innerWidth, innerHeight) ?? []; } catch { /* none this frame */ }

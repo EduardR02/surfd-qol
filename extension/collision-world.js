@@ -465,8 +465,11 @@ export function unpackCollisionWorld(packet) {
   }
   // Large displacement meshes remain packed; only queried triangles acquire
   // their native geometry representation. Ordinary array mutation stays local.
-  function lazyArray(length, materialize) {
+  function lazyArray(length, materialize, reader = null) {
     const target = new Array(length), state = new Uint8Array(length);
+    const arrayPrototype = reader ? Object.getPrototypeOf(target) : null;
+    const objectPrototype = arrayPrototype && Object.getPrototypeOf(arrayPrototype);
+    let direct = !!reader && arrayPrototype === Array.prototype && objectPrototype === Object.prototype && Object.getPrototypeOf(objectPrototype) === null;
     function indexOf(key) {
       if (typeof key !== 'string') return -1;
       const index = Number(key);
@@ -474,6 +477,10 @@ export function unpackCollisionWorld(packet) {
     }
     function realize(index) {
       if (index >= 0 && index < target.length && state[index] === 0) {
+        // An inherited indexed setter can retain the backing array. In that
+        // case all later reads must continue through the ordinary Proxy.
+        if (direct && (Object.getPrototypeOf(target) !== arrayPrototype || Object.getPrototypeOf(arrayPrototype) !== objectPrototype ||
+            Object.getPrototypeOf(objectPrototype) !== null || Object.hasOwn(arrayPrototype, index) || Object.hasOwn(objectPrototype, index))) direct = false;
         target[index] = materialize(index);
         state[index] = 1;
       }
@@ -481,35 +488,52 @@ export function unpackCollisionWorld(packet) {
     function recordLength(previous) {
       for (let i = target.length; i < previous && i < length; i++) state[i] = 2;
     }
-    return new Proxy(target, {
+    const proxy = new Proxy(target, {
       get(_, key, receiver) { realize(indexOf(key)); return Reflect.get(target, key, receiver); },
       has(_, key) {
         const index = indexOf(key);
         return index >= 0 && index < target.length && state[index] === 0 || Reflect.has(target, key);
       },
       set(_, key, value) {
+        direct = false;
         const previous = target.length, result = Reflect.set(target, key, value), index = indexOf(key);
         if (result && key === 'length') recordLength(previous);
         else if (result && index >= 0) state[index] = 1;
         return result;
       },
       deleteProperty(_, key) {
+        direct = false;
         const result = Reflect.deleteProperty(target, key), index = indexOf(key);
         if (result && index >= 0) state[index] = 2;
         return result;
       },
       defineProperty(_, key, descriptor) {
+        direct = false;
         const previous = target.length, result = Reflect.defineProperty(target, key, descriptor), index = indexOf(key);
         if (result && key === 'length') recordLength(previous);
         else if (result && index >= 0) state[index] = 1;
         return result;
       },
+      setPrototypeOf(_, prototype) { direct = false; return Reflect.setPrototypeOf(target, prototype); },
+      preventExtensions() { direct = false; return Reflect.preventExtensions(target); },
       getOwnPropertyDescriptor(_, key) { realize(indexOf(key)); return Reflect.getOwnPropertyDescriptor(target, key); },
       ownKeys() {
         for (let i = 0; i < length && i < target.length; i++) realize(i);
         return Reflect.ownKeys(target);
       },
     });
+    if (reader) {
+      const at = index => {
+        if (direct && Number.isInteger(index) && index >= 0 && index < length) {
+          realize(index);
+          if (direct && index < target.length && state[index] === 1) return target[index];
+        }
+        return proxy[index];
+      };
+      Object.defineProperty(at, 'array', {value: proxy});
+      reader.at = at;
+    }
+    return proxy;
   }
   function readBounds(index) {
     const offset = index * 6;
@@ -582,7 +606,8 @@ export function unpackCollisionWorld(packet) {
       {x: vertices[offset + 6], y: vertices[offset + 7], z: vertices[offset + 8]},
     ]};
   });
-  const triangleBounds = lazyArray(triangleCount, index => readBounds(brushCount + index));
+  const boundsReader = {};
+  const triangleBounds = lazyArray(triangleCount, index => readBounds(brushCount + index), boundsReader);
   function numericOrder(a, b) { return a - b; }
   const tree = {
     query(query) {
@@ -614,5 +639,6 @@ export function unpackCollisionWorld(packet) {
       return result.sort(numericOrder);
     },
   };
+  Object.defineProperty(tree, 'cameraTriangleBounds', {value: boundsReader.at});
   return {map: {...packet.map, brushes, displacementTriangles: triangles}, tree, triangleBounds};
 }

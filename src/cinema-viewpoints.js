@@ -50,6 +50,15 @@ const RINGS = [
   [2.7, 22, [0, 35, 90, 145, 180]],
   [3.4, 48, [45, 135]],
 ];
+// These angles and distances are invariant for every slice. Keep the same
+// candidate order and arithmetic as the ring layout below.
+const RING_OFFSETS = RINGS.map(([distance, elevation, bearings]) => ({
+  flat: Math.cos(elevation * DEGREES) * distance,
+  up: Math.sin(elevation * DEGREES) * distance,
+  directions: bearings.flatMap(bearing => (bearing % 180 ? [1, -1] : [1]).map(side => [
+    Math.cos(bearing * DEGREES), Math.sin(bearing * DEGREES) * side,
+  ])),
+}));
 // The view asked for is laid out at these shares of its distance as well.
 const ASKED = [1, 0.72, 1.35];
 // A point with terrain between it and the run is drawn in to PULL units short
@@ -101,6 +110,8 @@ const BACK = 5, WIDER = 4;
 // A take whose legs do not hold up sample by sample is reckoned again
 // without them, REPAIRS times at most. A leg on which the run is hidden for one sample costs BLINK.
 const REPAIRS = 24, BLINK = 2;
+// Limit retained repair geometry to 8 MB even for long or widened takes.
+const RELINK_CACHE = 1e6;
 // A leg keeps SKIM units clear of anything solid along its way.
 export const SKIM = 8;
 // A hidden view costs HIDDEN a second when no visible path can be found.
@@ -156,7 +167,7 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
   const slices = at.length;
 
   // Viewpoints, laid out slice by slice.
-  const perSlice = RINGS.reduce((sum, ring) => sum + ring[2].reduce((n, bearing) => n + (bearing % 180 ? 2 : 1), 0), 0) + ASKED.length + 2;
+  const perSlice = RING_OFFSETS.reduce((sum, ring) => sum + ring.directions.length, 0) + ASKED.length + 2;
   const P = new Float32Array(slices * perSlice * 3), home = new Int32Array(slices * perSlice), onRoute = new Uint8Array(slices * perSlice), starts = new Int32Array(slices + 1);
   let points = 0;
   const add = (k, x, y, z, route = 0) => { P[points * 3] = x; P[points * 3 + 1] = y; P[points * 3 + 2] = z; onRoute[points] = route; home[points++] = k; };
@@ -171,11 +182,10 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
     await pause();
     const s = at[k], o = s * 3, bx = body[o], by = body[o + 1], bz = body[o + 2], D = working[s], A = intent.distance[s];
     starts[k] = points;
-    for (const [distance, elevation, bearings] of RINGS) {
+    for (const ring of RING_OFFSETS) {
       if (due()) await pause();
-      const flat = Math.cos(elevation * DEGREES) * distance * D, up = Math.sin(elevation * DEGREES) * distance * D;
-      for (const bearing of bearings) for (const side of bearing % 180 ? [1, -1] : [1]) {
-        const c = Math.cos(bearing * DEGREES), w = Math.sin(bearing * DEGREES) * side;
+      const flat = ring.flat * D, up = ring.up * D;
+      for (const [c, w] of ring.directions) {
         lay(k, bx, by, bz, (-hx[s] * c + hy[s] * w) * flat, (-hy[s] * c - hx[s] * w) * flat, up);
       }
     }
@@ -225,14 +235,14 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
     return cost;
   };
   // What a point is worth at slice k for the view it gives, a second, before terrain.
-  const regard = (k, p, rule) => {
+  const regard = (k, p, rule, d, asked, askedRound) => {
     const s = at[k], o = s * 3, x = P[p * 3], y = P[p * 3 + 1], z = P[p * 3 + 2];
-    const dx = x - body[o], dy = y - body[o + 1], dz = z - body[o + 2], d = Math.hypot(dx, dy, dz);
+    const dx = x - body[o], dy = y - body[o + 1], dz = z - body[o + 2];
     let cost = 0;
     if (barred(route, s, x, y, z, rule)) return Infinity;
     else if (barred(route, s, x, y, z, ROOMY)) cost = TIGHT;
-    const flat = Math.hypot(dx, dy), elevation = Math.atan2(dz, flat), asked = Math.asin(clamp(intent.z[s], -1, 1));
-    const round = Math.atan2(dy, dx) - Math.atan2(intent.y[s], intent.x[s]);
+    const flat = Math.hypot(dx, dy), elevation = Math.atan2(dz, flat);
+    const round = Math.atan2(dy, dx) - askedRound;
     const bearing = Math.atan2(Math.sin(round), Math.cos(round)) * Math.cos(elevation) / OFF_BEARING;
     const rise = (elevation - asked) / OFF_ELEVATION, ratio = Math.log(d / intent.distance[s]), reach = ratio / OFF_DISTANCE[ratio < 0 ? 0 : 1];
     cost += INTENT * intent.weight[s] * (Math.sqrt(1 + bearing * bearing + rise * rise + reach * reach) - 1);
@@ -266,8 +276,14 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
   const fromRun = [0, 0, 0], toRun = [0, 0, 0];
   let rigid = false;
   const hop = (k, u, v, relax) => {
-    const T = seconds(k), world = Math.hypot(P[v * 3] - P[u * 3], P[v * 3 + 1] - P[u * 3 + 1], P[v * 3 + 2] - P[u * 3 + 2]);
-    if (world > Math.max(SPEED * speed[at[k]], SPEED_MIN) * T && relax < 2) return Infinity;
+    const T = seconds(k), dx = P[v * 3] - P[u * 3], dy = P[v * 3 + 1] - P[u * 3 + 1], dz = P[v * 3 + 2] - P[u * 3 + 2];
+    const limit = Math.max(SPEED * speed[at[k]], SPEED_MIN) * T;
+    // A conservative squared bound rejects obviously over-speed legs before
+    // hypot; the margin leaves borderline cases to the original exact test.
+    const squared = dx * dx + dy * dy + dz * dz;
+    if (relax < 2 && limit > 1e-150 && limit < 1e150 && squared > limit * limit * (1 + 1e-12)) return Infinity;
+    const world = Math.hypot(dx, dy, dz);
+    if (world > limit && relax < 2) return Infinity;
     offset(k, u, fromRun); offset(k + 1, v, toRun);
     const round = Math.hypot(toRun[0] - fromRun[0], toRun[1] - fromRun[1], toRun[2] - fromRun[2]);
     rigid = round < world;
@@ -360,35 +376,47 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
     const round = Math.atan2(dy * hx[s] - dx * hy[s], -(dx * hx[s] + dy * hy[s]));
     return Math.min(SECTORS - 1, Math.floor((round + Math.PI) / (2 * Math.PI) * SECTORS)) + (dz > 0.45 * Math.hypot(dx, dy, dz) ? SECTORS : 0);
   };
+  // Reused within each decision: a candidate's geometric cost from a kept
+  // predecessor does not change as its few most promising flights are traced.
+  let edgeCosts = new Float64Array(0);
   const decide = async (k, relax, wider, narrow = false, rule = SEARCHED) => {
     const s = at[k], o = s * 3, before = k > lowest[k] ? kept[k - 1] : null, T = before ? seconds(k - 1) : dt * SLICE;
+    const asked = Math.asin(clamp(intent.z[s], -1, 1)), askedRound = Math.atan2(intent.y[s], intent.x[s]);
     const legRule = before ? Math.min(before.rule, rule) : rule;
-    const cand = [], own = [], value = [], via = [], known = new Map();
+    const cand = [], own = [], value = [], via = [], known = new Map(), width = before?.n ?? 0;
+    const firstHome = Math.max(lowest[k], k - REACH), lastHome = Math.min(highest[k], k + REACH);
+    const capacity = (starts[lastHome + 1] - starts[firstHome]) * width;
+    if (edgeCosts.length < capacity) edgeCosts = new Float64Array(capacity);
     // Each candidate's best way in, taking untraced flights as clear unless only traced ones will do.
-    const reach = (i, p, traced) => {
+    const reach = (i, p, traced, initial = false) => {
       let best = Infinity, from = -1;
-      const any = known.size > 0;
-      for (let j = 0; j < before.n; j++) {
-        const u = before.p[j], state = any ? known.get(j * points + p) : undefined;
+      const any = known.size > 0, row = i * width;
+      for (let j = 0; j < width; j++) {
+        const state = any ? known.get(j * points + p) : undefined;
         if (state === undefined ? traced : state === 3 || state === 2 && relax < 1) continue;
-        const way = hop(k - 1, u, p, relax);
-        if (way === Infinity) continue;
-        const cost = before.value[j] + way + jolt(k - 1, before, j, p) + (state === 1 ? CROSS : state === 2 ? HIDDEN * T : 0);
+        let base;
+        if (initial) {
+          const way = hop(k - 1, before.p[j], p, relax);
+          base = way === Infinity ? Infinity : before.value[j] + way + jolt(k - 1, before, j, p);
+          edgeCosts[row + j] = base;
+        } else base = edgeCosts[row + j];
+        if (base === Infinity) continue;
+        const cost = base + (state === 1 ? CROSS : state === 2 ? HIDDEN * T : 0);
         if (cost < best) { best = cost; from = j; }
       }
       via[i] = from;
       return best;
     };
-    for (let home = Math.max(lowest[k], k - REACH); home <= Math.min(highest[k], k + REACH); home++) for (let p = starts[home]; p < starts[home + 1]; p++) {
+    for (let home = firstHome; home <= lastHome; home++) for (let p = starts[home]; p < starts[home + 1]; p++) {
       if (((p - starts[home]) & 15) === 0 && due()) await pause();
       if (fits[p] === 2 && (!narrow || minimum?.[p] === 2)) continue;
       const far = Math.hypot(P[p * 3] - body[o], P[p * 3 + 1] - body[o + 1], P[p * 3 + 2] - body[o + 2]);
       if (far > Math.max(FAR, FAR_ASKED * intent.distance[s])) continue;
-      const view = regard(k, p, rule);
+      const view = regard(k, p, rule, far, asked, askedRound);
       if (view === Infinity) continue;
       const i = cand.length;
       cand.push(p); own.push(view * T);
-      if (before) value.push(reach(i, p, false) + own[i]); else { via[i] = -1; value.push(own[i]); }
+      if (before) value.push(reach(i, p, false, true) + own[i]); else { via[i] = -1; value.push(own[i]); }
     }
     const order = cand.map((_, i) => i).filter(i => value[i] < Infinity).sort((i, j) => value[i] - value[j] || i - j);
     const beam = BEAM * wider, room = beam + (SECTORS * 2 + ON_LINE) * wider, keep = {p: new Int32Array(room), value: new Float64Array(room), cost: new Float64Array(room), from: new Int32Array(room), n: 0, relax, rule};
@@ -463,12 +491,15 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
       const u = chosen[k], v = chosen[k + 1], key = leg(k, u, v), rule = Math.min(kept[k].rule, kept[k + 1].rule);
       if (sound[rule].has(key) || refused[rule].has(key) || blinks[rule].has(key) || unseen[rule].has(key)) continue;
       hop(k, u, v, 2);
-      const crosses = through(u, v) > 0;
+      const crosses = through(u, v) > 0, surveyed = flown[rule].get(key);
+      const a = at[k], b = at[k + 1], one = Math.round(a + (b - a) / 3), two = Math.round(a + (b - a) * 2 / 3);
       let fails = false, hardFail = false, lost = 0;
-      for (let s = at[k] + 1; s < at[k + 1] && !hardFail; s++) {
+      for (let s = a + 1; s < b && !hardFail; s++) {
         between(k, u, v, s, here);
         stats.proofs++;
-        if (!scene.sees(here[0], here[1], here[2], s)) lost++;
+        // A successful survey already traced these exact points against the
+        // same body samples. Reuse that result, not a neighbouring ray.
+        if (!((surveyed === 0 || surveyed === 1) && (s === one || s === two)) && !scene.sees(here[0], here[1], here[2], s)) lost++;
         const barredHere = barred(route, s, here[0], here[1], here[2], rule), solid = !crosses && !scene.free(here[0], here[1], here[2], SKIM);
         fails ||= barredHere !== 0 || solid;
         hardFail = solid || barredHere !== 0 && (rule === FLOWN || barred(route, s, here[0], here[1], here[2], FLOWN) !== 0);
@@ -484,12 +515,33 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
   // the same reckoning as decide, over what it kept, with what the proof
   // found. Where nothing kept can be reached any more, the slices from
   // BACK before there on are decided afresh.
+  // A repair may relink the same candidates many times. Their hop geometry
+  // is invariant even though predecessor costs and jolt can change.
+  const relinkHops = new Array(slices);
+  let relinkCells = 0;
   const relink = async (first, last) => {
     for (let k = first + 1; k <= last; k++) {
       const before = kept[k - 1], now = kept[k], T = seconds(k - 1), rule = Math.min(before.rule, now.rule);
+      let cached = relinkHops[k];
+      if (!cached || cached.before !== before || cached.now !== now) {
+        if (cached) relinkCells -= (cached.strict?.length ?? 0) + (cached.loose?.length ?? 0);
+        relinkHops[k] = cached = {before, now, strict: null, loose: null};
+      }
       let alive = 0;
       for (let pass = 0; pass < 2 && !alive; pass++) {
         if (pass) { now.relax = Math.max(1, now.relax); stats.relaxed++; }
+        const mode = now.relax < 2 ? 'strict' : 'loose';
+        if (!cached[mode]) {
+          const cells = before.n * now.n;
+          if (relinkCells + cells > RELINK_CACHE) {
+            relinkHops.fill(undefined);
+            relinkCells = 0;
+            relinkHops[k] = cached = {before, now, strict: null, loose: null};
+          }
+          cached[mode] = new Float64Array(cells).fill(-1);
+          relinkCells += cells;
+        }
+        const hops = cached[mode];
         for (let i = 0; i < now.n; i++) {
           if ((i & 3) === 0 && due()) await pause();
           const p = now.p[i];
@@ -500,7 +552,9 @@ export async function searchTake({route, intent, scene, due, pause, debug = fals
               if (before.value[j] === Infinity) continue;
               const key = leg(k - 1, before.p[j], p), state = refused[rule].has(key) ? 3 : unseen[rule].has(key) ? 2 : flown[rule].get(key);
               if (state === undefined ? traced > WAYS : state === 3 || state === 2 && now.relax < 1) continue;
-              const way = hop(k - 1, before.p[j], p, now.relax);
+              const index = i * before.n + j;
+              let way = hops[index];
+              if (way < 0) hops[index] = way = hop(k - 1, before.p[j], p, now.relax);
               if (way === Infinity) continue;
               const cost = before.value[j] + way + jolt(k - 1, before, j, p) + (state === 1 ? CROSS : state === 2 ? HIDDEN * T : 0) + (blinks[rule].has(key) ? BLINK : 0);
               if (cost < best) { best = cost; from = j; }
