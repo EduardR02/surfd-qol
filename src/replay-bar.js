@@ -96,6 +96,7 @@ export const replayBarMarkup = `
       <button class="rb-btn rb-save" type="button" data-act="save" title="Save a location here (see Keyboard shortcuts for your keys)">Saveloc</button>
       <button class="rb-btn rb-icon" type="button" data-pop="keys" aria-haspopup="true" aria-expanded="false" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">${ICONS.keys}</button>
       <button class="rb-runs" type="button" data-act="runs" aria-expanded="false" aria-controls="runs-panel" title="Your runs on this map">${ICONS.runs}<span>Runs</span></button>
+      <button class="rb-btn rb-leave" type="button" data-act="link" hidden title="Copy a link that opens this replay at this moment">Copy link</button>
       <button class="rb-btn rb-leave" type="button" data-act="return" hidden>Return to server</button>
       <button class="rb-btn rb-leave" type="button" data-act="exit">Exit replay</button>
     </span>
@@ -218,6 +219,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
   const total = q('[data-rb="total"]'), notice = q('[data-rb="notice"]');
   const speedButton = q('.rb-speed'), runsButton = q('.rb-runs'), saveButton = q('[data-act="save"]');
   const indexed = q('.rb-indexed'), returnButton = q('[data-act="return"]');
+  const linkButton = q('[data-act="link"]');
   const popovers = Object.fromEntries([...bar.querySelectorAll('[data-popover]')].map(element => [element.dataset.popover, element]));
   const openers = Object.fromEntries([...bar.querySelectorAll('[data-pop]')].map(element => [element.dataset.pop, element]));
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -270,6 +272,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     if (action === 'toggle') control.toggle();
     else if (action === 'save') control.saveSpot();
     else if (action === 'exit') control.exit();
+    else if (action === 'link') control.copyLink();
     else if (action === 'return') control.returnToServer();
     else if (action === 'runs') onRuns?.(bar.getBoundingClientRect());
     refresh();
@@ -428,6 +431,7 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     indexed.hidden = status.complete !== false;
     if (indexed.style.width !== indexedWidth) indexed.style.width = indexedWidth;
     returnButton.hidden = !status.parked;
+    linkButton.hidden = !status.canShare;
     // Only multi-run comparison hides watched-run practice actions.
     if (saveButton.hidden !== !!status.ghosts) {
       const focused = root.activeElement;
@@ -467,9 +471,11 @@ export function createReplayBar({root, host, control, getBindings = () => null, 
     const length = railTime((status.length - status.start) * status.dt);
     if (length !== totalShown) { totalShown = length; write(total, length); }
     if (total.title !== (status.title ?? '')) total.title = status.title ?? '';
-    write(notice, status.notice || (status.complete === false ? `Indexing ${Math.floor(reach * 100)}%` : ''));
+    const message = status.shareNotice || status.notice ||
+      (status.openingAt != null ? `Opening at ${railTime(status.openingAt * status.dt)}…` : '');
+    write(notice, message || (status.complete === false ? `Indexing ${Math.floor(reach * 100)}%` : ''));
     if (++bindsAge > 30) { bindsAge = 0; readBinds(); }
-    const rest = status.playing && !dragging && !hovering && !overBar && !open && !held() && !bar.contains(root.activeElement) && !status.notice && now() - lastActivity > REST_MS;
+    const rest = status.playing && !dragging && !hovering && !overBar && !open && !held() && !bar.contains(root.activeElement) && !message && now() - lastActivity > REST_MS;
     toggleClass(bar, 'rest', rest);
   }
   function loop() {

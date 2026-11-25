@@ -137,8 +137,8 @@ function nativeCollisionWorldHooks(source, contract) {
 
 
 // Leave the native player's validation, watchdog, fallback and outputs intact.
-// A fresh worker receives a packed collision snapshot owned only by that job.
-function preparedIndexHooks(source, state) {
+// Transfer a job-owned collision snapshot only when both bundles are reviewed.
+function preparedIndexHooks(source, state, contract) {
   if (source.includes('__surfdQolIndexes')) return source;
   try {
     const index = unique(source, new RegExp(`startIndex\\((${identifier}),(${identifier}),(${identifier}),(${identifier})\\)\\{const (${identifier})=this\\.replay,(${identifier})=this\\.index,(${identifier})=this\\.revision,(${identifier})=\\(\\)=>\\{`, 'g'), 'index ownership');
@@ -147,31 +147,36 @@ function preparedIndexHooks(source, state) {
     const body = source.slice(index.index, end);
     const creation = unique(body, new RegExp(`const (${identifier})=(new Worker\\(new URL\\("/assets/replay-index\\.worker-[^"]+\\.js",import\\.meta\\.url\\),\\{type:"module"\\}\\));this\\.worker=\\1`, 'g'), 'index worker');
     const worker = creation[1];
+    unique(body, new RegExp(`${literal(worker)}\\.postMessage\\(\\{entry:${literal(index[2])},currentVersion:${literal(index[3])},replay:${literal(index[5])}\\}\\)`, 'g'), 'index request');
     const stop = unique(source, /stopWorker\(\)\{clearTimeout\(this\.workerTimeout\),this\.workerTimeout=void 0,this\.worker\?\.terminate\(\),this\.worker=null\}/g, 'index release');
-    const fallback = unique(body, /this\.stopWorker\(\),this\.fallback=/g, 'index fallback');
-    const map = unique(source, new RegExp(`(${identifier})&&\\1\\.dispose\\(\\),${literal(state)}=(${identifier})\\((${identifier})\\),`, 'g'), 'map ownership');
-    const attach = unique(source, new RegExp(`${literal(map[1])}\\.setQuality\\?\\.\\(`, 'g'), 'map renderer ownership');
+    if (stop.index !== end) return source;
+    const fallback = unique(body, new RegExp(`this\\.stopWorker\\(\\),this\\.fallback=new ${identifier}\\(${literal(index[1])},${literal(index[5])}\\)`, 'g'), 'index fallback');
+    const renderer = unique(source, new RegExp(
+      `(?<view>${identifier})&&\\k<view>\\.dispose\\(\\),${literal(state)}=${identifier}\\((?<map>${identifier})\\),` +
+      `(?:${identifier}=![01],)*\\k<view>=(?:${identifier}\\(\\)|${identifier}\\?${identifier}\\((?<canvas>${identifier}),${identifier},\\k<map>(?:,\\{bonuses:${identifier}\\})?\\):${identifier}\\(\\k<canvas>,\\k<map>\\)),` +
+      `\\k<view>\\.setQuality\\?\\.\\(`, 'g'), 'map renderer ownership');
     const changes = [
       {at: index.index + creation.index, length: creation[0].length,
         text: `const ${worker}=__surfdQolIndexes().acquire(${index[1]},${index[5]},this.host.session(),()=>${creation[2]});this.worker=${worker},${worker}.onclose=()=>{if(this.worker===${worker})this.stopWorker()}`},
-      {at: index.index + fallback.index, length: fallback[0].length, text: 'this.stopWorker(!0),this.fallback='},
+      {at: index.index + fallback.index, length: 'this.stopWorker()'.length, text: 'this.stopWorker(!0)'},
       {at: stop.index, length: stop[0].length, text: 'stopWorker(__surfdQolFailed=!1){clearTimeout(this.workerTimeout),this.workerTimeout=void 0,this.worker?.terminate(__surfdQolFailed),this.worker=null}'},
-      {at: attach.index, length: 0, text: `__surfdQolIndexes().ownRenderer(${map[1]}),`},
+      {at: renderer.index + renderer[0].lastIndexOf(`${renderer.groups.view}.setQuality`), length: 0,
+        text: `__surfdQolIndexes().ownRenderer(${renderer.groups.view}),`},
     ].sort((a, b) => b.at - a.at);
     for (const change of changes) source = source.slice(0, change.at) + change.text + source.slice(change.at + change.length);
     return source + `
 function __surfdQolIndexes(){
-  return __surfdQolIndexes.jobs??=(${createReplayIndexJobs.toString()})(async(map,session,message,isCurrent)=>{
-    const compatible=session?.map===map&&map.id===message.replay.mapId&&map.version===message.replay.mapVersion;
-    return compatible?await (${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
-  },()=>${creation[2]});
+  return __surfdQolIndexes.jobs??=(${createReplayIndexJobs.toString()})(${contract ? `async(map,session,message,isCurrent)=>{
+    const compatible=session?.map===map&&map.id===message.entry.id&&map.id===message.replay.mapId&&map.version===message.replay.mapVersion;
+    return compatible?(${packCollisionWorld.toString()})(map,session.movement?.world,{isCurrent}):null;
+  }` : 'null'},()=>${creation[2]});
 }
 `;
   } catch { return source; }
 }
 
 function preparedIndexWorkerHooks(source, workerRuntime, contract) {
-  if (source.includes('__surfdQolWorkerWorld')) return source;
+  if (source.includes('__surfdQolReceive')) return source;
   try {
     // Without the whole reviewed world contract, keep native geometry loading
     // and native construction. The independent worker protocol still works.
@@ -184,22 +189,35 @@ function preparedIndexWorkerHooks(source, workerRuntime, contract) {
       names[1].index === factories[0].index + 4 ? factories[0] : null;
     const handler = unique(source, new RegExp(`async function (${identifier})\\((${identifier})\\)\\{try\\{const\\{entry:(${identifier}),currentVersion:(${identifier}),replay:(${identifier})\\}=\\2;`, 'g'), 'index worker request');
     const entry = literal(handler[3]), current = literal(handler[4]), replay = literal(handler[5]);
-    // Bonus builds first compose a bonus run's course from the current map and its bonus file.
+    const version = `${replay}\\.mapVersion`;
+    // The current bonus loader resolves both native current and archived bonus
+    // revisions. Leave its checks and the main-course archive fallback intact.
     const loads = [
       new RegExp(`let (${identifier})=null;${replay}\\.mapVersion===${current}&&\\(\\1=await (${identifier})\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\),\\1\\?\\?=await (${identifier})\\(${entry},${replay}\\.mapVersion\\);`, 'g'),
       new RegExp(`let (${identifier})=null;const (${identifier})=(${identifier})\\(${replay}\\.mapVersion\\);if\\(\\2\\)\\{const (${identifier})=await (${identifier})\\(${entry}\\);[^{}]{0,300}\\}else\\(${replay}\\.mapVersion===${current}\\|\\|\\3\\(${current}\\)\\?\\.mainVersion===${replay}\\.mapVersion\\)&&\\(\\1=await \\5\\(${entry}\\),\\1\\.version!==${replay}\\.mapVersion&&\\(\\1=null\\)\\);\\1\\?\\?=await ${identifier}\\(${entry},${replay}\\.mapVersion\\);`, 'g'),
+      new RegExp(`let (${identifier})=null;(${identifier})\\(${version}\\)\\?\\1=await ${identifier}\\(await (${identifier})\\(${entry}\\),${version}\\):\\(${version}===${current}\\|\\|\\2\\(${current}\\)\\?\\.mainVersion===${version}\\)&&\\(\\1=await \\3\\(${entry}\\),\\1\\.version!==${version}&&\\(\\1=null\\)\\),\\1\\?\\?=await ${identifier}\\(${entry},${version}\\);`, 'g'),
     ];
-    const load = unique(source, loads.find(pattern => [...source.matchAll(pattern)].length) ?? loads[0], 'index geometry load');
+    const geometry = loads.flatMap(pattern => [...source.matchAll(pattern)]);
+    if (geometry.length !== 1) return source;
+    const [load] = geometry;
     const receiver = unique(source, new RegExp(`(${identifier})\\.onmessage=(${identifier})=>\\{${literal(handler[1])}\\(\\2\\.data\\)\\};`, 'g'), 'index worker receiver');
     const loop = unique(source, new RegExp(`const (${identifier})=new (${identifier})\\(${literal(load[1])},${replay}\\);for\\(;;\\)\\{const (${identifier})=performance\\.now\\(\\)\\+(${identifier}),(${identifier})=\\1\\.run\\(\\(\\)=>performance\\.now\\(\\)<\\3\\);if\\(${literal(receiver[1])}\\.postMessage\\(\\{ok:!0,batch:\\5\\},\\{transfer:\\[\\5\\.elapsed\\.buffer,\\5\\.phases\\.buffer\\]\\}\\),\\5\\.done\\)return\\}`, 'g'), 'index worker chunks');
-    const failure = unique(source, new RegExp(`${literal(receiver[1])}\\.postMessage\\(\\{ok:!1,error:(${identifier}) instanceof Error\\?\\1\\.message:String\\(\\1\\)\\}\\)`, 'g'), 'index worker failure');
+    const failure = unique(source, new RegExp(`\\}catch\\((${identifier})\\)\\{${literal(receiver[1])}\\.postMessage\\(\\{ok:!1,error:\\1 instanceof Error\\?\\1\\.message:String\\(\\1\\)\\}\\)\\}\\}`, 'g'), 'index worker failure');
+    const validation = new RegExp(`^if\\(!${replay}\\|\\|${replay}\\.mapId!==${entry}\\.id\\)throw Error\\("[^"]+"\\);(?:if\\(!Array\\.isArray\\(${replay}\\.commands\\)\\|\\|${replay}\\.commands\\.length>${identifier}\\)throw Error\\("[^"]+"\\);)?$`);
+    const receiverEnd = receiver.index + receiver[0].length;
+    if (receiverEnd > handler.index || source.slice(receiverEnd, handler.index).trim() ||
+        !validation.test(source.slice(handler.index + handler[0].length, load.index)) ||
+        load.index + load[0].length !== loop.index || loop.index + loop[0].length !== failure.index) return source;
     const strict = unique(source, /"use strict";/g, 'worker scope');
     // Direct source instrumentation remains usable without a generated asset.
     // Only the recognized native Session can enable the cinema protocol.
-    const session = [...source.matchAll(new RegExp(`this\\.session=new (${identifier})\\((${identifier}),(${identifier})\\.config\\)`, 'g'))];
-    const cinema = workerRuntime && session.length === 1 ? `
+    const simulation = unique(source, new RegExp(`class ${literal(loop[2])}\\{constructor\\((${identifier}),(${identifier})\\)\\{`, 'g'), 'index simulation');
+    const nativeSession = source.slice(simulation.index + simulation[0].length).match(new RegExp(
+      `^(?:this\\.replay=${literal(simulation[2])},)?this\\.session=new (${identifier})\\(${literal(simulation[1])},${literal(simulation[2])}\\.config\\)`));
+    const camera = workerRuntime && nativeSession;
+    const cinema = camera ? `
 ${workerRuntime}
-function __surfdQolCinemaSession(map,replay){const session=new ${session[0][1]}(map,replay.config,replay.format);session.loadReplay(replay);return session;}
+function __surfdQolCinemaSession(map,replay){const session=new ${nativeSession[1]}(map,replay.config,replay.format);session.loadReplay(replay);return session;}
 const __surfdQolCinema=globalThis.__surfdQolCreateCinemaWorker({
   post:(data,options)=>${receiver[1]}.postMessage(data,options),
   createSession:__surfdQolCinemaSession
@@ -210,9 +228,11 @@ delete globalThis.__surfdQolCreateCinemaWorker;
     const prepare = `let ${map}=__surfdQolMap;
 if(!${map}||${map}.id!==${handler[5]}.mapId||${map}.version!==${handler[5]}.mapVersion){
   ${map}=null;
-  ${factory ? `let __surfdQolPrepared=null;
-try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(${handler[2]}.__surfdQolCollision);}catch{}
-if(__surfdQolPrepared?.map.id===${handler[5]}.mapId&&__surfdQolPrepared.map.version===${handler[5]}.mapVersion){
+  ${factory ? `const __surfdQolPacket=${handler[2]}.__surfdQolCollision;
+let __surfdQolPrepared=null;
+if(__surfdQolPacket?.map?.id===${handler[5]}.mapId&&__surfdQolPacket.map.version===${handler[5]}.mapVersion)
+try{__surfdQolPrepared=(${unpackCollisionWorld.toString()})(__surfdQolPacket);}catch{}
+if(__surfdQolPrepared){
   ${map}=__surfdQolPrepared.map;
   Object.defineProperty(${map},"__surfdQolCollision",{value:__surfdQolPrepared});
 }else{${load[0].slice(4)}}` : load[0].slice(4)}
@@ -236,7 +256,7 @@ ${factory ? `function __surfdQolWorkerWorld(map,feature,corner,World){
   return world;
 }` : ''}
 `;
-    const viewOnly = session.length === 1 && workerRuntime ? `
+    const viewOnly = camera ? `
 if(${handler[2]}.__surfdQolViewOnly){
   const session=__surfdQolCinemaSession(${map},${handler[5]});
   __surfdQolCinema.attach(session,${handler[5]},${handler[2]}.job,!1);
@@ -267,11 +287,11 @@ try{for(;;){
 }}finally{__surfdQolCinema?.detach(${handler[2]}.job);}`;
     const changes = [
       ...(factory ? [{at: factory.index, length: factory[0].length, text: `__surfdQolWorkerWorld(${factory[1]},${factory[2]},${factory[3]},${contract.name})`}] : []),
-      ...(session.length === 1 ? [{at: session[0].index, length: session[0][0].length,
-        text: `${session[0][0].slice(0, -1)},${session[0][2]}.format)`}] : []),
+      ...(nativeSession ? [{at: simulation.index + simulation[0].length, length: nativeSession[0].length,
+        text: `${nativeSession[0].slice(0, -1)},${simulation[2]}.format)`}] : []),
       {at: load.index, length: load[0].length, text: prepare},
       {at: strict.index + strict[0].length, length: 0, text: helper},
-      {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]},__surfdQolCinema?.pause,__surfdQolCinema);${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
+      {at: receiver.index, length: receiver[0].length, text: `const __surfdQolReceive=(${createReplayIndexWorker.toString()})((data,options)=>${receiver[1]}.postMessage(data,options),${handler[1]},__surfdQolCinema?.pause,__surfdQolCinema,${Boolean(factory)});${receiver[1]}.onmessage=event=>__surfdQolReceive(event.data);`},
       {at: handler.index, length: handler[0].length, text: handler[0].replace(`(${handler[2]})`, `(${handler[2]},__surfdQolJob)`)},
       {at: loop.index, length: loop[0].length, text: chunks},
       {at: failure.index, length: failure[0].length, text: failure[0].replace(`${receiver[1]}.postMessage`, '__surfdQolJob.emit')},
@@ -302,14 +322,20 @@ export function instrumentPhysicsWorker(source, workerRuntime = '') {
 // seeking, speed and the timeline; the extension drives it and adds to it.
 function replayHooks(source) {
   try {
-    const watch = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})=\\+\\+(${identifier})\\)\\{if\\(!\\3\\(\\)\\)return;`, 'g'), 'replay watch');
+    // Newer Watch accepts native share metadata after the generation token.
+    // Leave that argument absent for QoL Watch: its own navigation uses ticks
+    // and an ordinary Watch must start at the beginning, including prestrafe.
+    const {watch, generation} = unique(source, new RegExp(
+      `async function (?<watch>${identifier})\\(${identifier},(?<current>${identifier}),${identifier},${identifier}=\\+\\+(?<generation>${identifier})(?:,${identifier})?\\)\\{if\\(!\\k<current>\\(\\)\\)return;`,
+      'g',
+    ), 'replay watch').groups;
     // The game's own debug snapshot reads the player: replay:<player>.snapshot().
     const transport = unique(source, new RegExp(`replay:(${identifier})\\.snapshot\\(\\)`, 'g'), 'replay player')[1];
     return `
     replay: {
-      reserve: () => ++${watch[6]},
-      isCurrent: token => token === ${watch[6]},
-      watch: (replay, label, isCurrent, token) => ${watch[1]}(replay, isCurrent, label, token),
+      reserve: () => ++${generation},
+      isCurrent: token => token === ${generation},
+      watch: (replay, label, isCurrent, token) => ${watch}(replay, isCurrent, label, token),
       transport: () => ${transport},
       // What's playing and where: index counts the commands played.
       playback: () => ({replay: ${transport}.replay ?? null, index: ${transport}.replay ? ${transport}.host.position() : 0}),
@@ -605,7 +631,11 @@ function roomHooks(source, client, state) {
 
 function previewViewHook(source, input) {
   try {
-    unique(source, new RegExp(`setView\\((${identifier})\\)\\{this\\.yaw=\\1\\.yaw,this\\.pitch=Math\\.max\\(-89,Math\\.min\\(89,\\1\\.pitch\\)\\)\\}`, 'g'), 'camera view setter');
+    const pitch = 'Math\\.max\\(-89,Math\\.min\\(89,\\1\\.pitch\\)\\)';
+    const direct = `this\\.yaw=\\1\\.yaw,this\\.pitch=${pitch}`;
+    // Buffered mouse input still exposes the displayed view as yaw and pitch.
+    const buffered = `this\\.reports\\.length=0,this\\.tickView=\\{yaw:\\1\\.yaw,pitch:${pitch}\\},this\\.shownView=\\{\\.\\.\\.this\\.tickView\\}`;
+    unique(source, new RegExp(`setView\\((${identifier})\\)\\{(?:${direct}|${buffered})\\}`, 'g'), 'camera view setter');
     return `
     previewView: {
       get: () => ({yaw: ${input}.yaw, pitch: ${input}.pitch}),
@@ -627,8 +657,12 @@ function cinemaHooks(source, client) {
     const scene = unique(source, new RegExp(`(${identifier})=${literal(factory)}\\((${identifier})\\)`, 'g'), 'record ghost scene')[2];
     const camera = unique(source, new RegExp(`\\.fov!==${identifier}&&\\((${identifier})\\.fov=2\\*Math\\.atan`, 'g'), 'map camera')[1];
     const object = unique(source, new RegExp(`(${identifier})=\\{resize:(${identifier}),setQuality:`, 'g'), 'map renderer');
-    const call = unique(source, new RegExp(`(${identifier})\\.render\\(\\{state:${identifier},eyePosition:`, 'g'), 'frame render')[1];
-    const ghost = unique(source, new RegExp(`ghost:(${identifier})\\|\\|(${identifier})\\?null:(${identifier})\\.frame\\((${identifier}),(${identifier})\\)\\}\\)`, 'g'), 'frame interpolation');
+    // Noclip can supply visual state instead of the physics state. Capture
+    // alpha from this same view's ghost expression, even when no ghost draws.
+    const visualState = `(?:${identifier}\\?${identifier}\\(${identifier}\\):)?${identifier}`;
+    const frame = unique(source, new RegExp(
+      `(?<renderer>${identifier})\\.render\\(\\{state:${visualState},eyePosition:(?:(?!\\}\\))[^;]){1,700}?,` +
+      `ghost:${identifier}\\|\\|${identifier}\\?null:${identifier}\\.frame\\(${identifier},(?<alpha>${identifier})\\)\\}\\)`, 'g'), 'frame render');
     // Optional even within cinema: an unknown WebGL renderer layout must not
     // disable the camera. Unsupported GPUs keep the existing first-draw path.
     let compile = '';
@@ -654,10 +688,10 @@ function cinemaHooks(source, client) {
       }:null,`;
     } catch { /* Shader preparation is optional; the renderer hook still works. */ }
     source = source.replace(object[0], () => `${object[1]}={${compile}qolScene:${scene},qolCamera:${camera},qolGhost:()=>${factory}(${scene}),resize:${object[2]},setQuality:`);
-    source = source.replace(ghost[0], () => `${ghost[0].slice(0, -2)},qolAlpha:${ghost[5]}})`);
+    source = source.replace(frame[0], () => `${frame[0].slice(0, -2)},qolAlpha:${frame.groups.alpha}})`);
     return {source, adapter: `
     cinema: {
-      renderer: () => ${call} ?? null,
+      renderer: () => ${frame.groups.renderer} ?? null,
       worker: (session,replay) => typeof __surfdQolIndexes === "function" ? __surfdQolIndexes().camera(session,replay,${client}.config?.maps?.find(entry=>entry.id===session?.map?.id)??session?.map) : null,
     },`};
   } catch (error) {
@@ -705,7 +739,7 @@ export function instrumentGame(source, mapWorkerSource = '') {
   source = nativeCollisionTreeHooks(source);
   if (mapWorkerSource) source = nativeMapFloorHooks(source, worldContract);
   if (mapWorkerSource) source = nativeMapPreparationHooks(source, worldContract, sessionClass);
-  source = preparedIndexHooks(source, state);
+  source = preparedIndexHooks(source, state, worldContract);
   source = nativeStageResetHooks(source);
   source = nativeMapLoadHooks(source);
   source = nativeProgressiveMapHooks(source);

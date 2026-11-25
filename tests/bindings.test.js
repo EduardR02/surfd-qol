@@ -86,41 +86,99 @@ test('a changed native binding retains its action rather than restoring stale co
   c.binding.release();
 });
 
-// Match the native boundary: key handlers run before the extension's listeners,
-// setBindings clones and clears, and sample -> peek copies the pressed Set.
-function nullControls(options = {}, nativeBindings = {}) {
+function commandFromKeys(keys, bindings) {
+  const held = action => bindings[action].some(key => keys.has(key));
+  return {
+    jump: held('jump'), duck: held('duck'),
+    forward: (Number(held('forward')) - Number(held('back'))) * 400,
+    side: (Number(held('right')) - Number(held('left'))) * 400
+  };
+}
+
+function commandKeys(input) {
+  const capturing = input.locked && !input.suppressed;
+  const keys = capturing ? new Set(input.keys) : new Set();
+  if (capturing && !input.wheelReleaseTick) for (const key of input.wheelPending) keys.add(key);
+  return keys;
+}
+
+function consumeWheel(input) {
+  if (input.wheelReleaseTick) input.wheelReleaseTick = false;
+  else if (input.wheelPending.size) { input.wheelPending.clear(); input.wheelReleaseTick = true; }
+}
+
+function clearKeys(input) {
+  input.keys.clear();
+  input.wheelPending.clear();
+  input.wheelReleaseTick = false;
+}
+
+// The live input builds physics samples at the committed view and previews at
+// the latest view. Both call controls directly; idle skips the physical keys.
+class TimestampedInput {
+  constructor(state) { Object.assign(this, state); }
+  reports = [];
+  tickView = {yaw: 0, pitch: 0};
+  shownView = this.tickView;
+  sampleDue = null;
+  stageRestartPending = false;
+
+  reportView(t, yaw, pitch) {
+    this.shownView = {yaw, pitch};
+    this.reports.push({t, view: this.shownView});
+  }
+  setSampleTime(t) { this.sampleDue = t; }
+  queueStageRestart() { if (this.locked && !this.suppressed) this.stageRestartPending = true; }
+  clear() {
+    this.reports.length = 0;
+    this.tickView = this.shownView;
+    this.stageRestartPending = false;
+    clearKeys(this);
+  }
+  sample() {
+    const due = this.sampleDue;
+    this.sampleDue = null;
+    if (due === null) {
+      this.tickView = this.shownView;
+      this.reports.length = 0;
+    } else {
+      while (this.reports.length && this.reports[0].t <= due) this.tickView = this.reports.shift().view;
+    }
+    const command = this.controls(this.tickView.yaw, this.tickView.pitch);
+    if (this.stageRestartPending) { command.restartStage = true; this.stageRestartPending = false; }
+    consumeWheel(this);
+    return command;
+  }
+  peek() { return this.controls(this.shownView.yaw, this.shownView.pitch); }
+  idle() { return {...commandFromKeys(new Set(), this.bindings), ...this.tickView}; }
+  controls(yaw, pitch) { return {...commandFromKeys(commandKeys(this), this.bindings), yaw, pitch}; }
+}
+
+// Native key handlers run first, and setBindings clones and clears.
+function nullControls(options = {}, nativeBindings = {}, timestamped = false) {
   let native = {
     jump: ['Space'], duck: ['ControlLeft', 'KeyC'], forward: ['KeyW'],
     back: ['KeyS'], left: ['KeyA'], right: ['KeyD'],
     ...nativeBindings
   };
   const settings = { crouchJump: false, crouchJumpKey: 'Space', nullAD: false, nullWSpace: false, ...options };
-  const input = {
+  const state = {
     doc: new EventTarget(), win: new EventTarget(), keys: new Set(),
     locked: true, suppressed: false, bindings: native,
     wheelPending: new Set(), wheelReleaseTick: false,
-    clear() { this.keys.clear(); this.wheelPending.clear(); this.wheelReleaseTick = false; },
     setSuppressed(value) { this.suppressed = value; this.clear(); },
     setBindings(bindings) {
       this.bindings = Object.fromEntries(Object.entries(bindings).map(([action, codes]) => [action, [...codes]]));
       this.clear();
-    },
-    peek() {
-      const keys = this.locked && !this.suppressed ? new Set(this.keys) : new Set();
-      if (this.locked && !this.suppressed && !this.wheelReleaseTick) {
-        for (const key of this.wheelPending) keys.add(key);
-      }
-      const held = action => this.bindings[action].some(key => keys.has(key));
-      return {
-        jump: held('jump'), duck: held('duck'),
-        forward: (Number(held('forward')) - Number(held('back'))) * 400,
-        side: (Number(held('right')) - Number(held('left'))) * 400
-      };
-    },
+    }
+  };
+  const input = timestamped ? new TimestampedInput(state) : {
+    ...state,
+    clear() { clearKeys(this); },
+    peek() { return commandFromKeys(commandKeys(this), this.bindings); },
     sample() {
       const command = this.peek();
-      if (this.wheelReleaseTick) this.wheelReleaseTick = false;
-      else if (this.wheelPending.size) { this.wheelPending.clear(); this.wheelReleaseTick = true; }
+      consumeWheel(this);
       return command;
     }
   };
@@ -139,7 +197,11 @@ function nullControls(options = {}, nativeBindings = {}) {
     if (Object.values(input.bindings).some(codes => codes.includes(code))) input.wheelPending.add(code);
   });
   input.doc.addEventListener('pointerlockchange', () => { if (!input.locked) input.clear(); });
-  input.doc.addEventListener('visibilitychange', () => { if (input.doc.hidden) input.clear(); });
+  input.doc.addEventListener('visibilitychange', () => {
+    if (!input.doc.hidden) return;
+    input.clear();
+    if (timestamped) input.locked = false;
+  });
   input.win.addEventListener('blur', () => { input.clear(); input.locked = false; });
   const nativeSample = input.sample, nativeClear = input.clear;
   const adapter = {
@@ -216,6 +278,62 @@ test('native command previews and sampled movement agree without consuming jump 
   c.binding.release();
   c.press('KeyA'); c.press('KeyW'); c.press('Space'); c.press('KeyD');
   expect(c.input.peek()).toEqual({ side:0,forward:400,jump:true,duck:false });
+});
+
+test('timestamped samples and previews share nullbinds without sharing views or consuming native edges', () => {
+  const c = nullControls({nullAD: true, nullWSpace: true, crouchJump: true, crouchJumpKey: 'KeyJ'}, {
+    left: ['ArrowLeft'], right: ['Mouse4'], forward: ['ArrowUp'], jump: ['WheelUp'], duck: ['KeyJ']
+  }, true);
+  const {input} = c;
+  const keys = input.keys, bindings = input.bindings;
+  c.press('ArrowLeft'); c.mouse('mousedown', 4); c.press('KeyJ'); c.press('ArrowUp');
+  expect(input.peek()).toMatchObject({side: 400, forward: 400, jump: false, duck: false});
+  c.wheel(-1);
+  input.reportView(10, 15, 4);
+  input.reportView(20, 30, -12);
+  input.setSampleTime(10);
+  input.queueStageRestart();
+
+  expect(input.idle()).toEqual({side: 0, forward: 0, jump: false, duck: false, yaw: 0, pitch: 0});
+  for (let frame = 0; frame < 3; frame++) {
+    expect(input.peek()).toEqual({side: 400, forward: 0, jump: true, duck: false, yaw: 30, pitch: -12});
+  }
+  expect(input.sample()).toEqual({
+    side: 400, forward: 0, jump: true, duck: true, yaw: 15, pitch: 4, restartStage: true
+  });
+  expect(input.keys).toBe(keys);
+  expect([...keys]).toEqual(['ArrowLeft', 'Mouse4', 'KeyJ', 'ArrowUp']);
+  expect(input.bindings).toBe(bindings);
+
+  input.setSampleTime(20);
+  expect(input.sample()).toEqual({side: 400, forward: 400, jump: false, duck: false, yaw: 30, pitch: -12});
+  c.release('ArrowUp'); c.mouse('mouseup', 4);
+  expect(input.sample()).toMatchObject({side: -400, forward: 0, jump: true, duck: true});
+  expect(input.sample()).toMatchObject({side: -400, forward: 0, jump: true, duck: false});
+  c.binding.release();
+  expect(input.controls).toBe(TimestampedInput.prototype.controls);
+  expect(input.sample).toBe(TimestampedInput.prototype.sample);
+  expect(Object.hasOwn(input, 'controls')).toBe(false);
+  expect(Object.hasOwn(input, 'sample')).toBe(false);
+});
+
+test('timestamped input clears priority and crouch state across tab loss and recapture', () => {
+  const c = nullControls({nullAD: true, nullWSpace: true, crouchJump: true}, {}, true);
+  const {input} = c;
+  c.press('KeyA'); c.press('KeyD'); c.press('KeyW'); c.press('Space');
+  expect(input.sample()).toMatchObject({side: 400, forward: 0, jump: true, duck: true});
+  input.doc.hidden = true;
+  input.doc.dispatchEvent(new Event('visibilitychange'));
+  expect(input.idle()).toMatchObject({side: 0, forward: 0, jump: false, duck: false});
+
+  input.doc.hidden = false;
+  input.locked = true;
+  c.press('KeyD'); c.press('KeyA'); c.press('Space'); c.press('KeyW');
+  expect(input.sample()).toMatchObject({side: -400, forward: 400, jump: false, duck: false});
+  c.release('KeyW');
+  expect(input.sample()).toMatchObject({side: -400, forward: 0, jump: true, duck: true});
+  expect(input.sample()).toMatchObject({side: -400, forward: 0, jump: true, duck: false});
+  c.binding.release();
 });
 
 test('both null pairs are independent and work with crouch-jump disabled', () => {

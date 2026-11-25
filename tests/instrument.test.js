@@ -105,10 +105,10 @@ function instrumentReplayFixture(source, expected = ['[Surfd QoL] Private rooms 
   } finally { console.warn = warn; }
 }
 
-function fixture() {
+function fixture(source = nativeSource) {
   let adapter;
-  const runtime = new Function('globalThis', instrumentReplayFixture(nativeSource) + `
-    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},drawFrame,replaceRenderer:()=>{renderer=mapRenderer();},
+  const runtime = new Function('globalThis', instrumentReplayFixture(source) + `
+    return {nativeWatch,generation:()=>generation,setStartup:fn=>{startup=fn;},drawFrame,prepareFrame:view=>renderer.prepare(view),replaceRenderer:()=>{renderer=mapRenderer();},
       setOwner:id=>{client.session=id?{user:{id}}:null;},
       sessions:()=>sessions,restart,setStart:(key,start)=>{starts[key]=start;},
       setRules:rule=>{settings.rule=rule;},setReplayMap:map=>{replayMap=map;}};
@@ -639,6 +639,22 @@ describe('native replay instrumentation', () => {
     expect(adapter.replay.isCurrent(token)).toBe(true);
   });
 
+  test('shared replay start time applies only to native Watch', async () => {
+    const source = nativeSource
+      .replace('token=++generation){', 'token=++generation,share){')
+      .replace('player.open(data);', 'player.open(data);if(share?.at)player.position=share.at;')
+      .replace('function nativeWatch(load)', 'function nativeWatch(load, share)')
+      .replace("'native',token)", "'native',token,share)");
+    const {adapter, runtime} = fixture(source);
+    const shared = {commands: ['shared']};
+    await runtime.nativeWatch(async () => shared, {at: 12});
+    expect(adapter.replay.playback()).toMatchObject({replay: shared, index: 12});
+    const token = adapter.replay.reserve(), saved = {commands: ['saved']};
+    await adapter.replay.watch(saved, 'saved', () => adapter.replay.isCurrent(token), token);
+    expect(adapter.replay.playback()).toMatchObject({replay: saved, index: 0});
+    expect(runtime.generation()).toBe(token);
+  });
+
   test('a newer native intent cancels an already pending extension startup', async () => {
     const {adapter, runtime} = fixture();
     let finishStartup;
@@ -776,6 +792,18 @@ describe('optional camera preview instrumentation', () => {
     expect(adapter.getSession()).toBe(session);
     expect(session.state).toBeUndefined();
   });
+  test('native preview view updates both buffered mouse views without stepping', () => {
+    const source = nativeSource.replace('yaw: 0, pitch: 0, setView(e){this.yaw=e.yaw,this.pitch=Math.max(-89,Math.min(89,e.pitch))}',
+      'reports:[{yaw:5}],tickView:{yaw:0,pitch:0},shownView:{yaw:0,pitch:0},get yaw(){return this.shownView.yaw},get pitch(){return this.shownView.pitch},setView(e){this.reports.length=0,this.tickView={yaw:e.yaw,pitch:Math.max(-89,Math.min(89,e.pitch))},this.shownView={...this.tickView}}');
+    const {adapter} = fixture(source);
+    const session = adapter.getSession(), input = adapter.getInput();
+    adapter.previewView.set({yaw: 110, pitch: 95});
+    expect(input.tickView).toEqual({yaw: 110, pitch: 89});
+    expect(adapter.previewView.get()).toEqual(input.tickView);
+    expect(input.reports).toEqual([]);
+    expect(adapter.getSession()).toBe(session);
+    expect(session.state).toBeUndefined();
+  });
   test('an unsupported camera setter leaves the base adapter usable', () => {
     const warnings = [], originalWarn = console.warn;
     let adapter;
@@ -802,6 +830,21 @@ describe('optional Compare view instrumentation', () => {
     expect(renderer.lastView).toMatchObject({qolAlpha: 0.25, ghost: {alpha: 0.25}});
     runtime.drawFrame({tick: 5}, 0.5, false, true);
     expect(renderer.lastView).toMatchObject({qolAlpha: 0.5, ghost: null});
+  });
+  test('noclip-aware render keeps its visual state and existing ghost gates', () => {
+    const source = nativeSource
+      .replace('setQuality:()=>{},render', 'setQuality:()=>{},prepare(view){api.render(view)},render')
+      .replace('inReplay=false){renderer.render({state:state,', 'inReplay=false,camera=false){renderer.render({state:camera?visualState(state):state,')
+      + '\nfunction visualState(state){return {...state,noclip:true}}';
+    const {adapter, runtime} = fixture(source);
+    const renderer = adapter.cinema.renderer();
+    runtime.drawFrame({tick: 4}, 0, false, false, true);
+    expect(renderer.lastView).toMatchObject({state: {tick: 4, noclip: true}, qolAlpha: 0, ghost: {alpha: 0}});
+    runtime.drawFrame({tick: 5}, 0.5, true);
+    expect(renderer.lastView).toMatchObject({state: {tick: 5}, qolAlpha: 0.5, ghost: null});
+    const firstView = {fov: 90};
+    runtime.prepareFrame(firstView);
+    expect(renderer.lastView).toEqual({fov: 90});
   });
   test('a renderer the game replaces is the one the adapter returns', () => {
     const {adapter, runtime} = fixture();

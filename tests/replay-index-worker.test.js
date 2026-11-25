@@ -12,7 +12,7 @@ class WorkerStub {
   postMessage(message, transfer) { this.posts.push({message, transfer}); }
   terminate() { this.terminated++; }
   receive(data) { this.onmessage?.({data}); }
-  ready(camera = false) { this.receive(protocol({type: 'ready', camera})); }
+  ready(camera = false, collision = true) { this.receive(protocol({type: 'ready', camera, collision})); }
   world(lease, replay) { this.receive(protocol({type: 'world', job: lease.id, mapId: replay.mapId, mapVersion: replay.mapVersion})); }
   batch(lease, batch = {done: false}) { this.receive(protocol({type: 'batch', job: lease.id, ok: true, batch})); }
   runs() { return this.posts.filter(post => post.message.type === 'run'); }
@@ -41,6 +41,24 @@ for (const [kind, makeJobs, makeWorker] of [
     }
     expect(preparations).toBe(2);
     expect(f.workers).toHaveLength(2);
+  });
+  test('packing waits for a worker with a reviewed collision contract', async () => {
+    let preparations = 0;
+    const f = fixture(async () => { preparations++; return {vertices: new Float64Array(1)}; });
+    const replay = replayFor(f.map), lease = f.acquire(replay), worker = f.workers[0];
+    lease.postMessage({replay});
+    await flush();
+    expect(preparations).toBe(0);
+    expect(worker.runs()).toHaveLength(0);
+    worker.receive(protocol({type: 'ready', camera: true}));
+    await flush();
+    expect(preparations).toBe(0);
+    expect(worker.runs()).toHaveLength(1);
+    expect(worker.runs()[0].message.__surfdQolCollision).toBeUndefined();
+    worker.world(lease, replay);
+    lease.onmessage = () => lease.terminate();
+    worker.batch(lease, {done: true});
+    f.jobs.ownRenderer({dispose() {}});
   });
   test('an active cinema view releases recordings while its completed world remains renderer-owned', async () => {
     const f = fixture(), replay = replayFor(f.map), lease = f.acquire(replay), worker = f.workers[0];
@@ -526,9 +544,9 @@ stopWorker(){clearTimeout(this.workerTimeout),this.workerTimeout=void 0,this.wor
 function valid(batch){return batch&&typeof batch.done==="boolean"}
 const player=new Player();install(map);
 `;
-function playerFixture(collision = '') {
+function playerFixture(collision = '', native = nativePlayer) {
   const warn = console.warn; let source;
-  try { console.warn = () => {}; source = instrumentGame(nativePlayer + collision); } finally { console.warn = warn; }
+  try { console.warn = () => {}; source = instrumentGame(native + collision); } finally { console.warn = warn; }
   const workers = [], timers = new Map();
   class NativeWorker extends WorkerStub { constructor() { super(); workers.push(this); } }
   const runtime = new Function('globalThis', 'Worker', 'setTimeout', 'clearTimeout', source.replaceAll('import.meta.url', '"https://surfd.net/game.js"') +
@@ -622,4 +640,88 @@ test('the bonus update loads bonus runs natively, or from a packed bonus world',
   packed.send({type: 'run', job: 1, entry: {id: 'map'}, currentVersion: 'v1', replay: {...replay, ...replayFor(map)}, __surfdQolCollision: packet}); await flush();
   expect(packed.probe.loads()).toBe(0);
   expect(packed.probe.simulations[0].map.version).toBe('v1/bonus-1');
+});
+
+// Current workers delegate bonus revision selection and validation to a
+// dedicated native loader instead of composing the bonus in the request body.
+const versionedBonusWorker = nativeWorker
+  .replace('let s=null;a.mapVersion===t&&(s=await loadCurrent(e),s.version!==a.mapVersion&&(s=null)),s??=await loadArchive(e,a.mapVersion);',
+    'if(!Array.isArray(a.commands)||a.commands.length>limit)throw Error("Replay too long");let s=null;bonusOf(a.mapVersion)?s=await loadBonus(await loadCurrent(e),a.mapVersion):(a.mapVersion===t||bonusOf(t)?.mainVersion===a.mapVersion)&&(s=await loadCurrent(e),s.version!==a.mapVersion&&(s=null)),s??=await loadArchive(e,a.mapVersion);')
+  .replace('async function loadCurrent(entry){', `
+const limit=2;
+function bonusOf(version){const match=/^(.*)\\/bonus-1(?:\\.r[2-9])?$/.exec(version);return match?{mainVersion:match[1]}:null}
+async function loadBonus(map,version){if(map.version!==bonusOf(version).mainVersion||!["v1/bonus-1","v1/bonus-1.r2"].includes(version))throw Error("wrong bonus revision");return {...map,version}}
+async function loadCurrent(entry){`);
+
+test('current worker keeps native main and bonus revision selection and request validation', async () => {
+  const f = workerFixture(versionedBonusWorker);
+  f.send({type: 'hello'});
+  expect(f.posts[0]).toEqual(protocol({type: 'ready', collision: true}));
+  const replay = {mapId: 'map', mapVersion: 'v1', format: 8, commands: [{}]};
+  const send = (job, changes, entry = {id: 'map'}, packet) =>
+    f.send({type: 'run', job, entry, currentVersion: 'v1/bonus-1', replay: {...replay, ...changes}, __surfdQolCollision: packet});
+  send(1, {}); await flush();
+  expect(f.probe.simulations[0].map.version).toBe('v1');
+  expect(f.probe.loads()).toBe(1);
+  send(2, {mapVersion: 'archive'}); await flush();
+  expect(f.probe.simulations[1].map.version).toBe('archive');
+  send(3, {mapVersion: 'v1/bonus-1.r2'}); await flush();
+  expect(f.probe.simulations[2].map.version).toBe('v1/bonus-1.r2');
+  expect(f.probe.loads()).toBe(3);
+
+  const map = {id: 'map', version: 'v1/bonus-1', brushes: [], displacementTriangles: []};
+  const packet = await packCollisionWorld(map, {brushes: map.brushes, triangles: map.displacementTriangles,
+    triangleBounds: [], tree: {bounds: [], root: null}});
+  send(4, {mapVersion: map.version}, {id: 'map'}, packet); await flush();
+  expect(f.probe.simulations[3].map.version).toBe(map.version);
+  expect(f.probe.loads()).toBe(3);
+  send(5, {mapVersion: 'v1/bonus-1.r3'}, {id: 'map'}, packet); await flush();
+  send(6, {mapVersion: map.version, commands: [{}, {}, {}]}); await flush();
+  send(7, {mapVersion: map.version}, {id: 'other'}); await flush();
+  expect(f.posts.filter(post => post.type === 'batch' && !post.ok).map(post => [post.job, post.error])).toEqual([
+    [5, 'wrong bonus revision'], [6, 'Replay too long'], [7, 'wrong map'],
+  ]);
+  expect(f.posts.filter(post => post.type === 'world').map(post => post.mapVersion))
+    .toEqual(['v1', 'archive', 'v1/bonus-1.r2', 'v1/bonus-1']);
+});
+
+test('current worker enables view-only cinema with native loading when its world changes', async () => {
+  const source = versionedBonusWorker
+    .replace('triangleCache=new Map;triangleBrush', 'newField=42;triangleCache=new Map;triangleBrush')
+    .replace('class Index{',
+      'class Session{constructor(map,config,format){this.map=map,this.config=config,this.world=worldFor(map,format)}loadReplay(replay){if(replay.mapVersion!==this.map.version)throw Error("wrong version");this.replay=replay}}class Index{')
+    .replace('this.map=map,this.replay=replay;', 'this.replay=replay,this.session=new Session(map,replay.config),this.session.loadReplay(replay),this.map=map;');
+  const runtime = `globalThis.__surfdQolCreateCinemaWorker=()=>({attach:(...args)=>self.probe.attached=args,receive:()=>false});`;
+  const f = workerFixture(source, performance, runtime);
+  f.send({type: 'hello'});
+  expect(f.posts[0]).toEqual(protocol({type: 'ready', camera: true}));
+  const replay = {mapId: 'map', mapVersion: 'v1/bonus-1.r2', format: 8, config: {}, commands: [{}]};
+  f.send({type: 'run', job: 1, entry: {id: 'map'}, currentVersion: 'v1', replay, __surfdQolViewOnly: true});
+  await flush();
+  const [session, ...attachment] = f.probe.attached;
+  expect(attachment).toEqual([replay, 1, false]);
+  expect(session.world.newField).toBe(42);
+  expect(session.world.vphysicsFeatureFix).toBe(true);
+  expect(f.probe.simulations).toHaveLength(0);
+  expect(f.probe.loads()).toBe(1);
+  expect(f.posts[1]).toEqual(protocol({type: 'world', job: 1, mapId: 'map', mapVersion: replay.mapVersion}));
+});
+
+test('current renderer ownership follows installation and never packs an unreviewed main world', async () => {
+  const source = nativePlayer
+    .replace('function install(map){', 'const canvas={},bonuses=[];function quality(){renderer.setQuality?.(2)}function install(map,visual){')
+    .replace('renderer=makeRenderer(),renderer.setQuality', 'renderer=visual?makeRenderer(canvas,visual,map,{bonuses:bonuses}):makeRenderer(canvas,map),renderer.setQuality');
+  const f = playerFixture('', source), replay = {...replayFor(f.map), commands: [{}]};
+  let worldReads = 0;
+  Object.defineProperty(f.session().movement, 'world', {get() { worldReads++; return null; }});
+  f.player.begin(replay);
+  const worker = f.workers[0];
+  worker.ready(true); await flush();
+  expect(worker.runs()).toHaveLength(1);
+  expect(worker.runs()[0].message.__surfdQolCollision).toBeUndefined();
+  expect(worldReads).toBe(0);
+  f.install(f.map, {});
+  expect(worker.terminated).toBe(1);
+  expect(f.timers.size).toBe(0);
+  expect(f.fallbacks()).toBe(0);
 });

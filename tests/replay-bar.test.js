@@ -46,7 +46,8 @@ function barFixture() {
     get innerHTML() { return this.html; }
   }
   const nodes = Object.fromEntries(['.rb-play', '.rb-rail', '.rb-track', '.rb-headway', '.rb-marks', '.rb-pins', '.rb-tip',
-    '[data-rb="total"]', '[data-rb="notice"]', '.rb-speed', '.rb-runs', '[data-act="save"]', '.rb-indexed', '[data-act="return"]'].map(selector => [selector, new Node()]));
+    '[data-rb="total"]', '[data-rb="notice"]', '.rb-speed', '.rb-runs', '[data-act="save"]', '.rb-indexed',
+    '[data-act="return"]', '[data-act="link"]'].map(selector => [selector, new Node()]));
   nodes['.rb-tip'].children = [new Node(), new Node(), new Node()];
   const keys = new Node(), speed = new Node(), keysOpener = new Node();
   keys.dataset.popover = 'keys'; speed.dataset.popover = 'speed';
@@ -56,6 +57,9 @@ function barFixture() {
   bar.querySelector = selector => nodes[selector] ?? null;
   bar.querySelectorAll = selector => selector === '[data-popover]' ? [keys, speed] : [keysOpener, nodes['.rb-speed']];
   const root = {getElementById: () => bar, activeElement: null};
+  const link = nodes['[data-act="link"]'];
+  link.dataset.act = 'link'; link.closest = () => link; bar.children.push(link);
+  let copies = 0;
   let value = {...status, playing: true, ended: false, speed: 1, complete: true}, kind = 'CP', resize;
   let id = 0;
   const frames = new Map();
@@ -66,9 +70,10 @@ function barFixture() {
     cancelAnimationFrame: key => frames.delete(key),
     ResizeObserver: class { constructor(fn) { resize = fn; } observe() {} disconnect() {} },
   });
-  const ui = createReplayBar({root, control: {status: () => value}, getKind: () => kind, now: () => 0});
+  const ui = createReplayBar({root, control: {status: () => value, copyLink: () => { copies++; }}, getKind: () => kind, now: () => 0});
   return {
     ui, nodes, bar,
+    get copies() { return copies; },
     set: patch => { value = {...value, ...patch}; },
     kind: next => { kind = next; },
     resize: width => { nodes['.rb-rail'].clientWidth = width; resize(); },
@@ -140,6 +145,28 @@ describe('replay bar', () => {
       const reopenedWrites = nodes['.rb-track'].writes;
       fixture.frame();
       expect(nodes['.rb-track'].writes).toBe(reopenedWrites);
+    } finally { fixture.close(); }
+  });
+
+  test('custom replay controls keep native timed share available only when the player supports it', () => {
+    const fixture = barFixture(), {ui, nodes, bar} = fixture;
+    const button = nodes['[data-act="link"]'], notice = nodes['[data-rb="notice"]'];
+    try {
+      ui.render(true);
+      expect(button.hidden).toBe(true);
+      fixture.set({canShare: true, openingAt: 500, paused: true});
+      fixture.frame();
+      expect(button.hidden).toBe(false);
+      expect(notice.textContent).toBe(`Opening at ${railTime(500 * status.dt)}…`);
+      bar.listeners.click({target: button});
+      expect(fixture.copies).toBe(1);
+      fixture.set({openingAt: null, shareNotice: 'Link copied'});
+      fixture.frame();
+      expect(notice.textContent).toBe('Link copied');
+      fixture.set({canShare: false, shareNotice: ''});
+      fixture.frame();
+      expect(button.hidden).toBe(true);
+      expect(notice.textContent).toBe('');
     } finally { fixture.close(); }
   });
 

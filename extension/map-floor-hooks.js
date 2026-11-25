@@ -21,6 +21,9 @@ const floors = [
   // The bonus update made the start point a parameter, so bonus zones on the main map pass their own spawn.
   {text: 'function @F(n,e,t=e.kind==="start"?n.spawn.position:@T[n.id]){const i=t?.x??(e.min.x+e.max.x)/2,a=t?.y??(e.min.y+e.max.y)/2,s=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=n.brushes.filter(l=>l.min.x<=i&&l.max.x>=i&&l.min.y<=a&&l.max.y>=a&&l.min.z<s&&l.max.z>r),c=n.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(u=>u.x))<=i&&Math.max(...l.vertices.map(u=>u.x))>=i&&Math.min(...l.vertices.map(u=>u.y))<=a&&Math.max(...l.vertices.map(u=>u.y))>=a&&Math.min(...l.vertices.map(u=>u.z))<s&&Math.max(...l.vertices.map(u=>u.z))>r),d=new @W(o,c).trace({x:i,y:a,z:s},{x:i,y:a,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}',
     edits: [['r=e.min.z-128,o=n.brushes.filter', 'r=e.min.z-128,__qolFloor=__qolZoneFloorCandidates(__qolFloorWorlds.get(n.brushes),n,i,a,r,s),o=(__qolFloor?.brushes??n.brushes).filter']]},
+  // Current game: same floor filter and trace with renamed locals.
+  {text: 'function @F(a,e,t=e.kind==="start"?a.spawn.position:@T[a.id]){const n=t?.x??(e.min.x+e.max.x)/2,s=t?.y??(e.min.y+e.max.y)/2,i=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=a.brushes.filter(l=>l.min.x<=n&&l.max.x>=n&&l.min.y<=s&&l.max.y>=s&&l.min.z<i&&l.max.z>r),c=a.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(f=>f.x))<=n&&Math.max(...l.vertices.map(f=>f.x))>=n&&Math.min(...l.vertices.map(f=>f.y))<=s&&Math.max(...l.vertices.map(f=>f.y))>=s&&Math.min(...l.vertices.map(f=>f.z))<i&&Math.max(...l.vertices.map(f=>f.z))>r),d=new @W(o,c).trace({x:n,y:s,z:i},{x:n,y:s,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}',
+    edits: [['r=e.min.z-128,o=a.brushes.filter', 'r=e.min.z-128,__qolFloor=__qolZoneFloorCandidates(__qolFloorWorlds.get(a.brushes),a,n,s,r,i),o=(__qolFloor?.brushes??a.brushes).filter']]},
 ];
 
 export function nativeMapFloorHooks(source, contract) {
@@ -35,7 +38,7 @@ export function nativeMapFloorHooks(source, contract) {
     const pattern = new RegExp(escape(floor.text).replace('@F', '[\\w$]+').replace('@T', '[\\w$]+').replace('@W', escape(contract.name)), 'g');
     const matches = [...source.matchAll(pattern)];
     if (matches.length !== 1) continue;
-    let replacement = matches[0][0].replace('c=n.displacementTriangles?.filter', 'c=(__qolFloor?__qolFloor.triangles:n.displacementTriangles)?.filter');
+    let replacement = matches[0][0].replace(/c=([an])\.displacementTriangles\?\.filter/, 'c=(__qolFloor?__qolFloor.triangles:$1.displacementTriangles)?.filter');
     for (const [from, to] of floor.edits) replacement = replacement.replace(from, to);
     source = source.slice(0, matches[0].index) + replacement + source.slice(matches[0].index + matches[0][0].length);
     return source.replace(ending, `this.tree=new ${tree}([...${brushes},...this.triangleBounds]);__qolFloorWorlds.set(${brushes},this)}`);

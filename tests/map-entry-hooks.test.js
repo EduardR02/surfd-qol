@@ -129,3 +129,18 @@ test('the bonus update keeps the early main-course ticket for signed-in players 
   await guest.loadMap(entry);
   expect(guest.guests.calls).toEqual(['guest:board-one']);
 });
+
+test('the ticket request overlaps the native kept-map wait, without skipping it', async () => {
+  const game = run(bonusSource.replace('try{const file=bonusFile', 'try{await prepareKeptMap(entry.slug);const file=bonusFile')
+    + 'function prepareKeptMap(slug){return deps.prepareKeptMap(slug)}');
+  let ready;
+  game.deps.prepareKeptMap = slug => new Promise(resolve => {
+    game.deps.events.push(`offline ${slug}`);
+    ready = resolve;
+  });
+  const load = game.loadMap(entry);
+  expect(game.deps.events).toEqual(['attempt', 'loading', 'offline one']);
+  ready();
+  await load;
+  expect(game.deps.events).toEqual(['attempt', 'loading', 'offline one', 'geometry']);
+});

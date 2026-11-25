@@ -4,6 +4,8 @@ import {triangleCollisionBrush} from '../extension/collision-world.js';
 import {packMapBounds, buildMapBoundsTree, unpackMapBoundsTree, adoptPreparedMapWorld}
   from '../extension/map-bvh-preparation.js';
 import {nativeMapPreparationHooks} from '../extension/map-preparation-hooks.js';
+import {nativeMapFloorHooks, zoneFloorCandidates} from '../extension/map-floor-hooks.js';
+import {nativeWorldContracts} from '../extension/native-world-contracts.js';
 
 const axes = ['x', 'y', 'z'];
 const point = (x = 0, y = 0, z = 0) => ({x, y, z});
@@ -541,4 +543,51 @@ test('the bonus update shape: a live Session subclass, renamed config and reader
   expect(patched).toContain('class w0{constructor(e,t=[],i=!1,a=!1){if(globalThis.__SURFD_QOL__?.usePreparedMapWorld?.(this,e,t,i,a,Zm))');
   expect(nativeMapPreparationHooks(source.replace('class Live extends Session{}', 'class Live extends Other{}'), contract, 'Session'))
     .not.toContain('__qolMapPreparation');
+});
+
+test('the live world adopts prepared geometry and the renamed floor helper uses native bounds', async () => {
+  const contract = nativeWorldContracts.find(world => world.name === 'sb');
+  const reader = 'async function th(a){if(!a.body)return a.json();const e=a.body.getReader(),t=[];let n=0;for(;n<2;){const o=await e.read();if(o.done)break;t.push(o.value),n+=o.value.length}const s=t.flatMap(o=>Array.from(o.subarray(0,2))).slice(0,2),i=new ReadableStream({start(o){for(const c of t)o.enqueue(c)},async pull(o){try{const c=await e.read();c.done?o.close():o.enqueue(c.value)}catch(c){o.error(c)}},cancel(o){return e.cancel(o)}}),r=s[0]===31&&s[1]===139?i.pipeThrough(new DecompressionStream("gzip")):i;return new Response(r).json()}';
+  const entry = 'async function nh(a,e){const t=Yl.find(r=>r.id===a.id),n=t?`/packed/${t.geometrySha256}.json.gz`:`/maps/${a.slug}-collision.json`,s=await bl(n,e),i=await th(s);if(i.id!==a.id||!i.brushes?.length||!i.zones?.some(r=>r.kind==="start")||!i.zones.some(r=>r.kind==="finish"))throw Error(`Invalid ${a.name} geometry`);return i}';
+  const floor = 'function nl(a,e,t=e.kind==="start"?a.spawn.position:C1[a.id]){const n=t?.x??(e.min.x+e.max.x)/2,s=t?.y??(e.min.y+e.max.y)/2,i=Math.min(e.max.z-1,t?t.z+1:e.max.z-1),r=e.min.z-128,o=a.brushes.filter(l=>l.min.x<=n&&l.max.x>=n&&l.min.y<=s&&l.max.y>=s&&l.min.z<i&&l.max.z>r),c=a.displacementTriangles?.filter(l=>Math.min(...l.vertices.map(f=>f.x))<=n&&Math.max(...l.vertices.map(f=>f.x))>=n&&Math.min(...l.vertices.map(f=>f.y))<=s&&Math.max(...l.vertices.map(f=>f.y))>=s&&Math.min(...l.vertices.map(f=>f.z))<i&&Math.max(...l.vertices.map(f=>f.z))>r),d=new sb(o,c).trace({x:n,y:s,z:i},{x:n,y:s,z:r},{min:{x:0,y:0,z:0},max:{x:0,y:0,z:0}});return d.brush&&!d.startSolid&&d.normal.z>.5?e.kind==="start"?d.end.z:Math.max(e.min.z,d.end.z):e.min.z}';
+  const source = `const ${contract.signature};class g6 extends Session{}function vr(a){const e=new g6(a,ou(a),Rf),t=lm(a);return e}
+    const ou=a=>({...he.unrestrictedStart?tb:ab,...a?.physicsOverrides,autoBhop:he.autoBhop,unrestrictedStart:he.unrestrictedStart});${reader}${entry}${floor}`;
+  const patchedFloor = nativeMapFloorHooks(source, contract);
+  expect(patchedFloor).toContain('__qolZoneFloorCandidates(__qolFloorWorlds.get(a.brushes),a,n,s,r,i)');
+  const unknownFloor = source.replace('e.min.z-128', 'e.min.z-256');
+  expect(nativeMapFloorHooks(unknownFloor, contract)).toBe(unknownFloor);
+  const unknownReader = patchedFloor.replace('new Response(r).json()', 'parseCustom(r)');
+  expect(nativeMapPreparationHooks(unknownReader, contract, 'Session')).toBe(unknownReader);
+
+  const makeBrush = (x, color) => ({min: point(x - 3, -3, -3), max: point(x + 3, 3, 0),
+    planes: [{normal: point(0, 0, 1), distance: 0}], color});
+  const start = {kind: 'start', min: point(-2, -2, -1), max: point(2, 2, 8)};
+  const map = {id: 'surf_one', brushes: [makeBrush(0, 'on start'), makeBrush(10, 'outside')],
+    zones: [start, {kind: 'finish'}], spawn: {position: point(0, 0, 3)}};
+  const prepared = new WeakMap(), calls = [];
+  const qol = {
+    createMapPreparationLoad: () => ({
+      read: async hash => { calls.push(hash); return map; },
+      prepare: async (data, threshold) => {
+        const packed = packMapBounds(data);
+        packed.root = unpackMapBoundsTree(buildMapBoundsTree(transferBounds(packed)), packed.itemCount);
+        prepared.set(data.brushes, packed);
+        calls.push(threshold);
+      },
+    }),
+    usePreparedMapWorld: (world, brushes, triangles, feature, corner, Tree) =>
+      adoptPreparedMapWorld(world, brushes, triangles, feature, corner, Tree, prepared),
+  };
+  const floorWorlds = new WeakMap();
+  const runtime = new Function('globalThis', 'Session', 'Yl', '__qolFloorWorlds', '__qolZoneFloorCandidates', `
+    const he={unrestrictedStart:false,autoBhop:false},ab={groundNormal:.7};
+    ${nativeMapPreparationHooks(patchedFloor, contract, 'Session')}
+    return {load:nh,World:sb,floor:nl};
+  `)({__SURFD_QOL__: qol}, class {}, [{id: map.id, geometrySha256: 'live-hash'}], floorWorlds, zoneFloorCandidates);
+  expect(await runtime.load({id: map.id})).toBe(map);
+  const world = new runtime.World(map.brushes);
+  expect(world.tree.root).toBe(prepared.get(map.brushes).root);
+  expect(floorWorlds.get(map.brushes)).toBe(world);
+  expect(runtime.floor(map, start)).toBeCloseTo(.03125, 10);
+  expect(calls).toEqual(['live-hash', .7]);
 });

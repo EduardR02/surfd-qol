@@ -144,7 +144,7 @@ export const nativeWorldContracts = [
       "<=0))if(F>b){const I=Math.max(0,(F-J)/(F-b));I>c&&(c=I,d=w,g=y.friction)}else h=Math.min(h,(F+J)/(F-b))}if(!(f||v<1&&m>v)){if(this.vphysicsFeatureFix&&r.collisionModel===\"vphysics\"" +
       "&&(c=z,d=x),!l){if(n.startSolid=!0,!u)return n.allSolid=!0,n.fraction=0,n.end={...t},n.brush=r,n;continue}c<h&&c>-1&&c<n.fraction&&(n.fraction=Math.max(0,c),n.normal={...d},n.brush" +
       "=r,g!==void 0?n.friction=g:delete n.friction)}}return n.end=ht(t,e,n.fraction),n}}"},
-  // Current game-CBUDnrs2.js. Its replay-index worker uses the reviewed Ce contract above.
+  // game-CBUDnrs2.js. Its replay-index worker uses the reviewed Ce contract above.
   {name: 'M0', index: 'e', cached: 't', triangle: 'i', vertices: 'a',
     signature: "Ue=(n=0,e=0,t=0)=>({x:n,y:e,z:t}),Gt=n=>({...n}),hn=(n,e)=>Ue(n.x+e.x,n.y+e.y,n.z+e.z),vi=(n,e)=>Ue(n.x-e.x,n.y-e.y,n.z-e.z)," +
       "ai=(n,e)=>Ue(n.x*e,n.y*e,n.z*e),vn=(n,e)=>n.x*e.x+n.y*e.y+n.z*e.z,Au=(n,e)=>Ue(n.y*e.z-n.z*e.y,n.z*e.x-n.x*e.z,n.x*e.y-n.y*e." +
@@ -178,4 +178,53 @@ export const nativeWorldContracts = [
       "eatureFix&&o.collisionModel===\"vphysics\"&&(c=p,l=S),!u){if(a.startSolid=!0,!f)return a.allSolid=!0,a.fraction=0,a.end={...e}," +
       "a.brush=o,a;continue}c<d&&c>-1&&c<a.fraction&&(a.fraction=Math.max(0,c),a.normal={...l},a.brush=o,b!==void 0?a.friction=b:del" +
       "ete a.friction)}}return a.end=_0(e,t,a.fraction),a}}"},
+  // Current live game and replay-index worker. The revised plane clipping
+  // logic stays native; the constructor, BVH and displacement brush are unchanged.
+  {name: 'sb', index: 'e', cached: 't', triangle: 'n', vertices: 's',
+    signature: "Oe=(a=0,e=0,t=0)=>({x:a,y:e,z:t}),Gt=a=>({...a}),ma=(a,e)=>Oe(a.x+e.x,a.y+e.y,a.z+e.z),Mn=(a,e)=>Oe(a.x-e.x,a.y-e.y,a.z-e.z),dn=(a,e)=>Oe(a.x*e,a.y*e,a.z*e),Sa=(a,e)=>a.x*e.x+a.y" +
+      "*e.y+a.z*e.z,Tf=(a,e)=>Oe(a.y*e.z-a.z*e.y,a.z*e.x-a.x*e.z,a.x*e.y-a.y*e.x),Gi=a=>Math.hypot(a.x,a.y,a.z),Tn=a=>Math.hypot(a.x,a.y),pl=a=>{const e=Gi(a);return e>1e-12?dn(a,1/e):O" +
+      "e()},nb=(a,e,t)=>ma(a,dn(Mn(e,a),t)),Gn=(a,e,t)=>Math.max(e,Math.min(t,a)),sm=a=>Oe(Math.fround(a.x),Math.fround(a.y),Math.fround(a.z)),Af=[\"x\",\"y\",\"z\"],p0=(a,e)=>Af.every(t=>a.m" +
+      "in[t]<=e.max[t]&&a.max[t]>=e.min[t]);class im{constructor(e,t=12){this.bounds=e;const n=s=>{const i={x:1/0,y:1/0,z:1/0},r={x:-1/0,y:-1/0,z:-1/0};for(const d of s)for(const l of A" +
+      "f)i[l]=Math.min(i[l],e[d].min[l]),r[l]=Math.max(r[l],e[d].max[l]);if(s.length<=t)return{min:i,max:r,items:s};const o=Af.reduce((d,l)=>r[l]-i[l]>r[d]-i[d]?l:d);s.sort((d,l)=>e[d]." +
+      "min[o]+e[d].max[o]-(e[l].min[o]+e[l].max[o])||d-l);const c=s.length>>1;return{min:i,max:r,left:n(s.slice(0,c)),right:n(s.slice(c))}};this.root=e.length?n(e.map((s,i)=>i)):null}bo" +
+      "unds;root;query(e){const t=[],n=s=>{if(p0(s,e))if(s.items)for(const i of s.items)p0(this.bounds[i],e)&&t.push(i);else n(s.left),n(s.right)};return this.root&&n(this.root),t.sort(" +
+      "(s,i)=>s-i)}}const Aa=.03125,Pi=[\"x\",\"y\",\"z\"];class sb{constructor(e,t=[],n=!1,s=!1){this.brushes=e,this.triangles=t,this.vphysicsFeatureFix=n,this.bspCornerFix=s,this.triangleBo" +
+      "unds=t.map(i=>({min:Oe(...Pi.map(r=>Math.min(...i.vertices.map(o=>o[r])))),max:Oe(...Pi.map(r=>Math.max(...i.vertices.map(o=>o[r]))))})),this.tree=new im([...e,...this.triangleBo" +
+      "unds])}brushes;triangles;vphysicsFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(e){const t=this.triangleCache.get(e);if(t)return t;const n=this.t" +
+      "riangles[e],s=n.vertices,i=[Oe(1,0,0),Oe(0,1,0),Oe(0,0,1)],o=[pl(Tf(Mn(s[1],s[0]),Mn(s[2],s[0]))),...i];for(let l=0;l<3;l++)for(const f of i)o.push(Tf(Mn(s[(l+1)%3],s[l]),f));con" +
+      "st c=[];for(const l of o)if(!(Gi(l)<1e-8))for(const f of[1,-1]){const u=dn(pl(l),f);c.some(h=>Sa(h.normal,u)>1-1e-9)||c.push({normal:u,distance:Math.max(...s.map(h=>Sa(u,h)))})}c" +
+      "onst d={id:`disp-${n.surfaceId}-${n.triangleId}`,vertices:s,faces:[[0,1,2]],planes:c,...this.triangleBounds[e],color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.s" +
+      "et(e,d),d}trace(e,t,n){const s={fraction:1,end:{...t},normal:Oe(),startSolid:!1,allSolid:!1,brush:null},i={min:Oe(),max:Oe()};for(const r of Pi)i.min[r]=Math.min(e[r],t[r])+n.min" +
+      "[r]-Aa,i.max[r]=Math.max(e[r],t[r])+n.max[r]+Aa;for(const r of this.tree.query(i)){const o=r<this.brushes.length?this.brushes[r]:this.triangleBrush(r-this.brushes.length);if(Pi.s" +
+      "ome(v=>Math.max(e[v],t[v])+n.max[v]<o.min[v]-Aa||Math.min(e[v],t[v])+n.min[v]>o.max[v]+Aa)||o.leafBounds&&!o.leafBounds.some(v=>Pi.every(S=>i.max[S]>=v.min[S]&&i.min[S]<=v.max[S]" +
+      ")))continue;let c=-1,d=1,l=Oe(),f=!1,u=!1,h=!1,m,g=-1/0,b=1/0,p=-1,x=Oe();const y=this.bspCornerFix&&!o.collisionModel&&o.planes.length===6&&o.planes.every(v=>Pi.filter(S=>v.norm" +
+      "al[S]!==0).length===1&&Pi.some(S=>Math.abs(v.normal[S])===1));for(const v of o.planes){const S=v.normal,E=S.x*(S.x<0?n.max.x:n.min.x)+S.y*(S.y<0?n.max.y:n.min.y)+S.z*(S.z<0?n.max" +
+      ".z:n.min.z),A=v.distance-E,k=Sa(e,S)-A,_=Sa(t,S)-A;if(o.collisionModel===\"vphysics\"||y)if(k>_){const M=k/(k-_);M>g&&(g=M,p=Math.max(0,(k-Aa)/(k-_)),x=S)}else k<_&&(b=Math.min(b,k" +
+      "/(k-_)));if(k>0&&(f=!0),_>0&&(u=!0),k>0&&_>0&&(!o.collisionModel||_>=k-1e-5)){h=!0;break}if(!(k<=0&&_<=0))if(k>_){const M=Math.max(0,(k-Aa)/(k-_));M>c&&(c=M,l=S,m=v.friction)}els" +
+      "e d=Math.min(d,(k+Aa)/(k-_))}if(!(h||b<1&&g>b)){if(this.vphysicsFeatureFix&&o.collisionModel===\"vphysics\"&&(c=p,l=x),!f){if(s.startSolid=!0,!u)return s.allSolid=!0,s.fraction=0,s" +
+      ".end={...e},s.brush=o,s;continue}c<d&&c>-1&&c<s.fraction&&(s.fraction=Math.max(0,c),s.normal={...l},s.brush=o,m!==void 0?s.friction=m:delete s.friction)}}return s.end=nb(e,t,s.fr" +
+      "action),s}}"},
+  {name: 'Re', index: 'e', cached: 'c', triangle: 'a', vertices: 'd',
+    signature: "p=(t=0,e=0,c=0)=>({x:t,y:e,z:c}),z=t=>({...t}),E=(t,e)=>p(t.x+e.x,t.y+e.y,t.z+e.z),C=(t,e)=>p(t.x-e.x,t.y-e.y,t.z-e.z),P=(t,e)=>p(t.x*e,t.y*e,t.z*e),B=(t,e)=>t.x*e.x+t.y*e.y+t.z*" +
+      "e.z,U=(t,e)=>p(t.y*e.z-t.z*e.y,t.z*e.x-t.x*e.z,t.x*e.y-t.y*e.x),$=t=>Math.hypot(t.x,t.y,t.z),N=t=>Math.hypot(t.x,t.y),L=t=>{const e=$(t);return e>1e-12?P(t,1/e):p()},Ne=(t,e,c)=>" +
+      "E(t,P(C(e,t),c)),j=(t,e,c)=>Math.max(e,Math.min(c,t)),je=t=>p(Math.fround(t.x),Math.fround(t.y),Math.fround(t.z)),X=[\"x\",\"y\",\"z\"],be=(t,e)=>X.every(c=>t.min[c]<=e.max[c]&&t.max[c" +
+      "]>=e.min[c]);class Me{constructor(e,c=12){this.bounds=e;const a=d=>{const s={x:1/0,y:1/0,z:1/0},r={x:-1/0,y:-1/0,z:-1/0};for(const n of d)for(const u of X)s[u]=Math.min(s[u],e[n]" +
+      ".min[u]),r[u]=Math.max(r[u],e[n].max[u]);if(d.length<=c)return{min:s,max:r,items:d};const i=X.reduce((n,u)=>r[u]-s[u]>r[n]-s[n]?u:n);d.sort((n,u)=>e[n].min[i]+e[n].max[i]-(e[u].m" +
+      "in[i]+e[u].max[i])||n-u);const o=d.length>>1;return{min:s,max:r,left:a(d.slice(0,o)),right:a(d.slice(o))}};this.root=e.length?a(e.map((d,s)=>s)):null}bounds;root;query(e){const c" +
+      "=[],a=d=>{if(be(d,e))if(d.items)for(const s of d.items)be(this.bounds[s],e)&&c.push(s);else a(d.left),a(d.right)};return this.root&&a(this.root),c.sort((d,s)=>d-s)}}const H=.0312" +
+      "5,D=[\"x\",\"y\",\"z\"];class Re{constructor(e,c=[],a=!1,d=!1){this.brushes=e,this.triangles=c,this.vphysicsFeatureFix=a,this.bspCornerFix=d,this.triangleBounds=c.map(s=>({min:p(...D.m" +
+      "ap(r=>Math.min(...s.vertices.map(i=>i[r])))),max:p(...D.map(r=>Math.max(...s.vertices.map(i=>i[r]))))})),this.tree=new Me([...e,...this.triangleBounds])}brushes;triangles;vphysic" +
+      "sFeatureFix;bspCornerFix;tree;triangleBounds;triangleCache=new Map;triangleBrush(e){const c=this.triangleCache.get(e);if(c)return c;const a=this.triangles[e],d=a.vertices,s=[p(1," +
+      "0,0),p(0,1,0),p(0,0,1)],i=[L(U(C(d[1],d[0]),C(d[2],d[0]))),...s];for(let u=0;u<3;u++)for(const b of s)i.push(U(C(d[(u+1)%3],d[u]),b));const o=[];for(const u of i)if(!($(u)<1e-8))" +
+      "for(const b of[1,-1]){const f=P(L(u),b);o.some(l=>B(l.normal,f)>1-1e-9)||o.push({normal:f,distance:Math.max(...d.map(l=>B(f,l)))})}const n={id:`disp-${a.surfaceId}-${a.triangleId" +
+      "}`,vertices:d,faces:[[0,1,2]],planes:o,...this.triangleBounds[e],color:\"#d4dadd\",friction:1,kind:\"snow\"};return this.triangleCache.set(e,n),n}trace(e,c,a){const d={fraction:1,end" +
+      ":{...c},normal:p(),startSolid:!1,allSolid:!1,brush:null},s={min:p(),max:p()};for(const r of D)s.min[r]=Math.min(e[r],c[r])+a.min[r]-H,s.max[r]=Math.max(e[r],c[r])+a.max[r]+H;for(" +
+      "const r of this.tree.query(s)){const i=r<this.brushes.length?this.brushes[r]:this.triangleBrush(r-this.brushes.length);if(D.some(g=>Math.max(e[g],c[g])+a.max[g]<i.min[g]-H||Math." +
+      "min(e[g],c[g])+a.min[g]>i.max[g]+H)||i.leafBounds&&!i.leafBounds.some(g=>D.every(k=>s.max[k]>=g.min[k]&&s.min[k]<=g.max[k])))continue;let o=-1,n=1,u=p(),b=!1,f=!1,l=!1,h,m=-1/0,y" +
+      "=1/0,S=-1,v=p();const x=this.bspCornerFix&&!i.collisionModel&&i.planes.length===6&&i.planes.every(g=>D.filter(k=>g.normal[k]!==0).length===1&&D.some(k=>Math.abs(g.normal[k])===1)" +
+      ");for(const g of i.planes){const k=g.normal,A=k.x*(k.x<0?a.max.x:a.min.x)+k.y*(k.y<0?a.max.y:a.min.y)+k.z*(k.z<0?a.max.z:a.min.z),T=g.distance-A,_=B(e,k)-T,I=B(c,k)-T;if(i.collis" +
+      "ionModel===\"vphysics\"||x)if(_>I){const V=_/(_-I);V>m&&(m=V,S=Math.max(0,(_-H)/(_-I)),v=k)}else _<I&&(y=Math.min(y,_/(_-I)));if(_>0&&(b=!0),I>0&&(f=!0),_>0&&I>0&&(!i.collisionMode" +
+      "l||I>=_-1e-5)){l=!0;break}if(!(_<=0&&I<=0))if(_>I){const V=Math.max(0,(_-H)/(_-I));V>o&&(o=V,u=k,h=g.friction)}else n=Math.min(n,(_+H)/(_-I))}if(!(l||y<1&&m>y)){if(this.vphysicsF" +
+      "eatureFix&&i.collisionModel===\"vphysics\"&&(o=S,u=v),!b){if(d.startSolid=!0,!f)return d.allSolid=!0,d.fraction=0,d.end={...e},d.brush=i,d;continue}o<n&&o>-1&&o<d.fraction&&(d.frac" +
+      "tion=Math.max(0,o),d.normal={...u},d.brush=i,h!==void 0?d.friction=h:delete d.friction)}}return d.end=Ne(e,c,d.fraction),d}}"},
 ];

@@ -398,3 +398,21 @@ test('failed codec-to-bitmap conversion releases codec resources and preserves n
     close() { decodersClosed++; }
   });
 });
+
+test('the live BSP hook preserves native atlas upload callbacks and tracks both disposal owners', () => {
+  const players = 'function rS(a,e,t){const n=Il(),s=Il(!0);const m=r4(()=>{if(d){m.dispose();return}try{e.initTexture(m)}catch{}l=!0},()=>{if(!d){u.map=h.map=f;try{e.initTexture(f)}catch{}l=!0}});return{set(){},dispose(){_.dispose(),m.dispose(),f.dispose(),b.dispose(),ee.clear(),a.remove(c)}}}const So=0;';
+  const ghost = 'function TS(a){const e=new Hs;e.name="record-ghost";const r=r4(()=>{s?r.dispose():(i.uniforms.map.value=r,i.uniforms.useMap.value=1)},()=>{});return{update(){},dispose(){F?.dispose(),w.dispose(),r.dispose()}}}function AS(){}';
+  const atlas = 'function r4(a,e){const t=new _5().load(new URL("/assets/agent-atlas-current.png",import.meta.url).href,a,void 0,e);return t.colorSpace=Qt,t.magFilter=Ua,t.minFilter=es,t.anisotropy=1,t}';
+  const source = atlas + players + ghost + nativeFixture.replace(/\bgpu\b/g, 's').replace(/\bworld\b/g, 'o')
+    .replace('async function loadAssets(', 'const has=data=>Object.keys(data.compressedTextures??{}).length>0,choose=(a,b)=>b!==!1&&a&&supports();async function loadAssets(')
+    .replace('zones=map?Labels(map):null;', 'zones=map?Labels(map):null,W=rS(o,s,(I,C,Q)=>_.pointVisible(I,C,Q)),U=TS(o);');
+  const patched = nativeMapLoadHooks(source);
+  expect(patched).toContain('const __qolProgressiveMap=');
+  expect(patched).toContain('[W.__qolAtlasTexture,U.__qolAtlasTexture]');
+  expect(patched).toContain('return{__qolAtlasTexture:m,set(');
+  expect(patched).toContain('return{__qolAtlasTexture:r,update(');
+  expect(patched).toContain('try{e.initTexture(m)}catch{}');
+  expect(patched).toContain('try{e.initTexture(f)}catch{}');
+  const unknownOwner = source.replace('r.dispose():(i.uniforms.map.value=r', 'r.dispose():(i.uniforms.map.value=null');
+  expect(nativeMapLoadHooks(unknownOwner)).toBe(unknownOwner);
+});

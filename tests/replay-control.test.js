@@ -866,6 +866,69 @@ describe('replay control', () => {
     world.frame(DT * 3);
     expect(control.status().index).toBe(12);
   });
+
+  test('adopting a native timed bonus replay leaves its seek to Surfd and delegates sharing the current time', async () => {
+    const {world, replay} = game();
+    let now = 10, share = true;
+    const control = createReplayControl({getAdapter: () => world.adapter, getSession: () => world.session, clock: () => now});
+    const {player} = world;
+    const links = [];
+    player.host.link = at => share ? `/run/verified?bonus=3&at=${at}` : null;
+    player.copyLink = async function () {
+      links.push(this.host.link(this.host.position() * DT));
+      this.notice = {text: 'Link copied', until: now + 2500};
+    };
+    const archived = {...replay, mapVersion: 'v1/bonus-3'};
+    try {
+      await world.watchNative(async () => archived);
+      player.startTarget = 180;
+      player.pause();
+      expect(control.status()).toMatchObject({index: 0, openingAt: 180, playing: false, canShare: true});
+      expect(player.startTarget).toBe(180);
+      expect(world.seeks).toBe(0);
+
+      // Native indexing reached the target and applied its own seek.
+      player.requestSeek(player.startTarget);
+      player.startTarget = null;
+      player.applyPending();
+      player.play();
+      expect(control.status()).toMatchObject({index: 180, openingAt: null, playing: true, canShare: true});
+      expect(world.playing).toBe(archived);
+      expect(world.playing.commands).toBe(replay.commands);
+      expect(world.reloads).toBe(1);
+      await control.copyLink();
+      expect(links).toEqual([`/run/verified?bonus=3&at=${180 * DT}`]);
+      expect(control.status().shareNotice).toBe('Link copied');
+      now += 2500;
+      expect(control.status().shareNotice).toBe('');
+
+      share = false;
+      expect(await control.watchLoaded(async () => replay)).toBe(true);
+      expect(control.status()).toMatchObject({index: 0, playing: true, canShare: false});
+      await control.copyLink();
+      expect(links).toHaveLength(1);
+    } finally { control.destroy(); }
+  });
+
+  test('a custom seek or playback action supersedes the pending native start, but copying does not', async () => {
+    const {world, replay, control} = game();
+    const {player} = world;
+    player.host.link = () => 'https://surfd.net/verified';
+    player.copyLink = async () => { throw new Error('Clipboard unavailable'); };
+    try {
+      await world.watchNative(async () => replay);
+      player.startTarget = 200;
+      player.pause();
+      await control.copyLink();
+      expect(control.status()).toMatchObject({openingAt: 200, notice: 'Couldn’t copy the link'});
+      expect(control.seek(10)).toBe(true);
+      expect(control.status()).toMatchObject({index: 10, openingAt: null, playing: false});
+
+      player.startTarget = 300;
+      control.toggle();
+      expect(control.status()).toMatchObject({index: 10, openingAt: null, playing: true});
+    } finally { control.destroy(); }
+  });
   test('new checkpoints and editing bookmarks never mutate an earlier timeline snapshot', async () => {
     const {world, replay, control} = game();
     await control.watchLoaded(async () => replay, {title: 'Leaderboard run'});

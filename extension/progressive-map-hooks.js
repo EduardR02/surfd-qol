@@ -9,11 +9,12 @@ export function nativeProgressiveMapHooks(source) {
   const id = '[\\w$]+';
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const one = matches => matches.length === 1 ? matches[0] : null;
-  const loader = one([...source.matchAll(/async function (?<name>[\w$]+)\((?<slug>[\w$]+),(?<options>[\w$]+),(?<controller>[\w$]+)\)\{(?<prefix>const (?<path>[\w$]+)=Object\.hasOwn\((?<index>[\w$]+),\k<slug>\)\?\k<index>\[\k<slug>\]:void 0;if\(!\k<path>\)throw new Error\(`Unknown BSP visual map: \$\{\k<slug>\}`\);const (?<signal>[\w$]+)=\k<controller>\.signal,(?<response>[\w$]+)=await (?<fetch>[\w$]+)\(\k<path>,\k<signal>\),(?<manifest>[\w$]+)=await (?<json>[\w$]+)\(\k<response>\);(?<validate>[\w$]+)\(\k<manifest>,\k<slug>\);const (?<data>[\w$]+)=\k<manifest>\.data;(?<normalize>[\w$]+)\(\k<data>\);)const (?<meshes>[\w$]+)=new Map,(?<images>[\w$]+)=new Map,(?<compressed>[\w$]+)=new Map,(?<using>[\w$]+)=\k<options>\.compressedTextures!==!1&&Object\.keys\(\k<data>\.compressedTextures\?\?\{\}\)\.length>0&&(?<supported>[\w$]+)\(\),(?<packs>[\w$]+)=(?<select>[\w$]+)\(\k<manifest>,\k<using>\),[\s\S]{0,3500}?return \k<data>\.resources=\{meshes:\k<meshes>,images:\k<images>,compressed:\k<compressed>\},\k<data>\}/g)]);
+  const loader = one([...source.matchAll(/async function (?<name>[\w$]+)\((?<slug>[\w$]+),(?<options>[\w$]+),(?<controller>[\w$]+)\)\{(?<prefix>const (?<path>[\w$]+)=Object\.hasOwn\((?<index>[\w$]+),\k<slug>\)\?\k<index>\[\k<slug>\]:void 0;if\(!\k<path>\)throw new Error\(`Unknown BSP visual map: \$\{\k<slug>\}`\);const (?<signal>[\w$]+)=\k<controller>\.signal,(?<response>[\w$]+)=await (?<fetch>[\w$]+)\(\k<path>,\k<signal>\),(?<manifest>[\w$]+)=await (?<json>[\w$]+)\(\k<response>\);(?<validate>[\w$]+)\(\k<manifest>,\k<slug>\);const (?<data>[\w$]+)=\k<manifest>\.data;(?<normalize>[\w$]+)\(\k<data>\);)const (?<meshes>[\w$]+)=new Map,(?<images>[\w$]+)=new Map,(?<compressed>[\w$]+)=new Map,(?<using>[\w$]+)=(?<compression>\k<options>\.compressedTextures!==!1&&Object\.keys\(\k<data>\.compressedTextures\?\?\{\}\)\.length>0&&[\w$]+\(\)|(?<choose>[\w$]+)\((?<has>[\w$]+)\(\k<data>\),\k<options>\.compressedTextures\)),(?<packs>[\w$]+)=(?<select>[\w$]+)\(\k<manifest>,\k<using>\),[\s\S]{0,3500}?return \k<data>\.resources=\{meshes:\k<meshes>,images:\k<images>,compressed:\k<compressed>\},\k<data>\}/g)]);
   const dds = one([...source.matchAll(/function (?<name>[\w$]+)\((?<buffer>[\w$]+),(?<descriptor>[\w$]+)\)\{(?<validate>[\w$]+)\(\k<buffer>,\k<descriptor>\);const (?<parsed>[\w$]+)=new (?<parser>[\w$]+)\(\)\.parse\(\k<buffer>,!0\),(?<format>[\w$]+)=(?<formats>\{DXT1:[\w$]+,DXT1A:[\w$]+,DXT3:[\w$]+,DXT5:[\w$]+\})\[\k<descriptor>\.format\],(?<texture>[\w$]+)=new (?<type>[\w$]+)\(\k<parsed>\.mipmaps,\k<parsed>\.width,\k<parsed>\.height,\k<format>\);return \k<texture>\.generateMipmaps=!1,\k<texture>\}/g)]);
   const factory = one([...source.matchAll(/function (?<name>[\w$]+)\((?<canvas>[\w$]+),(?<data>[\w$]+),(?<map>[\w$]+)(?<options>,[\w$]+=\{\})?\)\{const (?<renderer>[\w$]+)=new (?<type>[\w$]+)\(\{canvas:\k<canvas>,antialias:!0,alpha:!1,powerPreference:"high-performance"\}\);/g)]);
   if (!loader || !dds || !factory) return source;
   const l = loader.groups, d = dds.groups, f = factory.groups;
+  if (l.choose && !one([...source.matchAll(new RegExp(`const ${escape(l.has)}=(?<data>${id})=>Object\\.keys\\(\\k<data>\\.compressedTextures\\?\\?\\{\\}\\)\\.length>0,${escape(l.choose)}=\\((?<available>${id}),(?<preference>${id})\\)=>\\k<preference>!==!1&&\\k<available>&&${id}\\(\\);`, 'g'))])) return source;
   const packRead = loader[0].match(new RegExp(`await (${id})\\(await ${escape(l.fetch)}\\((${id})\\.url,${escape(l.signal)}\\),\\2\\.byteLength\\)`));
   const imageDecode = loader[0].match(new RegExp(`else ${escape(l.images)}\\.set\\((${id})\\.url,await (${id})\\((${id}),\\1\\.url,${escape(l.signal)}\\)\\)`));
   if (!packRead || !imageDecode || !loader[0].includes(`${d.validate}(`)) return source;
@@ -38,9 +39,11 @@ export function nativeProgressiveMapHooks(source) {
   const b = branch.groups, t = textureFactory.groups, c = cube.groups, s = sky.groups, v = draw.groups;
   const filter = scope.match(new RegExp(`${escape(b.texture)}\\.magFilter=${escape(t.nearest)}\\?(${id}):(${id}),${escape(b.texture)}\\.minFilter=${escape(t.nearest)}\\?\\1:(${id})&&${escape(b.texture)}\\.mipmaps\\.length===1\\?\\2:(${id})`));
   if (!filter) return source;
-  const load = one([...source.matchAll(/async function (?<name>[\w$]+)\((?<entry>[\w$]+),(?<resume>[\w$]+)=!1,(?<bypass>[\w$]+)=!1\)\{(?<before>[\s\S]{0,1000}?)try\{const(?: (?<lookup>[\w$]+=[\w$]+\(\k<entry>\.id\),))?\[(?<collision>[\w$]+),(?<visual>[\w$]+)(?:,(?<bonuses>[\w$]+))?\]=await Promise\.all\(\[(?<geometry>[\w$]+)\(\k<entry>,(?<controller>[\w$]+)\.signal\),(?<visualLoad>[\w$]+)\(\k<entry>\.slug,\{signal:\k<controller>\.signal\}\)(?<bonusLoad>,[^\[\]]{1,300}?)?\]\);(?<ready>[\w$]+)=!1;const (?<frame>[\w$]+)=(?<install>[\w$]+)\(\k<collision>,\k<visual>,\k<resume>,\k<bypass>(?<bonusArgument>,[\w$]+)?\);await (?<view>[\w$]+)\.prepare\?\.\(\k<frame>\),\k<ready>=!0,(?<success>[\s\S]{0,300}?)\}catch\((?<error>[\w$]+)\)\{(?<failure>[\s\S]{0,1400}?)\}finally\{(?<finalize>[\s\S]{0,200}?)\}(?<after>if[\s\S]{0,200}?)\}(?=async function)/g)]);
+  const load = one([...source.matchAll(/async function (?<name>[\w$]+)\((?<entry>[\w$]+),(?<resume>[\w$]+)=!1,(?<bypass>[\w$]+)=!1\)\{(?<before>[\s\S]{0,1600}?)try\{(?<cacheBarrier>await (?<cacheSync>[\w$]+)\(\k<entry>\.slug\);)?const(?: (?<lookup>[\w$]+=[\w$]+\(\k<entry>\.id\),))?\[(?<collision>[\w$]+),(?<visual>[\w$]+)(?:,(?<bonuses>[\w$]+))?\]=await Promise\.all\(\[(?<geometry>[\w$]+)\(\k<entry>,(?<controller>[\w$]+)\.signal\),(?<visualLoad>[\w$]+)\(\k<entry>\.slug,\{signal:\k<controller>\.signal\}\)(?<bonusLoad>,[^\[\]]{1,300}?)?\]\);(?<ready>[\w$]+)=!1;const (?<frame>[\w$]+)=(?<install>[\w$]+)\(\k<collision>,\k<visual>,\k<resume>,\k<bypass>(?<bonusArgument>,[\w$]+)?\);await (?<view>[\w$]+)\.prepare\?\.\(\k<frame>\),\k<ready>=!0,(?<success>[\s\S]{0,300}?)\}catch\((?<error>[\w$]+)\)\{(?<failure>[\s\S]{0,1400}?)\}finally\{(?<finalize>[\s\S]{0,200}?)\}(?<after>if[\s\S]{0,200}?)\}(?=async function)/g)]);
   if (!load || load.groups.visualLoad !== relay.groups.name) return source;
   const k = load.groups;
+  if (Boolean(k.cacheBarrier) !== Boolean(l.choose) ||
+      k.cacheSync && !one([...source.matchAll(new RegExp(`async function ${escape(k.cacheSync)}\\((${id})\\)\\{${id}\\(\\)\\.includes\\(\\1\\)&&await ${id}\\(\\)\\}`, 'g'))])) return source;
   // The bonus update loads the map's bonus courses alongside and installs them with the map.
   const bonuses = [k.lookup, k.bonuses, k.bonusLoad, k.bonusArgument];
   if (bonuses.some(Boolean) && (!bonuses.every(Boolean) || k.bonusArgument !== `,${k.bonuses}`)) return source;
@@ -101,10 +104,12 @@ export function nativeProgressiveMapHooks(source) {
     ${footer.groups.view}.dispose=()=>{if(__qolRendererDisposed)return;__qolRendererDisposed=true;__qolMapBindings.dispose();try{return __qolDispose.call(${footer.groups.view})}finally{${f.data}.resources.skyPreparation?.release?.()}};
     return ${footer.groups.view}}`);
 
+  // Keep's service worker serves the page's native asset requests. On that
+  // build, workers decode transferred bodies but never fetch packs themselves.
   const loaderText = `async function ${l.name}(${l.slug},${l.options},${l.controller}){${l.prefix}
-    const ${l.using}=${l.options}.compressedTextures!==false&&Object.keys(${l.data}.compressedTextures??{}).length>0&&${l.supported}(),${l.packs}=${l.select}(${l.manifest},${l.using});
+    const ${l.using}=${l.compression},${l.packs}=${l.select}(${l.manifest},${l.using});
     ${l.data}.resources=await (${loadProgressiveAssets.toString()})(${l.data},${l.packs},${l.using},${l.signal},{
-      fetchPack:pack=>${l.fetch}(pack.url,${l.signal}),packUrl:pack=>{try{return new URL(pack.url,${l.response}.url).href}catch{return null}},
+      fetchPack:pack=>${l.fetch}(pack.url,${l.signal}),${l.choose ? '' : `packUrl:pack=>{try{return new URL(pack.url,${l.response}.url).href}catch{return null}},`}
       readPack:async pack=>${packRead[1]}(await ${l.fetch}(pack.url,${l.signal}),pack.byteLength),
       decodeImage:(bytes,url)=>${imageDecode[2]}(bytes,url,${l.signal}),validateDDS:${d.validate},prepareSky:__qolPrepareSky,abort:error=>${l.controller}.abort(error)});return ${l.data}}`;
   const r = relay.groups;
@@ -119,7 +124,7 @@ export function nativeProgressiveMapHooks(source) {
     function __qolPostFailure(error){if(!__qolEntered||${k.view}!==__qolView||error?.name==="AbortError")return;__qolEntered=false;
       if(${j.loading}){${k.controller}.abort(error);${k.ready}=false;__qolView.dispose();return}
       ${unlock[1]}.unlock();${unlock[2]}.hidden=false;__qolMapFailure(error);${j.element}("play").disabled=!${k.ready};${j.clock}=performance.now();${j.input}.reset()}
-    try{
+    try{${k.cacheBarrier ?? ''}
       const ${k.lookup ?? ''}[${k.collision},${k.visual}${k.bonuses ? ',' + k.bonuses : ''}]=await Promise.all([${k.geometry}(${k.entry},${k.controller}.signal),${k.visualLoad}(${k.entry}.slug,{signal:${k.controller}.signal}).then(data=>{
         if(${k.controller}.signal.aborted){data.resources.cancel();for(const image of data.resources.images.values())image.close?.();throw ${k.controller}.signal.reason}
         __qolAssets=data.resources;__qolAssets.ready.catch(error=>{if(!__qolView&&!${k.controller}.signal.aborted)${k.controller}.abort(error)});return data})${k.bonusLoad ?? ''}]);

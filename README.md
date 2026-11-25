@@ -104,6 +104,8 @@ When a run is removed by history limits or a successful clear, its pending repla
 
 The replay bar marks each ramp touch on the timeline in the color of its grade, on your own runs and on any other replay once the game has indexed it. **Saveloc** (or your usual save bind) bookmarks a moment; your saved moments become practice savelocs when you leave the replay, so you can try the section yourself. **Restart current stage** also works after you load a practice saveloc or visit a practice station. The custom replay bar is on by default; switch to Surfd's own bar under **QoL → History**. Both have the same marks and savelocs.
 
+For a verified replay opened through Surfd, **Copy link** shares the current playback position in either replay bar.
+
 After you seek to a part you haven't watched yet, feedback can stay grey until the next ramp or flight, because the extension hasn't analysed what came before.
 
 Replays also show a **Hull: crouched / standing** line in the key display. Spectating shows speed, time and checkpoint progress only, since network updates don't carry enough data for exact feedback.
@@ -144,6 +146,8 @@ Game traffic goes through Cloudflare's relay, so players never see each other's 
 Maps still preload behind the menu; geometry parsing runs off-thread and preparation yields between stages to reduce UI freezes.
 
 Getting back into a map you've played recently is much faster than in the native game, with the same textures, collision and physics. The [download page](https://eduardr02.github.io/surfd-qol/) has the measured times. To make that possible, Surfd QoL keeps prepared collision data for the maps you played most recently in the browser, up to 256 MB in total, which Chrome stores compressed on disk (about 17 MB for the largest maps). It's part of surfd.net's site data, so clearing that removes it, and the next load rebuilds it.
+
+This prepared collision cache is separate from Surfd’s **Keep on this device** downloads, which still manage the map files used for offline loading.
 
 ## Optional extras
 

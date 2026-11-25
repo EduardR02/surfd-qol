@@ -64,7 +64,10 @@ export function createBindings(getAdapter, settings, onSettings) {
       message = status.join(' · ') || 'Disabled';
       return;
     }
-    if (typeof input?.sample !== 'function' || typeof input?.peek !== 'function') throw new Error('Native input sampling unavailable');
+    // Timestamped native samples bypass peek and share controls with previews.
+    // Older native builds construct commands directly in peek.
+    const commandMethod = typeof input?.controls === 'function' ? 'controls' : 'peek';
+    if (typeof input?.sample !== 'function' || typeof input[commandMethod] !== 'function') throw new Error('Native input sampling unavailable');
     if (crouchJump) {
       const bindings = Object.fromEntries(Object.entries(current).map(([action, codes]) => [action, [...codes]]));
       if (!bindings.jump.includes(code)) bindings.jump.push(code);
@@ -76,10 +79,10 @@ export function createBindings(getAdapter, settings, onSettings) {
     const hookedInput = input;
     const nativeBindings = sampledBindings = input.bindings;
     const sample = input.sample;
-    const peek = input.peek;
+    const constructCommand = input[commandMethod];
     const clear = input.clear;
     const ownSample = Object.getOwnPropertyDescriptor(input, 'sample');
-    const ownPeek = Object.getOwnPropertyDescriptor(input, 'peek');
+    const ownCommand = Object.getOwnPropertyDescriptor(input, commandMethod);
     const ownClear = Object.getOwnPropertyDescriptor(input, 'clear');
     let serial = 0, repeatSerial = 0, adWinner = 0, wsWinner = 0;
     let wasDown = crouchJump && input.keys.has(code);
@@ -122,11 +125,11 @@ export function createBindings(getAdapter, settings, onSettings) {
     };
     const empty = [];
     const filteredBindings = {...nativeBindings};
-    const peekFiltered = function () {
+    const commandFiltered = function () {
       if (this !== hookedInput || this.bindings !== nativeBindings || !this.locked || this.suppressed ||
-        (!nullAD && !nullWSpace)) return peek.apply(this, arguments);
+        (!nullAD && !nullWSpace)) return constructCommand.apply(this, arguments);
       sync();
-      if ((!adWinner || adWinner === 3) && (!wsWinner || wsWinner === 12)) return peek.apply(this, arguments);
+      if ((!adWinner || adWinner === 3) && (!wsWinner || wsWinner === 12)) return constructCommand.apply(this, arguments);
       // Filter actions, not physical keys: a shared duck/back/shortcut binding
       // must survive when its movement action loses priority.
       filteredBindings.left = adWinner === 2 ? empty : nativeBindings.left;
@@ -135,7 +138,7 @@ export function createBindings(getAdapter, settings, onSettings) {
       filteredBindings.jump = wsWinner === 4 ? empty : nativeBindings.jump;
       this.bindings = filteredBindings;
       try {
-        return peek.apply(this, arguments);
+        return constructCommand.apply(this, arguments);
       } finally {
         this.bindings = nativeBindings;
       }
@@ -180,7 +183,7 @@ export function createBindings(getAdapter, settings, onSettings) {
     const lockChanged = () => { if (!hookedInput.locked) reset(); };
     const visibilityChanged = () => { if (hookedInput.doc.hidden) reset(); };
     hookedInput.sample = sampleFiltered;
-    hookedInput.peek = peekFiltered;
+    hookedInput[commandMethod] = commandFiltered;
     if (typeof clear === 'function') hookedInput.clear = cleared;
     hookedInput.doc.addEventListener('keydown', pressed);
     hookedInput.doc.addEventListener('keyup', released);
@@ -197,9 +200,9 @@ export function createBindings(getAdapter, settings, onSettings) {
         if (ownSample) Object.defineProperty(hookedInput, 'sample', ownSample);
         else delete hookedInput.sample;
       }
-      if (hookedInput.peek === peekFiltered) {
-        if (ownPeek) Object.defineProperty(hookedInput, 'peek', ownPeek);
-        else delete hookedInput.peek;
+      if (hookedInput[commandMethod] === commandFiltered) {
+        if (ownCommand) Object.defineProperty(hookedInput, commandMethod, ownCommand);
+        else delete hookedInput[commandMethod];
       }
       if (hookedInput.clear === cleared) {
         if (ownClear) Object.defineProperty(hookedInput, 'clear', ownClear);

@@ -70,6 +70,13 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     return t && watched && getSession?.() === watched.session && t.replay === watched.replay &&
       (!t.host?.session || t.host.session() === watched.session) && t === watched.transport && t.revision === watched.revision ? t : null;
   };
+  // Match an explicit interaction with the native bar. Merely adopting or
+  // rendering a replay must not cancel the pending seek from its share link.
+  const cancelStart = t => {
+    if (t?.startTarget != null) t.startTarget = null;
+    return t;
+  };
+  const command = () => cancelStart(playing(current()));
 
   // A seek in the game's player restores a keyframe with restorePractice and
   // steps on from it: put the HUD's analysis back to that tick, or clear it
@@ -163,6 +170,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
     const watched = watching = {id: ++watches, replay, session, transport, revision: transport?.revision, length: replay.commands.length, dt: session.config?.dt ?? 0.015,
       start: null, markers: [], boards: [], spots: [], lastSpot: null, run: null,
       ramps: [], rampsKey: '', base: replay.initialState?.tick ?? 0, coherent: true,
+      canShare: typeof transport?.copyLink === 'function' && !!transport.host?.link?.(1),
       frames: createCoachingFrames(coaching ?? {save() {}, restore() {}}), ...details};
     const tick = (session.state?.tick ?? 0) - watched.base;
     watched.coherent = tick === 0;
@@ -281,6 +289,7 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
   function seek(index) {
     const watched = current(), t = playing(watched);
     if (!t || !Number.isFinite(index)) return false;
+    cancelStart(t);
     t.requestSeek(Math.max(0, Math.min(end(watched), Math.round(index))));
     t.applyPending();
     return true;
@@ -513,28 +522,41 @@ export function createReplayControl({getAdapter, getSession, archive, getMapName
       } catch { /* the player changed shape */ }
       let others = false;
       try { others = ghosts() === true; } catch { /* none */ }
+      const shareNotice = watched.canShare ? t?.notice : null;
+      const now = shareNotice || notice ? clock() : 0;
       return {
         title: watched.title, index: position(watched), length, start: Math.min(watched.start ?? 0, length), dt: watched.dt, ghosts: others,
         playing: !!t && !paused && !ended, ended, speed, parked, reachable,
         indexed: t?.index?.indexed ?? reachable, complete: t?.index?.complete ?? false,
         markers: watched.markers, ramps: others ? EMPTY_MARKS : ramps(watched),
         spots: others ? EMPTY_MARKS : watched.spots, lastSpot: others ? null : watched.lastSpot,
-        notice: notice && clock() - notice.at < NOTICE_MS ? notice.text : '', run: watched.run,
+        notice: notice && now - notice.at < NOTICE_MS ? notice.text : '', run: watched.run,
+        canShare: !!t && watched.canShare, shareNotice: shareNotice?.until > now ? shareNotice.text : '',
+        openingAt: t?.startTarget ?? null,
       };
     },
-    play() { playing(current())?.play(); },
-    pause() { playing(current())?.pause(); },
-    toggle() { playing(current())?.toggle(); },
+    play() { command()?.play(); },
+    pause() { command()?.pause(); },
+    toggle() { command()?.toggle(); },
     seek,
     // skip() moves by seconds; step() moves by ticks and pauses; stage() jumps a stage or checkpoint.
-    skip(seconds) { playing(current())?.seekBy(seconds); },
-    step(ticks) { playing(current())?.stepTick(ticks); },
-    stage(direction) { playing(current())?.stage(direction); },
-    setSpeed(next) { if (SPEEDS.includes(next)) playing(current())?.setSpeed(next); },
-    faster() { playing(current())?.shiftSpeed(1); },
-    slower() { playing(current())?.shiftSpeed(-1); },
+    skip(seconds) { command()?.seekBy(seconds); },
+    step(ticks) { command()?.stepTick(ticks); },
+    stage(direction) { command()?.stage(direction); },
+    setSpeed(next) { if (SPEEDS.includes(next)) command()?.setSpeed(next); },
+    faster() { command()?.shiftSpeed(1); },
+    slower() { command()?.shiftSpeed(-1); },
     exit() { playing(current())?.host?.exit?.(); },
     returnToServer() { playing(current())?.host?.returnToServer?.(); },
+    async copyLink() {
+      const watched = current(), t = playing(watched);
+      if (!t || !watched.canShare) return;
+      try { await t.copyLink(); }
+      catch {
+        if (watching === watched && playing(watched) === t)
+          notice = {text: 'Couldn’t copy the link', at: clock()};
+      }
+    },
     // Saves the current tick as a spot, also kept for practice; false when nothing could be saved.
     saveSpot() {
       const watched = current();

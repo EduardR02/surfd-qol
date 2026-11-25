@@ -164,9 +164,9 @@ function nativeZoneTextureHook(source, factory, end) {
   const owners = [...source.matchAll(new RegExp(`function ${escape(selected.factory)}\\((?<map>[\\w$]+)(?:,[\\w$]+)?\\)\\{const (?<group>[\\w$]+)=new [\\w$]+;\\k<group>\\.name="Timer zone boundaries";const (?<resources>[\\w$]+)=\\[\\],[\\s\\S]{0,6000}?dispose\\(\\)\\{for\\(const (?<entry>[\\w$]+) of \\k<resources>\\)\\k<entry>\\.dispose\\(\\)\\}\\}\\}`, 'g'))];
   if (owners.length !== 1) return null;
   const owner = owners[0], o = owner.groups;
-  const labels = [...owner[0].matchAll(/[\w$]+\.push\(\{sprite:[\w$]+,[\s\S]{0,500}?texture:(?<texture>[\w$]+),material:[\w$]+\}\)/g)];
+  const labels = [...owner[0].matchAll(/[\w$]+\.push\(\{sprite:[\w$]+,[^{}]{0,500}?texture:(?<texture>[\w$]+),material:[\w$]+(?:,minWidth:150)?\}\)/g)];
   const returned = `return{group:${o.group},update(`;
-  if (labels.length !== 1 || !owner[0].includes(`${o.resources}.push(${labels[0].groups.texture})`) ||
+  if (!labels.length || labels.some(label => !owner[0].includes(`${o.resources}.push(${label.groups.texture})`)) ||
       owner[0].split(returned).length !== 2) return null;
   // Enumerate the native disposal owner's resources, including the original
   // label maps swapped out by the first view and its shared hi-res canvas.
@@ -175,21 +175,51 @@ function nativeZoneTextureHook(source, factory, end) {
     text: owner[0].replace(returned, `return{*__qolZoneTextures(){yield* ${o.resources}},group:${o.group},update(`)};
 }
 
-function nativeAtlasHooks(source, factory, end, world) {
+// The live BSP view gives its remote-player owner the renderer and a PVS
+// callback. Its atlas callbacks also initialize the real/fallback texture.
+// Preserve those callbacks and native disposal while tracking readiness.
+function nativeLiveAtlasOwners(source, scope, world, renderer, load) {
+  if (world !== 'o' || renderer !== 's' || load !== 'r4' ||
+      scope.split('W=rS(o,s,(I,C,Q)=>_.pointVisible(I,C,Q)),U=TS(o)').length !== 2) return null;
+  const owners = [
+    {head: 'function rS(a,e,t){const n=Il(),s=Il(!0)', end: '}const So=',
+      callback: 'm=r4(()=>{if(d){m.dispose();return}try{e.initTexture(m)}catch{}l=!0},()=>{if(!d){u.map=h.map=f;try{e.initTexture(f)}catch{}l=!0}})',
+      disposal: '_.dispose(),m.dispose(),f.dispose(),b.dispose(),ee.clear(),a.remove(c)}}',
+      returned: 'return{set(', texture: 'm', owner: 'W'},
+    {head: 'function TS(a){const e=new Hs;e.name="record-ghost"', end: '}function AS(',
+      callback: 'r=r4(()=>{s?r.dispose():(i.uniforms.map.value=r,i.uniforms.useMap.value=1)},()=>{})',
+      disposal: 'F?.dispose(),w.dispose(),r.dispose()}}', returned: 'return{update(', texture: 'r', owner: 'U'},
+  ];
+  const changes = [], parameters = [];
+  for (const owner of owners) {
+    const at = source.indexOf(owner.head), end = source.indexOf(owner.end, at);
+    if (at < 0 || source.lastIndexOf(owner.head) !== at || end < 0) return null;
+    const body = source.slice(at, end);
+    if (body.split(owner.callback).length !== 2 || body.split(owner.disposal).length !== 2 ||
+        body.split(owner.returned).length !== 2) return null;
+    changes.push({before: body, after: body.replace(owner.returned, `return{__qolAtlasTexture:${owner.texture},${owner.returned.slice('return{'.length)}`)});
+    parameters.push(`${owner.owner}.__qolAtlasTexture`);
+  }
+  return {parameter: `[${parameters.join(',')}]`, changes};
+}
+
+function nativeAtlasHooks(source, factory, end, world, renderer) {
   const loaders = [...source.matchAll(/function (?<name>[\w$]+)\((?<success>[\w$]+),(?<failure>[\w$]+)\)\{const (?<texture>[\w$]+)=new (?<loader>[\w$]+)\(\)\.load\((?<url>new URL\("\/assets\/agent-atlas-[^"]+",import\.meta\.url\)\.href),\k<success>,void 0,\k<failure>\);return \k<texture>\.colorSpace=(?<color>[\w$]+),\k<texture>\.magFilter=(?<mag>[\w$]+),\k<texture>\.minFilter=(?<min>[\w$]+),\k<texture>\.anisotropy=1,\k<texture>\}/g)];
   if (loaders.length === 0) return source.includes('/assets/agent-atlas-') ? null : {parameter: '[]', changes: []};
   if (loaders.length !== 1) return null;
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const loader = loaders[0], l = loader.groups;
-  const owners = [...source.matchAll(new RegExp(`function (?<name>[\\w$]+)\\((?<scene>[\\w$]+)\\)\\{(?<before>(?:(?!function )[\\s\\S]){0,1800}?)(?<texture>[\\w$]+)=${escape(l.name)}\\(\\(\\)=>\\{(?<success>[^{}]{0,300})\\},\\(\\)=>\\{(?<failure>[^{}]{0,100})\\}\\)(?<after>[\\s\\S]{0,10000}?)(?<footer>\\}\\}\\})(?=const |function )`, 'g'))];
+  const scope = source.slice(factory.index, end);
+  const live = nativeLiveAtlasOwners(source, scope, world, renderer, l.name);
+  const owners = live ? [] : [...source.matchAll(new RegExp(`function (?<name>[\\w$]+)\\((?<scene>[\\w$]+)\\)\\{(?<before>(?:(?!function )[\\s\\S]){0,1800}?)(?<texture>[\\w$]+)=${escape(l.name)}\\(\\(\\)=>\\{(?<success>[^{}]{0,300})\\},\\(\\)=>\\{(?<failure>[^{}]{0,100})\\}\\)(?<after>[\\s\\S]{0,10000}?)(?<footer>\\}\\}\\})(?=const |function )`, 'g'))];
   const accepted = owners.filter(owner => {
     const o = owner.groups;
     return new RegExp(`${escape(o.texture)}\\.dispose\\(\\)`).test(o.success) &&
       new RegExp(`${escape(o.texture)}\\.dispose\\(\\)`).test(o.after) &&
       (o.after.includes('return{set(') || o.after.includes('return{update('));
   });
-  if (accepted.length !== 2) return null;
-  const scope = source.slice(factory.index, end), parameters = [], changes = [];
+  if (!live && accepted.length !== 2) return null;
+  const parameters = [], changes = live?.changes ?? [];
   for (const owner of accepted) {
     const o = owner.groups;
     const calls = [...scope.matchAll(new RegExp(`(?<owner>[\\w$]+)=${escape(o.name)}\\(${escape(world)}\\)`, 'g'))];
@@ -200,7 +230,7 @@ function nativeAtlasHooks(source, factory, end, world) {
   }
   const replacement = `function ${l.name}(${l.success},${l.failure}){const ${l.texture}=(${loadNativeAtlas.toString()})((success,failure)=>new ${l.loader}().load(${l.url},success,void 0,failure),${l.success},${l.failure});return ${l.texture}.colorSpace=${l.color},${l.texture}.magFilter=${l.mag},${l.texture}.minFilter=${l.min},${l.texture}.anisotropy=1,${l.texture}}`;
   changes.push({before: loader[0], after: replacement});
-  return {parameter: `[${parameters.join(',')}]`, changes};
+  return {parameter: live?.parameter ?? `[${parameters.join(',')}]`, changes};
 }
 
 
@@ -224,7 +254,7 @@ export function nativeMapLoadHooks(source) {
       !body.includes(`for(const ${instances[1]} of ${scenes})${renderer}.compile(${instances[1]},`)) return source;
   const compile = body.match(new RegExp(`for\\(const [\\w$]+ of ${scenes}\\)${renderer}\\.compile\\([\\w$]+,([\\w$]+)\\)`));
   if (!compile) return source;
-  const decode = [...source.matchAll(/function ([\w$]+)\(([\w$]+),([\w$]+),([\w$]+)\)\{const ([\w$]+)=\3\.endsWith\("\.png"\)\?"image\/png":[\s\S]*?\}async function ([\w$]+)\(([\w$]+),([\w$]+)=\{\}\)/g)];
+  const decode = [...source.matchAll(/function ([\w$]+)\(([\w$]+),([\w$]+),([\w$]+)\)\{const ([\w$]+)=\3\.endsWith\("\.png"\)\?"image\/png":[\s\S]{1,600}?\}(?=(?:const [\w$]+=[\w$]+=>Object\.keys\([\w$]+\.compressedTextures\?\?\{\}\)\.length>0,[\w$]+=\([\w$]+,[\w$]+\)=>[\w$]+!==!1&&[\w$]+&&[\w$]+\(\);)?async function [\w$]+\([\w$]+,[\w$]+=\{\}\))/g)];
   const factory = [...source.matchAll(new RegExp(`function ([\\w$]+)\\(([\\w$]+),([\\w$]+),([\\w$]+)(?:,[\\w$]+=\\{\\})?\\)\\{const ${renderer}=new [\\w$]+\\(\\{canvas:\\2,antialias:!0,alpha:!1,powerPreference:"high-performance"\\}\\)`, 'g'))];
   if (decode.length !== 1 || factory.length !== 1) return source;
   const dispose = `${renderer}.dispose()}};return ${finish[7]}}`;
@@ -239,7 +269,7 @@ export function nativeMapLoadHooks(source) {
   if (!gpu) return source;
   const zones = nativeZoneTextureHook(source, factory[0], source.indexOf(dispose));
   if (!zones) return source;
-  const atlases = nativeAtlasHooks(source, factory[0], source.indexOf(dispose), world);
+  const atlases = nativeAtlasHooks(source, factory[0], source.indexOf(dispose), world, renderer);
   if (!atlases) return source;
   const viewPattern = new RegExp(`(const |,)${finish[7].replace(/[$]/g, '\\$&')}=\\{`);
   const viewDeclaration = source.slice(factory[0].index, source.indexOf(dispose)).match(viewPattern);
@@ -258,7 +288,7 @@ export function nativeMapLoadHooks(source) {
   // the constructor's eager upload of every decoded texture is unnecessary.
   source = source.replace(eager[0][0], '');
   const decoder = decode[0], nativeName = '__qolNativeMapImage';
-  const original = decoder[0].slice(0, decoder[0].lastIndexOf('async function '));
+  const original = decoder[0];
   const wrapper = `function ${decoder[1]}(${decoder[2]},${decoder[3]},${decoder[4]}){return (${decodeMapImage.toString()})(${decoder[2]},${decoder[3]},${decoder[4]},${nativeName})}`;
   source = source.replace(original, () => wrapper + original.replace(`function ${decoder[1]}(`, `function ${nativeName}(`));
   const close = map => `for(const image of ${map}.values())if(typeof image.close==="function")image.close();`;

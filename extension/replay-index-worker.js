@@ -35,17 +35,15 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
     return slot === owner && owner.lease === lease && !lease.closed;
   }
   async function post(owner, lease) {
-    if (!lease.message || lease.posting) return;
+    if (!owner.ready || !lease.message || lease.posting) return;
     lease.posting = true;
-    const isCurrent = () => current(owner, lease);
     try {
       let packet = null;
-      if (!owner.world) {
-        try { packet = await prepare(lease.map, lease.session, lease.message, isCurrent); }
+      if (prepare && owner.collision && !owner.world) {
+        try { packet = await prepare(lease.map, lease.session, lease.message, () => current(owner, lease)); }
         catch { /* Native geometry loading remains the cold-path fallback. */ }
       }
-      if (!owner.ready) await owner.readiness;
-      if (!isCurrent()) return;
+      if (!current(owner, lease)) return;
       const message = {...lease.message, __surfdQolIndex: protocol, type: 'run', job: lease.id};
       const transfer = [];
       if (packet) {
@@ -62,7 +60,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
         owner.worker.postMessage(message);
       }
     } catch {
-      if (isCurrent()) fail(owner);
+      if (current(owner, lease)) fail(owner);
     }
   }
   function camera(owner) {
@@ -251,6 +249,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
           if (data.type === 'ready') {
             owner.ready = true;
             owner.camera = data.camera === true;
+            owner.collision = data.collision === true;
             owner.readyResolve(owner.camera);
             if (owner.viewOnly && !owner.camera) { evict(owner); return; }
             if (owner.lease) void post(owner, owner.lease);
@@ -350,7 +349,7 @@ export function createReplayIndexJobs(prepare, createWorkerDefault = null) {
 
 // One active native simulation, with at most the newest pending request. The
 // only scheduled task is a yield between active native indexing chunks.
-export function createReplayIndexWorker(post, run, pause = () => new Promise(resolve => setTimeout(resolve, 0)), cinema = null) {
+export function createReplayIndexWorker(post, run, pause = () => new Promise(resolve => setTimeout(resolve, 0)), cinema = null, collision = false) {
   let active = null, pending = null, running = false;
   const protocol = 1;
   async function drain() {
@@ -386,7 +385,7 @@ export function createReplayIndexWorker(post, run, pause = () => new Promise(res
       return;
     }
     if (message.type === 'hello') {
-      post({__surfdQolIndex: protocol, type: 'ready', ...(cinema ? {camera: true} : {})});
+      post({__surfdQolIndex: protocol, type: 'ready', ...(cinema ? {camera: true} : {}), ...(collision ? {collision: true} : {})});
     } else if (message.type === 'cancel') {
       if (active?.id === message.job) active = null;
       if (pending?.job === message.job) pending = null;

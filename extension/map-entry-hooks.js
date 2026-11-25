@@ -33,7 +33,9 @@ function runTicketPrefetch(source, load, entry) {
   const catalog = board[3];
   const geometry = unique(source, new RegExp(`async function (${identifier})\\((${identifier}),${identifier}\\)\\{const (${identifier})=${literal(catalog)}\\.find\\((${identifier})=>\\4\\.id===\\2\\.id\\),`, 'g'));
   const body = source.slice(load.index + load[0].length, load.index + load[0].length + 1200);
-  if (!geometry || !new RegExp(`try\\{const(?: ${identifier}=${identifier}\\(${literal(entry)}\\.id\\),)?\\[${identifier},${identifier}(?:,${identifier})?\\]=await Promise\\.all\\(\\[${literal(geometry[1])}\\(${literal(entry)},`).test(body)) return null;
+  // A kept map waits for the native offline cache before starting its downloads.
+  // Check that form too without moving or replacing the cache wait.
+  if (!geometry || !new RegExp(`try\\{(?:await ${identifier}\\(${literal(entry)}\\.slug\\);)?const(?: ${identifier}=${identifier}\\(${literal(entry)}\\.id\\),)?\\[${identifier},${identifier}(?:,${identifier})?\\]=await Promise\\.all\\(\\[${literal(geometry[1])}\\(${literal(entry)},`).test(body)) return null;
   return {instance: instance[1], at: controller.index + controller[0].length - `ready:${ready},setMap(`.length,
     method: `__qolPrefetchRun(__qolMap){if(!${initialized}||${failure}||!${client}.config.enabled||!${client}.session&&!${client}.config.guestRuns||${client}.session&&${retained}.retained>=6)return;
     const __qolRecord=${catalog}.find(__qolEntry=>__qolEntry.id===__qolMap?.id),__qolBoard=__qolRecord&&${client}.board(__qolRecord);

@@ -860,3 +860,40 @@ test('the bonus update installs the bonus courses it loaded beside the map', asy
   expect(fixture.deps.courses).toEqual({mapId: 'surf_one', bonuses: [{number: 1}]});
   expect(fixture.run.view.__qolTextureBindings).toBeDefined();
 });
+
+test('live progressive loading waits for Keep cache synchronization and fetches packs through the page', async () => {
+  const compression = 'options.compressedTextures!==!1&&Object.keys(data.compressedTextures??{}).length>0&&supported()';
+  const source = progressiveFixture.replace(compression, 'choose(has(data),options.compressedTextures)')
+    .replace('async function relay(', 'const has=data=>Object.keys(data.compressedTextures??{}).length>0,choose=(available,preference)=>preference!==!1&&available&&supported();async function relay(')
+    .replace('async function startMap(', 'async function syncCache(slug){downloaded().includes(slug)&&await sync()}async function startMap(')
+    .replace('try{const[collision,visual]', 'try{await syncCache(entry.slug);const[collision,visual]');
+  const patched = nativeProgressiveMapHooks(source);
+  expect(patched).toContain('const __qolMapBindings=');
+  expect(patched).not.toContain('packUrl:pack=>');
+  const unknownCache = source.replace('downloaded().includes(slug)&&await sync()', 'await sync()');
+  expect(nativeProgressiveMapHooks(unknownCache)).toBe(unknownCache);
+
+  const cache = deferred(), fetches = [];
+  const selected = pack('visual', [{url: 'texture', bytes: [1]}]);
+  const {startMap, ready} = new Function('gate', 'fetches', 'selected', `
+    const downloaded=()=>["map"],sync=()=>gate;
+    const index={map:"manifest"},validateDDS=()=>{},validateManifest=()=>{},normalize=()=>{};
+    const fetchNative=async url=>{fetches.push(url);return url};
+    const fetchJson=async()=>({data:{sky:[]},packs:[selected]}),supported=()=>false,selectPacks=value=>value.packs;
+    const readBytes=async()=>selected.bytes,decodeImage=async()=>({}),geometry=async()=>{fetches.push("collision");return {}};
+    class Renderer {renderBufferDirect(){} draw(){} dispose(){}}
+    class CubeTexture {}
+    let ready=false,loading=true,currentView=null,clock=0;
+    const controls={unlock(){}},overlay={},input={reset(){}},element=()=>({}),success=()=>{},done=()=>{};
+    const failed=error=>{throw error};
+    function install(collision,visual){currentView=factory({},visual,collision);return {}}
+    ${patched}
+    return {startMap,ready:()=>ready};
+  `)(cache.promise, fetches, selected);
+  const loading = startMap({slug: 'map'});
+  expect(fetches).toEqual([]);
+  cache.resolve();
+  await loading;
+  expect(fetches).toEqual(['collision', 'manifest', 'visual']);
+  expect(ready()).toBe(true);
+});
